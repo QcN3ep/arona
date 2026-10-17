@@ -1,0 +1,15 @@
+.cache/
+.vscode/
+.idea/
+*.swp
+
+target/
+build/
+output/
+*.elf
+*.iso
+*.img
+
+*.qcow2
+*.vmem
+serial*.log
