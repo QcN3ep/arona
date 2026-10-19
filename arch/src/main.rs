@@ -3,11 +3,15 @@
 #![no_std]
 #![no_main]
 
-#[cfg(not(target_arch = "riscv64"))]
-compile_error!("Arona only supports riscv64gc-unknown-none-elf");
+#[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
+compile_error!("Arona only supports RISC-V 64 and LoongArch 64");
+
+#[cfg(target_arch = "loongarch64")]
+use arch::loongarch64::boot;
+#[cfg(target_arch = "riscv64")]
+use arch::riscv64::boot;
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    #[cfg(target_arch = "riscv64")]
-    arch::riscv64::boot::halt()
+    boot::halt()
 }
