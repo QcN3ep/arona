@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MPL-2.0
+
+[workspace]
+resolver = "3"
+members = ["kernel", "arch"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
