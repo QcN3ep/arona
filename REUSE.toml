@@ -1,7 +1,7 @@
 version = 1
 
 [[annotations]]
-path = ["**.md", "**.txt", "**.json", "**.yml", "**.yaml", "**.toml", ".gitignore", ".gitattributes"]
+path = ["**.md", "**.txt", "**.json", "**.yml", "**.yaml", "**.toml", "**.dtb", ".gitignore", ".gitattributes"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 The Arona Authors"
 SPDX-License-Identifier = "MPL-2.0"

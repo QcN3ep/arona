@@ -20,5 +20,11 @@ required-features = ["baremetal"]
 test = false
 bench = false
 
+[[test]]
+name = "dtb"
+path = "tests/boot/dtb/mod.rs"
+
 [dependencies]
+arrayvec = { version = "0.7.6", default-features = false }
+fdt = "0.2.0-alpha3"
 kernel = { package = "arona-kernel", path = "../kernel" }

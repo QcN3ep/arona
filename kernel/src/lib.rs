@@ -6,5 +6,9 @@
 
 pub mod boot;
 
-pub use boot::boot_kernel;
-pub use boot::{BootInfo, CpuInfo, MemoryInfo, MemoryRegion, MemoryRegionState, PhysRange};
+pub use boot::{
+    BootInfo, CpuInfo, DeviceUsePolicy, DmaInfo, DmaIsolationRoute, HardwareDeviceInfo,
+    HardwareDeviceInstanceId, HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo,
+    HardwareInterruptInfo, InterruptPolarity, InterruptTrigger, MemoryInfo, MemoryRegion,
+    MemoryRegionState, PhysRange, boot_kernel,
+};

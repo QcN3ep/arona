@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/dts-v1/;
+
+/ {
+    #address-cells = <2>;
+    #size-cells = <2>;
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        cpu@0 { device_type = "cpu"; reg = <0>; };
+    };
+    memory@80000000 { device_type = "memory"; reg = <0 0x80000000 0 0x8000000>; };
+    disabled {
+        status = "disabled";
+        virtio@0 { compatible = "virtio,mmio"; };
+    };
+    outer {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges = <0 0x1000 0 0x10000000 0 0x10000>;
+        interrupt-parent = <&plic>;
+        inner {
+            #address-cells = <2>;
+            #size-cells = <2>;
+            ranges = <0 0x2000 0 0x1000 0 0x1000>;
+            bridge0 {
+                #address-cells = <2>; #size-cells = <2>; ranges;
+                bridge1 {
+                    #address-cells = <2>; #size-cells = <2>; ranges;
+                    bridge2 {
+                        #address-cells = <2>; #size-cells = <2>; ranges;
+                        bridge3 {
+                            #address-cells = <2>; #size-cells = <2>; ranges;
+                            bridge4 {
+                                #address-cells = <2>; #size-cells = <2>; ranges;
+                                bridge5 {
+                                    #address-cells = <2>; #size-cells = <2>; ranges;
+                                    bridge6 {
+                                        #address-cells = <2>; #size-cells = <2>; ranges;
+                                        bridge7 {
+                                            #address-cells = <2>; #size-cells = <2>; ranges;
+                                            bridge8 {
+                                                #address-cells = <2>; #size-cells = <2>; ranges;
+                                                bridge9 {
+                                                    #address-cells = <2>; #size-cells = <2>; ranges;
+                                                    bridge10 {
+                                                        #address-cells = <2>; #size-cells = <2>; ranges;
+                                                        bridge11 {
+                                                            #address-cells = <2>; #size-cells = <2>; ranges;
+                                                            bridge12 {
+                                                                #address-cells = <2>; #size-cells = <2>; ranges;
+                                                                bridge13 {
+                                                                    #address-cells = <2>; #size-cells = <2>; ranges;
+                                                                    bridge14 {
+                                                                        #address-cells = <2>; #size-cells = <2>; ranges;
+                                                                        bridge15 {
+                                                                            #address-cells = <2>; #size-cells = <2>; ranges;
+                                                                            serial@2000 { compatible = "ns16550a"; reg = <0 0x2000 0 0x100>; interrupts = <10>; };
+                                                                        };
+                                                                    };
+                                                                };
+                                                            };
+                                                        };
+                                                    };
+                                                };
+                                            };
+                                        };
+                                    };
+                                };
+                            };
+                        };
+                    };
+                };
+            };
+        };
+    };
+    plic: interrupt-controller@c000000 {
+        compatible = "riscv,plic0";
+        interrupt-controller;
+        #address-cells = <0>;
+        #interrupt-cells = <1>;
+        riscv,ndev = <95>;
+        reg = <0 0xc000000 0 0x600000>;
+    };
+};

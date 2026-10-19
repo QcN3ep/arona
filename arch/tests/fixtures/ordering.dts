@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/dts-v1/;
+
+/ {
+    #address-cells = <2>;
+    #size-cells = <2>;
+
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        cpu@7 { device_type = "cpu"; reg = <7>; };
+    };
+    memory@80000000 {
+        device_type = "memory";
+        reg = <0 0x80000000 0 0x10000000>;
+    };
+    bus {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+        device@10001000 {
+            compatible = "virtio,mmio", "ns16550a";
+            reg = <0 0x10001000 0 0x1000>;
+        };
+    };
+    bus-aux@10002000 {
+        compatible = "ns16550a";
+        reg = <0 0x10002000 0 0x1000>;
+    };
+};
