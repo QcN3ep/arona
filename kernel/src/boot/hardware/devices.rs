@@ -37,6 +37,7 @@ impl HardwareDeviceInfo {
                     | HardwareDeviceKind::LOONGARCH_PCH_MSI
                     | HardwareDeviceKind::PCI_HOST_BRIDGE
                     | HardwareDeviceKind::IOMMU
+                    | HardwareDeviceKind::SYSCON
             )
         {
             return Err("system device must be reserved for the kernel");
@@ -74,6 +75,9 @@ impl HardwareDeviceInfo {
                     return Err("invalid MSI controller configuration");
                 }
             }
+            (DeviceConfiguration::Syscon(info), HardwareDeviceKind::SYSCON) => {
+                info.validate(&self.mmio_regions)?
+            }
             (DeviceConfiguration::None, kind)
                 if !matches!(
                     kind,
@@ -82,6 +86,7 @@ impl HardwareDeviceInfo {
                         | HardwareDeviceKind::LOONGARCH_EIOINTC
                         | HardwareDeviceKind::LOONGARCH_PCH_PIC
                         | HardwareDeviceKind::LOONGARCH_PCH_MSI
+                        | HardwareDeviceKind::SYSCON
                 ) => {}
             _ => return Err("device configuration does not match its kind"),
         }
@@ -140,6 +145,7 @@ impl HardwareDeviceKind {
     pub const VIRTIO_PCI: Self = Self(8);
     pub const LOONGARCH_PCH_PIC: Self = Self(9);
     pub const LOONGARCH_PCH_MSI: Self = Self(10);
+    pub const SYSCON: Self = Self(11);
     pub const RISCV_CLINT: Self = Self(12);
 }
 
@@ -250,6 +256,7 @@ pub enum DeviceConfiguration {
     Msi {
         vectors: Range<u32>,
     },
+    Syscon(SysconInfo),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -266,6 +273,52 @@ pub struct UartInfo {
 pub enum RegisterEndian {
     Little,
     Big,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SysconInfo {
+    pub register_width: u8,
+    pub endian: RegisterEndian,
+    pub poweroff: Option<RegisterWrite>,
+    pub reboot: Option<RegisterWrite>,
+}
+
+impl SysconInfo {
+    fn validate(&self, registers: &[PhysRange]) -> Result<(), &'static str> {
+        let first_size = registers
+            .first()
+            .map(|range| range.end.saturating_sub(range.start))
+            .unwrap_or(0);
+        if !matches!(self.register_width, 1 | 2 | 4)
+            || registers.len() != 1
+            || first_size < u64::from(self.register_width)
+            || !registers[0]
+                .start
+                .is_multiple_of(u64::from(self.register_width))
+        {
+            return Err("invalid system controller registers");
+        }
+        let bits = u32::MAX >> (32 - u32::from(self.register_width) * 8);
+        for write in [self.poweroff, self.reboot].into_iter().flatten() {
+            if u64::from(write.offset) + u64::from(self.register_width) > first_size
+                || !write.offset.is_multiple_of(u32::from(self.register_width))
+                || write.mask == 0
+                || write.mask & !bits != 0
+                || write.value & !bits != 0
+            {
+                return Err("invalid system control register operation");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 以 `(old & !mask) | (value & mask)` 更新寄存器。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisterWrite {
+    pub offset: u32,
+    pub mask: u32,
+    pub value: u32,
 }
 
 #[repr(u8)]

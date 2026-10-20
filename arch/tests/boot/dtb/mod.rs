@@ -13,7 +13,7 @@ use kernel::{
     BootInfo, ConsoleInfo, CpuInfo, CpuInterruptTarget, DeviceConfiguration, DeviceUsePolicy,
     HardwareDeviceInstanceId, HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo,
     InterruptPolarity, InterruptTrigger, MemoryRegion, MemoryRegionState, PciAddressSpace,
-    PhysRange,
+    PhysRange, RegisterEndian,
 };
 
 // dtc -I dts -O dtb -o arch/tests/fixtures/boot.dtb arch/tests/fixtures/boot.dts
@@ -361,7 +361,7 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
     // dtc -I dts -O dtb -o arch/tests/fixtures/loongarch.dtb arch/tests/fixtures/loongarch.dts
     let hardware = parse_hardware(LOONGARCH_DTB);
     assert_eq!(hardware.cpus.as_slice(), &[CpuInfo { hardware_id: 0 }]);
-    let [eiointc, msi, pci, pic, uarts @ ..] = hardware.devices.as_slice() else {
+    let [eiointc, syscon, msi, pci, pic, uarts @ ..] = hardware.devices.as_slice() else {
         panic!("missing LoongArch devices")
     };
     assert_eq!(
@@ -383,6 +383,28 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
         DeviceConfiguration::Msi { vectors: 32..256 }
     );
     assert_eq!(msi.interrupt_route.unwrap().controller, eiointc.instance_id);
+    let DeviceConfiguration::Syscon(control) = syscon.configuration else {
+        panic!("missing syscon configuration")
+    };
+    assert_eq!(
+        (control.register_width, control.endian),
+        (1, RegisterEndian::Little)
+    );
+    assert_eq!(
+        (
+            control.poweroff.unwrap().offset,
+            control.poweroff.unwrap().value,
+            control.poweroff.unwrap().mask
+        ),
+        (0, 0x34, 0xff)
+    );
+    assert_eq!(
+        (
+            control.reboot.unwrap().offset,
+            control.reboot.unwrap().value
+        ),
+        (2, 0x42)
+    );
     let HardwareDeviceLocation::PciHostBridge { windows, .. } = &pci.location else {
         panic!("missing PCI host")
     };
@@ -447,6 +469,31 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
             )
         );
     }
+    let mut blob = LOONGARCH_DTB.to_vec();
+    let header = *fdt::Fdt::new_unaligned(&blob).unwrap().header();
+    let strings = header.strings_offset as usize;
+    let offset = strings
+        + blob[strings..]
+            .windows(6)
+            .position(|bytes| bytes == b"value\0")
+            .unwrap();
+    blob[offset..offset + 5].copy_from_slice(b"mask\0");
+    let hardware = parse_hardware(&blob);
+    let control = hardware
+        .devices
+        .iter()
+        .find_map(|device| match device.configuration {
+            DeviceConfiguration::Syscon(info) => Some(info),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        (
+            control.poweroff.unwrap().mask,
+            control.poweroff.unwrap().value
+        ),
+        (0xff, 0x34)
+    );
 }
 
 #[test]
@@ -492,6 +539,17 @@ fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
         panic!("missing UART configuration")
     };
     assert_eq!(serial.clock_frequency_hz, Some(3_686_400));
+    let syscon = hardware
+        .devices
+        .iter()
+        .find(|device| device.kind == HardwareDeviceKind::SYSCON)
+        .unwrap();
+    let DeviceConfiguration::Syscon(control) = syscon.configuration else {
+        panic!("missing syscon configuration")
+    };
+    assert_eq!(control.register_width, 4);
+    assert_eq!(control.poweroff.unwrap().value, 0x5555);
+    assert_eq!(control.reboot.unwrap().value, 0x7777);
     assert_eq!(hardware.pci.interrupts.len(), 16);
     assert!(hardware.pci.msi_maps.is_empty());
     let pci = hardware

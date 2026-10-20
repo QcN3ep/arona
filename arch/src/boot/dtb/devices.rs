@@ -5,6 +5,7 @@
 mod interrupts;
 mod pci;
 mod serial;
+mod syscon;
 
 use core::ops::Range;
 
@@ -70,6 +71,7 @@ pub(super) fn parse(dtb: &Dtb<'_>, hardware: &mut HardwareInfo) -> Result<()> {
         .devices
         .as_mut_slice()
         .sort_unstable_by_key(|device| device.instance_id.0);
+    syscon::operations(dtb, &nodes, &mut hardware.devices)?;
     hardware.console = serial::console(dtb, &nodes).unwrap_or_default();
     Ok(())
 }
@@ -186,6 +188,7 @@ fn parse_device(
             | HardwareDeviceKind::LOONGARCH_EIOINTC
             | HardwareDeviceKind::LOONGARCH_PCH_PIC
             | HardwareDeviceKind::LOONGARCH_PCH_MSI => interrupts::configuration(node, kind)?,
+            HardwareDeviceKind::SYSCON => DeviceConfiguration::Syscon(syscon::parse(node)?),
             _ => DeviceConfiguration::None,
         },
         dma: dma(walk, kind)?,
@@ -220,6 +223,7 @@ fn kind(node: Node<'_>) -> Result<Option<HardwareDeviceKind>> {
         "loongson,ls2k2000-eiointc" => Some(HardwareDeviceKind::LOONGARCH_EIOINTC),
         "loongson,pch-pic-1.0" => Some(HardwareDeviceKind::LOONGARCH_PCH_PIC),
         "loongson,pch-msi-1.0" => Some(HardwareDeviceKind::LOONGARCH_PCH_MSI),
+        "syscon" => Some(HardwareDeviceKind::SYSCON),
         "riscv,clint0" | "sifive,clint0" => Some(HardwareDeviceKind::RISCV_CLINT),
         _ => None,
     }))

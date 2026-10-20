@@ -131,12 +131,69 @@ fn rejects_invalid_normalized_resources() {
 }
 
 #[test]
+fn unsupported_optional_information_does_not_prevent_boot() {
+    for (path, property, value) in [
+        ("/poweroff", "regmap", 0xdead),
+        ("/poweroff", "offset", 0xffff),
+        ("/poweroff", "value", 0x100),
+        ("/reboot", "regmap", 0xdead),
+        ("/reboot", "offset", 0xffff),
+        ("/reboot", "value", 0x100),
+    ] {
+        let mut blob = LOONGARCH_DTB.to_vec();
+        let tree = fdt::Fdt::new_unaligned(&blob).unwrap();
+        let property = tree
+            .find_node(path)
+            .unwrap()
+            .raw_property(property)
+            .unwrap();
+        let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize;
+        blob[offset..offset + 4].copy_from_slice(&u32::to_be_bytes(value));
+        let hardware = parse_hardware(&blob);
+        let control = hardware
+            .devices
+            .iter()
+            .find_map(|device| match device.configuration {
+                DeviceConfiguration::Syscon(info) => Some(info),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(control.poweroff.is_none(), path == "/poweroff");
+        assert_eq!(control.reboot.is_none(), path == "/reboot");
+    }
+    for stdout in [
+        b"missing:115200n8r".as_slice(),
+        b"serial0:115200x8r".as_slice(),
+    ] {
+        let mut blob = DTB.to_vec();
+        let tree = fdt::Fdt::new_unaligned(&blob).unwrap();
+        let property = tree
+            .find_node("/chosen")
+            .unwrap()
+            .raw_property("stdout-path")
+            .unwrap();
+        let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize;
+        blob[offset..offset + stdout.len()].copy_from_slice(stdout);
+        let hardware = parse_hardware(&blob);
+        if stdout.starts_with(b"missing") {
+            assert_eq!(hardware.console, ConsoleInfo::Unspecified);
+        } else {
+            assert!(matches!(
+                hardware.console,
+                ConsoleInfo::Uart { settings: None, .. }
+            ));
+        }
+    }
+}
+
+#[test]
 fn rejects_broken_control_and_routing_descriptions() {
     for (original, path, property, cell, value) in [
         (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 0),
         (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 62),
         (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 64),
         (DTB, "/memory@80000000", "reg", 1, 0x80000001),
+        (LOONGARCH_DTB, "/ged@100e001c", "reg-io-width", 0, 4),
         (
             LOONGARCH_DTB,
             "/msi@2ff00000",
@@ -168,32 +225,5 @@ fn rejects_broken_control_and_routing_descriptions() {
             Dtb::from_bytes(&blob).unwrap().dump(&mut hardware).is_err(),
             "{path}"
         );
-    }
-}
-
-#[test]
-fn unsupported_optional_information_does_not_prevent_boot() {
-    for stdout in [
-        b"missing:115200n8r".as_slice(),
-        b"serial0:115200x8r".as_slice(),
-    ] {
-        let mut blob = DTB.to_vec();
-        let tree = fdt::Fdt::new_unaligned(&blob).unwrap();
-        let property = tree
-            .find_node("/chosen")
-            .unwrap()
-            .raw_property("stdout-path")
-            .unwrap();
-        let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize;
-        blob[offset..offset + stdout.len()].copy_from_slice(stdout);
-        let hardware = parse_hardware(&blob);
-        if stdout.starts_with(b"missing") {
-            assert_eq!(hardware.console, ConsoleInfo::Unspecified);
-        } else {
-            assert!(matches!(
-                hardware.console,
-                ConsoleInfo::Uart { settings: None, .. }
-            ));
-        }
     }
 }
