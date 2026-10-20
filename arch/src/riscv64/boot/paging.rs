@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! 临时启动页表、高半区访问布局与分页切换。
+
+pub(super) const LARGE_PAGE_SIZE: usize = 0x20_0000;
+const KERNEL_BASE: usize = 0xffff_ffc0_0000_0000;
+pub(super) const UART_BASE: usize = KERNEL_BASE + 0x20_0000;
+pub(super) const FIRMWARE_BASE: usize = KERNEL_BASE + 0x40_0000;
+
+// REFERENCE: https://docs.riscv.org/reference/isa/priv/supervisor.html
+const VALID: usize = 1;
+const READ: usize = 1 << 1;
+const WRITE: usize = 1 << 2;
+const EXECUTE: usize = 1 << 3;
+const ACCESSED: usize = 1 << 6;
+const DIRTY: usize = 1 << 7;
+const PAGE_RO: usize = VALID | READ | ACCESSED;
+const PAGE_RX: usize = PAGE_RO | EXECUTE;
+const PAGE_RW: usize = PAGE_RO | WRITE | DIRTY;
+const PAGE_RWX: usize = PAGE_RW | EXECUTE;
+
+#[repr(C, align(4096))]
+struct PageTable {
+    entries: [usize; 512],
+}
+
+#[repr(C)]
+struct PageTables {
+    root: PageTable,
+    kernel_l1: PageTable,
+}
+
+#[used]
+#[unsafe(link_section = ".boot_tables")]
+static mut TABLES: PageTables = PageTables {
+    root: PageTable::new(),
+    kernel_l1: PageTable::new(),
+};
+
+unsafe extern "C" {
+    static mut _boot_tables_phys: PageTables;
+    static _kernel_phys_start: u8;
+}
+
+/// # Safety
+///
+/// 处理器须关闭中断并在物理地址执行，页表与启动栈须可独占读写，dtb 须为固件交付的物理地址。
+#[unsafe(link_section = ".text.entry.rust")]
+pub(super) unsafe extern "C" fn enter(hartid: usize, dtb: usize) -> ! {
+    let start = core::ptr::addr_of!(_kernel_phys_start) as usize;
+
+    // SAFETY: 链接脚本定义的页表区域须按页对齐且可独占写入。
+    let tables = unsafe { &mut *core::ptr::addr_of_mut!(_boot_tables_phys) };
+    tables.init(start, dtb);
+
+    let satp = (8usize << 60) | (&raw const tables.root as usize >> 12);
+    // SAFETY: 页表须覆盖当前指令及高半区入口，a0/a1 须保留固件启动参数。
+    unsafe {
+        core::arch::asm!(
+            "lla t1, 2f",
+            "ld t1, 0(t1)",
+            "sfence.vma",
+            "csrw satp, t0",
+            "sfence.vma",
+            "jr t1",
+            ".balign 8",
+            "2:",
+            ".dword {virtual_entry}",
+            virtual_entry = sym super::_start_virtual,
+            in("t0") satp,
+            in("a0") hartid,
+            in("a1") dtb,
+            options(noreturn),
+        );
+    }
+}
+
+impl PageTables {
+    #[inline(always)]
+    fn init(&mut self, kernel: usize, dtb: usize) {
+        self.root.clear();
+        self.kernel_l1.clear();
+
+        self.root.link::<2>(KERNEL_BASE, &self.kernel_l1);
+        self.root.map::<2>(kernel, kernel & !0x3fff_ffff, PAGE_RX);
+        // 启动映像暂以一个可读写执行的 2 MiB 大页映射。
+        self.kernel_l1.map::<1>(KERNEL_BASE, kernel, PAGE_RWX);
+        self.kernel_l1.map::<1>(UART_BASE, 0x1000_0000, PAGE_RW);
+
+        let dtb_page = dtb & !(LARGE_PAGE_SIZE - 1);
+        self.kernel_l1.map::<1>(FIRMWARE_BASE, dtb_page, PAGE_RO);
+        self.kernel_l1.map::<1>(
+            FIRMWARE_BASE + LARGE_PAGE_SIZE,
+            dtb_page.wrapping_add(LARGE_PAGE_SIZE),
+            PAGE_RO,
+        );
+    }
+}
+
+impl PageTable {
+    const fn new() -> Self {
+        Self { entries: [0; 512] }
+    }
+
+    #[inline(always)]
+    fn clear(&mut self) {
+        let mut index = 0usize;
+        while index < self.entries.len() {
+            self.write(index, 0);
+            index = index.wrapping_add(1);
+        }
+    }
+
+    #[inline(always)]
+    fn link<const LEVEL: usize>(&mut self, virtual_address: usize, next: &Self) {
+        let physical = next as *const Self as usize;
+        self.write(virtual_address >> (12 + 9 * LEVEL), (physical >> 2) | VALID);
+    }
+
+    #[inline(always)]
+    fn map<const LEVEL: usize>(&mut self, virtual_address: usize, physical: usize, flags: usize) {
+        self.write(virtual_address >> (12 + 9 * LEVEL), (physical >> 2) | flags);
+    }
+
+    #[inline(always)]
+    fn write(&mut self, index: usize, value: usize) {
+        let entry = self.entries.as_mut_ptr().wrapping_add(index & 511);
+        // SAFETY: entry 位于独占页表内；内联存储避免分页前调用高地址的 core 调试检查。
+        unsafe {
+            core::arch::asm!(
+                "sd {value}, 0({entry})",
+                entry = in(reg) entry,
+                value = in(reg) value,
+                options(nostack),
+            );
+        }
+    }
+}
