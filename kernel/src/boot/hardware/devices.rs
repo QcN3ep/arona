@@ -32,7 +32,9 @@ impl HardwareDeviceInfo {
                 self.kind,
                 HardwareDeviceKind::RISCV_PLIC
                     | HardwareDeviceKind::RISCV_CLINT
+                    | HardwareDeviceKind::GOLDFISH_RTC
                     | HardwareDeviceKind::LOONGARCH_EIOINTC
+                    | HardwareDeviceKind::LOONGARCH_LS7A_RTC
                     | HardwareDeviceKind::LOONGARCH_PCH_PIC
                     | HardwareDeviceKind::LOONGARCH_PCH_MSI
                     | HardwareDeviceKind::PCI_HOST_BRIDGE
@@ -147,6 +149,7 @@ impl HardwareDeviceKind {
     pub const LOONGARCH_PCH_MSI: Self = Self(10);
     pub const SYSCON: Self = Self(11);
     pub const RISCV_CLINT: Self = Self(12);
+    pub const GOLDFISH_RTC: Self = Self(13);
 }
 
 /// 设备资源是否允许委托给用户态。

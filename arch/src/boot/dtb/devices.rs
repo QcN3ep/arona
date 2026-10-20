@@ -222,9 +222,11 @@ fn kind(node: Node<'_>) -> Result<Option<HardwareDeviceKind>> {
         "pci-host-ecam-generic" => Some(HardwareDeviceKind::PCI_HOST_BRIDGE),
         "loongson,ls2k2000-eiointc" => Some(HardwareDeviceKind::LOONGARCH_EIOINTC),
         "loongson,pch-pic-1.0" => Some(HardwareDeviceKind::LOONGARCH_PCH_PIC),
+        "loongson,ls7a-rtc" => Some(HardwareDeviceKind::LOONGARCH_LS7A_RTC),
         "loongson,pch-msi-1.0" => Some(HardwareDeviceKind::LOONGARCH_PCH_MSI),
         "syscon" => Some(HardwareDeviceKind::SYSCON),
         "riscv,clint0" | "sifive,clint0" => Some(HardwareDeviceKind::RISCV_CLINT),
+        "google,goldfish-rtc" => Some(HardwareDeviceKind::GOLDFISH_RTC),
         _ => None,
     }))
 }

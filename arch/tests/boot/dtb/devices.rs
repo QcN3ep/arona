@@ -128,6 +128,22 @@ fn rejects_invalid_normalized_resources() {
         hardware.validate_resources(),
         Err("PCI memory window is not page-aligned")
     );
+    for (blob, kind) in [
+        (LOONGARCH_DTB, HardwareDeviceKind::LOONGARCH_LS7A_RTC),
+        (RISCV_DTB, HardwareDeviceKind::GOLDFISH_RTC),
+    ] {
+        let mut hardware = parse_hardware(blob);
+        hardware
+            .devices
+            .iter_mut()
+            .find(|device| device.kind == kind)
+            .unwrap()
+            .use_policy = DeviceUsePolicy::UserAssignable;
+        assert_eq!(
+            hardware.validate_resources(),
+            Err("system device must be reserved for the kernel")
+        );
+    }
 }
 
 #[test]
