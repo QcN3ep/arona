@@ -13,6 +13,7 @@ use crate::{
 };
 
 const PAGE_SIZE_U64: u64 = PAGE_SIZE as u64;
+const END_OF_FREE_LIST: u64 = u64::MAX;
 
 static MEMORY_MANAGER: Mutex<MemoryManager> = Mutex::new(MemoryManager::empty());
 
@@ -93,7 +94,7 @@ impl MemoryManager {
         if let Some(address) = self.free.as_ref().map(Frame::physical_address) {
             let frame = Frame { address };
             let next = mmu.read_frame_link(frame.address)?;
-            let free = if next == 0 {
+            let free = if next == END_OF_FREE_LIST {
                 None
             } else {
                 Some(self.frame_at(next)?)
@@ -118,7 +119,9 @@ impl MemoryManager {
         }
         mmu.write_frame_link(
             frame.address,
-            self.free.as_ref().map_or(0, Frame::physical_address),
+            self.free
+                .as_ref()
+                .map_or(END_OF_FREE_LIST, Frame::physical_address),
         )?;
         self.free = Some(frame);
         Ok(())
