@@ -3,13 +3,15 @@
 //! 启动数据定义及内核入口。
 
 mod hardware;
+mod image;
 
 pub use hardware::*;
+pub use image::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BootInfo<'boot> {
     pub boot_cpu_id: u64,
-    pub kernel_image: PhysRange,
+    pub kernel_image: KernelImage,
     pub hardware: &'boot HardwareInfo,
 }
 

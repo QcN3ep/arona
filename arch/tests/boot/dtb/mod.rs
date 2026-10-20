@@ -3,6 +3,8 @@
 mod devices;
 mod memory;
 
+use super::{BOOT_CPU_ID, image};
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -30,7 +32,6 @@ use kernel::{
 const DTB: &[u8] = include_bytes!("../../fixtures/boot.dtb");
 const LOONGARCH_DTB: &[u8] = include_bytes!("../../fixtures/loongarch.dtb");
 const RISCV_DTB: &[u8] = include_bytes!("../../fixtures/riscv.dtb");
-const BOOT_CPU_ID: u64 = 7;
 
 thread_local! {
     static ALLOCATIONS: Cell<Option<usize>> = const { Cell::new(None) };
@@ -96,7 +97,7 @@ fn parse_hardware(blob: &[u8]) -> Box<HardwareInfo> {
 #[test]
 fn dtb_produces_complete_boot_data() {
     let blob = DTB.to_vec();
-    let mut hardware = parse_hardware(&blob);
+    let hardware = parse_hardware(&blob);
     drop(blob);
     assert_eq!(
         hardware.cpus.as_slice(),
@@ -191,43 +192,6 @@ fn dtb_produces_complete_boot_data() {
             (0xa0000000, 0xa0100000, MemoryRegionState::Available),
         ]
     );
-    let kernel_image = PhysRange {
-        start: 0x80200000,
-        end: 0x80300000,
-    };
-    let info = prepare_boot_info(BOOT_CPU_ID, kernel_image, &mut hardware).unwrap();
-    assert_eq!(info.boot_cpu_id, BOOT_CPU_ID);
-    assert_eq!(info.kernel_image, kernel_image);
-    assert!(hardware.memory.regions.contains(&MemoryRegion {
-        range: kernel_image,
-        state: MemoryRegionState::Reserved
-    }));
-    assert_eq!(
-        hardware.memory.regions[..3]
-            .iter()
-            .map(|region| (region.range.start, region.range.end, region.state))
-            .collect::<Vec<_>>(),
-        memory[..3]
-    );
-    assert_eq!(
-        prepare_boot_info(99, kernel_image, &mut hardware).unwrap_err(),
-        "boot CPU is missing from the hardware description"
-    );
-    for range in [
-        PhysRange {
-            start: 0x80002000,
-            end: 0x80003000,
-        },
-        PhysRange {
-            start: 0x90000000,
-            end: 0x90001000,
-        },
-    ] {
-        assert_eq!(
-            prepare_boot_info(BOOT_CPU_ID, range, &mut hardware).unwrap_err(),
-            "reservation is not contained in mappable RAM"
-        );
-    }
 }
 
 #[test]
@@ -375,10 +339,10 @@ fn dtb_conversion_does_not_allocate() {
         let boot_cpu_id = hardware.cpus[0].hardware_id;
         prepare_boot_info(
             boot_cpu_id,
-            PhysRange {
+            image(PhysRange {
                 start,
-                end: start + 4096,
-            },
+                end: start + 5 * 4096,
+            }),
             &mut hardware,
         )
         .unwrap();
@@ -557,10 +521,10 @@ fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
     let mut hardware = parse_hardware(RISCV_DTB);
     prepare_boot_info(
         0,
-        PhysRange {
+        image(PhysRange {
             start: 0x80200000,
             end: 0x80400000,
-        },
+        }),
         &mut hardware,
     )
     .unwrap();

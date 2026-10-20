@@ -37,6 +37,24 @@ SECTIONS
         _kernel_image = .;
         QUAD(_kernel_phys_start)
         QUAD(_kernel_phys_end)
+        _kernel_text = .;
+        QUAD(LOADADDR(.text))
+        QUAD(LOADADDR(.text) + SIZEOF(.text))
+        QUAD(ADDR(.text))
+        _kernel_rodata = .;
+        QUAD(LOADADDR(.rodata))
+        QUAD(LOADADDR(.rodata) + SIZEOF(.rodata))
+        QUAD(ADDR(.rodata))
+        _kernel_data = .;
+        QUAD(LOADADDR(.data))
+        QUAD(_kernel_phys_end)
+        QUAD(ADDR(.data))
+        _kernel_boot_tables = .;
+        QUAD(_boot_tables_phys)
+        QUAD(_boot_tables_phys_end)
+        _kernel_boot_stack = .;
+        QUAD(_boot_stack_bottom - _kernel_offset)
+        QUAD(_boot_stack_top - _kernel_offset)
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
         . = ALIGN(8);

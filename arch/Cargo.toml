@@ -21,8 +21,8 @@ test = false
 bench = false
 
 [[test]]
-name = "dtb"
-path = "tests/boot/dtb/mod.rs"
+name = "boot"
+path = "tests/boot/mod.rs"
 
 [[test]]
 name = "uart"

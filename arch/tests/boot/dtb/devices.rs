@@ -70,10 +70,10 @@ fn discovers_unfamiliar_devices_and_preserves_owned_configuration() {
     assert!(sensor.dma.is_none());
     prepare_boot_info(
         BOOT_CPU_ID,
-        PhysRange {
+        image(PhysRange {
             start: 0x80200000,
             end: 0x80300000,
-        },
+        }),
         &mut hardware,
     )
     .unwrap();

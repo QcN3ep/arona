@@ -48,7 +48,6 @@ static CONSOLE: AtomicUsize = AtomicUsize::new(BOOT_UART);
 unsafe extern "C" {
     static _sbss: u8;
     static _ebss: u8;
-    static _kernel_image: u8;
 }
 
 struct Storage<'a> {
@@ -332,25 +331,22 @@ fn run_operations(mmu: &dyn Mmu, storage: &mut Storage<'_>, data: u64) {
 
 fn install_kernel(mmu: &dyn Mmu, storage: &mut Storage<'_>) {
     mmu.initialize(storage).unwrap();
-    // SAFETY: 链接脚本须在 _kernel_image 存放内核映像物理范围的两个 u64。
-    let image =
-        unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(_kernel_image).cast::<u64>(), 2) };
-    let start = image[0] as usize;
-    let end = image[1] as usize;
-    let text_end = core::ptr::addr_of!(_kernel_image) as usize;
-    for physical_address in (start..end).step_by(PAGE_SIZE) {
-        let virtual_address = physical_address.wrapping_add(KERNEL_OFFSET);
-        let permissions = if virtual_address < text_end {
-            PagePermissions::ReadExecute
-        } else {
-            PagePermissions::ReadWrite
-        };
-        mmu.map(
-            storage,
-            virtual_address,
-            mapping(physical_address as u64, permissions),
-        )
-        .unwrap();
+    let image = arch::boot::kernel_image();
+    for (segment, permissions) in [
+        (image.text, PagePermissions::ReadExecute),
+        (image.rodata, PagePermissions::ReadOnly),
+        (image.data, PagePermissions::ReadWrite),
+    ] {
+        for physical_address in (segment.physical.start..segment.physical.end).step_by(PAGE_SIZE) {
+            let virtual_address =
+                segment.virtual_start + (physical_address - segment.physical.start) as usize;
+            mmu.map(
+                storage,
+                virtual_address,
+                mapping(physical_address, permissions),
+            )
+            .unwrap();
+        }
     }
     mmu.map(
         storage,
