@@ -28,3 +28,6 @@ path = "tests/boot/dtb/mod.rs"
 arrayvec = { version = "0.7.6", default-features = false }
 fdt = "0.2.0-alpha3"
 kernel = { package = "arona-kernel", path = "../kernel" }
+
+[target.'cfg(target_arch = "loongarch64")'.dependencies]
+uefi-raw = "0.14.0"

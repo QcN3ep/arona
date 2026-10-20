@@ -2,9 +2,18 @@
 
 use core::mem::size_of;
 
+use kernel::{BootInfo, HardwareInfo, PhysRange};
+use uefi_raw::{guid, table::system::SystemTable};
+
+use crate::boot::dtb::Dtb;
+
+static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
+
 unsafe extern "C" {
     static _sbss: u8;
     static _ebss: u8;
+    static _kernel_start: u8;
+    static _kernel_end: u8;
 }
 
 /// QEMU virt 上 LoongArch 64 直启入口。
@@ -31,9 +40,58 @@ pub unsafe extern "C" fn _start() -> ! {
 ///
 /// 只能由 [`_start`] 在系统启动时调用一次。
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn _start_native(_argc: usize, _argv: usize, _system_table: usize) -> ! {
+pub unsafe extern "C" fn _start_native(_argc: usize, _argv: usize, system_table: usize) -> ! {
     clear_bss();
-    halt()
+
+    // REFERENCE: https://gitlab.com/qemu-project/qemu/-/blob/v11.1.2/hw/loongarch/boot.c
+    // SAFETY: system_table 须指向可读且不变的 SystemTable。
+    let system = unsafe { &*(system_table as *const SystemTable) };
+    assert_eq!(
+        system.header.signature,
+        SystemTable::SIGNATURE,
+        "invalid QEMU system table signature"
+    );
+    // SAFETY: configuration_table 须覆盖 number_of_configuration_table_entries 个可读且不变的配置表项。
+    let tables = unsafe {
+        core::slice::from_raw_parts(
+            system.configuration_table,
+            system.number_of_configuration_table_entries,
+        )
+    };
+    let mut matches = tables
+        .iter()
+        .filter(|entry| entry.vendor_guid == guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0"));
+    let dtb = matches
+        .next()
+        .expect("QEMU configuration table is missing DTB")
+        .vendor_table
+        .cast::<u8>();
+    assert!(
+        matches.next().is_none(),
+        "duplicate DTB configuration table"
+    );
+
+    // SAFETY: 可变借用存续期间须独占访问 HARDWARE_INFO。
+    let hardware = unsafe { &mut *core::ptr::addr_of_mut!(HARDWARE_INFO) };
+    // SAFETY: dtb 须指向解析期间可读且不变的完整 DTB。
+    unsafe { Dtb::new(dtb) }
+        .and_then(|dtb| dtb.dump(hardware))
+        .unwrap_or_else(|error| panic!("failed to parse DTB: {error}"));
+    let cpu_id: usize;
+    // REFERENCE: https://github.com/torvalds/linux/blob/v6.18/arch/loongarch/include/asm/loongarch.h
+    unsafe {
+        core::arch::asm!("csrrd {}, 0x20", out(reg) cpu_id, options(nomem, nostack));
+    }
+    let info = BootInfo {
+        boot_cpu_id: (cpu_id & 0x1ff) as u64,
+        kernel_image: PhysRange {
+            start: core::ptr::addr_of!(_kernel_start) as u64,
+            end: core::ptr::addr_of!(_kernel_end) as u64,
+        },
+        hardware,
+    };
+
+    kernel::boot_kernel(info)
 }
 
 fn clear_bss() {
