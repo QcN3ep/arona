@@ -16,7 +16,8 @@ pub struct BootInfo<'boot> {
 /// # Safety
 ///
 /// `info` 及其字段须合法且与实际硬件一致，当前处理器须处于内核运行所需的执行环境。
-pub fn boot_kernel(_info: BootInfo<'_>) -> ! {
+pub fn boot_kernel(info: BootInfo<'_>) -> ! {
+    log::info!("Entering kernel");
     loop {
         core::hint::spin_loop();
     }

@@ -17,6 +17,8 @@ name = "arona-kernel"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "log",
+ "spin",
 ]
 
 [[package]]
@@ -36,6 +38,18 @@ name = "fdt"
 version = "0.2.0-alpha3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "addf728870aa3321a3a3a5d564ddf72b8ebb4dfbfd608a1befd43e8710b2a2b5"
+
+[[package]]
+name = "log"
+version = "0.4.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "spin"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 
 [[package]]
 name = "uefi-raw"

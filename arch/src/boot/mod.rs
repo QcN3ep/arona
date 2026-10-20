@@ -2,6 +2,8 @@
 
 //! 固件启动信息解析与内核交接准备。
 
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+pub(crate) mod console;
 pub mod dtb;
 
 use kernel::{BootInfo, HardwareInfo, MemoryRegionState, PhysRange};

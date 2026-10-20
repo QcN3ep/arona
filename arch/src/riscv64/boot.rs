@@ -2,11 +2,14 @@
 
 use core::mem::size_of;
 
-use kernel::{HardwareInfo, MemoryRegionState, PhysRange};
+use kernel::{HardwareInfo, MemoryRegionState, PhysRange, log, logger};
 
-use crate::boot::{dtb::Dtb, prepare_boot_info};
+use crate::boot::{console::EarlyConsole, dtb::Dtb, prepare_boot_info};
+use crate::device::uart::Uart;
 
 static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
+// SAFETY: 地址须对应 QEMU virt 的字节宽度与步长均为 1 的 16550 UART，且普通访问须由此实例独占。
+static EARLY_CONSOLE: EarlyConsole = EarlyConsole::new(unsafe { Uart::new(0x1000_0000) });
 
 unsafe extern "C" {
     static _sbss: u8;
@@ -40,6 +43,12 @@ pub unsafe extern "C" fn _start() -> ! {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
     clear_bss();
+    EARLY_CONSOLE.init();
+    logger::LOGGER
+        .add_sink(&EARLY_CONSOLE)
+        .expect("failed to register early console");
+    logger::init(log::LevelFilter::Debug).expect("failed to initialize logger");
+    log::info!(target: "arch::boot", "Booting kernel on CPU {hartid}");
 
     // SAFETY: 可变借用存续期间须独占访问 HARDWARE_INFO。
     let hardware = unsafe { &mut *core::ptr::addr_of_mut!(HARDWARE_INFO) };
@@ -68,8 +77,18 @@ pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
     )
     .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));
 
+    log::debug!(target: "arch::boot", "Parsed DTB at {dtb:#x}");
     // SAFETY: 启动信息须与实际硬件一致，处理器须处于内核运行所需的执行环境。
     kernel::boot_kernel(info)
+}
+
+pub fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    // SAFETY: 调用方须处于允许写入 `sstatus` 的特权级。
+    unsafe {
+        core::arch::asm!("csrci sstatus, 2", options(nostack));
+    }
+    EARLY_CONSOLE.panic(info);
+    halt()
 }
 
 fn clear_bss() {

@@ -2,12 +2,15 @@
 
 use core::mem::size_of;
 
-use kernel::{HardwareInfo, MemoryRegionState, PhysRange};
+use kernel::{HardwareInfo, MemoryRegionState, PhysRange, log, logger};
 use uefi_raw::{guid, table::system::SystemTable};
 
-use crate::boot::{dtb::Dtb, prepare_boot_info};
+use crate::boot::{console::EarlyConsole, dtb::Dtb, prepare_boot_info};
+use crate::device::uart::Uart;
 
 static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
+// SAFETY: 地址须对应 QEMU virt 的字节宽度与步长均为 1 的 16550 UART，且普通访问须由此实例独占。
+static EARLY_CONSOLE: EarlyConsole = EarlyConsole::new(unsafe { Uart::new(0x1fe0_01e0) });
 
 unsafe extern "C" {
     static _sbss: u8;
@@ -42,6 +45,18 @@ pub unsafe extern "C" fn _start() -> ! {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start_native(_argc: usize, _argv: usize, system_table: usize) -> ! {
     clear_bss();
+    EARLY_CONSOLE.init();
+    logger::LOGGER
+        .add_sink(&EARLY_CONSOLE)
+        .expect("failed to register early console");
+    logger::init(log::LevelFilter::Debug).expect("failed to initialize logger");
+    // REFERENCE: https://github.com/torvalds/linux/blob/v6.18/arch/loongarch/include/asm/loongarch.h
+    let cpu_id: usize;
+    unsafe {
+        core::arch::asm!("csrrd {}, 0x20", out(reg) cpu_id, options(nomem, nostack));
+    }
+    let boot_cpu_id = (cpu_id & 0x1ff) as u64;
+    log::info!(target: "arch::boot", "Booting kernel on CPU {boot_cpu_id}");
 
     // REFERENCE: https://gitlab.com/qemu-project/qemu/-/blob/v11.1.2/hw/loongarch/boot.c
     // SAFETY: system_table 须指向可读且不变的 SystemTable。
@@ -96,13 +111,8 @@ pub unsafe extern "C" fn _start_native(_argc: usize, _argv: usize, system_table:
             .reserve(range, MemoryRegionState::BootReserved)
             .unwrap_or_else(|error| panic!("failed to reserve firmware data: {error}"));
     }
-    let cpu_id: usize;
-    // REFERENCE: https://github.com/torvalds/linux/blob/v6.18/arch/loongarch/include/asm/loongarch.h
-    unsafe {
-        core::arch::asm!("csrrd {}, 0x20", out(reg) cpu_id, options(nomem, nostack));
-    }
     let info = prepare_boot_info(
-        (cpu_id & 0x1ff) as u64,
+        boot_cpu_id,
         PhysRange {
             start: core::ptr::addr_of!(_kernel_start) as u64,
             end: core::ptr::addr_of!(_kernel_end) as u64,
@@ -111,8 +121,23 @@ pub unsafe extern "C" fn _start_native(_argc: usize, _argv: usize, system_table:
     )
     .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));
 
+    log::debug!(target: "arch::boot", "Parsed DTB at {:#x}", dtb as usize);
     // SAFETY: 启动信息须与实际硬件一致，处理器须处于内核运行所需的执行环境。
     kernel::boot_kernel(info)
+}
+
+pub fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    // SAFETY: 调用方须处于允许写入 `CRMD` 的特权级。
+    unsafe {
+        core::arch::asm!(
+            "li.d $t0, 4",
+            "csrxchg $zero, $t0, 0x0",
+            out("$t0") _,
+            options(nostack),
+        );
+    }
+    EARLY_CONSOLE.panic(info);
+    halt()
 }
 
 fn clear_bss() {

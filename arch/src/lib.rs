@@ -3,6 +3,7 @@
 #![no_std]
 
 pub mod boot;
+pub mod device;
 
 #[cfg(target_arch = "loongarch64")]
 pub mod loongarch64;

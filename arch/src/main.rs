@@ -12,6 +12,6 @@ use arch::loongarch64::boot;
 use arch::riscv64::boot;
 
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    boot::halt()
+fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    boot::panic(info)
 }

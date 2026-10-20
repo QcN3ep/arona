@@ -24,6 +24,10 @@ bench = false
 name = "dtb"
 path = "tests/boot/dtb/mod.rs"
 
+[[test]]
+name = "uart"
+path = "tests/device/uart.rs"
+
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
 fdt = "0.2.0-alpha3"

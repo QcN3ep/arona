@@ -11,3 +11,5 @@ name = "kernel"
 
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
+log = { version = "0.4.34", default-features = false }
+spin = { version = "0.9.9", default-features = false, features = ["rwlock"] }
