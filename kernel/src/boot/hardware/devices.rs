@@ -2,14 +2,14 @@
 
 //! 设备资源、寄存器配置及 DMA 描述。
 
-use super::PhysRange;
+use super::{PciWindow, PhysRange};
 use arrayvec::ArrayVec;
 use core::ops::Range;
 
 pub const MAX_DEVICES: usize = 128;
 pub const MAX_MMIO_REGIONS: usize = 16;
 pub const MAX_INTERRUPTS: usize = 16;
-pub const MAX_PCI_MEMORY_WINDOWS: usize = 16;
+pub const MAX_PCI_WINDOWS: usize = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HardwareDeviceInfo {
@@ -103,19 +103,17 @@ impl HardwareDeviceInfo {
     }
 
     pub(super) fn addresses(&self) -> impl Iterator<Item = PhysRange> + '_ {
-        let (ecam, windows): (_, &[PhysRange]) = match &self.location {
-            HardwareDeviceLocation::PciHostBridge {
-                ecam,
-                memory_windows,
-                ..
-            } => (Some(*ecam), memory_windows.as_slice()),
+        let (ecam, windows): (_, &[PciWindow]) = match &self.location {
+            HardwareDeviceLocation::PciHostBridge { ecam, windows, .. } => {
+                (Some(*ecam), windows.as_slice())
+            }
             HardwareDeviceLocation::Platform | HardwareDeviceLocation::Iocsr { .. } => (None, &[]),
         };
         self.mmio_regions
             .iter()
             .copied()
             .chain(ecam)
-            .chain(windows.iter().copied())
+            .chain(windows.iter().map(|window| window.cpu_range))
     }
 }
 
@@ -163,7 +161,7 @@ pub enum HardwareDeviceLocation {
         first_bus: u8,
         last_bus: u8,
         ecam: PhysRange,
-        memory_windows: ArrayVec<PhysRange, MAX_PCI_MEMORY_WINDOWS>,
+        windows: ArrayVec<PciWindow, MAX_PCI_WINDOWS>,
         iommu: Option<HardwareDeviceInstanceId>,
     },
 }

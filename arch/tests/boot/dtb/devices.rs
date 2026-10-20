@@ -60,6 +60,46 @@ fn accepts_128_devices_and_rejects_overflow() {
 }
 
 #[test]
+fn rejects_invalid_normalized_resources() {
+    let mut hardware = parse_hardware(LOONGARCH_DTB);
+    hardware.pci.interrupts[0].pin = 0;
+    hardware.pci.interrupts[0].pin_mask = 0;
+    assert_eq!(
+        hardware.validate_resources(),
+        Err("invalid PCI interrupt route")
+    );
+    hardware.pci.interrupts[0].pin = 1;
+    hardware.pci.interrupts[0].pin_mask = 7;
+    let pci = hardware
+        .devices
+        .iter()
+        .position(|device| device.kind == HardwareDeviceKind::PCI_HOST_BRIDGE)
+        .unwrap();
+    let HardwareDeviceLocation::PciHostBridge { ecam, .. } = &mut hardware.devices[pci].location
+    else {
+        unreachable!()
+    };
+    ecam.start += 1;
+    ecam.end += 1;
+    assert_eq!(
+        hardware.validate_resources(),
+        Err("invalid PCI ECAM bus range")
+    );
+    let HardwareDeviceLocation::PciHostBridge { ecam, windows, .. } =
+        &mut hardware.devices[pci].location
+    else {
+        unreachable!()
+    };
+    ecam.start -= 1;
+    ecam.end -= 1;
+    windows[0].bus_address += 1;
+    assert_eq!(
+        hardware.validate_resources(),
+        Err("PCI memory window is not page-aligned")
+    );
+}
+
+#[test]
 fn rejects_broken_control_and_routing_descriptions() {
     for (original, path, property, cell, value) in [
         (DTB, "/memory@80000000", "reg", 1, 0x80000001),
@@ -70,6 +110,8 @@ fn rejects_broken_control_and_routing_descriptions() {
             0,
             225,
         ),
+        (LOONGARCH_DTB, "/pcie@20000000", "msi-map", 3, 65537),
+        (LOONGARCH_DTB, "/pcie@20000000", "interrupt-map", 4, 0xdead),
         (
             RISCV_DTB,
             "/soc/interrupt-controller@c000000",

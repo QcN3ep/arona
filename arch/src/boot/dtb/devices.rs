@@ -35,6 +35,8 @@ pub(super) fn parse(dtb: &Dtb<'_>, hardware: &mut HardwareInfo) -> Result<()> {
     collect_nodes(dtb, &mut nodes)?;
     hardware.devices.clear();
     hardware.cpu_interrupts.clear();
+    hardware.pci.interrupts.clear();
+    hardware.pci.msi_maps.clear();
     let mut walk = dtb.nodes();
     while let Some(node) = walk.next()? {
         let name = node.name()?.name;
@@ -55,6 +57,9 @@ pub(super) fn parse(dtb: &Dtb<'_>, hardware: &mut HardwareInfo) -> Result<()> {
                         instance_id(index),
                         &mut hardware.cpu_interrupts,
                     )?;
+                }
+                HardwareDeviceKind::PCI_HOST_BRIDGE => {
+                    pci::routes(dtb, &walk, index, &nodes, &mut hardware.pci)?
                 }
                 _ => {}
             }

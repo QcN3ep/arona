@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 解析 generic ECAM 主桥的总线范围和内存窗口。
+//! 解析 generic ECAM 主桥的地址窗口及中断路由。
 
+use super::{DeviceNode, instance_id, interrupts};
 use arrayvec::ArrayVec;
 use fdt::properties::{
-    pci::{PciAddress, PciAddressSpace},
+    pci::{PciAddress, PciAddressSpace as FdtAddressSpace},
     values::U32List,
 };
-use kernel::HardwareDeviceLocation;
+use kernel::{
+    HardwareDeviceKind, HardwareDeviceLocation, PciAddressSpace, PciInfo, PciInterruptRoute,
+    PciMsiMap, PciWindow,
+};
 
 use super::super::{
-    Result,
+    Dtb, Result,
     nodes::{Nodes, cell_sizes, property, ranges, registers},
     range,
 };
@@ -54,31 +58,146 @@ pub(super) fn parse(walk: &Nodes<'_>) -> Result<HardwareDeviceLocation> {
         .flat_map(|ranges| ranges.iter::<PciAddress, u64, u64>())
     {
         let entry = entry?;
-        if !matches!(
-            entry.child_bus_address.hi.address_space(),
-            PciAddressSpace::Memory32 | PciAddressSpace::Memory64
-        ) {
-            continue;
-        }
+        let space = match entry.child_bus_address.hi.address_space() {
+            FdtAddressSpace::Io => continue,
+            FdtAddressSpace::Memory32 => PciAddressSpace::Memory32,
+            FdtAddressSpace::Memory64 => PciAddressSpace::Memory64,
+            _ => return Err("PCI ranges contains configuration space".into()),
+        };
         let child =
             u64::from(entry.child_bus_address.mid) << 32 | u64::from(entry.child_bus_address.lo);
-        let window = walk.translate(range(entry.parent_bus_address, entry.len)?)?;
-        if child != window.start {
-            return Err("non-identity PCI memory windows are not supported".into());
-        }
-        if !window.start.is_multiple_of(PAGE_SIZE) || !window.end.is_multiple_of(PAGE_SIZE) {
-            return Err("PCI memory window is not page-aligned".into());
-        }
+        let window = PciWindow {
+            bus_address: child,
+            cpu_range: walk.translate(range(entry.parent_bus_address, entry.len)?)?,
+            space,
+            prefetchable: entry.child_bus_address.hi.prefetchable(),
+        };
         windows
             .try_push(window)
-            .map_err(|_| "too many PCI memory windows")?;
+            .map_err(|_| "too many PCI windows")?;
     }
     Ok(HardwareDeviceLocation::PciHostBridge {
         segment,
         first_bus: first as u8,
         last_bus: last as u8,
         ecam,
-        memory_windows: windows,
+        windows,
         iommu: None,
     })
+}
+
+pub(super) fn routes(
+    dtb: &Dtb<'_>,
+    walk: &Nodes<'_>,
+    index: usize,
+    nodes: &[DeviceNode<'_>],
+    output: &mut PciInfo,
+) -> Result<()> {
+    let node = walk.node();
+    if node.raw_property("interrupt-map-pass-thru")?.is_some()
+        || node.raw_property("msi-parent")?.is_some()
+    {
+        return Err("unsupported PCI interrupt routing binding".into());
+    }
+    if let Some(map) = property::<U32List<'_>>(node, "interrupt-map")? {
+        // REFERENCE: https://www.devicetree.org/open-firmware/bindings/pci/pci2_1.pdf
+        if property::<u32>(node, "#interrupt-cells")? != Some(1) {
+            return Err("unsupported PCI interrupt cells".into());
+        }
+        let mask = property::<U32List<'_>>(node, "interrupt-map-mask")?
+            .ok_or("PCI interrupt-map requires an address mask")?;
+        let mut mask = mask.iter();
+        let mask = {
+            let values = [
+                cell(&mut mask)?,
+                cell(&mut mask)?,
+                cell(&mut mask)?,
+                cell(&mut mask)?,
+            ];
+            if mask.next().is_some() {
+                return Err("invalid PCI interrupt mask size".into());
+            }
+            values
+        };
+        if mask[0] & !0x00ffff00 != 0 || mask[1] != 0 || mask[2] != 0 || mask[3] > 7 {
+            return Err("unsupported PCI interrupt address mask".into());
+        }
+        let mut cells = map.iter().peekable();
+        while cells.peek().is_some() {
+            let address = [cell(&mut cells)?, cell(&mut cells)?, cell(&mut cells)?];
+            let pin = cell(&mut cells)?;
+            if !(1..=4).contains(&pin) {
+                return Err("invalid PCI interrupt pin".into());
+            }
+            let phandle = cell(&mut cells)?;
+            let (_, parent) = interrupts::controller(dtb, nodes, phandle)?;
+            if property::<u32>(parent, "#address-cells")?.unwrap_or(0) != 0 {
+                return Err("PCI interrupt parent address cells are unsupported".into());
+            }
+            let interrupt = interrupts::interrupt(dtb, nodes, phandle, &mut cells)?;
+            output
+                .interrupts
+                .try_push(PciInterruptRoute {
+                    host: instance_id(index),
+                    requester_id: ((address[0] & mask[0]) >> 8) as u16,
+                    requester_mask: (mask[0] >> 8) as u16,
+                    pin: (pin & mask[3]) as u8,
+                    pin_mask: mask[3] as u8,
+                    interrupt,
+                })
+                .map_err(|_| "too many PCI interrupt routes")?;
+        }
+    }
+    msi_map(dtb, node, index, nodes, output)
+}
+
+fn msi_map(
+    dtb: &Dtb<'_>,
+    node: super::super::nodes::Node<'_>,
+    index: usize,
+    nodes: &[DeviceNode<'_>],
+    output: &mut PciInfo,
+) -> Result<()> {
+    if let Some(map) = property::<U32List<'_>>(node, "msi-map")? {
+        // REFERENCE: https://github.com/devicetree-org/dt-schema/blob/main/dtschema/schemas/pci/pci-msi.yaml
+        let mask = property::<u32>(node, "msi-map-mask")?.unwrap_or(0xffff);
+        if mask > 0xffff {
+            return Err("PCI MSI requester mask exceeds 16 bits".into());
+        }
+        let mut cells = map.iter().peekable();
+        while cells.peek().is_some() {
+            let requester_base = cell(&mut cells)?;
+            let controller = dtb.resolve_phandle(cell(&mut cells)?)?;
+            let name = controller.name()?.name;
+            let controller_index = nodes
+                .iter()
+                .position(|device| core::ptr::eq(device.name, name))
+                .ok_or("PCI MSI controller is unsupported")?;
+            if nodes[controller_index].kind != HardwareDeviceKind::LOONGARCH_PCH_MSI
+                || property::<u32>(controller, "#msi-cells")?.unwrap_or(0) != 0
+            {
+                return Err("unsupported PCI MSI controller binding".into());
+            }
+            let msi_base = cell(&mut cells)?;
+            let requester_count = cell(&mut cells)?;
+            output
+                .msi_maps
+                .try_push(PciMsiMap {
+                    host: instance_id(index),
+                    requester_base,
+                    requester_count,
+                    requester_mask: mask as u16,
+                    controller: instance_id(controller_index),
+                    msi_base,
+                })
+                .map_err(|_| "too many PCI MSI requester maps")?;
+        }
+    }
+    Ok(())
+}
+
+fn cell(cells: &mut impl Iterator<Item = u32>) -> Result<u32> {
+    cells
+        .next()
+        .ok_or_else(|| "truncated PCI routing entry".into())
 }

@@ -13,7 +13,8 @@ use arch::boot::dtb::Dtb;
 use kernel::{
     BootInfo, CpuInfo, CpuInterruptTarget, DeviceConfiguration, DeviceUsePolicy,
     HardwareDeviceInstanceId, HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo,
-    InterruptPolarity, InterruptTrigger, MemoryRegion, MemoryRegionState, PhysRange,
+    InterruptPolarity, InterruptTrigger, MemoryRegion, MemoryRegionState, PciAddressSpace,
+    PhysRange,
 };
 
 // dtc -I dts -O dtb -o arch/tests/fixtures/boot.dtb arch/tests/fixtures/boot.dts
@@ -118,7 +119,7 @@ fn dtb_produces_complete_boot_data() {
         first_bus,
         last_bus,
         ecam,
-        memory_windows,
+        windows,
         iommu,
     } = &pci.location
     else {
@@ -133,7 +134,10 @@ fn dtb_produces_complete_boot_data() {
         }
     );
     assert_eq!(
-        memory_windows.as_slice(),
+        windows
+            .iter()
+            .map(|window| window.cpu_range)
+            .collect::<Vec<_>>(),
         &[PhysRange {
             start: 0x40000000,
             end: 0x80000000
@@ -326,7 +330,7 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
     // dtc -I dts -O dtb -o arch/tests/fixtures/loongarch.dtb arch/tests/fixtures/loongarch.dts
     let hardware = parse_hardware(LOONGARCH_DTB);
     assert_eq!(hardware.cpus.as_slice(), &[CpuInfo { hardware_id: 0 }]);
-    let [eiointc, msi, _pci, pic, uarts @ ..] = hardware.devices.as_slice() else {
+    let [eiointc, msi, pci, pic, uarts @ ..] = hardware.devices.as_slice() else {
         panic!("missing LoongArch devices")
     };
     assert_eq!(
@@ -348,6 +352,37 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
         DeviceConfiguration::Msi { vectors: 32..256 }
     );
     assert_eq!(msi.interrupt_route.unwrap().controller, eiointc.instance_id);
+    let HardwareDeviceLocation::PciHostBridge { windows, .. } = &pci.location else {
+        panic!("missing PCI host")
+    };
+    assert_eq!(
+        (
+            windows[0].bus_address,
+            windows[0].cpu_range.start,
+            windows[0].space
+        ),
+        (0x40000000, 0x40000000, PciAddressSpace::Memory32)
+    );
+    assert_eq!(windows.len(), 1);
+    assert_eq!(hardware.pci.interrupts.len(), 16);
+    assert_eq!(hardware.pci.msi_maps.len(), 1);
+    assert_eq!(
+        (
+            hardware.pci.msi_maps[0].controller,
+            hardware.pci.msi_maps[0].requester_count
+        ),
+        (msi.instance_id, 65536)
+    );
+    for route in &hardware.pci.interrupts {
+        assert_eq!(
+            (route.host, route.interrupt.controller),
+            (pci.instance_id, pic.instance_id)
+        );
+        assert_eq!(
+            route.interrupt.line,
+            16 + ((u32::from(route.requester_id >> 3) + u32::from(route.pin) - 1) % 4)
+        );
+    }
     assert_eq!(
         (pic.mmio_regions[0].start, pic.mmio_regions[0].end),
         (0x10000000, 0x10000400)
@@ -411,6 +446,26 @@ fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
     assert_eq!((contexts[0].output, contexts[0].line), (0, 11));
     assert_eq!((contexts[1].output, contexts[1].line), (1, 9));
     assert_eq!(contexts[1].target, CpuInterruptTarget::Cpu(0));
+    assert_eq!(hardware.pci.interrupts.len(), 16);
+    assert!(hardware.pci.msi_maps.is_empty());
+    let pci = hardware
+        .devices
+        .iter()
+        .find(|device| device.kind == HardwareDeviceKind::PCI_HOST_BRIDGE)
+        .unwrap();
+    let HardwareDeviceLocation::PciHostBridge { windows, .. } = &pci.location else {
+        panic!("missing PCI host")
+    };
+    assert_eq!(windows.len(), 2);
+    assert_eq!(windows[1].bus_address, 0x4_00000000);
+    assert_eq!(windows[1].space, PciAddressSpace::Memory64);
+    for route in &hardware.pci.interrupts {
+        assert_eq!(route.interrupt.controller, plic.instance_id);
+        assert_eq!(
+            route.interrupt.line,
+            32 + ((u32::from(route.requester_id >> 3) + u32::from(route.pin) - 1) % 4)
+        );
+    }
     let mut blob = RISCV_DTB.to_vec();
     let tree = fdt::Fdt::new_unaligned(&blob).unwrap();
     let property = tree

@@ -5,10 +5,12 @@
 mod devices;
 mod interrupts;
 mod memory;
+mod pci;
 
 pub use devices::*;
 pub use interrupts::*;
 pub use memory::*;
+pub use pci::*;
 
 use arrayvec::ArrayVec;
 
@@ -21,6 +23,7 @@ pub struct HardwareInfo {
     pub devices: ArrayVec<HardwareDeviceInfo, MAX_DEVICES>,
     pub timebase_frequency_hz: Option<u64>,
     pub cpu_interrupts: ArrayVec<CpuInterruptRoute, MAX_CPU_INTERRUPT_ROUTES>,
+    pub pci: PciInfo,
 }
 
 impl HardwareInfo {
@@ -33,6 +36,7 @@ impl HardwareInfo {
             devices: ArrayVec::new_const(),
             timebase_frequency_hz: None,
             cpu_interrupts: ArrayVec::new_const(),
+            pci: PciInfo::new(),
         }
     }
 
@@ -95,7 +99,7 @@ impl HardwareInfo {
             }
         }
         self.validate_interrupts()?;
-        Ok(())
+        self.pci.validate(self)
     }
 
     pub(super) fn device(
