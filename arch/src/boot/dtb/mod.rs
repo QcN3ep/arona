@@ -110,6 +110,10 @@ impl<'a> Dtb<'a> {
         })
     }
 
+    pub fn total_size(&self) -> usize {
+        self.bytes.len()
+    }
+
     /// 将 DTB 转换为硬件描述，失败时结果不可用。
     pub fn dump(self, hardware: &mut HardwareInfo) -> Result<()> {
         cpus::parse(&self, &mut hardware.cpus)?;

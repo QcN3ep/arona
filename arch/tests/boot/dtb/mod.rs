@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod memory;
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -79,17 +81,8 @@ fn parse_hardware(blob: &[u8]) -> Box<HardwareInfo> {
 #[test]
 fn dtb_produces_complete_boot_data() {
     let blob = DTB.to_vec();
-    let hardware = parse_hardware(&blob);
+    let mut hardware = parse_hardware(&blob);
     drop(blob);
-    BootInfo {
-        boot_cpu_id: BOOT_CPU_ID,
-        kernel_image: PhysRange {
-            start: 0x80200000,
-            end: 0x80300000,
-        },
-        hardware: &hardware,
-    }
-    .validate();
     assert_eq!(
         hardware.cpus.as_slice(),
         &[CpuInfo { hardware_id: 0 }, CpuInfo { hardware_id: 7 }]
@@ -155,6 +148,15 @@ fn dtb_produces_complete_boot_data() {
         state,
     });
     assert_eq!(hardware.memory.regions.as_slice(), memory);
+    let kernel_image = PhysRange {
+        start: 0x80200000,
+        end: 0x80300000,
+    };
+    BootInfo::new(BOOT_CPU_ID, kernel_image, &mut hardware).validate();
+    assert!(hardware.memory.regions.contains(&MemoryRegion {
+        range: kernel_image,
+        state: MemoryRegionState::Reserved,
+    }));
 }
 
 #[test]
@@ -163,6 +165,7 @@ fn pointer_and_slice_inputs_produce_the_same_hardware() {
     struct AlignedDtb([u8; DTB.len()]);
     let blob = AlignedDtb(DTB.try_into().unwrap());
     let from_slice = Dtb::from_bytes(&blob.0).unwrap();
+    assert_eq!(from_slice.total_size(), DTB.len());
     // SAFETY: blob 须覆盖完整 DTB，并在 from_ptr 存续期间保持可读且不变。
     let from_ptr = unsafe { Dtb::new(blob.0.as_ptr()) }.unwrap();
     let mut expected = Box::new(HardwareInfo::new());

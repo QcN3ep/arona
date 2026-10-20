@@ -14,6 +14,22 @@ pub struct BootInfo<'boot> {
 }
 
 impl BootInfo<'_> {
+    pub fn new(
+        boot_cpu_id: u64,
+        kernel_image: PhysRange,
+        hardware: &mut HardwareInfo,
+    ) -> BootInfo<'_> {
+        hardware
+            .memory
+            .reserve(kernel_image, MemoryRegionState::Reserved)
+            .unwrap_or_else(|error| panic!("{error}"));
+        BootInfo {
+            boot_cpu_id,
+            kernel_image,
+            hardware,
+        }
+    }
+
     pub fn validate(&self) {
         self.hardware
             .validate_resources()

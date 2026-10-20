@@ -31,6 +31,28 @@ impl HardwareInfo {
     }
 
     pub fn validate_resources(&self) -> Result<(), &'static str> {
+        if self.cpus.is_empty()
+            || self
+                .cpus
+                .windows(2)
+                .any(|pair| pair[0].hardware_id >= pair[1].hardware_id)
+        {
+            return Err("CPU table is empty or not strictly ordered");
+        }
+        if self.memory.regions.is_empty()
+            || self.memory.regions.iter().any(|region| {
+                region.range.start >= region.range.end
+                    || !region.range.start.is_multiple_of(4096)
+                    || !region.range.end.is_multiple_of(4096)
+            })
+            || self
+                .memory
+                .regions
+                .windows(2)
+                .any(|pair| pair[0].range.end > pair[1].range.start)
+        {
+            return Err("invalid memory region table");
+        }
         for (index, device) in self.devices.iter().enumerate() {
             for (position, address) in device.addresses().enumerate() {
                 if self

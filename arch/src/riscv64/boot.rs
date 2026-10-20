@@ -2,7 +2,7 @@
 
 use core::mem::size_of;
 
-use kernel::{BootInfo, HardwareInfo, PhysRange};
+use kernel::{BootInfo, HardwareInfo, MemoryRegionState, PhysRange};
 
 use crate::boot::dtb::Dtb;
 
@@ -44,17 +44,28 @@ pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
     // SAFETY: 可变借用存续期间须独占访问 HARDWARE_INFO。
     let hardware = unsafe { &mut *core::ptr::addr_of_mut!(HARDWARE_INFO) };
     // SAFETY: dtb 须指向解析期间可读且不变的完整 DTB。
-    unsafe { Dtb::new(dtb as *const u8) }
-        .and_then(|dtb| dtb.dump(hardware))
+    let tree = unsafe { Dtb::new(dtb as *const u8) }
+        .unwrap_or_else(|error| panic!("failed to read DTB: {error}"));
+    let dtb_range = PhysRange {
+        start: dtb as u64,
+        end: (dtb as u64)
+            .checked_add(tree.total_size() as u64)
+            .expect("DTB address range overflow"),
+    };
+    tree.dump(hardware)
         .unwrap_or_else(|error| panic!("failed to parse DTB: {error}"));
-    let info = BootInfo {
-        boot_cpu_id: hartid as u64,
-        kernel_image: PhysRange {
+    hardware
+        .memory
+        .reserve(dtb_range, MemoryRegionState::BootReserved)
+        .unwrap_or_else(|error| panic!("failed to reserve DTB: {error}"));
+    let info = BootInfo::new(
+        hartid as u64,
+        PhysRange {
             start: core::ptr::addr_of!(_kernel_start) as u64,
             end: core::ptr::addr_of!(_kernel_end) as u64,
         },
         hardware,
-    };
+    );
 
     kernel::boot_kernel(info)
 }

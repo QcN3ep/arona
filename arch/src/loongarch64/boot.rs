@@ -2,7 +2,7 @@
 
 use core::mem::size_of;
 
-use kernel::{BootInfo, HardwareInfo, PhysRange};
+use kernel::{BootInfo, HardwareInfo, MemoryRegionState, PhysRange};
 use uefi_raw::{guid, table::system::SystemTable};
 
 use crate::boot::dtb::Dtb;
@@ -74,22 +74,41 @@ pub unsafe extern "C" fn _start_native(_argc: usize, _argv: usize, system_table:
     // SAFETY: 可变借用存续期间须独占访问 HARDWARE_INFO。
     let hardware = unsafe { &mut *core::ptr::addr_of_mut!(HARDWARE_INFO) };
     // SAFETY: dtb 须指向解析期间可读且不变的完整 DTB。
-    unsafe { Dtb::new(dtb) }
-        .and_then(|dtb| dtb.dump(hardware))
+    let tree =
+        unsafe { Dtb::new(dtb) }.unwrap_or_else(|error| panic!("failed to read DTB: {error}"));
+    let dtb_range = PhysRange {
+        start: dtb as u64,
+        end: (dtb as u64)
+            .checked_add(tree.total_size() as u64)
+            .expect("DTB address range overflow"),
+    };
+    tree.dump(hardware)
         .unwrap_or_else(|error| panic!("failed to parse DTB: {error}"));
+    for range in [
+        dtb_range,
+        PhysRange {
+            start: 0,
+            end: 0x00100000,
+        },
+    ] {
+        hardware
+            .memory
+            .reserve(range, MemoryRegionState::BootReserved)
+            .unwrap_or_else(|error| panic!("failed to reserve firmware data: {error}"));
+    }
     let cpu_id: usize;
     // REFERENCE: https://github.com/torvalds/linux/blob/v6.18/arch/loongarch/include/asm/loongarch.h
     unsafe {
         core::arch::asm!("csrrd {}, 0x20", out(reg) cpu_id, options(nomem, nostack));
     }
-    let info = BootInfo {
-        boot_cpu_id: (cpu_id & 0x1ff) as u64,
-        kernel_image: PhysRange {
+    let info = BootInfo::new(
+        (cpu_id & 0x1ff) as u64,
+        PhysRange {
             start: core::ptr::addr_of!(_kernel_start) as u64,
             end: core::ptr::addr_of!(_kernel_end) as u64,
         },
         hardware,
-    };
+    );
 
     kernel::boot_kernel(info)
 }

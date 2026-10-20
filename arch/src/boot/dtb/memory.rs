@@ -58,9 +58,7 @@ fn normalize<'a>(
             {
                 return None;
             }
-            let state = covering
-                .map(|region| region.state)
-                .max_by_key(|&state| priority(state))?;
+            let state = covering.map(|region| region.state).max()?;
             Some(MemoryRegion {
                 range: address,
                 state,
@@ -95,7 +93,7 @@ fn reserved(dtb: &Dtb<'_>, output: &mut Regions) -> Result<()> {
     for range in dtb.reservations()? {
         output
             .try_push(MemoryRegion {
-                range: range?,
+                range: range?.page_envelope()?,
                 state: MemoryRegionState::Reserved,
             })
             .map_err(|_| "too many firmware memory ranges")?;
@@ -138,23 +136,21 @@ fn read_regions(node: Node<'_>, state: MemoryRegionState, output: &mut Regions) 
     for entry in registers(node)?.iter::<u64, u64>() {
         let entry = entry?;
         let range = range(entry.address, entry.len)?;
+        let pages = range.page_envelope()?;
+        if state == MemoryRegionState::Available && range != pages {
+            return Err("RAM range is not page-aligned".into());
+        }
         if state == MemoryRegionState::Available
             && output.iter().any(|other| range.overlaps(other.range))
         {
             return Err("RAM regions overlap".into());
         }
         output
-            .try_push(MemoryRegion { range, state })
+            .try_push(MemoryRegion {
+                range: pages,
+                state,
+            })
             .map_err(|_| "too many firmware memory ranges")?;
     }
     Ok(())
-}
-
-fn priority(state: MemoryRegionState) -> u8 {
-    match state {
-        MemoryRegionState::Available => 0,
-        MemoryRegionState::BootReserved => 1,
-        MemoryRegionState::Reserved => 2,
-        MemoryRegionState::NoMap => 3,
-    }
 }
