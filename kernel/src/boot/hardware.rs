@@ -22,6 +22,7 @@ pub struct HardwareInfo {
     pub memory: MemoryInfo,
     pub devices: ArrayVec<HardwareDeviceInfo, MAX_DEVICES>,
     pub timebase_frequency_hz: Option<u64>,
+    pub console: ConsoleInfo,
     pub cpu_interrupts: ArrayVec<CpuInterruptRoute, MAX_CPU_INTERRUPT_ROUTES>,
     pub pci: PciInfo,
 }
@@ -35,6 +36,7 @@ impl HardwareInfo {
             },
             devices: ArrayVec::new_const(),
             timebase_frequency_hz: None,
+            console: ConsoleInfo::Unspecified,
             cpu_interrupts: ArrayVec::new_const(),
             pci: PciInfo::new(),
         }
@@ -65,6 +67,19 @@ impl HardwareInfo {
         }
         if self.timebase_frequency_hz == Some(0) {
             return Err("timebase frequency is zero");
+        }
+        if let ConsoleInfo::Uart { device, settings } = self.console {
+            let uart = self.device(device)?;
+            if uart.kind != HardwareDeviceKind::UART_16550
+                || uart.use_policy != DeviceUsePolicy::KernelReserved
+            {
+                return Err("console does not reference a reserved UART");
+            }
+            if settings.is_some_and(|settings| {
+                settings.baud_rate == 0 || !(5..=8).contains(&settings.data_bits)
+            }) {
+                return Err("invalid console serial settings");
+            }
         }
         for (index, device) in self.devices.iter().enumerate() {
             device.validate_configuration()?;

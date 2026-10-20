@@ -4,6 +4,7 @@
 
 mod interrupts;
 mod pci;
+mod serial;
 
 use core::ops::Range;
 
@@ -17,7 +18,7 @@ use kernel::{
 
 use super::{
     Dtb, Result,
-    nodes::{Node, Nodes, property, registers},
+    nodes::{Node, Nodes, registers},
     range,
 };
 
@@ -69,6 +70,7 @@ pub(super) fn parse(dtb: &Dtb<'_>, hardware: &mut HardwareInfo) -> Result<()> {
         .devices
         .as_mut_slice()
         .sort_unstable_by_key(|device| device.instance_id.0);
+    hardware.console = serial::console(dtb, &nodes).unwrap_or_default();
     Ok(())
 }
 
@@ -120,15 +122,6 @@ fn parse_device(
     let node = walk.node();
     let kind = nodes[index].kind;
     let virtio = kind == HardwareDeviceKind::VIRTIO_MMIO;
-    if kind == HardwareDeviceKind::UART_16550
-        && (
-            property::<u32>(node, "reg-shift")?.unwrap_or(0),
-            property::<u32>(node, "reg-io-width")?.unwrap_or(1),
-            property::<u32>(node, "reg-offset")?.unwrap_or(0),
-        ) != (0, 1, 0)
-    {
-        return Err("unsupported UART register layout".into());
-    }
     let location = match kind {
         HardwareDeviceKind::PCI_HOST_BRIDGE => pci::parse(walk)?,
         HardwareDeviceKind::LOONGARCH_EIOINTC => {
@@ -188,6 +181,7 @@ fn parse_device(
             None
         },
         configuration: match kind {
+            HardwareDeviceKind::UART_16550 => DeviceConfiguration::Uart(serial::parse(dtb, node)?),
             HardwareDeviceKind::RISCV_PLIC
             | HardwareDeviceKind::LOONGARCH_EIOINTC
             | HardwareDeviceKind::LOONGARCH_PCH_PIC
@@ -264,4 +258,18 @@ fn dma(walk: &Nodes<'_>, kind: HardwareDeviceKind) -> Result<Option<DmaInfo>> {
         coherent: coherent.unwrap_or(false),
         isolation: None,
     }))
+}
+
+fn endian(node: Node<'_>) -> Result<kernel::RegisterEndian> {
+    let big = node.raw_property("big-endian")?.is_some();
+    let little = node.raw_property("little-endian")?.is_some();
+    let native = node.raw_property("native-endian")?.is_some();
+    if u8::from(big) + u8::from(little) + u8::from(native) > 1 {
+        return Err("conflicting register endianness".into());
+    }
+    Ok(if big || native && cfg!(target_endian = "big") {
+        kernel::RegisterEndian::Big
+    } else {
+        kernel::RegisterEndian::Little
+    })
 }

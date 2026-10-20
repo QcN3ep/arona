@@ -47,6 +47,9 @@ impl HardwareDeviceInfo {
             .map(|range| range.end.saturating_sub(range.start))
             .unwrap_or(0);
         match (&self.configuration, self.kind) {
+            (DeviceConfiguration::Uart(info), HardwareDeviceKind::UART_16550) => {
+                info.validate(&self.mmio_regions)?
+            }
             (DeviceConfiguration::InterruptController { lines }, kind) => {
                 let valid = match kind {
                     HardwareDeviceKind::RISCV_PLIC => {
@@ -74,7 +77,8 @@ impl HardwareDeviceInfo {
             (DeviceConfiguration::None, kind)
                 if !matches!(
                     kind,
-                    HardwareDeviceKind::RISCV_PLIC
+                    HardwareDeviceKind::UART_16550
+                        | HardwareDeviceKind::RISCV_PLIC
                         | HardwareDeviceKind::LOONGARCH_EIOINTC
                         | HardwareDeviceKind::LOONGARCH_PCH_PIC
                         | HardwareDeviceKind::LOONGARCH_PCH_MSI
@@ -238,6 +242,7 @@ pub struct DmaIsolationRoute {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DeviceConfiguration {
     None,
+    Uart(UartInfo),
     InterruptController {
         /// 控制器命名空间内可编码的中断号。
         lines: Range<u32>,
@@ -245,4 +250,75 @@ pub enum DeviceConfiguration {
     Msi {
         vectors: Range<u32>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UartInfo {
+    pub register_shift: u8,
+    pub register_width: u8,
+    pub register_offset: u32,
+    pub endian: RegisterEndian,
+    pub clock_frequency_hz: Option<u64>,
+    pub current_speed: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegisterEndian {
+    Little,
+    Big,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ConsoleInfo {
+    #[default]
+    Unspecified,
+    Uart {
+        device: HardwareDeviceInstanceId,
+        settings: Option<SerialSettings>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SerialSettings {
+    pub baud_rate: u32,
+    pub parity: SerialParity,
+    pub data_bits: u8,
+    pub flow_control: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SerialParity {
+    None,
+    Even,
+    Odd,
+}
+
+impl UartInfo {
+    fn validate(&self, registers: &[PhysRange]) -> Result<(), &'static str> {
+        let first_size = registers
+            .first()
+            .map(|range| range.end.saturating_sub(range.start))
+            .unwrap_or(0);
+        let stride = 1_u64.checked_shl(u32::from(self.register_shift));
+        let size = stride
+            .and_then(|stride| stride.checked_mul(7))
+            .and_then(|offset| {
+                offset.checked_add(u64::from(self.register_offset) + u64::from(self.register_width))
+            });
+        if !matches!(self.register_width, 1 | 2 | 4)
+            || registers.len() != 1
+            || stride.is_none_or(|stride| stride < u64::from(self.register_width))
+            || registers[0]
+                .start
+                .checked_add(u64::from(self.register_offset))
+                .is_none_or(|start| !start.is_multiple_of(u64::from(self.register_width)))
+            || size.is_none_or(|size| size > first_size)
+            || self.clock_frequency_hz == Some(0)
+            || self.current_speed == Some(0)
+        {
+            return Err("invalid UART register layout or clock");
+        }
+        Ok(())
+    }
 }

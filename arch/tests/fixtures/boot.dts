@@ -7,6 +7,9 @@
     #address-cells = <2>;
     #size-cells = <2>;
 
+    aliases { serial0 = "/soc@10000000/serial@0"; };
+    chosen { stdout-path = "serial0:115200n8r"; };
+    uart_clock: clock { compatible = "fixed-clock"; #clock-cells = <0>; clock-frequency = <3686400>; };
     cpus {
         #address-cells = <2>;
         #size-cells = <0>;
@@ -42,9 +45,10 @@
         serial@0 {
             compatible = "ns16550a";
             reg = <0 0 0 0x100>;
-            reg-shift = <0>;
-            reg-io-width = <1>;
-            reg-offset = <0>;
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            reg-offset = <8>;
+            clocks = <&uart_clock>;
             interrupts = <10>;
         };
         disabled {

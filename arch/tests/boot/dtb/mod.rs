@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod devices;
-
 mod memory;
 
 use std::{
@@ -11,7 +10,7 @@ use std::{
 
 use arch::boot::dtb::Dtb;
 use kernel::{
-    BootInfo, CpuInfo, CpuInterruptTarget, DeviceConfiguration, DeviceUsePolicy,
+    BootInfo, ConsoleInfo, CpuInfo, CpuInterruptTarget, DeviceConfiguration, DeviceUsePolicy,
     HardwareDeviceInstanceId, HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo,
     InterruptPolarity, InterruptTrigger, MemoryRegion, MemoryRegionState, PciAddressSpace,
     PhysRange,
@@ -94,24 +93,52 @@ fn dtb_produces_complete_boot_data() {
         &[CpuInfo { hardware_id: 0 }, CpuInfo { hardware_id: 7 }]
     );
     let [plic, pci, uart, virtio] = hardware.devices.as_slice() else {
-        unreachable!()
+        panic!("missing boot devices")
     };
-    assert_eq!(plic.kind, HardwareDeviceKind::RISCV_PLIC);
-    assert_eq!(plic.instance_id, HardwareDeviceInstanceId(1));
-    assert_eq!(uart.kind, HardwareDeviceKind::UART_16550);
-    assert_eq!(uart.instance_id, HardwareDeviceInstanceId(3));
-    assert_eq!(uart.use_policy, DeviceUsePolicy::KernelReserved);
     assert_eq!(
-        uart.mmio_regions.as_slice(),
-        &[PhysRange {
-            start: 0x10000000,
-            end: 0x10000100
-        }]
+        plic.configuration,
+        DeviceConfiguration::InterruptController { lines: 1..96 }
     );
-    assert_eq!(uart.interrupts[0].controller, plic.instance_id);
-    assert_eq!(uart.interrupts[0].line, 10);
-    assert_eq!(virtio.interrupts[0].controller, plic.instance_id);
-    assert_eq!(virtio.interrupts[0].line, 1);
+    assert_eq!(
+        (uart.mmio_regions[0].start, uart.mmio_regions[0].end),
+        (0x10000000, 0x10000100)
+    );
+    let DeviceConfiguration::Uart(serial) = uart.configuration else {
+        panic!("missing UART configuration")
+    };
+    assert_eq!(
+        (
+            serial.register_shift,
+            serial.register_width,
+            serial.register_offset
+        ),
+        (2, 4, 8)
+    );
+    assert_eq!(serial.clock_frequency_hz, Some(3_686_400));
+    let ConsoleInfo::Uart {
+        device,
+        settings: Some(settings),
+    } = hardware.console
+    else {
+        panic!("missing console settings")
+    };
+    assert_eq!(device, uart.instance_id);
+    assert_eq!(
+        (
+            settings.baud_rate,
+            settings.data_bits,
+            settings.flow_control
+        ),
+        (115200, 8, true)
+    );
+    assert_eq!(
+        (uart.interrupts[0].controller, uart.interrupts[0].line),
+        (plic.instance_id, 10)
+    );
+    assert_eq!(
+        (virtio.interrupts[0].controller, virtio.interrupts[0].line),
+        (plic.instance_id, 1)
+    );
     assert_eq!(virtio.use_policy, DeviceUsePolicy::UserAssignable);
     assert_eq!(virtio.dma.unwrap().address_bits, 64);
     let HardwareDeviceLocation::PciHostBridge {
@@ -123,40 +150,37 @@ fn dtb_produces_complete_boot_data() {
         iommu,
     } = &pci.location
     else {
-        unreachable!()
+        panic!("missing PCI host")
     };
-    assert_eq!((*segment, *first_bus, *last_bus), (0, 0, 255));
     assert_eq!(
-        *ecam,
-        PhysRange {
-            start: 0x30000000,
-            end: 0x40000000
-        }
+        (*segment, *first_bus, *last_bus, ecam.start, ecam.end),
+        (0, 0, 255, 0x30000000, 0x40000000)
     );
     assert_eq!(
         windows
             .iter()
-            .map(|window| window.cpu_range)
+            .map(|window| (window.bus_address, window.cpu_range.start, window.space))
             .collect::<Vec<_>>(),
-        &[PhysRange {
-            start: 0x40000000,
-            end: 0x80000000
-        }]
+        [(0x40000000, 0x40000000, PciAddressSpace::Memory32)]
     );
     assert!(pci.mmio_regions.is_empty());
     assert!(iommu.is_none());
-    let memory = [
-        (0x80000000, 0x80002000, MemoryRegionState::Reserved),
-        (0x80002000, 0x80003000, MemoryRegionState::NoMap),
-        (0x80003000, 0x80004000, MemoryRegionState::BootReserved),
-        (0x80004000, 0x88000000, MemoryRegionState::Available),
-        (0xa0000000, 0xa0100000, MemoryRegionState::Available),
-    ]
-    .map(|(start, end, state)| MemoryRegion {
-        range: PhysRange { start, end },
-        state,
-    });
-    assert_eq!(hardware.memory.regions.as_slice(), memory);
+    let memory = hardware
+        .memory
+        .regions
+        .iter()
+        .map(|region| (region.range.start, region.range.end, region.state))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        memory,
+        [
+            (0x80000000, 0x80002000, MemoryRegionState::Reserved),
+            (0x80002000, 0x80003000, MemoryRegionState::NoMap),
+            (0x80003000, 0x80004000, MemoryRegionState::BootReserved),
+            (0x80004000, 0x88000000, MemoryRegionState::Available),
+            (0xa0000000, 0xa0100000, MemoryRegionState::Available),
+        ]
+    );
     let kernel_image = PhysRange {
         start: 0x80200000,
         end: 0x80300000,
@@ -164,8 +188,15 @@ fn dtb_produces_complete_boot_data() {
     BootInfo::new(BOOT_CPU_ID, kernel_image, &mut hardware).validate();
     assert!(hardware.memory.regions.contains(&MemoryRegion {
         range: kernel_image,
-        state: MemoryRegionState::Reserved,
+        state: MemoryRegionState::Reserved
     }));
+    assert_eq!(
+        hardware.memory.regions[..3]
+            .iter()
+            .map(|region| (region.range.start, region.range.end, region.state))
+            .collect::<Vec<_>>(),
+        memory[..3]
+    );
 }
 
 #[test]
@@ -394,6 +425,9 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
         ),
         (eiointc.instance_id, 0)
     );
+    assert!(
+        matches!(hardware.console, ConsoleInfo::Uart { device, .. } if device == uarts[0].instance_id)
+    );
     assert_eq!(uarts.len(), 4);
     for (index, uart) in uarts.iter().enumerate() {
         let start = 0x1fe001e0 + index as u64 * 0x100;
@@ -446,6 +480,18 @@ fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
     assert_eq!((contexts[0].output, contexts[0].line), (0, 11));
     assert_eq!((contexts[1].output, contexts[1].line), (1, 9));
     assert_eq!(contexts[1].target, CpuInterruptTarget::Cpu(0));
+    let uart = hardware
+        .devices
+        .iter()
+        .find(|device| device.kind == HardwareDeviceKind::UART_16550)
+        .unwrap();
+    assert!(
+        matches!(hardware.console, ConsoleInfo::Uart { device, .. } if device == uart.instance_id)
+    );
+    let DeviceConfiguration::Uart(serial) = uart.configuration else {
+        panic!("missing UART configuration")
+    };
+    assert_eq!(serial.clock_frequency_hz, Some(3_686_400));
     assert_eq!(hardware.pci.interrupts.len(), 16);
     assert!(hardware.pci.msi_maps.is_empty());
     let pci = hardware

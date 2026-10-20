@@ -61,6 +61,37 @@ fn accepts_128_devices_and_rejects_overflow() {
 
 #[test]
 fn rejects_invalid_normalized_resources() {
+    let mut hardware = parse_hardware(DTB);
+    let uart = hardware
+        .devices
+        .iter()
+        .position(|device| device.kind == HardwareDeviceKind::UART_16550)
+        .unwrap();
+    let DeviceConfiguration::Uart(mut serial) = hardware.devices[uart].configuration else {
+        unreachable!()
+    };
+    hardware.devices[uart].mmio_regions[0] = PhysRange {
+        start: u64::MAX - 3,
+        end: u64::MAX,
+    };
+    assert_eq!(
+        hardware.validate_resources(),
+        Err("invalid UART register layout or clock")
+    );
+    hardware.devices[uart].mmio_regions[0] = PhysRange {
+        start: 0,
+        end: u64::MAX - 4095,
+    };
+    serial.register_width = 1;
+    serial.register_offset = 0;
+    for shift in [62, 63, 64, 255] {
+        serial.register_shift = shift;
+        hardware.devices[uart].configuration = DeviceConfiguration::Uart(serial);
+        assert_eq!(
+            hardware.validate_resources(),
+            Err("invalid UART register layout or clock")
+        );
+    }
     let mut hardware = parse_hardware(LOONGARCH_DTB);
     hardware.pci.interrupts[0].pin = 0;
     hardware.pci.interrupts[0].pin_mask = 0;
@@ -102,6 +133,9 @@ fn rejects_invalid_normalized_resources() {
 #[test]
 fn rejects_broken_control_and_routing_descriptions() {
     for (original, path, property, cell, value) in [
+        (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 0),
+        (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 62),
+        (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 64),
         (DTB, "/memory@80000000", "reg", 1, 0x80000001),
         (
             LOONGARCH_DTB,
@@ -134,5 +168,32 @@ fn rejects_broken_control_and_routing_descriptions() {
             Dtb::from_bytes(&blob).unwrap().dump(&mut hardware).is_err(),
             "{path}"
         );
+    }
+}
+
+#[test]
+fn unsupported_optional_information_does_not_prevent_boot() {
+    for stdout in [
+        b"missing:115200n8r".as_slice(),
+        b"serial0:115200x8r".as_slice(),
+    ] {
+        let mut blob = DTB.to_vec();
+        let tree = fdt::Fdt::new_unaligned(&blob).unwrap();
+        let property = tree
+            .find_node("/chosen")
+            .unwrap()
+            .raw_property("stdout-path")
+            .unwrap();
+        let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize;
+        blob[offset..offset + stdout.len()].copy_from_slice(stdout);
+        let hardware = parse_hardware(&blob);
+        if stdout.starts_with(b"missing") {
+            assert_eq!(hardware.console, ConsoleInfo::Unspecified);
+        } else {
+            assert!(matches!(
+                hardware.console,
+                ConsoleInfo::Uart { settings: None, .. }
+            ));
+        }
     }
 }
