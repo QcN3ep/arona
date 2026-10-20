@@ -60,89 +60,160 @@ fn accepts_128_devices_and_rejects_overflow() {
 }
 
 #[test]
-fn rejects_invalid_normalized_resources() {
-    let mut hardware = parse_hardware(DTB);
-    let uart = hardware
-        .devices
-        .iter()
-        .position(|device| device.kind == HardwareDeviceKind::UART_16550)
-        .unwrap();
-    let DeviceConfiguration::Uart(mut serial) = hardware.devices[uart].configuration else {
-        unreachable!()
-    };
-    hardware.devices[uart].mmio_regions[0] = PhysRange {
-        start: u64::MAX - 3,
-        end: u64::MAX,
-    };
-    assert_eq!(
-        hardware.validate_resources(),
-        Err("invalid UART register layout or clock")
-    );
-    hardware.devices[uart].mmio_regions[0] = PhysRange {
-        start: 0,
-        end: u64::MAX - 4095,
-    };
-    serial.register_width = 1;
-    serial.register_offset = 0;
-    for shift in [62, 63, 64, 255] {
-        serial.register_shift = shift;
-        hardware.devices[uart].configuration = DeviceConfiguration::Uart(serial);
-        assert_eq!(
-            hardware.validate_resources(),
-            Err("invalid UART register layout or clock")
+fn rejects_invalid_device_properties() {
+    for (original, path, property, cell, value) in [
+        (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 63),
+        (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 255),
+        (DTB, "/soc@10000000/serial@0", "reg-io-width", 0, 0),
+        (DTB, "/soc@10000000/serial@0", "reg-offset", 0, u32::MAX),
+        (DTB, "/clock", "clock-frequency", 0, 0),
+        (DTB, "/memory@80000000", "reg", 3, 0x8000001),
+        (DTB, "/interrupt-controller@c000000", "riscv,ndev", 0, 0),
+        (LOONGARCH_DTB, "/pcie@20000000", "interrupt-map", 3, 0),
+        (LOONGARCH_DTB, "/pcie@20000000", "interrupt-map-mask", 3, 0),
+        (LOONGARCH_DTB, "/pcie@20000000", "reg", 1, 0x20000001),
+        (LOONGARCH_DTB, "/pcie@20000000", "ranges", 9, 0x40000001),
+        (LOONGARCH_DTB, "/pcie@20000000", "ranges", 11, 0x40000001),
+        (LOONGARCH_DTB, "/pcie@20000000", "ranges", 8, 1),
+        (LOONGARCH_DTB, "/pcie@20000000", "interrupt-map", 10, 1),
+        (LOONGARCH_DTB, "/pcie@20000000", "interrupt-map", 5, 6),
+        (LOONGARCH_DTB, "/ged@100e001c", "reg-io-width", 0, 0),
+        (
+            LOONGARCH_DTB,
+            "/msi@2ff00000",
+            "loongson,msi-num-vecs",
+            0,
+            0,
+        ),
+        (
+            LOONGARCH_DTB,
+            "/platic@10000000",
+            "loongson,pic-base-vec",
+            0,
+            193,
+        ),
+        (LOONGARCH_DTB, "/eiointc@1400", "interrupts", 0, 14),
+        (LOONGARCH_DTB, "/flash@1c000000", "bank-width", 0, 3),
+        (RISCV_DTB, "/cpus", "timebase-frequency", 0, 0),
+        (
+            RISCV_DTB,
+            "/soc/interrupt-controller@c000000",
+            "interrupts-extended",
+            1,
+            8,
+        ),
+    ] {
+        let mut blob = original.to_vec();
+        let tree = fdt::Fdt::new_unaligned(&blob).unwrap();
+        let property = tree
+            .find_node(path)
+            .unwrap()
+            .raw_property(property)
+            .unwrap();
+        let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize + cell * 4;
+        blob[offset..offset + 4].copy_from_slice(&u32::to_be_bytes(value));
+        let mut hardware = Box::new(HardwareInfo::new());
+        assert!(
+            Dtb::from_bytes(&blob).unwrap().dump(&mut hardware).is_err(),
+            "{path}: {cell} = {value}"
         );
     }
-    let mut hardware = parse_hardware(LOONGARCH_DTB);
-    hardware.pci.interrupts[0].pin = 0;
-    hardware.pci.interrupts[0].pin_mask = 0;
-    assert_eq!(
-        hardware.validate_resources(),
-        Err("invalid PCI interrupt route")
-    );
-    hardware.pci.interrupts[0].pin = 1;
-    hardware.pci.interrupts[0].pin_mask = 7;
-    let pci = hardware
-        .devices
-        .iter()
-        .position(|device| device.kind == HardwareDeviceKind::PCI_HOST_BRIDGE)
+    let mut blob = LOONGARCH_DTB.to_vec();
+    let tree = fdt::Fdt::new_unaligned(&blob).unwrap();
+    let reg = tree
+        .find_node("/serial@1fe001e0")
+        .unwrap()
+        .raw_property("reg")
         .unwrap();
-    let HardwareDeviceLocation::PciHostBridge { ecam, .. } = &mut hardware.devices[pci].location
-    else {
-        unreachable!()
-    };
-    ecam.start += 1;
-    ecam.end += 1;
+    let offset = reg.value.as_ptr() as usize - blob.as_ptr() as usize;
+    let strings = tree.header().strings_offset as usize;
+    let name = strings
+        + blob[strings..]
+            .windows(16)
+            .position(|bytes| bytes == b"clock-frequency\0")
+            .unwrap();
+    // 复用已有属性的名字，为 UART 注入会溢出绝对地址的偏移。
+    blob[name..name + 11].copy_from_slice(b"reg-offset\0");
+    for (index, value) in [u32::MAX, u32::MAX - 3, 0, 3].into_iter().enumerate() {
+        blob[offset + index * 4..offset + index * 4 + 4].copy_from_slice(&value.to_be_bytes());
+    }
+    let mut hardware = Box::new(HardwareInfo::new());
     assert_eq!(
-        hardware.validate_resources(),
-        Err("invalid PCI ECAM bus range")
+        Dtb::from_bytes(&blob)
+            .unwrap()
+            .dump(&mut hardware)
+            .unwrap_err()
+            .to_string(),
+        "invalid UART register layout or clock"
     );
-    let HardwareDeviceLocation::PciHostBridge { ecam, windows, .. } =
-        &mut hardware.devices[pci].location
-    else {
-        unreachable!()
-    };
-    ecam.start -= 1;
-    ecam.end -= 1;
-    windows[0].bus_address += 1;
-    assert_eq!(
-        hardware.validate_resources(),
-        Err("PCI memory window is not page-aligned")
-    );
+
     for (blob, kind) in [
         (LOONGARCH_DTB, HardwareDeviceKind::LOONGARCH_LS7A_RTC),
         (RISCV_DTB, HardwareDeviceKind::GOLDFISH_RTC),
     ] {
-        let mut hardware = parse_hardware(blob);
-        hardware
-            .devices
-            .iter_mut()
-            .find(|device| device.kind == kind)
-            .unwrap()
-            .use_policy = DeviceUsePolicy::UserAssignable;
+        let hardware = parse_hardware(blob);
         assert_eq!(
-            hardware.validate_resources(),
-            Err("system device must be reserved for the kernel")
+            hardware
+                .devices
+                .iter()
+                .find(|device| device.kind == kind)
+                .unwrap()
+                .use_policy,
+            DeviceUsePolicy::KernelReserved
         );
+    }
+}
+
+#[test]
+fn rejects_conflicting_device_resources() {
+    for (original, path, property, values, expected) in [
+        (
+            DTB,
+            "/soc@10000000/virtio@1000",
+            "reg",
+            [0, 0, 0, 0x1000].as_slice(),
+            "device register ranges overlap",
+        ),
+        (
+            DTB,
+            "/soc@10000000/virtio@1000",
+            "reg",
+            [0, 0x100, 0, 0x100].as_slice(),
+            "assignable device shares a resource page",
+        ),
+        (
+            LOONGARCH_DTB,
+            "/serial@1fe003e0",
+            "reg",
+            [0, 0x1fe002e0, 0, 0x100].as_slice(),
+            "device register ranges overlap",
+        ),
+        (
+            LOONGARCH_DTB,
+            "/serial@1fe003e0",
+            "interrupts",
+            [3, 4].as_slice(),
+            "shared IRQs are not supported",
+        ),
+    ] {
+        let mut blob = original.to_vec();
+        let tree = fdt::Fdt::new_unaligned(&blob).unwrap();
+        let property = tree
+            .find_node(path)
+            .unwrap()
+            .raw_property(property)
+            .unwrap();
+        let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize;
+        for (index, value) in values.iter().enumerate() {
+            blob[offset + index * 4..offset + index * 4 + 4]
+                .copy_from_slice(&u32::to_be_bytes(*value));
+        }
+        let mut hardware = Box::new(HardwareInfo::new());
+        let error = Dtb::from_bytes(&blob)
+            .unwrap()
+            .dump(&mut hardware)
+            .unwrap_err();
+        assert_eq!(error.to_string(), expected, "{path}");
     }
 }
 

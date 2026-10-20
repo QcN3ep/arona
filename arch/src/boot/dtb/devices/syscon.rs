@@ -4,7 +4,9 @@
 
 use arrayvec::ArrayVec;
 use fdt::properties::Compatible;
-use kernel::{DeviceConfiguration, HardwareDeviceInfo, MAX_DEVICES, RegisterWrite, SysconInfo};
+use kernel::{
+    DeviceConfiguration, HardwareDeviceInfo, MAX_DEVICES, PhysRange, RegisterWrite, SysconInfo,
+};
 
 use super::super::{
     Dtb, Result,
@@ -12,15 +14,20 @@ use super::super::{
 };
 use super::DeviceNode;
 
-pub(super) fn parse(node: Node<'_>) -> Result<SysconInfo> {
+pub(super) fn parse(node: Node<'_>, registers: &[PhysRange]) -> Result<SysconInfo> {
     if property::<u32>(node, "reg-shift")?.unwrap_or(0) != 0 {
         return Err("shifted syscon registers are not supported".into());
     }
+    let width = property::<u32>(node, "reg-io-width")?.unwrap_or(4);
+    if !matches!(width, 1 | 2 | 4)
+        || registers.len() != 1
+        || registers[0].end - registers[0].start < u64::from(width)
+        || !registers[0].start.is_multiple_of(u64::from(width))
+    {
+        return Err("invalid system controller registers".into());
+    }
     Ok(SysconInfo {
-        register_width: property::<u32>(node, "reg-io-width")?
-            .unwrap_or(4)
-            .try_into()
-            .map_err(|_| "syscon register width overflow")?,
+        register_width: width as u8,
         endian: super::endian(node)?,
         poweroff: None,
         reboot: None,

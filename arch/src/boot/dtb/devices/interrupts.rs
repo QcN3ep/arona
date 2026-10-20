@@ -6,8 +6,8 @@ use arrayvec::ArrayVec;
 use fdt::properties::values::U32List;
 use kernel::{
     CpuInterruptRoute, CpuInterruptTarget, DeviceConfiguration, HardwareDeviceInstanceId,
-    HardwareDeviceKind, HardwareInterruptInfo, HardwareInterruptRoute, InterruptPolarity,
-    InterruptTrigger, MAX_CPU_INTERRUPT_ROUTES, boot::MAX_INTERRUPTS,
+    HardwareDeviceKind, HardwareInfo, HardwareInterruptInfo, HardwareInterruptRoute,
+    InterruptPolarity, InterruptTrigger, MAX_CPU_INTERRUPT_ROUTES, PhysRange, boot::MAX_INTERRUPTS,
 };
 
 use super::super::{
@@ -15,7 +15,7 @@ use super::super::{
     nodes::{Node, Nodes, integer, property},
 };
 
-use super::{DeviceNode, instance_id};
+use super::{DeviceNode, find_device, instance_id};
 
 pub(super) fn parse(
     dtb: &Dtb<'_>,
@@ -53,14 +53,16 @@ pub(super) fn cascade(
     if nodes[index].kind != HardwareDeviceKind::LOONGARCH_EIOINTC {
         return Err("unsupported PCH PIC parent controller".into());
     }
+    let base_line = if kind == HardwareDeviceKind::LOONGARCH_PCH_MSI {
+        0
+    } else {
+        property::<u32>(walk.node(), "loongson,pic-base-vec")?
+            .filter(|&base| base <= 256 - 64)
+            .ok_or("PCH PIC base vector is missing or out of range")?
+    };
     Ok(HardwareInterruptRoute {
         controller: instance_id(index),
-        base_line: if kind == HardwareDeviceKind::LOONGARCH_PCH_MSI {
-            0
-        } else {
-            property::<u32>(walk.node(), "loongson,pic-base-vec")?
-                .ok_or("PCH PIC is missing loongson,pic-base-vec")?
-        },
+        base_line,
     })
 }
 
@@ -140,6 +142,7 @@ pub(super) fn interrupt(
 pub(super) fn configuration(
     node: Node<'_>,
     kind: HardwareDeviceKind,
+    registers: &[PhysRange],
 ) -> Result<DeviceConfiguration> {
     if kind == HardwareDeviceKind::LOONGARCH_PCH_MSI {
         let start =
@@ -149,6 +152,9 @@ pub(super) fn configuration(
         let end = start
             .checked_add(count)
             .ok_or("MSI vector range overflow")?;
+        if count == 0 || end > 256 || registers.first().is_none_or(|reg| reg.end - reg.start < 4) {
+            return Err("invalid MSI controller configuration".into());
+        }
         return Ok(DeviceConfiguration::Msi {
             vectors: start..end,
         });
@@ -156,7 +162,10 @@ pub(super) fn configuration(
     let lines = match kind {
         HardwareDeviceKind::RISCV_PLIC => {
             let count = property::<u32>(node, "riscv,ndev")?.ok_or("PLIC is missing riscv,ndev")?;
-            1..count.checked_add(1).ok_or("PLIC source range overflow")?
+            if !(1..=1023).contains(&count) {
+                return Err("invalid PLIC source count".into());
+            }
+            1..count + 1
         }
         HardwareDeviceKind::LOONGARCH_EIOINTC => 0..256,
         HardwareDeviceKind::LOONGARCH_PCH_PIC => 0..64,
@@ -240,6 +249,77 @@ pub(super) fn cpu_routes(
                     line,
                 })
                 .map_err(|_| "too many CPU interrupt routes")?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate(hardware: &HardwareInfo) -> Result<()> {
+    cpu_targets(hardware)?;
+    for (index, device) in hardware.devices.iter().enumerate() {
+        for (position, interrupt) in device.interrupts.iter().enumerate() {
+            let current = source(hardware, *interrupt)?;
+            for other in hardware.devices[..index]
+                .iter()
+                .flat_map(|device| &device.interrupts)
+                .chain(&device.interrupts[..position])
+            {
+                if source(hardware, *other)? == current {
+                    return Err("shared IRQs are not supported".into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn source(
+    hardware: &HardwareInfo,
+    interrupt: HardwareInterruptInfo,
+) -> Result<(HardwareDeviceInstanceId, u32)> {
+    let controller = find_device(hardware, interrupt.controller)?;
+    let DeviceConfiguration::InterruptController { lines } = &controller.configuration else {
+        return Err("invalid interrupt controller".into());
+    };
+    if !lines.contains(&interrupt.line) {
+        return Err("interrupt line is out of range".into());
+    }
+    if let Some(route) = controller.interrupt_route {
+        if controller.kind != HardwareDeviceKind::LOONGARCH_PCH_PIC
+            || find_device(hardware, route.controller)?.kind
+                != HardwareDeviceKind::LOONGARCH_EIOINTC
+        {
+            return Err("unsupported interrupt cascade".into());
+        }
+        let line = route
+            .base_line
+            .checked_add(interrupt.line)
+            .filter(|&line| line < 256)
+            .ok_or("interrupt route is out of range")?;
+        return Ok((route.controller, line));
+    }
+    Ok((interrupt.controller, interrupt.line))
+}
+
+fn cpu_targets(hardware: &HardwareInfo) -> Result<()> {
+    for route in &hardware.cpu_interrupts {
+        let valid = match (find_device(hardware, route.controller)?.kind, route.target) {
+            (HardwareDeviceKind::RISCV_PLIC, CpuInterruptTarget::Cpu(_)) => {
+                matches!(route.line, 9 | 11)
+            }
+            (HardwareDeviceKind::RISCV_CLINT, CpuInterruptTarget::Cpu(_)) => {
+                matches!(route.line, 3 | 7)
+            }
+            (HardwareDeviceKind::LOONGARCH_EIOINTC, CpuInterruptTarget::AllCpus) => route.line < 14,
+            _ => false,
+        };
+        if !valid {
+            return Err("invalid CPU interrupt route".into());
+        }
+        if let CpuInterruptTarget::Cpu(id) = route.target
+            && !hardware.cpus.iter().any(|cpu| cpu.hardware_id == id)
+        {
+            return Err("interrupt targets an unknown CPU".into());
         }
     }
     Ok(())

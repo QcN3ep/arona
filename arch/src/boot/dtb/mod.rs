@@ -118,8 +118,7 @@ impl<'a> Dtb<'a> {
     pub fn dump(self, hardware: &mut HardwareInfo) -> Result<()> {
         hardware.timebase_frequency_hz = cpus::parse(&self, &mut hardware.cpus)?;
         memory::parse(&self, &mut hardware.memory)?;
-        devices::parse(&self, hardware)?;
-        hardware.validate_resources().map_err(Into::into)
+        devices::parse(&self, hardware)
     }
 
     fn nodes(&self) -> Nodes<'a> {

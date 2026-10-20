@@ -65,10 +65,4 @@ fn reservations_cover_whole_pages() {
             )
             .is_err()
     );
-    hardware.validate_resources().unwrap();
-    hardware.memory.regions[0].range.start += 1;
-    assert_eq!(
-        hardware.validate_resources(),
-        Err("invalid memory region table")
-    );
 }

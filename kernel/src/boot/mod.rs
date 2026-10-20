@@ -13,43 +13,10 @@ pub struct BootInfo<'boot> {
     pub hardware: &'boot HardwareInfo,
 }
 
-impl BootInfo<'_> {
-    pub fn new(
-        boot_cpu_id: u64,
-        kernel_image: PhysRange,
-        hardware: &mut HardwareInfo,
-    ) -> BootInfo<'_> {
-        hardware
-            .memory
-            .reserve(kernel_image, MemoryRegionState::Reserved)
-            .unwrap_or_else(|error| panic!("{error}"));
-        BootInfo {
-            boot_cpu_id,
-            kernel_image,
-            hardware,
-        }
-    }
-
-    pub fn validate(&self) {
-        self.hardware
-            .validate_resources()
-            .unwrap_or_else(|error| panic!("{error}"));
-        assert!(
-            self.hardware
-                .cpus
-                .iter()
-                .any(|cpu| cpu.hardware_id == self.boot_cpu_id),
-            "boot CPU is missing from the hardware description"
-        );
-        assert!(
-            self.hardware.memory.is_mappable(self.kernel_image),
-            "kernel image is not fully contained in mappable RAM"
-        );
-    }
-}
-
-pub fn boot_kernel(info: BootInfo<'_>) -> ! {
-    info.validate();
+/// # Safety
+///
+/// `info` 及其字段须合法且与实际硬件一致，当前处理器须处于内核运行所需的执行环境。
+pub fn boot_kernel(_info: BootInfo<'_>) -> ! {
     loop {
         core::hint::spin_loop();
     }

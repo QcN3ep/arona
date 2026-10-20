@@ -9,8 +9,8 @@ use fdt::properties::{
     values::U32List,
 };
 use kernel::{
-    HardwareDeviceKind, HardwareDeviceLocation, PciAddressSpace, PciInfo, PciInterruptRoute,
-    PciMsiMap, PciWindow,
+    HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo, PciAddressSpace, PciInfo,
+    PciInterruptRoute, PciMsiMap, PciWindow,
 };
 
 use super::super::{
@@ -72,6 +72,24 @@ pub(super) fn parse(walk: &Nodes<'_>) -> Result<HardwareDeviceLocation> {
             space,
             prefetchable: entry.child_bus_address.hi.prefetchable(),
         };
+        let end = child
+            .checked_add(entry.len)
+            .ok_or("PCI bus window overflow")?;
+        if !child.is_multiple_of(PAGE_SIZE)
+            || !window.cpu_range.start.is_multiple_of(PAGE_SIZE)
+            || !window.cpu_range.end.is_multiple_of(PAGE_SIZE)
+        {
+            return Err("PCI memory window is not page-aligned".into());
+        }
+        if space == PciAddressSpace::Memory32 && end > 1_u64 << 32 {
+            return Err("PCI window exceeds its address space".into());
+        }
+        if windows.iter().any(|other: &PciWindow| {
+            child < other.bus_address + (other.cpu_range.end - other.cpu_range.start)
+                && other.bus_address < end
+        }) {
+            return Err("overlapping PCI bus windows".into());
+        }
         windows
             .try_push(window)
             .map_err(|_| "too many PCI windows")?;
@@ -135,16 +153,30 @@ pub(super) fn routes(
                 return Err("PCI interrupt parent address cells are unsupported".into());
             }
             let interrupt = interrupts::interrupt(dtb, nodes, phandle, &mut cells)?;
+            let route = PciInterruptRoute {
+                host: instance_id(index),
+                requester_id: ((address[0] & mask[0]) >> 8) as u16,
+                requester_mask: (mask[0] >> 8) as u16,
+                pin: (pin & mask[3]) as u8,
+                pin_mask: mask[3] as u8,
+                interrupt,
+            };
+            if !(1..=4).contains(&route.pin) {
+                return Err("invalid PCI interrupt route".into());
+            }
+            if output.interrupts.iter().any(|other| {
+                route.host == other.host
+                    && (route.requester_id ^ other.requester_id)
+                        & route.requester_mask
+                        & other.requester_mask
+                        == 0
+                    && (route.pin ^ other.pin) & route.pin_mask & other.pin_mask == 0
+            }) {
+                return Err("ambiguous PCI interrupt route".into());
+            }
             output
                 .interrupts
-                .try_push(PciInterruptRoute {
-                    host: instance_id(index),
-                    requester_id: ((address[0] & mask[0]) >> 8) as u16,
-                    requester_mask: (mask[0] >> 8) as u16,
-                    pin: (pin & mask[3]) as u8,
-                    pin_mask: mask[3] as u8,
-                    interrupt,
-                })
+                .try_push(route)
                 .map_err(|_| "too many PCI interrupt routes")?;
         }
     }
@@ -180,6 +212,23 @@ fn msi_map(
             }
             let msi_base = cell(&mut cells)?;
             let requester_count = cell(&mut cells)?;
+            if requester_count == 0
+                || requester_base & !mask != 0
+                || requester_base
+                    .checked_add(requester_count)
+                    .is_none_or(|end| end > 65536)
+                || msi_base.checked_add(requester_count).is_none()
+            {
+                return Err("invalid PCI MSI requester map".into());
+            }
+            if output.msi_maps.iter().any(|other| {
+                other.host == instance_id(index)
+                    && (mask != u32::from(other.requester_mask)
+                        || requester_base < other.requester_base + other.requester_count
+                            && other.requester_base < requester_base + requester_count)
+            }) {
+                return Err("ambiguous PCI MSI requester map".into());
+            }
             output
                 .msi_maps
                 .try_push(PciMsiMap {
@@ -200,4 +249,20 @@ fn cell(cells: &mut impl Iterator<Item = u32>) -> Result<u32> {
     cells
         .next()
         .ok_or_else(|| "truncated PCI routing entry".into())
+}
+
+pub(super) fn validate(hardware: &HardwareInfo) -> Result<()> {
+    for route in &hardware.pci.interrupts {
+        let source = interrupts::source(hardware, route.interrupt)?;
+        for interrupt in hardware
+            .devices
+            .iter()
+            .flat_map(|device| &device.interrupts)
+        {
+            if interrupts::source(hardware, *interrupt)? == source {
+                return Err("PCI interrupt overlaps a platform interrupt".into());
+            }
+        }
+    }
+    Ok(())
 }

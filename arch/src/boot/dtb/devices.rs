@@ -13,7 +13,7 @@ use arrayvec::ArrayVec;
 use fdt::properties::Compatible;
 use kernel::{
     DeviceConfiguration, DeviceUsePolicy, DmaInfo, HardwareDeviceInfo, HardwareDeviceInstanceId,
-    HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo, PhysRange,
+    HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo, PciWindow, PhysRange,
     boot::{MAX_DEVICES, MAX_MMIO_REGIONS},
 };
 
@@ -73,7 +73,17 @@ pub(super) fn parse(dtb: &Dtb<'_>, hardware: &mut HardwareInfo) -> Result<()> {
         .sort_unstable_by_key(|device| device.instance_id.0);
     syscon::operations(dtb, &nodes, &mut hardware.devices)?;
     hardware.console = serial::console(dtb, &nodes).unwrap_or_default();
-    Ok(())
+    for (index, device) in hardware.devices.iter().enumerate() {
+        validate_addresses(hardware, index, device)?;
+        if hardware.devices[..index]
+            .iter()
+            .any(|other| locations_overlap(&device.location, &other.location))
+        {
+            return Err("device locations overlap".into());
+        }
+    }
+    interrupts::validate(hardware)?;
+    pci::validate(hardware)
 }
 
 fn collect_nodes<'a>(
@@ -163,6 +173,7 @@ fn parse_device(
     } else {
         interrupts::parse(dtb, walk, nodes)?
     };
+    let configuration = configuration(dtb, node, kind, &mmio_regions)?;
     Ok(HardwareDeviceInfo {
         instance_id: instance_id(index),
         kind,
@@ -182,27 +193,55 @@ fn parse_device(
         } else {
             None
         },
-        configuration: match kind {
-            HardwareDeviceKind::UART_16550 => DeviceConfiguration::Uart(serial::parse(dtb, node)?),
-            HardwareDeviceKind::RISCV_PLIC
-            | HardwareDeviceKind::LOONGARCH_EIOINTC
-            | HardwareDeviceKind::LOONGARCH_PCH_PIC
-            | HardwareDeviceKind::LOONGARCH_PCH_MSI => interrupts::configuration(node, kind)?,
-            HardwareDeviceKind::SYSCON => DeviceConfiguration::Syscon(syscon::parse(node)?),
-            HardwareDeviceKind::CFI_FLASH => DeviceConfiguration::Flash {
-                bank_width: property::<u32>(node, "bank-width")?
-                    .ok_or("flash is missing bank-width")?
-                    .try_into()
-                    .map_err(|_| "invalid flash bank width")?,
-            },
-            _ => DeviceConfiguration::None,
-        },
+        configuration,
         dma: dma(walk, kind)?,
+    })
+}
+
+fn configuration(
+    dtb: &Dtb<'_>,
+    node: Node<'_>,
+    kind: HardwareDeviceKind,
+    registers: &[PhysRange],
+) -> Result<DeviceConfiguration> {
+    Ok(match kind {
+        HardwareDeviceKind::UART_16550 => {
+            DeviceConfiguration::Uart(serial::parse(dtb, node, registers)?)
+        }
+        HardwareDeviceKind::RISCV_PLIC
+        | HardwareDeviceKind::LOONGARCH_EIOINTC
+        | HardwareDeviceKind::LOONGARCH_PCH_PIC
+        | HardwareDeviceKind::LOONGARCH_PCH_MSI => {
+            interrupts::configuration(node, kind, registers)?
+        }
+        HardwareDeviceKind::SYSCON => DeviceConfiguration::Syscon(syscon::parse(node, registers)?),
+        HardwareDeviceKind::CFI_FLASH => {
+            let bank_width =
+                property::<u32>(node, "bank-width")?.ok_or("flash is missing bank-width")?;
+            if !matches!(bank_width, 1 | 2 | 4 | 8) {
+                return Err("invalid flash bank width".into());
+            }
+            DeviceConfiguration::Flash {
+                bank_width: bank_width as u8,
+            }
+        }
+        _ => DeviceConfiguration::None,
     })
 }
 
 fn instance_id(index: usize) -> HardwareDeviceInstanceId {
     HardwareDeviceInstanceId((index + 1) as u32)
+}
+
+fn find_device(
+    hardware: &HardwareInfo,
+    id: HardwareDeviceInstanceId,
+) -> Result<&HardwareDeviceInfo> {
+    hardware
+        .devices
+        .iter()
+        .find(|device| device.instance_id == id)
+        .ok_or_else(|| "referenced device is missing from the device table".into())
 }
 
 fn mmio(walk: &Nodes<'_>) -> Result<ArrayVec<PhysRange, MAX_MMIO_REGIONS>> {
@@ -288,4 +327,81 @@ fn endian(node: Node<'_>) -> Result<kernel::RegisterEndian> {
     } else {
         kernel::RegisterEndian::Little
     })
+}
+
+fn validate_addresses(
+    hardware: &HardwareInfo,
+    index: usize,
+    device: &HardwareDeviceInfo,
+) -> Result<()> {
+    for (position, address) in addresses(device).enumerate() {
+        let pages = address.page_envelope()?;
+        if hardware
+            .memory
+            .regions
+            .iter()
+            .any(|region| region.range.overlaps(pages))
+        {
+            return Err("device resource envelope overlaps RAM".into());
+        }
+        if addresses(device)
+            .take(position)
+            .any(|other| address.overlaps(other))
+        {
+            return Err("device resources overlap within the same device".into());
+        }
+        for other in &hardware.devices[..index] {
+            for other_address in addresses(other) {
+                if address.overlaps(other_address) {
+                    return Err("device register ranges overlap".into());
+                }
+                if (device.use_policy == DeviceUsePolicy::UserAssignable
+                    || other.use_policy == DeviceUsePolicy::UserAssignable)
+                    && pages.overlaps(other_address.page_envelope()?)
+                {
+                    return Err("assignable device shares a resource page".into());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn addresses(device: &HardwareDeviceInfo) -> impl Iterator<Item = PhysRange> + '_ {
+    let (ecam, windows): (_, &[PciWindow]) = match &device.location {
+        HardwareDeviceLocation::PciHostBridge { ecam, windows, .. } => {
+            (Some(*ecam), windows.as_slice())
+        }
+        HardwareDeviceLocation::Platform | HardwareDeviceLocation::Iocsr { .. } => (None, &[]),
+    };
+    device
+        .mmio_regions
+        .iter()
+        .copied()
+        .chain(ecam)
+        .chain(windows.iter().map(|window| window.cpu_range))
+}
+
+fn locations_overlap(left: &HardwareDeviceLocation, right: &HardwareDeviceLocation) -> bool {
+    match (left, right) {
+        (
+            HardwareDeviceLocation::Iocsr { registers: a },
+            HardwareDeviceLocation::Iocsr { registers: b },
+        ) => a.start < b.end && b.start < a.end,
+        (
+            HardwareDeviceLocation::PciHostBridge {
+                segment: a_segment,
+                first_bus: a_first,
+                last_bus: a_last,
+                ..
+            },
+            HardwareDeviceLocation::PciHostBridge {
+                segment: b_segment,
+                first_bus: b_first,
+                last_bus: b_last,
+                ..
+            },
+        ) => a_segment == b_segment && a_last >= b_first && b_last >= a_first,
+        _ => false,
+    }
 }

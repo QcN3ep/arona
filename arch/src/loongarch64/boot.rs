@@ -2,10 +2,10 @@
 
 use core::mem::size_of;
 
-use kernel::{BootInfo, HardwareInfo, MemoryRegionState, PhysRange};
+use kernel::{HardwareInfo, MemoryRegionState, PhysRange};
 use uefi_raw::{guid, table::system::SystemTable};
 
-use crate::boot::dtb::Dtb;
+use crate::boot::{dtb::Dtb, prepare_boot_info};
 
 static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
 
@@ -101,15 +101,17 @@ pub unsafe extern "C" fn _start_native(_argc: usize, _argv: usize, system_table:
     unsafe {
         core::arch::asm!("csrrd {}, 0x20", out(reg) cpu_id, options(nomem, nostack));
     }
-    let info = BootInfo::new(
+    let info = prepare_boot_info(
         (cpu_id & 0x1ff) as u64,
         PhysRange {
             start: core::ptr::addr_of!(_kernel_start) as u64,
             end: core::ptr::addr_of!(_kernel_end) as u64,
         },
         hardware,
-    );
+    )
+    .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));
 
+    // SAFETY: 启动信息须与实际硬件一致，处理器须处于内核运行所需的执行环境。
     kernel::boot_kernel(info)
 }
 

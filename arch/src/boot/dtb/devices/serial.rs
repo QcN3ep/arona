@@ -3,7 +3,7 @@
 //! 解析 UART 寄存器布局、输入时钟和固件控制台选择。
 
 use fdt::properties::{Compatible, values::U32List};
-use kernel::{ConsoleInfo, HardwareDeviceKind, SerialParity, SerialSettings, UartInfo};
+use kernel::{ConsoleInfo, HardwareDeviceKind, PhysRange, SerialParity, SerialSettings, UartInfo};
 
 use super::super::{
     Dtb, Result,
@@ -11,7 +11,7 @@ use super::super::{
 };
 use super::{DeviceNode, instance_id};
 
-pub(super) fn parse(dtb: &Dtb<'_>, node: Node<'_>) -> Result<UartInfo> {
+pub(super) fn parse(dtb: &Dtb<'_>, node: Node<'_>, registers: &[PhysRange]) -> Result<UartInfo> {
     let mut frequency = integer(node, "clock-frequency")?;
     if frequency.is_none()
         && let Some(clocks) = property::<U32List<'_>>(node, "clocks")?
@@ -29,7 +29,7 @@ pub(super) fn parse(dtb: &Dtb<'_>, node: Node<'_>) -> Result<UartInfo> {
         }
         frequency = Some(integer(clock, "clock-frequency")?.ok_or("fixed clock has no frequency")?);
     }
-    Ok(UartInfo {
+    let info = UartInfo {
         register_shift: property::<u32>(node, "reg-shift")?
             .unwrap_or(0)
             .try_into()
@@ -42,7 +42,9 @@ pub(super) fn parse(dtb: &Dtb<'_>, node: Node<'_>) -> Result<UartInfo> {
         clock_frequency_hz: frequency,
         endian: super::endian(node)?,
         current_speed: property(node, "current-speed")?,
-    })
+    };
+    validate(&info, registers)?;
+    Ok(info)
 }
 
 pub(super) fn console(dtb: &Dtb<'_>, nodes: &[DeviceNode<'_>]) -> Result<ConsoleInfo> {
@@ -118,4 +120,31 @@ fn settings(options: &str) -> Result<SerialSettings> {
         data_bits,
         flow_control,
     })
+}
+
+fn validate(info: &UartInfo, registers: &[PhysRange]) -> Result<()> {
+    let first_size = registers
+        .first()
+        .map(|range| range.end.saturating_sub(range.start))
+        .unwrap_or(0);
+    let stride = 1_u64.checked_shl(u32::from(info.register_shift));
+    let size = stride
+        .and_then(|stride| stride.checked_mul(7))
+        .and_then(|offset| {
+            offset.checked_add(u64::from(info.register_offset) + u64::from(info.register_width))
+        });
+    if !matches!(info.register_width, 1 | 2 | 4)
+        || registers.len() != 1
+        || stride.is_none_or(|stride| stride < u64::from(info.register_width))
+        || registers[0]
+            .start
+            .checked_add(u64::from(info.register_offset))
+            .is_none_or(|start| !start.is_multiple_of(u64::from(info.register_width)))
+        || size.is_none_or(|size| size > first_size)
+        || info.clock_frequency_hz == Some(0)
+        || info.current_speed == Some(0)
+    {
+        return Err("invalid UART register layout or clock".into());
+    }
+    Ok(())
 }

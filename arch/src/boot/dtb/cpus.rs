@@ -51,5 +51,9 @@ pub(super) fn parse(
     {
         return Err("duplicate CPU hardware ID".into());
     }
-    integer(parent, "timebase-frequency")
+    let frequency = integer(parent, "timebase-frequency")?;
+    if frequency == Some(0) {
+        return Err("timebase frequency is zero".into());
+    }
+    Ok(frequency)
 }

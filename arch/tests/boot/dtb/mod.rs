@@ -8,9 +8,9 @@ use std::{
     cell::Cell,
 };
 
-use arch::boot::dtb::Dtb;
+use arch::boot::{dtb::Dtb, prepare_boot_info};
 use kernel::{
-    BootInfo, ConsoleInfo, CpuInfo, CpuInterruptTarget, DeviceConfiguration, DeviceUsePolicy,
+    ConsoleInfo, CpuInfo, CpuInterruptTarget, DeviceConfiguration, DeviceUsePolicy,
     HardwareDeviceInstanceId, HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo,
     InterruptPolarity, InterruptTrigger, MemoryRegion, MemoryRegionState, PciAddressSpace,
     PhysRange, RegisterEndian,
@@ -185,7 +185,9 @@ fn dtb_produces_complete_boot_data() {
         start: 0x80200000,
         end: 0x80300000,
     };
-    BootInfo::new(BOOT_CPU_ID, kernel_image, &mut hardware).validate();
+    let info = prepare_boot_info(BOOT_CPU_ID, kernel_image, &mut hardware).unwrap();
+    assert_eq!(info.boot_cpu_id, BOOT_CPU_ID);
+    assert_eq!(info.kernel_image, kernel_image);
     assert!(hardware.memory.regions.contains(&MemoryRegion {
         range: kernel_image,
         state: MemoryRegionState::Reserved
@@ -197,6 +199,25 @@ fn dtb_produces_complete_boot_data() {
             .collect::<Vec<_>>(),
         memory[..3]
     );
+    assert_eq!(
+        prepare_boot_info(99, kernel_image, &mut hardware).unwrap_err(),
+        "boot CPU is missing from the hardware description"
+    );
+    for range in [
+        PhysRange {
+            start: 0x80002000,
+            end: 0x80003000,
+        },
+        PhysRange {
+            start: 0x90000000,
+            end: 0x90001000,
+        },
+    ] {
+        assert_eq!(
+            prepare_boot_info(BOOT_CPU_ID, range, &mut hardware).unwrap_err(),
+            "reservation is not contained in mappable RAM"
+        );
+    }
 }
 
 #[test]
@@ -213,48 +234,6 @@ fn pointer_and_slice_inputs_produce_the_same_hardware() {
     from_slice.dump(&mut expected).unwrap();
     from_ptr.dump(&mut actual).unwrap();
     assert_eq!(actual, expected);
-}
-
-#[test]
-fn rejects_conflicting_device_resources() {
-    let mut blob = DTB.to_vec();
-    let fdt = fdt::Fdt::new_unaligned(&blob).unwrap();
-    let reg = fdt
-        .find_node("/soc@10000000/virtio@1000")
-        .unwrap()
-        .raw_property("reg")
-        .unwrap();
-    let offset = reg.value.as_ptr() as usize - blob.as_ptr() as usize;
-    blob[offset..offset + 8].copy_from_slice(&0_u64.to_be_bytes());
-    let mut hardware = Box::new(HardwareInfo::new());
-    assert!(Dtb::from_bytes(&blob).unwrap().dump(&mut hardware).is_err());
-
-    let mut hardware = parse_hardware(LOONGARCH_DTB);
-    let first = hardware
-        .devices
-        .iter()
-        .position(|device| device.kind == HardwareDeviceKind::UART_16550)
-        .unwrap()
-        + 1;
-    let second = first + 1;
-    hardware.devices[first].use_policy = DeviceUsePolicy::UserAssignable;
-    assert_eq!(
-        hardware.validate_resources(),
-        Err("assignable device shares a resource page")
-    );
-    hardware.devices[first].use_policy = DeviceUsePolicy::KernelReserved;
-    let registers = hardware.devices[second].mmio_regions[0];
-    hardware.devices[second].mmio_regions[0] = hardware.devices[first].mmio_regions[0];
-    assert_eq!(
-        hardware.validate_resources(),
-        Err("device register ranges overlap")
-    );
-    hardware.devices[second].mmio_regions[0] = registers;
-    hardware.devices[second].interrupts[0] = hardware.devices[first].interrupts[0];
-    assert_eq!(
-        hardware.validate_resources(),
-        Err("shared IRQs are not supported")
-    );
 }
 
 #[test]
@@ -351,6 +330,24 @@ fn dtb_conversion_does_not_allocate() {
     ] {
         ALLOCATIONS.set(Some(0));
         Dtb::from_bytes(bytes).unwrap().dump(&mut hardware).unwrap();
+        let start = hardware
+            .memory
+            .regions
+            .iter()
+            .find(|region| region.state == MemoryRegionState::Available)
+            .unwrap()
+            .range
+            .start;
+        let boot_cpu_id = hardware.cpus[0].hardware_id;
+        prepare_boot_info(
+            boot_cpu_id,
+            PhysRange {
+                start,
+                end: start + 4096,
+            },
+            &mut hardware,
+        )
+        .unwrap();
         let allocations = ALLOCATIONS.replace(None).unwrap();
         assert_eq!(allocations, 0);
     }
@@ -520,7 +517,7 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
 #[test]
 fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
     let mut hardware = parse_hardware(RISCV_DTB);
-    BootInfo::new(
+    prepare_boot_info(
         0,
         PhysRange {
             start: 0x80200000,
@@ -528,7 +525,7 @@ fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
         },
         &mut hardware,
     )
-    .validate();
+    .unwrap();
     assert_eq!(hardware.timebase_frequency_hz, Some(10_000_000));
     assert_eq!(hardware.cpu_interrupts.len(), 4);
     let plic = hardware

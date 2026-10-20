@@ -2,9 +2,9 @@
 
 use core::mem::size_of;
 
-use kernel::{BootInfo, HardwareInfo, MemoryRegionState, PhysRange};
+use kernel::{HardwareInfo, MemoryRegionState, PhysRange};
 
-use crate::boot::dtb::Dtb;
+use crate::boot::{dtb::Dtb, prepare_boot_info};
 
 static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
 
@@ -58,15 +58,17 @@ pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
         .memory
         .reserve(dtb_range, MemoryRegionState::BootReserved)
         .unwrap_or_else(|error| panic!("failed to reserve DTB: {error}"));
-    let info = BootInfo::new(
+    let info = prepare_boot_info(
         hartid as u64,
         PhysRange {
             start: core::ptr::addr_of!(_kernel_start) as u64,
             end: core::ptr::addr_of!(_kernel_end) as u64,
         },
         hardware,
-    );
+    )
+    .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));
 
+    // SAFETY: 启动信息须与实际硬件一致，处理器须处于内核运行所需的执行环境。
     kernel::boot_kernel(info)
 }
 

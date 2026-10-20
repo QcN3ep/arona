@@ -24,117 +24,6 @@ pub struct HardwareDeviceInfo {
     pub dma: Option<DmaInfo>,
 }
 
-impl HardwareDeviceInfo {
-    pub(super) fn validate_configuration(&self) -> Result<(), &'static str> {
-        self.validate_location()?;
-        if self.use_policy == DeviceUsePolicy::UserAssignable
-            && matches!(
-                self.kind,
-                HardwareDeviceKind::RISCV_PLIC
-                    | HardwareDeviceKind::RISCV_CLINT
-                    | HardwareDeviceKind::GOLDFISH_RTC
-                    | HardwareDeviceKind::LOONGARCH_EIOINTC
-                    | HardwareDeviceKind::LOONGARCH_LS7A_RTC
-                    | HardwareDeviceKind::LOONGARCH_PCH_PIC
-                    | HardwareDeviceKind::LOONGARCH_PCH_MSI
-                    | HardwareDeviceKind::PCI_HOST_BRIDGE
-                    | HardwareDeviceKind::IOMMU
-                    | HardwareDeviceKind::SYSCON
-            )
-        {
-            return Err("system device must be reserved for the kernel");
-        }
-        let first_size = self
-            .mmio_regions
-            .first()
-            .map(|range| range.end.saturating_sub(range.start))
-            .unwrap_or(0);
-        match (&self.configuration, self.kind) {
-            (DeviceConfiguration::Uart(info), HardwareDeviceKind::UART_16550) => {
-                info.validate(&self.mmio_regions)?
-            }
-            (DeviceConfiguration::InterruptController { lines }, kind) => {
-                let valid = match kind {
-                    HardwareDeviceKind::RISCV_PLIC => {
-                        lines.start == 1 && (2..=1024).contains(&lines.end)
-                    }
-                    HardwareDeviceKind::LOONGARCH_EIOINTC => *lines == (0..256),
-                    HardwareDeviceKind::LOONGARCH_PCH_PIC => {
-                        *lines == (0..64) && self.interrupt_route.is_some()
-                    }
-                    _ => false,
-                };
-                if !valid {
-                    return Err("invalid interrupt controller namespace");
-                }
-            }
-            (DeviceConfiguration::Msi { vectors }, HardwareDeviceKind::LOONGARCH_PCH_MSI) => {
-                if vectors.is_empty()
-                    || vectors.end > 256
-                    || self.interrupt_route.is_none()
-                    || first_size < 4
-                {
-                    return Err("invalid MSI controller configuration");
-                }
-            }
-            (DeviceConfiguration::Syscon(info), HardwareDeviceKind::SYSCON) => {
-                info.validate(&self.mmio_regions)?
-            }
-            (
-                DeviceConfiguration::Flash {
-                    bank_width: 1 | 2 | 4 | 8,
-                },
-                HardwareDeviceKind::CFI_FLASH,
-            ) => {}
-            (DeviceConfiguration::None, kind)
-                if !matches!(
-                    kind,
-                    HardwareDeviceKind::UART_16550
-                        | HardwareDeviceKind::RISCV_PLIC
-                        | HardwareDeviceKind::LOONGARCH_EIOINTC
-                        | HardwareDeviceKind::LOONGARCH_PCH_PIC
-                        | HardwareDeviceKind::LOONGARCH_PCH_MSI
-                        | HardwareDeviceKind::SYSCON
-                        | HardwareDeviceKind::CFI_FLASH
-                ) => {}
-            _ => return Err("device configuration does not match its kind"),
-        }
-        Ok(())
-    }
-
-    fn validate_location(&self) -> Result<(), &'static str> {
-        let location_valid = match (&self.location, self.kind) {
-            (HardwareDeviceLocation::Iocsr { .. }, HardwareDeviceKind::LOONGARCH_EIOINTC)
-            | (HardwareDeviceLocation::PciHostBridge { .. }, HardwareDeviceKind::PCI_HOST_BRIDGE) => {
-                true
-            }
-            (HardwareDeviceLocation::Platform, kind) => !matches!(
-                kind,
-                HardwareDeviceKind::LOONGARCH_EIOINTC | HardwareDeviceKind::PCI_HOST_BRIDGE
-            ),
-            _ => false,
-        };
-        if !location_valid {
-            return Err("device location does not match its kind");
-        }
-        Ok(())
-    }
-
-    pub(super) fn addresses(&self) -> impl Iterator<Item = PhysRange> + '_ {
-        let (ecam, windows): (_, &[PciWindow]) = match &self.location {
-            HardwareDeviceLocation::PciHostBridge { ecam, windows, .. } => {
-                (Some(*ecam), windows.as_slice())
-            }
-            HardwareDeviceLocation::Platform | HardwareDeviceLocation::Iocsr { .. } => (None, &[]),
-        };
-        self.mmio_regions
-            .iter()
-            .copied()
-            .chain(ecam)
-            .chain(windows.iter().map(|window| window.cpu_range))
-    }
-}
-
 /// 实例编号，1-base。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HardwareDeviceInstanceId(pub u32);
@@ -193,31 +82,6 @@ pub enum HardwareDeviceLocation {
 pub struct HardwareInterruptRoute {
     pub controller: HardwareDeviceInstanceId,
     pub base_line: u32,
-}
-
-impl HardwareDeviceLocation {
-    pub(super) fn overlaps(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Iocsr { registers: a }, Self::Iocsr { registers: b }) => {
-                a.start < b.end && b.start < a.end
-            }
-            (
-                Self::PciHostBridge {
-                    segment: a_segment,
-                    first_bus: a_first,
-                    last_bus: a_last,
-                    ..
-                },
-                Self::PciHostBridge {
-                    segment: b_segment,
-                    first_bus: b_first,
-                    last_bus: b_last,
-                    ..
-                },
-            ) => a_segment == b_segment && a_last >= b_first && b_last >= a_first,
-            _ => false,
-        }
-    }
 }
 
 /// 中断控制器命名空间内的输入。
@@ -298,36 +162,6 @@ pub struct SysconInfo {
     pub reboot: Option<RegisterWrite>,
 }
 
-impl SysconInfo {
-    fn validate(&self, registers: &[PhysRange]) -> Result<(), &'static str> {
-        let first_size = registers
-            .first()
-            .map(|range| range.end.saturating_sub(range.start))
-            .unwrap_or(0);
-        if !matches!(self.register_width, 1 | 2 | 4)
-            || registers.len() != 1
-            || first_size < u64::from(self.register_width)
-            || !registers[0]
-                .start
-                .is_multiple_of(u64::from(self.register_width))
-        {
-            return Err("invalid system controller registers");
-        }
-        let bits = u32::MAX >> (32 - u32::from(self.register_width) * 8);
-        for write in [self.poweroff, self.reboot].into_iter().flatten() {
-            if u64::from(write.offset) + u64::from(self.register_width) > first_size
-                || !write.offset.is_multiple_of(u32::from(self.register_width))
-                || write.mask == 0
-                || write.mask & !bits != 0
-                || write.value & !bits != 0
-            {
-                return Err("invalid system control register operation");
-            }
-        }
-        Ok(())
-    }
-}
-
 /// 以 `(old & !mask) | (value & mask)` 更新寄存器。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegisterWrite {
@@ -360,33 +194,4 @@ pub enum SerialParity {
     None,
     Even,
     Odd,
-}
-
-impl UartInfo {
-    fn validate(&self, registers: &[PhysRange]) -> Result<(), &'static str> {
-        let first_size = registers
-            .first()
-            .map(|range| range.end.saturating_sub(range.start))
-            .unwrap_or(0);
-        let stride = 1_u64.checked_shl(u32::from(self.register_shift));
-        let size = stride
-            .and_then(|stride| stride.checked_mul(7))
-            .and_then(|offset| {
-                offset.checked_add(u64::from(self.register_offset) + u64::from(self.register_width))
-            });
-        if !matches!(self.register_width, 1 | 2 | 4)
-            || registers.len() != 1
-            || stride.is_none_or(|stride| stride < u64::from(self.register_width))
-            || registers[0]
-                .start
-                .checked_add(u64::from(self.register_offset))
-                .is_none_or(|start| !start.is_multiple_of(u64::from(self.register_width)))
-            || size.is_none_or(|size| size > first_size)
-            || self.clock_frequency_hz == Some(0)
-            || self.current_speed == Some(0)
-        {
-            return Err("invalid UART register layout or clock");
-        }
-        Ok(())
-    }
 }
