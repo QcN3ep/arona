@@ -233,6 +233,7 @@ fn kind(node: Node<'_>) -> Result<Option<HardwareDeviceKind>> {
         "syscon" => Some(HardwareDeviceKind::SYSCON),
         "riscv,clint0" | "sifive,clint0" => Some(HardwareDeviceKind::RISCV_CLINT),
         "google,goldfish-rtc" => Some(HardwareDeviceKind::GOLDFISH_RTC),
+        "qemu,fw-cfg-mmio" => Some(HardwareDeviceKind::QEMU_FW_CFG),
         "cfi-flash" => Some(HardwareDeviceKind::CFI_FLASH),
         _ => None,
     }))
@@ -241,7 +242,9 @@ fn kind(node: Node<'_>) -> Result<Option<HardwareDeviceKind>> {
 fn dma(walk: &Nodes<'_>, kind: HardwareDeviceKind) -> Result<Option<DmaInfo>> {
     if !matches!(
         kind,
-        HardwareDeviceKind::VIRTIO_MMIO | HardwareDeviceKind::PCI_HOST_BRIDGE
+        HardwareDeviceKind::VIRTIO_MMIO
+            | HardwareDeviceKind::PCI_HOST_BRIDGE
+            | HardwareDeviceKind::QEMU_FW_CFG
     ) {
         return Ok(None);
     }

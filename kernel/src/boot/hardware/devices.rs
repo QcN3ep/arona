@@ -157,6 +157,7 @@ impl HardwareDeviceKind {
     pub const SYSCON: Self = Self(11);
     pub const RISCV_CLINT: Self = Self(12);
     pub const GOLDFISH_RTC: Self = Self(13);
+    pub const QEMU_FW_CFG: Self = Self(14);
     pub const CFI_FLASH: Self = Self(15);
 }
 
