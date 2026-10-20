@@ -3,6 +3,92 @@
 use super::*;
 
 #[test]
+fn discovers_unfamiliar_devices_and_preserves_owned_configuration() {
+    let mut blob = DTB.to_vec();
+    let tree = fdt::Fdt::new_unaligned(&blob).unwrap();
+    let property = tree
+        .find_node("/soc@10000000/serial@0")
+        .unwrap()
+        .raw_property("compatible")
+        .unwrap();
+    let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize;
+    let strings = tree.header().strings_offset as usize;
+    blob[offset..offset + 9].copy_from_slice(b"acme,adc\0");
+    let offset = strings
+        + blob[strings..]
+            .windows(10)
+            .position(|bytes| bytes == b"reg-shift\0")
+            .unwrap();
+    blob[offset..offset + 10].copy_from_slice(b"acme,rate\0");
+    let mut hardware = parse_hardware(&blob);
+    drop(blob);
+    let sensor = hardware
+        .devices
+        .iter()
+        .find(|device| device.has_identity("devicetree", "acme,adc"))
+        .unwrap();
+    assert!(UartInfo::from_device(sensor, &hardware).unwrap().is_none());
+    assert_eq!(
+        sensor.mmio_regions.as_slice(),
+        &[PhysRange {
+            start: 0x10000000,
+            end: 0x10000100
+        }]
+    );
+    assert_eq!(sensor.interrupts[0].line, 10);
+    assert_eq!(
+        hardware.device_property(sensor.instance_id, "devicetree", "acme,rate"),
+        Some(2_u32.to_be_bytes().as_slice())
+    );
+    let parent = hardware
+        .devices
+        .iter()
+        .find(|device| Some(device.instance_id) == sensor.parent)
+        .unwrap();
+    assert_eq!(parent.name.as_str(), "soc@10000000");
+    let clock_handle = u32::from_be_bytes(
+        hardware
+            .device_property(sensor.instance_id, "devicetree", "clocks")
+            .unwrap()
+            .try_into()
+            .unwrap(),
+    );
+    let clock = hardware
+        .devices
+        .iter()
+        .find(|device| {
+            hardware.device_property(device.instance_id, "devicetree", "phandle")
+                == Some(clock_handle.to_be_bytes().as_slice())
+        })
+        .unwrap();
+    assert!(clock.has_identity("devicetree", "fixed-clock"));
+    assert_eq!(
+        hardware.device_property(clock.instance_id, "devicetree", "clock-frequency"),
+        Some(3_686_400_u32.to_be_bytes().as_slice())
+    );
+    assert_eq!(sensor.use_policy, DeviceUsePolicy::KernelReserved);
+    assert!(sensor.dma.is_none());
+    prepare_boot_info(
+        BOOT_CPU_ID,
+        PhysRange {
+            start: 0x80200000,
+            end: 0x80300000,
+        },
+        &mut hardware,
+    )
+    .unwrap();
+}
+
+fn parse_device_configurations(hardware: &HardwareInfo) -> Result<(), arch::boot::dtb::Error> {
+    for device in &hardware.devices {
+        UartInfo::from_device(device, hardware)?;
+        SysconInfo::from_device(device, hardware)?;
+        FlashInfo::from_device(device, hardware)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn accepts_128_devices_and_rejects_overflow() {
     let header = *fdt::Fdt::new_unaligned(DTB).unwrap().header();
     let strings = &DTB[header.strings_offset as usize..];
@@ -15,7 +101,7 @@ fn accepts_128_devices_and_rejects_overflow() {
     let insertion = (header.structs_offset + header.structs_size) as usize - 8;
     for count in [65, 128, 129] {
         let mut extra = Vec::new();
-        for index in 0..count - 4 {
+        for index in 0..count - 6 {
             let address = 0x90000000 + index * 4096;
             extra.extend_from_slice(&1_u32.to_be_bytes());
             extra.extend_from_slice(format!("virtio@{address:x}\0").as_bytes());
@@ -40,7 +126,7 @@ fn accepts_128_devices_and_rejects_overflow() {
         ] {
             blob[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
         }
-        let mut hardware = Box::new(HardwareInfo::new());
+        let mut hardware = Box::new(const { HardwareInfo::new() });
         let (hardware, result) = std::thread::Builder::new()
             .stack_size(64 * 1024)
             .spawn(move || {
@@ -112,9 +198,13 @@ fn rejects_invalid_device_properties() {
             .unwrap();
         let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize + cell * 4;
         blob[offset..offset + 4].copy_from_slice(&u32::to_be_bytes(value));
-        let mut hardware = Box::new(HardwareInfo::new());
+        let mut hardware = Box::new(const { HardwareInfo::new() });
         assert!(
-            Dtb::from_bytes(&blob).unwrap().dump(&mut hardware).is_err(),
+            Dtb::from_bytes(&blob)
+                .unwrap()
+                .dump(&mut hardware)
+                .and_then(|()| parse_device_configurations(&hardware))
+                .is_err(),
             "{path}: {cell} = {value}"
         );
     }
@@ -137,26 +227,29 @@ fn rejects_invalid_device_properties() {
     for (index, value) in [u32::MAX, u32::MAX - 3, 0, 3].into_iter().enumerate() {
         blob[offset + index * 4..offset + index * 4 + 4].copy_from_slice(&value.to_be_bytes());
     }
-    let mut hardware = Box::new(HardwareInfo::new());
+    let mut hardware = Box::new(const { HardwareInfo::new() });
     assert_eq!(
-        Dtb::from_bytes(&blob)
-            .unwrap()
-            .dump(&mut hardware)
-            .unwrap_err()
-            .to_string(),
-        "invalid UART register layout or clock"
+        {
+            Dtb::from_bytes(&blob)
+                .unwrap()
+                .dump(&mut hardware)
+                .and_then(|()| parse_device_configurations(&hardware))
+                .unwrap_err()
+                .to_string()
+        },
+        "page envelope overflow"
     );
 
-    for (blob, kind) in [
-        (LOONGARCH_DTB, HardwareDeviceKind::LOONGARCH_LS7A_RTC),
-        (RISCV_DTB, HardwareDeviceKind::GOLDFISH_RTC),
+    for (blob, identity) in [
+        (LOONGARCH_DTB, "loongson,ls7a-rtc"),
+        (RISCV_DTB, "google,goldfish-rtc"),
     ] {
         let hardware = parse_hardware(blob);
         assert_eq!(
             hardware
                 .devices
                 .iter()
-                .find(|device| device.kind == kind)
+                .find(|device| device.has_identity("devicetree", identity))
                 .unwrap()
                 .use_policy,
             DeviceUsePolicy::KernelReserved
@@ -208,7 +301,7 @@ fn rejects_conflicting_device_resources() {
             blob[offset + index * 4..offset + index * 4 + 4]
                 .copy_from_slice(&u32::to_be_bytes(*value));
         }
-        let mut hardware = Box::new(HardwareInfo::new());
+        let mut hardware = Box::new(const { HardwareInfo::new() });
         let error = Dtb::from_bytes(&blob)
             .unwrap()
             .dump(&mut hardware)
@@ -240,10 +333,7 @@ fn unsupported_optional_information_does_not_prevent_boot() {
         let control = hardware
             .devices
             .iter()
-            .find_map(|device| match device.configuration {
-                DeviceConfiguration::Syscon(info) => Some(info),
-                _ => None,
-            })
+            .find_map(|device| SysconInfo::from_device(device, &hardware).unwrap())
             .unwrap();
         assert_eq!(control.poweroff.is_none(), path == "/poweroff");
         assert_eq!(control.reboot.is_none(), path == "/reboot");
@@ -263,12 +353,10 @@ fn unsupported_optional_information_does_not_prevent_boot() {
         blob[offset..offset + stdout.len()].copy_from_slice(stdout);
         let hardware = parse_hardware(&blob);
         if stdout.starts_with(b"missing") {
-            assert_eq!(hardware.console, ConsoleInfo::Unspecified);
+            assert!(hardware.console.is_none());
         } else {
-            assert!(matches!(
-                hardware.console,
-                ConsoleInfo::Uart { settings: None, .. }
-            ));
+            let console = hardware.console.as_ref().unwrap();
+            assert!(SerialSettings::from_options(&console.options).is_err());
         }
     }
 }
@@ -307,9 +395,13 @@ fn rejects_broken_control_and_routing_descriptions() {
             .unwrap();
         let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize + cell * 4;
         blob[offset..offset + 4].copy_from_slice(&u32::to_be_bytes(value));
-        let mut hardware = Box::new(HardwareInfo::new());
+        let mut hardware = Box::new(const { HardwareInfo::new() });
         assert!(
-            Dtb::from_bytes(&blob).unwrap().dump(&mut hardware).is_err(),
+            Dtb::from_bytes(&blob)
+                .unwrap()
+                .dump(&mut hardware)
+                .and_then(|()| parse_device_configurations(&hardware))
+                .is_err(),
             "{path}"
         );
     }

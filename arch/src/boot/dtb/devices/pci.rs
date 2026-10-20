@@ -9,8 +9,8 @@ use fdt::properties::{
     values::U32List,
 };
 use kernel::{
-    HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo, PciAddressSpace, PciInfo,
-    PciInterruptRoute, PciMsiMap, PciWindow,
+    HardwareDeviceLocation, HardwareInfo, PciAddressSpace, PciInfo, PciInterruptRoute, PciMsiMap,
+    PciWindow,
 };
 
 use super::super::{
@@ -205,7 +205,7 @@ fn msi_map(
                 .iter()
                 .position(|device| core::ptr::eq(device.name, name))
                 .ok_or("PCI MSI controller is unsupported")?;
-            if nodes[controller_index].kind != HardwareDeviceKind::LOONGARCH_PCH_MSI
+            if !interrupts::is_msi(controller)?
                 || property::<u32>(controller, "#msi-cells")?.unwrap_or(0) != 0
             {
                 return Err("unsupported PCI MSI controller binding".into());

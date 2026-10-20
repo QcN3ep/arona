@@ -1,53 +1,118 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 设备资源、寄存器配置及 DMA 描述。
+//! 设备身份、拓扑、资源及配置属性。
 
 use super::{PciWindow, PhysRange};
-use arrayvec::ArrayVec;
+use arrayvec::{ArrayString, ArrayVec};
 use core::ops::Range;
 
 pub const MAX_DEVICES: usize = 128;
 pub const MAX_MMIO_REGIONS: usize = 16;
 pub const MAX_INTERRUPTS: usize = 16;
 pub const MAX_PCI_WINDOWS: usize = 16;
+pub const MAX_DEVICE_IDENTITIES: usize = 8;
+pub const MAX_DEVICE_PROPERTIES: usize = 512;
+pub const MAX_DEVICE_PROPERTY_BYTES: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HardwareDeviceInfo {
     pub instance_id: HardwareDeviceInstanceId,
-    pub kind: HardwareDeviceKind,
+    pub name: ArrayString<64>,
+    pub parent: Option<HardwareDeviceInstanceId>,
+    pub identities: ArrayVec<DeviceIdentity, MAX_DEVICE_IDENTITIES>,
     pub use_policy: DeviceUsePolicy,
     pub location: HardwareDeviceLocation,
     pub mmio_regions: ArrayVec<PhysRange, MAX_MMIO_REGIONS>,
     pub interrupts: ArrayVec<HardwareInterruptInfo, MAX_INTERRUPTS>,
     pub interrupt_route: Option<HardwareInterruptRoute>,
-    pub configuration: DeviceConfiguration,
+    pub interrupt_lines: Option<Range<u32>>,
+    pub msi_vectors: Option<Range<u32>>,
     pub dma: Option<DmaInfo>,
+}
+
+impl HardwareDeviceInfo {
+    pub const fn new(instance_id: HardwareDeviceInstanceId) -> Self {
+        Self {
+            instance_id,
+            name: ArrayString::new_const(),
+            parent: None,
+            identities: ArrayVec::new_const(),
+            use_policy: DeviceUsePolicy::KernelReserved,
+            location: HardwareDeviceLocation::Platform,
+            mmio_regions: ArrayVec::new_const(),
+            interrupts: ArrayVec::new_const(),
+            interrupt_route: None,
+            interrupt_lines: None,
+            msi_vectors: None,
+            dma: None,
+        }
+    }
+
+    pub fn has_identity(&self, namespace: &str, value: &str) -> bool {
+        self.identities.iter().any(|identity| {
+            identity.namespace.as_str() == namespace && identity.value.as_str() == value
+        })
+    }
 }
 
 /// 实例编号，1-base。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HardwareDeviceInstanceId(pub u32);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HardwareDeviceKind(pub u32);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceIdentity {
+    pub namespace: ArrayString<16>,
+    pub value: ArrayString<64>,
+}
 
-impl HardwareDeviceKind {
-    pub const UNKNOWN: Self = Self(0);
-    pub const UART_16550: Self = Self(1);
-    pub const PCI_HOST_BRIDGE: Self = Self(2);
-    pub const RISCV_PLIC: Self = Self(3);
-    pub const LOONGARCH_EIOINTC: Self = Self(4);
-    pub const LOONGARCH_LS7A_RTC: Self = Self(5);
-    pub const IOMMU: Self = Self(6);
-    pub const VIRTIO_MMIO: Self = Self(7);
-    pub const VIRTIO_PCI: Self = Self(8);
-    pub const LOONGARCH_PCH_PIC: Self = Self(9);
-    pub const LOONGARCH_PCH_MSI: Self = Self(10);
-    pub const SYSCON: Self = Self(11);
-    pub const RISCV_CLINT: Self = Self(12);
-    pub const GOLDFISH_RTC: Self = Self(13);
-    pub const QEMU_FW_CFG: Self = Self(14);
-    pub const CFI_FLASH: Self = Self(15);
+impl DeviceIdentity {
+    pub fn new(namespace: &str, value: &str) -> Result<Self, &'static str> {
+        Ok(Self {
+            namespace: namespace
+                .try_into()
+                .map_err(|_| "device identity namespace is too long")?,
+            value: value
+                .try_into()
+                .map_err(|_| "device identity is too long")?,
+        })
+    }
+}
+
+/// 保留来源编码的自有属性，不授予资源访问权限。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeviceProperty {
+    pub device: HardwareDeviceInstanceId,
+    pub namespace: ArrayString<16>,
+    pub name: ArrayString<64>,
+    pub value: ArrayVec<u8, MAX_DEVICE_PROPERTY_BYTES>,
+}
+
+impl DeviceProperty {
+    pub fn new(
+        device: HardwareDeviceInstanceId,
+        namespace: &str,
+        name: &str,
+        value: &[u8],
+    ) -> Result<Self, &'static str> {
+        Ok(Self {
+            device,
+            namespace: namespace
+                .try_into()
+                .map_err(|_| "device property namespace is too long")?,
+            name: name
+                .try_into()
+                .map_err(|_| "device property name is too long")?,
+            value: value
+                .try_into()
+                .map_err(|_| "device property is too large")?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsoleInfo {
+    pub device: HardwareDeviceInstanceId,
+    pub options: ArrayString<64>,
 }
 
 /// 设备资源是否允许委托给用户态。
@@ -119,79 +184,4 @@ pub struct DmaInfo {
 pub struct DmaIsolationRoute {
     pub iommu: HardwareDeviceInstanceId,
     pub requester_id: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DeviceConfiguration {
-    None,
-    Uart(UartInfo),
-    InterruptController {
-        /// 控制器命名空间内可编码的中断号。
-        lines: Range<u32>,
-    },
-    Msi {
-        vectors: Range<u32>,
-    },
-    Syscon(SysconInfo),
-    Flash {
-        bank_width: u8,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct UartInfo {
-    pub register_shift: u8,
-    pub register_width: u8,
-    pub register_offset: u32,
-    pub endian: RegisterEndian,
-    pub clock_frequency_hz: Option<u64>,
-    pub current_speed: Option<u32>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RegisterEndian {
-    Little,
-    Big,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SysconInfo {
-    pub register_width: u8,
-    pub endian: RegisterEndian,
-    pub poweroff: Option<RegisterWrite>,
-    pub reboot: Option<RegisterWrite>,
-}
-
-/// 以 `(old & !mask) | (value & mask)` 更新寄存器。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RegisterWrite {
-    pub offset: u32,
-    pub mask: u32,
-    pub value: u32,
-}
-
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum ConsoleInfo {
-    #[default]
-    Unspecified,
-    Uart {
-        device: HardwareDeviceInstanceId,
-        settings: Option<SerialSettings>,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SerialSettings {
-    pub baud_rate: u32,
-    pub parity: SerialParity,
-    pub data_bits: u8,
-    pub flow_control: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SerialParity {
-    None,
-    Even,
-    Odd,
 }

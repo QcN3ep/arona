@@ -1,25 +1,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 转换受支持的设备绑定并关联中断控制器。
+//! 发现设备并规范化地址、中断和 DMA 资源，保留设备专属属性。
 
+pub mod flash;
 mod interrupts;
 mod pci;
-mod serial;
-mod syscon;
+pub mod serial;
+pub mod syscon;
 
-use core::ops::Range;
+use core::{fmt::Write, ops::Range};
 
 use arrayvec::ArrayVec;
-use fdt::properties::Compatible;
+use fdt::properties::{Compatible, values::PropertyValue};
 use kernel::{
-    DeviceConfiguration, DeviceUsePolicy, DmaInfo, HardwareDeviceInfo, HardwareDeviceInstanceId,
-    HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo, PciWindow, PhysRange,
-    boot::{MAX_DEVICES, MAX_MMIO_REGIONS},
+    DeviceIdentity, DeviceProperty, DeviceUsePolicy, DmaInfo, HardwareDeviceInfo,
+    HardwareDeviceInstanceId, HardwareDeviceLocation, HardwareInfo, PciWindow, PhysRange,
+    boot::{MAX_DEVICE_PROPERTIES, MAX_DEVICES, MAX_MMIO_REGIONS},
 };
 
 use super::{
     Dtb, Result,
-    nodes::{Node, Nodes, property, registers},
+    nodes::{Node, Nodes, cell_sizes, property, registers},
     range,
 };
 
@@ -29,49 +30,12 @@ const PAGE_SIZE: u64 = 4096;
 struct DeviceNode<'a> {
     // fdt 的 NodeId 假定字符串块位于结构块后，这里用节点名在 DTB 中的位置标识节点。
     name: &'a str,
-    kind: HardwareDeviceKind,
 }
 
 pub(super) fn parse(dtb: &Dtb<'_>, hardware: &mut HardwareInfo) -> Result<()> {
-    let mut nodes = ArrayVec::new();
+    let mut nodes = const { ArrayVec::new_const() };
     collect_nodes(dtb, &mut nodes)?;
-    hardware.devices.clear();
-    hardware.cpu_interrupts.clear();
-    hardware.pci.interrupts.clear();
-    hardware.pci.msi_maps.clear();
-    let mut walk = dtb.nodes();
-    while let Some(node) = walk.next()? {
-        let name = node.name()?.name;
-        if let Some(index) = nodes
-            .iter()
-            .position(|device| core::ptr::eq(device.name, name))
-        {
-            hardware
-                .devices
-                .push(parse_device(dtb, &walk, index, &nodes)?);
-            match nodes[index].kind {
-                HardwareDeviceKind::RISCV_PLIC
-                | HardwareDeviceKind::RISCV_CLINT
-                | HardwareDeviceKind::LOONGARCH_EIOINTC => {
-                    interrupts::cpu_routes(
-                        dtb,
-                        &walk,
-                        instance_id(index),
-                        &mut hardware.cpu_interrupts,
-                    )?;
-                }
-                HardwareDeviceKind::PCI_HOST_BRIDGE => {
-                    pci::routes(dtb, &walk, index, &nodes, &mut hardware.pci)?
-                }
-                _ => {}
-            }
-        }
-    }
-    hardware
-        .devices
-        .as_mut_slice()
-        .sort_unstable_by_key(|device| device.instance_id.0);
-    syscon::operations(dtb, &nodes, &mut hardware.devices)?;
+    parse_devices(dtb, hardware, &nodes)?;
     hardware.console = serial::console(dtb, &nodes).unwrap_or_default();
     for (index, device) in hardware.devices.iter().enumerate() {
         validate_addresses(hardware, index, device)?;
@@ -86,6 +50,41 @@ pub(super) fn parse(dtb: &Dtb<'_>, hardware: &mut HardwareInfo) -> Result<()> {
     pci::validate(hardware)
 }
 
+fn parse_devices(
+    dtb: &Dtb<'_>,
+    hardware: &mut HardwareInfo,
+    nodes: &[DeviceNode<'_>],
+) -> Result<()> {
+    hardware.devices.clear();
+    hardware.device_properties.clear();
+    hardware.cpu_interrupts.clear();
+    hardware.pci.interrupts.clear();
+    hardware.pci.msi_maps.clear();
+    let mut walk = dtb.nodes();
+    while let Some(node) = walk.next()? {
+        let Some(index) = node_index(nodes, node)? else {
+            continue;
+        };
+        let position = hardware
+            .devices
+            .partition_point(|device| device.instance_id.0 < instance_id(index).0);
+        hardware
+            .devices
+            .insert(position, HardwareDeviceInfo::new(instance_id(index)));
+        let device = &mut hardware.devices[position];
+        parse_device(&walk, nodes, device)?;
+        interrupts::resources(dtb, &walk, nodes, device, &mut hardware.cpu_interrupts)?;
+        capture_properties(node, device, &mut hardware.device_properties)?;
+        if matches!(
+            device.location,
+            HardwareDeviceLocation::PciHostBridge { .. }
+        ) {
+            pci::routes(dtb, &walk, index, nodes, &mut hardware.pci)?;
+        }
+    }
+    Ok(())
+}
+
 fn collect_nodes<'a>(
     dtb: &Dtb<'a>,
     output: &mut ArrayVec<DeviceNode<'a>, MAX_DEVICES>,
@@ -94,23 +93,23 @@ fn collect_nodes<'a>(
     let mut paths = ArrayVec::<u8, 8192>::new();
     let mut walk = dtb.nodes();
     while let Some(node) = walk.next()? {
-        if let Some(kind) = kind(node)? {
-            let start = paths.len();
-            for byte in walk.path() {
-                paths
-                    .try_push(byte)
-                    .map_err(|_| "device paths exceed 8 KiB")?;
-            }
-            entries
-                .try_push((
-                    start..paths.len(),
-                    DeviceNode {
-                        name: node.name()?.name,
-                        kind,
-                    },
-                ))
-                .map_err(|_| "too many devices")?;
+        if !is_device(&walk)? {
+            continue;
         }
+        let start = paths.len();
+        for byte in walk.path() {
+            paths
+                .try_push(byte)
+                .map_err(|_| "device paths exceed 8 KiB")?;
+        }
+        entries
+            .try_push((
+                start..paths.len(),
+                DeviceNode {
+                    name: node.name()?.name,
+                },
+            ))
+            .map_err(|_| "too many devices")?;
     }
     entries
         .as_mut_slice()
@@ -125,112 +124,120 @@ fn collect_nodes<'a>(
     Ok(())
 }
 
-fn parse_device(
-    dtb: &Dtb<'_>,
-    walk: &Nodes<'_>,
-    index: usize,
-    nodes: &[DeviceNode<'_>],
-) -> Result<HardwareDeviceInfo> {
-    let node = walk.node();
-    let kind = nodes[index].kind;
-    let virtio = kind == HardwareDeviceKind::VIRTIO_MMIO;
-    let location = match kind {
-        HardwareDeviceKind::PCI_HOST_BRIDGE => pci::parse(walk)?,
-        HardwareDeviceKind::LOONGARCH_EIOINTC => {
-            let mut entries = registers(node)?.iter::<u64, u64>();
-            let entry = entries.next().ok_or("EIOINTC is missing reg")??;
-            if entries.next().is_some() {
-                return Err("EIOINTC has multiple register ranges".into());
-            }
-            // REFERENCE: https://docs.kernel.org/arch/loongarch/irq-chip-model.html
-            let registers = range(entry.address, entry.len)?;
-            let start = registers
-                .start
-                .try_into()
-                .map_err(|_| "IOCSR address overflow")?;
-            let end = registers
-                .end
-                .try_into()
-                .map_err(|_| "IOCSR address overflow")?;
-            HardwareDeviceLocation::Iocsr {
-                registers: start..end,
-            }
+fn is_device(walk: &Nodes<'_>) -> Result<bool> {
+    if walk.node().parent().is_none() {
+        return Ok(false);
+    }
+    for node in core::iter::once(walk.node()).chain(walk.ancestors()) {
+        if property::<&str>(node, "device_type")? == Some("memory")
+            || node
+                .parent()
+                .is_some_and(|parent| parent.parent().is_none())
+                && matches!(
+                    node.name()?.name,
+                    "cpus" | "reserved-memory" | "chosen" | "aliases"
+                )
+        {
+            return Ok(false);
         }
-        _ => HardwareDeviceLocation::Platform,
-    };
-    let mmio_regions = match &location {
-        HardwareDeviceLocation::Platform => mmio(walk)?,
-        _ => ArrayVec::new(),
-    };
-    let interrupts = if matches!(
-        kind,
-        HardwareDeviceKind::RISCV_PLIC
-            | HardwareDeviceKind::RISCV_CLINT
-            | HardwareDeviceKind::LOONGARCH_EIOINTC
-            | HardwareDeviceKind::LOONGARCH_PCH_MSI
-    ) {
-        ArrayVec::new()
-    } else {
-        interrupts::parse(dtb, walk, nodes)?
-    };
-    let configuration = configuration(dtb, node, kind, &mmio_regions)?;
-    Ok(HardwareDeviceInfo {
-        instance_id: instance_id(index),
-        kind,
-        use_policy: if virtio {
-            DeviceUsePolicy::UserAssignable
-        } else {
-            DeviceUsePolicy::KernelReserved
-        },
-        location,
-        mmio_regions,
-        interrupts,
-        interrupt_route: if matches!(
-            kind,
-            HardwareDeviceKind::LOONGARCH_PCH_PIC | HardwareDeviceKind::LOONGARCH_PCH_MSI
-        ) {
-            Some(interrupts::cascade(dtb, walk, nodes, kind)?)
-        } else {
-            None
-        },
-        configuration,
-        dma: dma(walk, kind)?,
-    })
+    }
+    Ok(true)
 }
 
-fn configuration(
-    dtb: &Dtb<'_>,
+fn parse_device(
+    walk: &Nodes<'_>,
+    nodes: &[DeviceNode<'_>],
+    device: &mut HardwareDeviceInfo,
+) -> Result<()> {
+    let node = walk.node();
+    write!(device.name, "{}", node.name()?).map_err(|_| "device name is too long")?;
+    for ancestor in walk.ancestors() {
+        if let Some(index) = node_index(nodes, ancestor)? {
+            device.parent = Some(instance_id(index));
+            break;
+        }
+    }
+    if let Some(compatible) = node.property::<Compatible>()? {
+        for name in compatible {
+            device
+                .identities
+                .try_push(DeviceIdentity::new("devicetree", name)?)
+                .map_err(|_| "too many device identities")?;
+        }
+    }
+    device.location = if matches(node, "pci-host-ecam-generic")? {
+        pci::parse(walk)?
+    } else {
+        interrupts::location(walk)?.unwrap_or(HardwareDeviceLocation::Platform)
+    };
+    if device.location == HardwareDeviceLocation::Platform {
+        device.mmio_regions = mmio(walk)?;
+    }
+    device.dma = dma(walk)?;
+    if matches(node, "virtio,mmio")? {
+        device.use_policy = DeviceUsePolicy::UserAssignable;
+    }
+    Ok(())
+}
+
+fn capture_properties(
     node: Node<'_>,
-    kind: HardwareDeviceKind,
-    registers: &[PhysRange],
-) -> Result<DeviceConfiguration> {
-    Ok(match kind {
-        HardwareDeviceKind::UART_16550 => {
-            DeviceConfiguration::Uart(serial::parse(dtb, node, registers)?)
+    device: &HardwareDeviceInfo,
+    properties: &mut ArrayVec<DeviceProperty, MAX_DEVICE_PROPERTIES>,
+) -> Result<()> {
+    let pci = matches!(
+        device.location,
+        HardwareDeviceLocation::PciHostBridge { .. }
+    );
+    for entry in node.properties()? {
+        let entry = entry?;
+        if matches!(
+            entry.name,
+            "compatible" | "status" | "interrupts" | "interrupts-extended"
+        ) || entry.name == "reg"
+            && (!device.mmio_regions.is_empty()
+                || device.location != HardwareDeviceLocation::Platform)
+            || pci
+                && matches!(
+                    entry.name,
+                    "ranges"
+                        | "interrupt-map"
+                        | "interrupt-map-mask"
+                        | "msi-map"
+                        | "msi-map-mask"
+                        | "bus-range"
+                        | "linux,pci-domain"
+                )
+        {
+            continue;
         }
-        HardwareDeviceKind::RISCV_PLIC
-        | HardwareDeviceKind::LOONGARCH_EIOINTC
-        | HardwareDeviceKind::LOONGARCH_PCH_PIC
-        | HardwareDeviceKind::LOONGARCH_PCH_MSI => {
-            interrupts::configuration(node, kind, registers)?
+        if properties
+            .iter()
+            .any(|other| other.device == device.instance_id && other.name.as_str() == entry.name)
+        {
+            return Err("duplicate device property".into());
         }
-        HardwareDeviceKind::SYSCON => DeviceConfiguration::Syscon(syscon::parse(node, registers)?),
-        HardwareDeviceKind::CFI_FLASH => {
-            let bank_width =
-                property::<u32>(node, "bank-width")?.ok_or("flash is missing bank-width")?;
-            if !matches!(bank_width, 1 | 2 | 4 | 8) {
-                return Err("invalid flash bank width".into());
-            }
-            DeviceConfiguration::Flash {
-                bank_width: bank_width as u8,
-            }
-        }
-        _ => DeviceConfiguration::None,
-    })
+        properties
+            .try_push(DeviceProperty::new(
+                device.instance_id,
+                "devicetree",
+                entry.name,
+                entry.value,
+            )?)
+            .map_err(|_| "too many device properties")?;
+    }
+    Ok(())
 }
 
 fn instance_id(index: usize) -> HardwareDeviceInstanceId {
     HardwareDeviceInstanceId((index + 1) as u32)
+}
+
+fn node_index(nodes: &[DeviceNode<'_>], node: Node<'_>) -> Result<Option<usize>> {
+    let name = node.name()?.name;
+    Ok(nodes
+        .iter()
+        .position(|device| core::ptr::eq(device.name, name)))
 }
 
 fn find_device(
@@ -246,6 +253,18 @@ fn find_device(
 
 fn mmio(walk: &Nodes<'_>) -> Result<ArrayVec<PhysRange, MAX_MMIO_REGIONS>> {
     let mut output = ArrayVec::new();
+    if walk.node().raw_property("reg")?.is_none() {
+        return Ok(output);
+    }
+    for bus in walk.ancestors() {
+        let cells = cell_sizes(bus)?;
+        if cells.size_cells == 0
+            || cells.address_cells > 2
+            || bus.parent().is_some() && bus.raw_property("ranges")?.is_none()
+        {
+            return Ok(output);
+        }
+    }
     for entry in registers(walk.node())?.iter::<u64, u64>() {
         let entry = entry?;
         let address = walk.translate(range(entry.address, entry.len)?)?;
@@ -256,38 +275,20 @@ fn mmio(walk: &Nodes<'_>) -> Result<ArrayVec<PhysRange, MAX_MMIO_REGIONS>> {
     Ok(output)
 }
 
-fn kind(node: Node<'_>) -> Result<Option<HardwareDeviceKind>> {
-    let Some(compatible) = node.property::<Compatible>()? else {
-        return Ok(None);
-    };
-    Ok(compatible.into_iter().find_map(|name| match name {
-        "ns16550a" | "ns16550" => Some(HardwareDeviceKind::UART_16550),
-        "riscv,plic0" | "sifive,plic-1.0.0" => Some(HardwareDeviceKind::RISCV_PLIC),
-        "virtio,mmio" => Some(HardwareDeviceKind::VIRTIO_MMIO),
-        "pci-host-ecam-generic" => Some(HardwareDeviceKind::PCI_HOST_BRIDGE),
-        "loongson,ls2k2000-eiointc" => Some(HardwareDeviceKind::LOONGARCH_EIOINTC),
-        "loongson,pch-pic-1.0" => Some(HardwareDeviceKind::LOONGARCH_PCH_PIC),
-        "loongson,ls7a-rtc" => Some(HardwareDeviceKind::LOONGARCH_LS7A_RTC),
-        "loongson,pch-msi-1.0" => Some(HardwareDeviceKind::LOONGARCH_PCH_MSI),
-        "syscon" => Some(HardwareDeviceKind::SYSCON),
-        "riscv,clint0" | "sifive,clint0" => Some(HardwareDeviceKind::RISCV_CLINT),
-        "google,goldfish-rtc" => Some(HardwareDeviceKind::GOLDFISH_RTC),
-        "qemu,fw-cfg-mmio" => Some(HardwareDeviceKind::QEMU_FW_CFG),
-        "cfi-flash" => Some(HardwareDeviceKind::CFI_FLASH),
-        _ => None,
-    }))
+fn matches(node: Node<'_>, identity: &str) -> Result<bool> {
+    Ok(node
+        .property::<Compatible>()?
+        .is_some_and(|names| names.into_iter().any(|name| name == identity)))
 }
 
-fn dma(walk: &Nodes<'_>, kind: HardwareDeviceKind) -> Result<Option<DmaInfo>> {
-    if !matches!(
-        kind,
-        HardwareDeviceKind::VIRTIO_MMIO
-            | HardwareDeviceKind::PCI_HOST_BRIDGE
-            | HardwareDeviceKind::QEMU_FW_CFG
-    ) {
+fn dma(walk: &Nodes<'_>) -> Result<Option<DmaInfo>> {
+    let node = walk.node();
+    if !(matches(node, "virtio,mmio")?
+        || matches(node, "pci-host-ecam-generic")?
+        || matches(node, "qemu,fw-cfg-mmio")?)
+    {
         return Ok(None);
     }
-    let node = walk.node();
     if node.raw_property("iommus")?.is_some() || node.raw_property("iommu-map")?.is_some() {
         return Err("IOMMU device bindings are not supported".into());
     }
@@ -315,17 +316,55 @@ fn dma(walk: &Nodes<'_>, kind: HardwareDeviceKind) -> Result<Option<DmaInfo>> {
     }))
 }
 
-fn endian(node: Node<'_>) -> Result<kernel::RegisterEndian> {
-    let big = node.raw_property("big-endian")?.is_some();
-    let little = node.raw_property("little-endian")?.is_some();
-    let native = node.raw_property("native-endian")?.is_some();
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegisterEndian {
+    Little,
+    Big,
+}
+
+fn attribute<'a, T: PropertyValue<'a>>(
+    hardware: &'a HardwareInfo,
+    device: &HardwareDeviceInfo,
+    name: &str,
+) -> Result<Option<T>> {
+    hardware
+        .device_property(device.instance_id, "devicetree", name)
+        .map(|value| T::parse(value).map_err(|error| fdt::FdtError::from(error).into()))
+        .transpose()
+}
+
+fn resolve(hardware: &HardwareInfo, phandle: u32) -> Result<&HardwareDeviceInfo> {
+    if phandle == 0 || phandle == u32::MAX {
+        return Err("invalid phandle".into());
+    }
+    let mut found = None;
+    for device in &hardware.devices {
+        if attribute::<u32>(hardware, device, "phandle")? == Some(phandle)
+            && found.replace(device).is_some()
+        {
+            return Err("duplicate phandle".into());
+        }
+    }
+    found.ok_or_else(|| "phandle does not reference a device".into())
+}
+
+fn endian(hardware: &HardwareInfo, device: &HardwareDeviceInfo) -> Result<RegisterEndian> {
+    let big = hardware
+        .device_property(device.instance_id, "devicetree", "big-endian")
+        .is_some();
+    let little = hardware
+        .device_property(device.instance_id, "devicetree", "little-endian")
+        .is_some();
+    let native = hardware
+        .device_property(device.instance_id, "devicetree", "native-endian")
+        .is_some();
     if u8::from(big) + u8::from(little) + u8::from(native) > 1 {
         return Err("conflicting register endianness".into());
     }
     Ok(if big || native && cfg!(target_endian = "big") {
-        kernel::RegisterEndian::Big
+        RegisterEndian::Big
     } else {
-        kernel::RegisterEndian::Little
+        RegisterEndian::Little
     })
 }
 

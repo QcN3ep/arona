@@ -1,24 +1,75 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 解析系统控制寄存器及关机、重启操作。
+//! 按需解释系统控制寄存器及关机、重启操作。
 
-use arrayvec::ArrayVec;
-use fdt::properties::Compatible;
-use kernel::{
-    DeviceConfiguration, HardwareDeviceInfo, MAX_DEVICES, PhysRange, RegisterWrite, SysconInfo,
-};
+use kernel::{HardwareDeviceInfo, HardwareInfo};
 
-use super::super::{
-    Dtb, Result,
-    nodes::{Node, property},
-};
-use super::DeviceNode;
+use super::super::Result;
+use super::{RegisterEndian, attribute, resolve};
 
-pub(super) fn parse(node: Node<'_>, registers: &[PhysRange]) -> Result<SysconInfo> {
-    if property::<u32>(node, "reg-shift")?.unwrap_or(0) != 0 {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SysconInfo {
+    pub register_width: u8,
+    pub endian: RegisterEndian,
+    pub poweroff: Option<RegisterWrite>,
+    pub reboot: Option<RegisterWrite>,
+}
+
+/// 以 `(old & !mask) | (value & mask)` 更新寄存器。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisterWrite {
+    pub offset: u32,
+    pub mask: u32,
+    pub value: u32,
+}
+
+impl SysconInfo {
+    pub fn from_device(
+        device: &HardwareDeviceInfo,
+        hardware: &HardwareInfo,
+    ) -> Result<Option<Self>> {
+        if !device.has_identity("devicetree", "syscon") {
+            return Ok(None);
+        }
+        let mut info = parse(hardware, device)?;
+        let mut ambiguous = [false; 2];
+        for node in &hardware.devices {
+            let reboot = if node.has_identity("devicetree", "syscon-reboot") {
+                true
+            } else if node.has_identity("devicetree", "syscon-poweroff") {
+                false
+            } else {
+                continue;
+            };
+            let Ok((controller, write)) = operation(hardware, node) else {
+                continue;
+            };
+            if controller != device.instance_id {
+                continue;
+            }
+            let slot = if reboot {
+                &mut info.reboot
+            } else {
+                &mut info.poweroff
+            };
+            let ambiguous = &mut ambiguous[usize::from(reboot)];
+            if *ambiguous || slot.is_some() {
+                *ambiguous = true;
+                *slot = None;
+            } else {
+                *slot = Some(write);
+            }
+        }
+        Ok(Some(info))
+    }
+}
+
+fn parse(hardware: &HardwareInfo, device: &HardwareDeviceInfo) -> Result<SysconInfo> {
+    let registers = &device.mmio_regions;
+    if attribute::<u32>(hardware, device, "reg-shift")?.unwrap_or(0) != 0 {
         return Err("shifted syscon registers are not supported".into());
     }
-    let width = property::<u32>(node, "reg-io-width")?.unwrap_or(4);
+    let width = attribute::<u32>(hardware, device, "reg-io-width")?.unwrap_or(4);
     if !matches!(width, 1 | 2 | 4)
         || registers.len() != 1
         || registers[0].end - registers[0].start < u64::from(width)
@@ -28,73 +79,29 @@ pub(super) fn parse(node: Node<'_>, registers: &[PhysRange]) -> Result<SysconInf
     }
     Ok(SysconInfo {
         register_width: width as u8,
-        endian: super::endian(node)?,
+        endian: super::endian(hardware, device)?,
         poweroff: None,
         reboot: None,
     })
 }
 
-pub(super) fn operations(
-    dtb: &Dtb<'_>,
-    nodes: &[DeviceNode<'_>],
-    devices: &mut ArrayVec<HardwareDeviceInfo, MAX_DEVICES>,
-) -> Result<()> {
-    let mut ambiguous = [[false; 2]; MAX_DEVICES];
-    let mut walk = dtb.nodes();
-    while let Some(node) = walk.next()? {
-        let Some(names) = node.property::<Compatible>()? else {
-            continue;
-        };
-        let Some(reboot) = names.into_iter().find_map(|name| match name {
-            "syscon-poweroff" => Some(false),
-            "syscon-reboot" => Some(true),
-            _ => None,
-        }) else {
-            continue;
-        };
-        let Ok((index, write)) = operation(dtb, nodes, devices, node) else {
-            continue;
-        };
-        let DeviceConfiguration::Syscon(info) = &mut devices[index].configuration else {
-            unreachable!()
-        };
-        let slot = if reboot {
-            &mut info.reboot
-        } else {
-            &mut info.poweroff
-        };
-        let ambiguous = &mut ambiguous[index][usize::from(reboot)];
-        if *ambiguous || slot.is_some() {
-            *ambiguous = true;
-            *slot = None;
-        } else {
-            *slot = Some(write);
-        }
-    }
-    Ok(())
-}
-
-fn operation<'a>(
-    dtb: &Dtb<'a>,
-    nodes: &[DeviceNode<'_>],
-    devices: &[HardwareDeviceInfo],
-    node: Node<'a>,
-) -> Result<(usize, RegisterWrite)> {
-    let controller = if let Some(phandle) = property::<u32>(node, "regmap")? {
-        dtb.resolve_phandle(phandle)?
+fn operation(
+    hardware: &HardwareInfo,
+    node: &HardwareDeviceInfo,
+) -> Result<(kernel::HardwareDeviceInstanceId, RegisterWrite)> {
+    let device = if let Some(phandle) = attribute::<u32>(hardware, node, "regmap")? {
+        resolve(hardware, phandle)?
     } else {
-        node.parent()
+        hardware
+            .devices
+            .iter()
+            .find(|device| Some(device.instance_id) == node.parent)
             .ok_or("system control operation has no parent")?
     };
-    let name = controller.name()?.name;
-    let index = nodes
-        .iter()
-        .position(|device| core::ptr::eq(device.name, name))
-        .ok_or("system controller is unsupported")?;
-    let device = &devices[index];
-    let DeviceConfiguration::Syscon(info) = &device.configuration else {
+    if !device.has_identity("devicetree", "syscon") {
         return Err("operation does not reference a syscon".into());
-    };
+    }
+    let info = parse(hardware, device)?;
     let bits = match info.register_width {
         1 => 0xff,
         2 => 0xffff,
@@ -102,8 +109,8 @@ fn operation<'a>(
         _ => return Err("unsupported syscon access width".into()),
     };
     // REFERENCE: https://github.com/torvalds/linux/blob/v6.18/drivers/power/reset/syscon-poweroff.c
-    let value = property::<u32>(node, "value")?;
-    let mask = property::<u32>(node, "mask")?;
+    let value = attribute::<u32>(hardware, node, "value")?;
+    let mask = attribute::<u32>(hardware, node, "mask")?;
     let (mask, value) = match (mask, value) {
         (Some(mask), Some(value)) => (mask, value),
         (None, Some(value)) => (bits, value),
@@ -111,7 +118,8 @@ fn operation<'a>(
         (None, None) => return Err("system control operation is missing value and mask".into()),
     };
     let write = RegisterWrite {
-        offset: property(node, "offset")?.ok_or("system control operation is missing offset")?,
+        offset: attribute(hardware, node, "offset")?
+            .ok_or("system control operation is missing offset")?,
         mask,
         value,
     };
@@ -128,5 +136,5 @@ fn operation<'a>(
     {
         return Err("invalid system control register operation".into());
     }
-    Ok((index, write))
+    Ok((device.instance_id, write))
 }

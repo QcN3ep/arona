@@ -21,13 +21,30 @@ pub struct HardwareInfo {
     pub cpus: ArrayVec<CpuInfo, MAX_CPUS>,
     pub memory: MemoryInfo,
     pub devices: ArrayVec<HardwareDeviceInfo, MAX_DEVICES>,
+    pub device_properties: ArrayVec<DeviceProperty, MAX_DEVICE_PROPERTIES>,
     pub timebase_frequency_hz: Option<u64>,
-    pub console: ConsoleInfo,
+    pub console: Option<ConsoleInfo>,
     pub cpu_interrupts: ArrayVec<CpuInterruptRoute, MAX_CPU_INTERRUPT_ROUTES>,
     pub pci: PciInfo,
 }
 
 impl HardwareInfo {
+    pub fn device_property(
+        &self,
+        device: HardwareDeviceInstanceId,
+        namespace: &str,
+        name: &str,
+    ) -> Option<&[u8]> {
+        self.device_properties
+            .iter()
+            .find(|entry| {
+                entry.device == device
+                    && entry.namespace.as_str() == namespace
+                    && entry.name.as_str() == name
+            })
+            .map(|entry| entry.value.as_slice())
+    }
+
     pub const fn new() -> Self {
         Self {
             cpus: ArrayVec::new_const(),
@@ -35,8 +52,9 @@ impl HardwareInfo {
                 regions: ArrayVec::new_const(),
             },
             devices: ArrayVec::new_const(),
+            device_properties: ArrayVec::new_const(),
             timebase_frequency_hz: None,
-            console: ConsoleInfo::Unspecified,
+            console: None,
             cpu_interrupts: ArrayVec::new_const(),
             pci: PciInfo::new(),
         }

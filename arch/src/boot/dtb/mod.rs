@@ -3,7 +3,7 @@
 //! 将固件 DTB 转换到固定容量的内核硬件描述中。
 
 mod cpus;
-mod devices;
+pub mod devices;
 mod memory;
 mod nodes;
 

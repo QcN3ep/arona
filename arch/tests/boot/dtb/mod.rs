@@ -8,12 +8,22 @@ use std::{
     cell::Cell,
 };
 
-use arch::boot::{dtb::Dtb, prepare_boot_info};
+use arch::boot::{
+    dtb::{
+        Dtb,
+        devices::{
+            RegisterEndian,
+            flash::FlashInfo,
+            serial::{SerialSettings, UartInfo},
+            syscon::SysconInfo,
+        },
+    },
+    prepare_boot_info,
+};
 use kernel::{
-    ConsoleInfo, CpuInfo, CpuInterruptTarget, DeviceConfiguration, DeviceUsePolicy,
-    HardwareDeviceInstanceId, HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo,
-    InterruptPolarity, InterruptTrigger, MemoryRegion, MemoryRegionState, PciAddressSpace,
-    PhysRange, RegisterEndian,
+    CpuInfo, CpuInterruptTarget, DeviceUsePolicy, HardwareDeviceInstanceId, HardwareDeviceLocation,
+    HardwareInfo, InterruptPolarity, InterruptTrigger, MemoryRegion, MemoryRegionState,
+    PciAddressSpace, PhysRange,
 };
 
 // dtc -I dts -O dtb -o arch/tests/fixtures/boot.dtb arch/tests/fixtures/boot.dts
@@ -78,7 +88,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
 static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 fn parse_hardware(blob: &[u8]) -> Box<HardwareInfo> {
-    let mut hardware = Box::new(HardwareInfo::new());
+    let mut hardware = Box::new(const { HardwareInfo::new() });
     Dtb::from_bytes(blob).unwrap().dump(&mut hardware).unwrap();
     hardware
 }
@@ -92,20 +102,25 @@ fn dtb_produces_complete_boot_data() {
         hardware.cpus.as_slice(),
         &[CpuInfo { hardware_id: 0 }, CpuInfo { hardware_id: 7 }]
     );
-    let [plic, pci, uart, virtio] = hardware.devices.as_slice() else {
-        panic!("missing boot devices")
+    let device = |identity| {
+        hardware
+            .devices
+            .iter()
+            .find(|device| device.has_identity("devicetree", identity))
+            .unwrap()
     };
-    assert_eq!(
-        plic.configuration,
-        DeviceConfiguration::InterruptController { lines: 1..96 }
+    let (plic, pci, uart, virtio) = (
+        device("riscv,plic0"),
+        device("pci-host-ecam-generic"),
+        device("ns16550a"),
+        device("virtio,mmio"),
     );
+    assert_eq!(plic.interrupt_lines, Some(1..96));
     assert_eq!(
         (uart.mmio_regions[0].start, uart.mmio_regions[0].end),
         (0x10000000, 0x10000100)
     );
-    let DeviceConfiguration::Uart(serial) = uart.configuration else {
-        panic!("missing UART configuration")
-    };
+    let serial = UartInfo::from_device(uart, &hardware).unwrap().unwrap();
     assert_eq!(
         (
             serial.register_shift,
@@ -115,14 +130,9 @@ fn dtb_produces_complete_boot_data() {
         (2, 4, 8)
     );
     assert_eq!(serial.clock_frequency_hz, Some(3_686_400));
-    let ConsoleInfo::Uart {
-        device,
-        settings: Some(settings),
-    } = hardware.console
-    else {
-        panic!("missing console settings")
-    };
-    assert_eq!(device, uart.instance_id);
+    assert_eq!(hardware.console.as_ref().unwrap().device, uart.instance_id);
+    let settings =
+        SerialSettings::from_options(&hardware.console.as_ref().unwrap().options).unwrap();
     assert_eq!(
         (
             settings.baud_rate,
@@ -229,8 +239,8 @@ fn pointer_and_slice_inputs_produce_the_same_hardware() {
     assert_eq!(from_slice.total_size(), DTB.len());
     // SAFETY: blob 须覆盖完整 DTB，并在 from_ptr 存续期间保持可读且不变。
     let from_ptr = unsafe { Dtb::new(blob.0.as_ptr()) }.unwrap();
-    let mut expected = Box::new(HardwareInfo::new());
-    let mut actual = Box::new(HardwareInfo::new());
+    let mut expected = Box::new(const { HardwareInfo::new() });
+    let mut actual = Box::new(const { HardwareInfo::new() });
     from_slice.dump(&mut expected).unwrap();
     from_ptr.dump(&mut actual).unwrap();
     assert_eq!(actual, expected);
@@ -238,7 +248,7 @@ fn pointer_and_slice_inputs_produce_the_same_hardware() {
 
 #[test]
 fn conversion_runs_with_a_64_kib_stack() {
-    let mut hardware = Box::new(HardwareInfo::new());
+    let mut hardware = Box::new(const { HardwareInfo::new() });
     std::thread::Builder::new()
         .stack_size(64 * 1024)
         .spawn(move || {
@@ -265,11 +275,25 @@ fn conversion_runs_with_a_64_kib_stack() {
 fn deep_buses_translate_addresses_and_inherit_interrupt_parents() {
     // dtc -I dts -O dtb -o arch/tests/fixtures/nested.dtb arch/tests/fixtures/nested.dts
     let hardware = parse_hardware(include_bytes!("../../fixtures/nested.dtb"));
-    let [plic, uart] = hardware.devices.as_slice() else {
-        panic!("expected only the enabled PLIC and UART");
-    };
-    assert_eq!(plic.kind, HardwareDeviceKind::RISCV_PLIC);
-    assert_eq!(uart.kind, HardwareDeviceKind::UART_16550);
+    let plic = hardware
+        .devices
+        .iter()
+        .find(|device| device.has_identity("devicetree", "riscv,plic0"))
+        .unwrap();
+    let uart = hardware
+        .devices
+        .iter()
+        .find(|device| device.has_identity("devicetree", "ns16550a"))
+        .unwrap();
+    assert!(uart.parent.is_some());
+    assert!(
+        hardware
+            .devices
+            .iter()
+            .all(|device| !device.has_identity("devicetree", "virtio,mmio"))
+    );
+    assert!(plic.has_identity("devicetree", "riscv,plic0"));
+    assert!(uart.has_identity("devicetree", "ns16550a"));
     assert_eq!(
         uart.mmio_regions.as_slice(),
         &[PhysRange {
@@ -282,17 +306,27 @@ fn deep_buses_translate_addresses_and_inherit_interrupt_parents() {
 }
 
 #[test]
-fn device_ids_follow_full_paths_and_bindings_follow_compatible_order() {
+fn device_ids_follow_full_paths_and_preserve_compatible_order() {
     // dtc -I dts -O dtb -o arch/tests/fixtures/ordering.dtb arch/tests/fixtures/ordering.dts
     let hardware = parse_hardware(include_bytes!("../../fixtures/ordering.dtb"));
-    let [uart, virtio] = hardware.devices.as_slice() else {
-        panic!("expected UART and Virtio devices");
+    let [bus, uart, virtio] = hardware.devices.as_slice() else {
+        panic!("expected bus, UART and Virtio devices");
     };
     // `/bus-aux@10002000` 排在 `/bus/device@10001000` 前，与深度优先遍历的次序不同。
-    assert_eq!(uart.kind, HardwareDeviceKind::UART_16550);
-    assert_eq!(uart.instance_id, HardwareDeviceInstanceId(1));
-    assert_eq!(virtio.kind, HardwareDeviceKind::VIRTIO_MMIO);
-    assert_eq!(virtio.instance_id, HardwareDeviceInstanceId(2));
+    assert!(uart.has_identity("devicetree", "ns16550a"));
+    assert_eq!(uart.instance_id, HardwareDeviceInstanceId(2));
+    assert!(virtio.has_identity("devicetree", "virtio,mmio"));
+    assert_eq!(bus.instance_id, HardwareDeviceInstanceId(1));
+    assert_eq!(virtio.instance_id, HardwareDeviceInstanceId(3));
+    assert_eq!(virtio.parent, Some(bus.instance_id));
+    assert_eq!(
+        virtio
+            .identities
+            .iter()
+            .map(|identity| identity.value.as_str())
+            .collect::<Vec<_>>(),
+        ["virtio,mmio", "ns16550a"]
+    );
 }
 
 #[test]
@@ -320,7 +354,7 @@ fn block_order_does_not_change_hardware_or_device_ids() {
 
 #[test]
 fn dtb_conversion_does_not_allocate() {
-    let mut hardware = Box::new(HardwareInfo::new());
+    let mut hardware = Box::new(const { HardwareInfo::new() });
     for bytes in [
         DTB,
         LOONGARCH_DTB,
@@ -358,20 +392,28 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
     // dtc -I dts -O dtb -o arch/tests/fixtures/loongarch.dtb arch/tests/fixtures/loongarch.dts
     let hardware = parse_hardware(LOONGARCH_DTB);
     assert_eq!(hardware.cpus.as_slice(), &[CpuInfo { hardware_id: 0 }]);
-    let [
-        eiointc,
-        flash,
-        fw_cfg,
-        syscon,
-        msi,
-        pci,
-        pic,
-        rtc,
-        uarts @ ..,
-    ] = hardware.devices.as_slice()
-    else {
-        panic!("missing LoongArch devices")
+    let device = |identity| {
+        hardware
+            .devices
+            .iter()
+            .find(|device| device.has_identity("devicetree", identity))
+            .unwrap()
     };
+    let (eiointc, flash, fw_cfg, syscon, msi, pci, pic, rtc) = (
+        device("loongson,ls2k2000-eiointc"),
+        device("cfi-flash"),
+        device("qemu,fw-cfg-mmio"),
+        device("syscon"),
+        device("loongson,pch-msi-1.0"),
+        device("pci-host-ecam-generic"),
+        device("loongson,pch-pic-1.0"),
+        device("loongson,ls7a-rtc"),
+    );
+    let uarts = hardware
+        .devices
+        .iter()
+        .filter(|device| device.has_identity("devicetree", "ns16550a"))
+        .collect::<Vec<_>>();
     assert_eq!(
         eiointc.location,
         HardwareDeviceLocation::Iocsr {
@@ -387,19 +429,17 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
         (CpuInterruptTarget::AllCpus, 3)
     );
     assert_eq!(
-        flash.configuration,
-        DeviceConfiguration::Flash { bank_width: 4 }
+        FlashInfo::from_device(flash, &hardware)
+            .unwrap()
+            .unwrap()
+            .bank_width,
+        4
     );
     assert_eq!(flash.mmio_regions.len(), 2);
     assert!(fw_cfg.dma.unwrap().coherent);
-    assert_eq!(
-        msi.configuration,
-        DeviceConfiguration::Msi { vectors: 32..256 }
-    );
+    assert_eq!(msi.msi_vectors, Some(32..256));
     assert_eq!(msi.interrupt_route.unwrap().controller, eiointc.instance_id);
-    let DeviceConfiguration::Syscon(control) = syscon.configuration else {
-        panic!("missing syscon configuration")
-    };
+    let control = SysconInfo::from_device(syscon, &hardware).unwrap().unwrap();
     assert_eq!(
         (control.register_width, control.endian),
         (1, RegisterEndian::Little)
@@ -465,8 +505,9 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
         (rtc.mmio_regions[0].start, rtc.interrupts[0].line),
         (0x100d0100, 6)
     );
-    assert!(
-        matches!(hardware.console, ConsoleInfo::Uart { device, .. } if device == uarts[0].instance_id)
+    assert_eq!(
+        hardware.console.as_ref().unwrap().device,
+        uarts[0].instance_id
     );
     assert_eq!(uarts.len(), 4);
     for (index, uart) in uarts.iter().enumerate() {
@@ -500,10 +541,7 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
     let control = hardware
         .devices
         .iter()
-        .find_map(|device| match device.configuration {
-            DeviceConfiguration::Syscon(info) => Some(info),
-            _ => None,
-        })
+        .find_map(|device| SysconInfo::from_device(device, &hardware).unwrap())
         .unwrap();
     assert_eq!(
         (
@@ -531,12 +569,9 @@ fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
     let plic = hardware
         .devices
         .iter()
-        .find(|device| device.kind == HardwareDeviceKind::RISCV_PLIC)
+        .find(|device| device.has_identity("devicetree", "riscv,plic0"))
         .unwrap();
-    assert_eq!(
-        plic.configuration,
-        DeviceConfiguration::InterruptController { lines: 1..96 }
-    );
+    assert_eq!(plic.interrupt_lines, Some(1..96));
     let contexts = hardware
         .cpu_interrupts
         .iter()
@@ -548,23 +583,17 @@ fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
     let uart = hardware
         .devices
         .iter()
-        .find(|device| device.kind == HardwareDeviceKind::UART_16550)
+        .find(|device| device.has_identity("devicetree", "ns16550a"))
         .unwrap();
-    assert!(
-        matches!(hardware.console, ConsoleInfo::Uart { device, .. } if device == uart.instance_id)
-    );
-    let DeviceConfiguration::Uart(serial) = uart.configuration else {
-        panic!("missing UART configuration")
-    };
+    assert_eq!(hardware.console.as_ref().unwrap().device, uart.instance_id);
+    let serial = UartInfo::from_device(uart, &hardware).unwrap().unwrap();
     assert_eq!(serial.clock_frequency_hz, Some(3_686_400));
     let syscon = hardware
         .devices
         .iter()
-        .find(|device| device.kind == HardwareDeviceKind::SYSCON)
+        .find(|device| device.has_identity("devicetree", "syscon"))
         .unwrap();
-    let DeviceConfiguration::Syscon(control) = syscon.configuration else {
-        panic!("missing syscon configuration")
-    };
+    let control = SysconInfo::from_device(syscon, &hardware).unwrap().unwrap();
     assert_eq!(control.register_width, 4);
     assert_eq!(control.poweroff.unwrap().value, 0x5555);
     assert_eq!(control.reboot.unwrap().value, 0x7777);
@@ -573,7 +602,7 @@ fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
     let pci = hardware
         .devices
         .iter()
-        .find(|device| device.kind == HardwareDeviceKind::PCI_HOST_BRIDGE)
+        .find(|device| device.has_identity("devicetree", "pci-host-ecam-generic"))
         .unwrap();
     let HardwareDeviceLocation::PciHostBridge { windows, .. } = &pci.location else {
         panic!("missing PCI host")

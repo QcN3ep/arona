@@ -41,7 +41,7 @@ pub(super) struct Nodes<'a> {
 impl<'a> Nodes<'a> {
     pub fn new(root: Node<'a>) -> Self {
         Self {
-            path: ArrayVec::new(),
+            path: const { ArrayVec::new_const() },
             root: Some(root),
         }
     }

@@ -1,58 +1,92 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 解析 UART 寄存器布局、输入时钟和固件控制台选择。
+//! 按需解释 UART 配置与控制台参数。
 
-use fdt::properties::{Compatible, values::U32List};
-use kernel::{ConsoleInfo, HardwareDeviceKind, PhysRange, SerialParity, SerialSettings, UartInfo};
+use fdt::properties::values::U32List;
+use kernel::{ConsoleInfo, HardwareDeviceInfo, HardwareInfo, PhysRange};
 
-use super::super::{
-    Dtb, Result,
-    nodes::{Node, integer, property},
-};
-use super::{DeviceNode, instance_id};
+use super::super::{Dtb, Result, nodes::property};
+use super::{DeviceNode, RegisterEndian, attribute, instance_id, resolve};
 
-pub(super) fn parse(dtb: &Dtb<'_>, node: Node<'_>, registers: &[PhysRange]) -> Result<UartInfo> {
-    let mut frequency = integer(node, "clock-frequency")?;
-    if frequency.is_none()
-        && let Some(clocks) = property::<U32List<'_>>(node, "clocks")?
-    {
-        let mut cells = clocks.iter();
-        let phandle = cells.next().ok_or("UART clocks is empty")?;
-        let clock = dtb.resolve_phandle(phandle)?;
-        if cells.next().is_some()
-            || property::<u32>(clock, "#clock-cells")? != Some(0)
-            || !clock
-                .property::<Compatible>()?
-                .is_some_and(|names| names.into_iter().any(|name| name == "fixed-clock"))
-        {
-            return Err("unsupported UART clock binding".into());
-        }
-        frequency = Some(integer(clock, "clock-frequency")?.ok_or("fixed clock has no frequency")?);
-    }
-    let info = UartInfo {
-        register_shift: property::<u32>(node, "reg-shift")?
-            .unwrap_or(0)
-            .try_into()
-            .map_err(|_| "UART register shift overflow")?,
-        register_width: property::<u32>(node, "reg-io-width")?
-            .unwrap_or(1)
-            .try_into()
-            .map_err(|_| "UART register width overflow")?,
-        register_offset: property::<u32>(node, "reg-offset")?.unwrap_or(0),
-        clock_frequency_hz: frequency,
-        endian: super::endian(node)?,
-        current_speed: property(node, "current-speed")?,
-    };
-    validate(&info, registers)?;
-    Ok(info)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct UartInfo {
+    pub register_shift: u8,
+    pub register_width: u8,
+    pub register_offset: u32,
+    pub endian: RegisterEndian,
+    pub clock_frequency_hz: Option<u64>,
+    pub current_speed: Option<u32>,
 }
 
-pub(super) fn console(dtb: &Dtb<'_>, nodes: &[DeviceNode<'_>]) -> Result<ConsoleInfo> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SerialSettings {
+    pub baud_rate: u32,
+    pub parity: SerialParity,
+    pub data_bits: u8,
+    pub flow_control: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SerialParity {
+    None,
+    Even,
+    Odd,
+}
+
+impl UartInfo {
+    pub fn from_device(
+        device: &HardwareDeviceInfo,
+        hardware: &HardwareInfo,
+    ) -> Result<Option<Self>> {
+        if !(device.has_identity("devicetree", "ns16550a")
+            || device.has_identity("devicetree", "ns16550"))
+        {
+            return Ok(None);
+        }
+        let registers = &device.mmio_regions;
+        let mut frequency = attribute::<u64>(hardware, device, "clock-frequency")?;
+        if frequency.is_none()
+            && let Some(clocks) = attribute::<U32List<'_>>(hardware, device, "clocks")?
+        {
+            let mut cells = clocks.iter();
+            let phandle = cells.next().ok_or("UART clocks is empty")?;
+            let clock = resolve(hardware, phandle)?;
+            if cells.next().is_some()
+                || attribute::<u32>(hardware, clock, "#clock-cells")? != Some(0)
+                || !clock.has_identity("devicetree", "fixed-clock")
+            {
+                return Err("unsupported UART clock binding".into());
+            }
+            frequency = Some(
+                attribute::<u64>(hardware, clock, "clock-frequency")?
+                    .ok_or("fixed clock has no frequency")?,
+            );
+        }
+        let info = UartInfo {
+            register_shift: attribute::<u32>(hardware, device, "reg-shift")?
+                .unwrap_or(0)
+                .try_into()
+                .map_err(|_| "UART register shift overflow")?,
+            register_width: attribute::<u32>(hardware, device, "reg-io-width")?
+                .unwrap_or(1)
+                .try_into()
+                .map_err(|_| "UART register width overflow")?,
+            register_offset: attribute::<u32>(hardware, device, "reg-offset")?.unwrap_or(0),
+            clock_frequency_hz: frequency,
+            endian: super::endian(hardware, device)?,
+            current_speed: attribute(hardware, device, "current-speed")?,
+        };
+        validate(&info, registers)?;
+        Ok(Some(info))
+    }
+}
+
+pub(super) fn console(dtb: &Dtb<'_>, nodes: &[DeviceNode<'_>]) -> Result<Option<ConsoleInfo>> {
     let Some(chosen) = dtb.root.child("chosen")? else {
-        return Ok(ConsoleInfo::Unspecified);
+        return Ok(None);
     };
     let Some(stdout) = property::<&str>(chosen, "stdout-path")? else {
-        return Ok(ConsoleInfo::Unspecified);
+        return Ok(None);
     };
     let (path, options) = stdout
         .split_once(':')
@@ -74,52 +108,54 @@ pub(super) fn console(dtb: &Dtb<'_>, nodes: &[DeviceNode<'_>]) -> Result<Console
                 .iter()
                 .position(|device| core::ptr::eq(device.name, name))
                 .ok_or("stdout device is unsupported")?;
-            if nodes[index].kind != HardwareDeviceKind::UART_16550 {
-                return Err("stdout is not a UART".into());
-            }
-            return Ok(ConsoleInfo::Uart {
+            return Ok(Some(ConsoleInfo {
                 device: instance_id(index),
-                settings: options.and_then(|options| settings(options).ok()),
-            });
+                options: options
+                    .unwrap_or_default()
+                    .try_into()
+                    .map_err(|_| "stdout options are too long")?,
+            }));
         }
     }
     Err("stdout does not reference an enabled device".into())
 }
 
-fn settings(options: &str) -> Result<SerialSettings> {
-    // REFERENCE: https://devicetree-specification.readthedocs.io/en/stable/devicenodes.html#chosen-node
-    let digits = options.bytes().take_while(u8::is_ascii_digit).count();
-    let baud_rate = options[..digits]
-        .parse::<u32>()
-        .ok()
-        .filter(|&rate| rate != 0)
-        .ok_or("invalid stdout baud rate")?;
-    let mut suffix = options[digits..].bytes();
-    let parity = match suffix.next() {
-        None | Some(b'n') => SerialParity::None,
-        Some(b'e') => SerialParity::Even,
-        Some(b'o') => SerialParity::Odd,
-        _ => return Err("unsupported stdout parity".into()),
-    };
-    let data_bits = match suffix.next() {
-        None => 8,
-        Some(value @ b'5'..=b'8') => value - b'0',
-        _ => return Err("invalid stdout data bits".into()),
-    };
-    let flow_control = match suffix.next() {
-        None => false,
-        Some(b'r') => true,
-        _ => return Err("invalid stdout flow control".into()),
-    };
-    if suffix.next().is_some() {
-        return Err("invalid stdout options".into());
+impl SerialSettings {
+    pub fn from_options(options: &str) -> Result<Self> {
+        // REFERENCE: https://devicetree-specification.readthedocs.io/en/stable/devicenodes.html#chosen-node
+        let digits = options.bytes().take_while(u8::is_ascii_digit).count();
+        let baud_rate = options[..digits]
+            .parse::<u32>()
+            .ok()
+            .filter(|&rate| rate != 0)
+            .ok_or("invalid stdout baud rate")?;
+        let mut suffix = options[digits..].bytes();
+        let parity = match suffix.next() {
+            None | Some(b'n') => SerialParity::None,
+            Some(b'e') => SerialParity::Even,
+            Some(b'o') => SerialParity::Odd,
+            _ => return Err("unsupported stdout parity".into()),
+        };
+        let data_bits = match suffix.next() {
+            None => 8,
+            Some(value @ b'5'..=b'8') => value - b'0',
+            _ => return Err("invalid stdout data bits".into()),
+        };
+        let flow_control = match suffix.next() {
+            None => false,
+            Some(b'r') => true,
+            _ => return Err("invalid stdout flow control".into()),
+        };
+        if suffix.next().is_some() {
+            return Err("invalid stdout options".into());
+        }
+        Ok(SerialSettings {
+            baud_rate,
+            parity,
+            data_bits,
+            flow_control,
+        })
     }
-    Ok(SerialSettings {
-        baud_rate,
-        parity,
-        data_bits,
-        flow_control,
-    })
 }
 
 fn validate(info: &UartInfo, registers: &[PhysRange]) -> Result<()> {
