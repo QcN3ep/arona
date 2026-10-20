@@ -85,6 +85,9 @@ SECTIONS
     .boot_tables ALIGN(4096) (NOLOAD) : AT(ADDR(.boot_tables) - _kernel_offset)
     {
         _boot_root = .;
+        KEEP(*(.boot_tables.root))
+        _boot_tables_window_phys = ABSOLUTE(LOADADDR(.boot_tables) + (. - ADDR(.boot_tables)));
+        KEEP(*(.boot_tables.window))
         KEEP(*(.boot_tables))
     } :data
     _boot_tables_phys = LOADADDR(.boot_tables);

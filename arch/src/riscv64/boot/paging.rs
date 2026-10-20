@@ -2,6 +2,8 @@
 
 //! 临时启动页表、高半区访问布局与分页切换。
 
+use crate::paging::PAGE_TABLE_WINDOW;
+
 pub(super) const LARGE_PAGE_SIZE: usize = 0x20_0000;
 const KERNEL_BASE: usize = 0xffff_ffc0_0000_0000;
 pub(super) const UART_BASE: usize = KERNEL_BASE + 0x20_0000;
@@ -28,17 +30,20 @@ struct PageTable {
 struct PageTables {
     root: PageTable,
     kernel_l1: PageTable,
+    window_l1: PageTable,
 }
 
 #[used]
-#[unsafe(link_section = ".boot_tables")]
+#[unsafe(link_section = ".boot_tables.root")]
 static mut TABLES: PageTables = PageTables {
     root: PageTable::new(),
     kernel_l1: PageTable::new(),
+    window_l1: PageTable::new(),
 };
 
 unsafe extern "C" {
     static mut _boot_tables_phys: PageTables;
+    static _boot_tables_window_phys: u8;
     static _kernel_phys_start: u8;
 }
 
@@ -80,9 +85,16 @@ impl PageTables {
     fn init(&mut self, kernel: usize, dtb: usize) {
         self.root.clear();
         self.kernel_l1.clear();
+        self.window_l1.clear();
 
         self.root.link::<2>(KERNEL_BASE, &self.kernel_l1);
         self.root.map::<2>(kernel, kernel & !0x3fff_ffff, PAGE_RX);
+        self.root.link::<2>(PAGE_TABLE_WINDOW, &self.window_l1);
+        let window_table = core::ptr::addr_of!(_boot_tables_window_phys) as usize;
+        // SAFETY: 分页启用前，页表区可经物理地址独占写入。
+        unsafe { (&mut *(window_table as *mut PageTable)).clear() };
+        self.window_l1
+            .link_address::<1>(PAGE_TABLE_WINDOW, window_table);
         // 启动映像暂以一个可读写执行的 2 MiB 大页映射。
         self.kernel_l1.map::<1>(KERNEL_BASE, kernel, PAGE_RWX);
         self.kernel_l1.map::<1>(UART_BASE, 0x1000_0000, PAGE_RW);
@@ -114,6 +126,11 @@ impl PageTable {
     #[inline(always)]
     fn link<const LEVEL: usize>(&mut self, virtual_address: usize, next: &Self) {
         let physical = next as *const Self as usize;
+        self.write(virtual_address >> (12 + 9 * LEVEL), (physical >> 2) | VALID);
+    }
+
+    #[inline(always)]
+    fn link_address<const LEVEL: usize>(&mut self, virtual_address: usize, physical: usize) {
         self.write(virtual_address >> (12 + 9 * LEVEL), (physical >> 2) | VALID);
     }
 

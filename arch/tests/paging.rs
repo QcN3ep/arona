@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use arch::device::uart::Uart;
 use kernel::hardware::mmu::{
     MemoryType, Mmu, MmuError, PAGE_SIZE, PageAttributes, PageMapping, PagePermissions,
-    PageTableStorage,
+    PageTableFrames,
 };
 
 #[cfg(target_arch = "loongarch64")]
@@ -86,18 +86,9 @@ impl<'a> Storage<'a> {
     }
 }
 
-impl PageTableStorage for Storage<'_> {
+impl PageTableFrames for Storage<'_> {
     fn root_address(&self) -> u64 {
         physical(self.pages.as_ptr() as usize)
-    }
-
-    fn table(&self, address: u64) -> Result<&[u8; PAGE_SIZE], MmuError> {
-        Ok(&self.pages[self.index(address)?].0)
-    }
-
-    fn table_mut(&mut self, address: u64) -> Result<&mut [u8; PAGE_SIZE], MmuError> {
-        let index = self.index(address)?;
-        Ok(&mut self.pages[index].0)
     }
 
     fn take_table(&mut self) -> Result<u64, MmuError> {
@@ -176,6 +167,7 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
 
     run_operations(&mmu, &mut first, data);
     install_kernel(&mmu, &mut first);
+    mmu.initialize(&mut second).unwrap();
     install_kernel(&mmu, &mut second);
     mmu.map(
         &mut first,
@@ -223,7 +215,7 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
 }
 
 fn run_operations(mmu: &dyn Mmu, storage: &mut Storage<'_>, data: u64) {
-    mmu.initialize(storage).unwrap();
+    let initialized_count = storage.count();
     assert_eq!(mmu.query(storage, TEST_ADDRESS).unwrap(), None);
     let page = mapping(data, PagePermissions::ReadWrite);
     mmu.map(storage, TEST_ADDRESS, page).unwrap();
@@ -235,6 +227,11 @@ fn run_operations(mmu: &dyn Mmu, storage: &mut Storage<'_>, data: u64) {
     assert_eq!(
         mmu.map(storage, TEST_ADDRESS + 1, page),
         Err(MmuError::InvalidAlignment)
+    );
+    let window_region = (usize::MAX & !(PAGE_SIZE - 1)) & !((1 << 21) - 1);
+    assert_eq!(
+        mmu.map(storage, window_region, page),
+        Err(MmuError::InvalidAddress)
     );
     assert_eq!(
         mmu.map(storage, 1usize << 55, page),
@@ -279,19 +276,19 @@ fn run_operations(mmu: &dyn Mmu, storage: &mut Storage<'_>, data: u64) {
     );
     assert_eq!(mmu.unmap(storage, TEST_ADDRESS), Err(MmuError::NotMapped));
     mmu.unmap(storage, TEST_ADDRESS + PAGE_SIZE).unwrap();
-    assert_eq!(storage.count(), 1);
+    assert_eq!(storage.count(), initialized_count);
 
     storage.remaining = 1;
     assert_eq!(
         mmu.map(storage, TEST_ADDRESS, page),
         Err(MmuError::NoMemory)
     );
-    assert_eq!(storage.count(), 1);
+    assert_eq!(storage.count(), initialized_count);
     assert_eq!(mmu.query(storage, TEST_ADDRESS).unwrap(), None);
     storage.remaining = usize::MAX;
     mmu.map(storage, TEST_ADDRESS, page).unwrap();
     mmu.unmap(storage, TEST_ADDRESS).unwrap();
-    assert_eq!(storage.count(), 1);
+    assert_eq!(storage.count(), initialized_count);
 
     let mut device = page;
     device.physical_address = UART_PHYSICAL;
@@ -330,7 +327,6 @@ fn run_operations(mmu: &dyn Mmu, storage: &mut Storage<'_>, data: u64) {
 }
 
 fn install_kernel(mmu: &dyn Mmu, storage: &mut Storage<'_>) {
-    mmu.initialize(storage).unwrap();
     let image = arch::boot::kernel_image();
     for (segment, permissions) in [
         (image.text, PagePermissions::ReadExecute),

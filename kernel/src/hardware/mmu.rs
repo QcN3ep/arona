@@ -59,25 +59,20 @@ pub struct PageMapping {
     pub attributes: PageAttributes,
 }
 
-/// 持有一个根及其下级页表的后备存储，仅借出调用方预先准备的页表页。
-/// 根和已借出的页须持续可访问，table 与 table_mut 对其他地址返回 InvalidTable。
+/// 持有根页及下级页表帧，不提供页表帧的虚拟内存视图。
 ///
 /// # Safety
 ///
-/// 页表页须按页对齐且固定，物理地址须与借用内容对应；所有页须在页表及硬件引用存续期间保持独占有效。
-pub trait PageTableStorage {
+/// 根页和借出的页须是互不重叠、页对齐且由实现独占持有的物理帧，并在其被页表引用期间保持有效。
+pub trait PageTableFrames {
     fn root_address(&self) -> u64;
 
-    fn table(&self, physical_address: u64) -> Result<&[u8; PAGE_SIZE], MmuError>;
-
-    fn table_mut(&mut self, physical_address: u64) -> Result<&mut [u8; PAGE_SIZE], MmuError>;
-
-    /// 借出一个清零且未使用的页表页；没有备用页时返回 NoMemory。
+    /// 借出一个未使用的页表帧；没有备用帧时返回 NoMemory。
     fn take_table(&mut self) -> Result<u64, MmuError>;
 
     /// # Safety
     ///
-    /// 地址须由 take_table 发放，且该页已脱离页表树和硬件引用。
+    /// 地址须由 take_table 发放，且该帧已脱离页表树并完成 TLB 失效。
     fn return_table(&mut self, physical_address: u64);
 }
 
@@ -86,18 +81,19 @@ pub trait PageTableStorage {
 ///
 /// # Safety
 ///
-/// 修改页表或切换根时须关闭本地中断并独占页表；目标物理页须已获授权、在映射存续期间有效且满足跨映射权限约束。
+/// 修改页表时须关闭本地中断、独占页表，且所有处理器上的 MMU 调用须串行化。
+/// 当前根页须保留页表访问窗口；映射目标须已获授权、在映射期间有效且满足跨映射权限约束。
 /// 修改不得破坏当前代码、栈和页表访问仍依赖的映射。
 pub trait Mmu: Sync {
     /// 判断地址是否符合目标 ISA 的虚拟地址格式。
     fn is_valid_virtual_address(&self, address: usize) -> bool;
 
-    /// 初始化根页，不借出下级页表；失败时保留原存储。
+    /// 清空根页并建立页表访问窗口；失败时保留原根页。
     ///
     /// # Safety
     ///
-    /// 根须尚未启用，且不含需要保留的映射或下级页表。
-    fn initialize(&self, tables: &mut dyn PageTableStorage) -> Result<(), MmuError>;
+    /// 根须尚未启用或初始化，且不含下级页表。
+    fn initialize(&self, frames: &mut dyn PageTableFrames) -> Result<(), MmuError>;
 
     /// 映射一个未映射页；虚拟和物理地址须按页对齐；失败时撤销本次修改并归还借出的页表页。
     ///
@@ -106,7 +102,7 @@ pub trait Mmu: Sync {
     /// 新增执行映射前须关闭该物理页的全部写入路径，并完成代码同步。
     fn map(
         &self,
-        tables: &mut dyn PageTableStorage,
+        frames: &mut dyn PageTableFrames,
         virtual_address: usize,
         mapping: PageMapping,
     ) -> Result<(), MmuError>;
@@ -114,7 +110,7 @@ pub trait Mmu: Sync {
     /// 撤销一个页对齐的映射并返回原描述，不释放目标物理页；失败时保留原映射。
     fn unmap(
         &self,
-        tables: &mut dyn PageTableStorage,
+        frames: &mut dyn PageTableFrames,
         virtual_address: usize,
     ) -> Result<PageMapping, MmuError>;
 
@@ -125,7 +121,7 @@ pub trait Mmu: Sync {
     /// 权限不得超过原授权，新增执行权限前须关闭全部写入路径并完成代码同步。
     fn protect(
         &self,
-        tables: &mut dyn PageTableStorage,
+        frames: &mut dyn PageTableFrames,
         virtual_address: usize,
         permissions: PagePermissions,
     ) -> Result<(), MmuError>;
@@ -133,7 +129,7 @@ pub trait Mmu: Sync {
     /// 查询 address 所在页，返回的物理地址为页首地址；未映射时返回 None。
     fn query(
         &self,
-        tables: &dyn PageTableStorage,
+        frames: &dyn PageTableFrames,
         address: usize,
     ) -> Result<Option<PageMapping>, MmuError>;
 
@@ -142,7 +138,7 @@ pub trait Mmu: Sync {
     /// # Safety
     ///
     /// 新页表须保留当前代码、栈和仍在使用的数据映射；存储及其后备页须在下次切换前保持有效。
-    fn switch_root(&self, tables: &dyn PageTableStorage) -> Result<(), MmuError>;
+    fn switch_root(&self, frames: &dyn PageTableFrames) -> Result<(), MmuError>;
 
     /// 使包含 address 的页在本地 TLB 失效，包括该地址的全局项。
     fn invalidate_page(&self, address: usize) -> Result<(), MmuError>;

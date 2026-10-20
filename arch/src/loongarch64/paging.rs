@@ -4,10 +4,12 @@ use core::arch::asm;
 use core::ops::Range;
 
 use kernel::hardware::mmu::{
-    MemoryType, Mmu, MmuError, PageAttributes, PageMapping, PagePermissions, PageTableStorage,
+    MemoryType, Mmu, MmuError, PageAttributes, PageMapping, PagePermissions, PageTableFrames,
 };
 
-use crate::paging::{self, Format};
+use crate::paging::{
+    self, Format, PAGE_TABLE_WINDOW, PAGE_TABLE_WINDOW_TABLE, PageTable, WINDOW_INDEX,
+};
 
 // REFERENCE: https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html
 const VALID: u64 = 1;
@@ -19,6 +21,22 @@ const NO_EXECUTE: u64 = 1 << 62;
 const PHYSICAL: u64 = ((1 << 48) - 1) & !0xfff;
 const PWCL: usize = 12 | (9 << 5) | (21 << 10) | (9 << 15) | (30 << 20) | (9 << 25);
 const PWCH: usize = 39 | (9 << 6);
+
+fn invalidate_address(address: usize) {
+    // SAFETY: address 须为当前地址空间中的规范虚拟地址。
+    unsafe {
+        asm!(
+            "dbar 0",
+            "csrrd {asid}, 0x18",
+            "bstrpick.d {asid}, {asid}, 9, 0",
+            "invtlb 6, {asid}, {address}",
+            "ibar 0",
+            asid = out(reg) _,
+            address = in(reg) address,
+            options(nostack),
+        );
+    }
+}
 
 crate::declare_hardware!(
     static MMU: LoongArchMmu = LoongArchMmu => kernel::hardware::mmu::bind
@@ -95,6 +113,37 @@ impl Format for LoongArchMmu {
             },
         })
     }
+
+    fn with_table<T>(
+        &self,
+        address: u64,
+        operation: impl FnOnce(&mut PageTable) -> T,
+    ) -> Result<T, MmuError> {
+        paging::validate_physical::<Self>(address)?;
+        let entry = self.encode_mapping(PageMapping {
+            physical_address: address,
+            attributes: PageAttributes {
+                permissions: PagePermissions::ReadWrite,
+                memory_type: MemoryType::Normal,
+                user_accessible: false,
+            },
+        })?;
+        let table = core::ptr::addr_of_mut!(PAGE_TABLE_WINDOW_TABLE);
+        // SAFETY: 调用方须串行化所有处理器上的 MMU 操作。
+        unsafe {
+            if (*table).read(WINDOW_INDEX) != 0 {
+                return Err(MmuError::InvalidTable);
+            }
+            (*table).write(WINDOW_INDEX, entry);
+        }
+        invalidate_address(PAGE_TABLE_WINDOW);
+        // SAFETY: 当前根须将 PAGE_TABLE_WINDOW 映射到保留的页表窗口。
+        let result = unsafe { operation(&mut *(PAGE_TABLE_WINDOW as *mut PageTable)) };
+        // SAFETY: 调用方须串行化所有处理器上的 MMU 操作。
+        unsafe { (*table).write(WINDOW_INDEX, 0) };
+        invalidate_address(PAGE_TABLE_WINDOW);
+        Ok(result)
+    }
 }
 
 impl Mmu for LoongArchMmu {
@@ -102,53 +151,53 @@ impl Mmu for LoongArchMmu {
         paging::is_canonical(address, 48)
     }
 
-    fn initialize(&self, tables: &mut dyn PageTableStorage) -> Result<(), MmuError> {
-        paging::initialize(self, tables)
+    fn initialize(&self, frames: &mut dyn PageTableFrames) -> Result<(), MmuError> {
+        paging::initialize(self, frames)
     }
 
     fn map(
         &self,
-        tables: &mut dyn PageTableStorage,
+        frames: &mut dyn PageTableFrames,
         address: usize,
         mapping: PageMapping,
     ) -> Result<(), MmuError> {
-        paging::map(self, tables, address, mapping)
+        paging::map(self, frames, address, mapping)
     }
 
     fn unmap(
         &self,
-        tables: &mut dyn PageTableStorage,
+        frames: &mut dyn PageTableFrames,
         address: usize,
     ) -> Result<PageMapping, MmuError> {
-        paging::unmap(self, tables, address)
+        paging::unmap(self, frames, address)
     }
 
     fn protect(
         &self,
-        tables: &mut dyn PageTableStorage,
+        frames: &mut dyn PageTableFrames,
         address: usize,
         permissions: PagePermissions,
     ) -> Result<(), MmuError> {
-        paging::protect(self, tables, address, permissions)
+        paging::protect(self, frames, address, permissions)
     }
 
     fn query(
         &self,
-        tables: &dyn PageTableStorage,
+        frames: &dyn PageTableFrames,
         address: usize,
     ) -> Result<Option<PageMapping>, MmuError> {
-        paging::query(self, tables, address)
+        paging::query(self, frames, address)
     }
 
-    fn switch_root(&self, tables: &dyn PageTableStorage) -> Result<(), MmuError> {
-        let root = tables.root_address();
+    fn switch_root(&self, frames: &dyn PageTableFrames) -> Result<(), MmuError> {
+        let root = frames.root_address();
         paging::validate_physical::<Self>(root)?;
         if root == 0 {
             return Err(MmuError::InvalidTable);
         }
-        tables.table(root)?;
+        paging::validate_window(self, frames)?;
         let refill = refill_entry();
-        let mapping = self.query(tables, refill)?.ok_or(MmuError::NotMapped)?;
+        let mapping = self.query(frames, refill)?.ok_or(MmuError::NotMapped)?;
         if !matches!(
             mapping.attributes.permissions,
             PagePermissions::ReadExecute | PagePermissions::ExecuteOnly
@@ -193,19 +242,7 @@ impl Mmu for LoongArchMmu {
         if !self.is_valid_virtual_address(address) {
             return Err(MmuError::InvalidAddress);
         }
-        // SAFETY: 处理器须允许访问 ASID 并执行本地 TLB 失效。
-        unsafe {
-            asm!(
-                "dbar 0",
-                "csrrd {asid}, 0x18",
-                "bstrpick.d {asid}, {asid}, 9, 0",
-                "invtlb 6, {asid}, {address}",
-                "ibar 0",
-                asid = out(reg) _,
-                address = in(reg) address,
-                options(nostack),
-            );
-        }
+        invalidate_address(address);
         Ok(())
     }
 

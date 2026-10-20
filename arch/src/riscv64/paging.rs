@@ -4,10 +4,12 @@ use core::arch::asm;
 use core::ops::Range;
 
 use kernel::hardware::mmu::{
-    MemoryType, Mmu, MmuError, PageAttributes, PageMapping, PagePermissions, PageTableStorage,
+    MemoryType, Mmu, MmuError, PageAttributes, PageMapping, PagePermissions, PageTableFrames,
 };
 
-use crate::paging::{self, Format};
+use crate::paging::{
+    self, Format, PAGE_TABLE_WINDOW, PAGE_TABLE_WINDOW_TABLE, PageTable, WINDOW_INDEX,
+};
 
 // REFERENCE: https://docs.riscv.org/reference/isa/priv/supervisor.html
 const VALID: u64 = 1;
@@ -18,6 +20,11 @@ const USER: u64 = 1 << 4;
 const ACCESSED: u64 = 1 << 6;
 const DIRTY: u64 = 1 << 7;
 const PPN: u64 = ((1 << 44) - 1) << 10;
+
+fn invalidate_address(address: usize) {
+    // SAFETY: address 须为当前地址空间中的规范虚拟地址。
+    unsafe { asm!("sfence.vma {address}, zero", address = in(reg) address, options(nostack)) };
+}
 
 crate::declare_hardware!(
     static MMU: Sv39 = Sv39 => kernel::hardware::mmu::bind
@@ -84,6 +91,37 @@ impl Format for Sv39 {
             },
         })
     }
+
+    fn with_table<T>(
+        &self,
+        address: u64,
+        operation: impl FnOnce(&mut PageTable) -> T,
+    ) -> Result<T, MmuError> {
+        paging::validate_physical::<Self>(address)?;
+        let entry = self.encode_mapping(PageMapping {
+            physical_address: address,
+            attributes: PageAttributes {
+                permissions: PagePermissions::ReadWrite,
+                memory_type: MemoryType::Normal,
+                user_accessible: false,
+            },
+        })?;
+        let table = core::ptr::addr_of_mut!(PAGE_TABLE_WINDOW_TABLE);
+        // SAFETY: 调用方须串行化所有处理器上的 MMU 操作。
+        unsafe {
+            if (*table).read(WINDOW_INDEX) != 0 {
+                return Err(MmuError::InvalidTable);
+            }
+            (*table).write(WINDOW_INDEX, entry);
+        }
+        invalidate_address(PAGE_TABLE_WINDOW);
+        // SAFETY: 当前根须将 PAGE_TABLE_WINDOW 映射到保留的页表窗口。
+        let result = unsafe { operation(&mut *(PAGE_TABLE_WINDOW as *mut PageTable)) };
+        // SAFETY: 调用方须串行化所有处理器上的 MMU 操作。
+        unsafe { (*table).write(WINDOW_INDEX, 0) };
+        invalidate_address(PAGE_TABLE_WINDOW);
+        Ok(result)
+    }
 }
 
 impl Mmu for Sv39 {
@@ -91,48 +129,48 @@ impl Mmu for Sv39 {
         paging::is_canonical(address, 39)
     }
 
-    fn initialize(&self, tables: &mut dyn PageTableStorage) -> Result<(), MmuError> {
-        paging::initialize(self, tables)
+    fn initialize(&self, frames: &mut dyn PageTableFrames) -> Result<(), MmuError> {
+        paging::initialize(self, frames)
     }
 
     fn map(
         &self,
-        tables: &mut dyn PageTableStorage,
+        frames: &mut dyn PageTableFrames,
         address: usize,
         mapping: PageMapping,
     ) -> Result<(), MmuError> {
-        paging::map(self, tables, address, mapping)
+        paging::map(self, frames, address, mapping)
     }
 
     fn unmap(
         &self,
-        tables: &mut dyn PageTableStorage,
+        frames: &mut dyn PageTableFrames,
         address: usize,
     ) -> Result<PageMapping, MmuError> {
-        paging::unmap(self, tables, address)
+        paging::unmap(self, frames, address)
     }
 
     fn protect(
         &self,
-        tables: &mut dyn PageTableStorage,
+        frames: &mut dyn PageTableFrames,
         address: usize,
         permissions: PagePermissions,
     ) -> Result<(), MmuError> {
-        paging::protect(self, tables, address, permissions)
+        paging::protect(self, frames, address, permissions)
     }
 
     fn query(
         &self,
-        tables: &dyn PageTableStorage,
+        frames: &dyn PageTableFrames,
         address: usize,
     ) -> Result<Option<PageMapping>, MmuError> {
-        paging::query(self, tables, address)
+        paging::query(self, frames, address)
     }
 
-    fn switch_root(&self, tables: &dyn PageTableStorage) -> Result<(), MmuError> {
-        let root = tables.root_address();
+    fn switch_root(&self, frames: &dyn PageTableFrames) -> Result<(), MmuError> {
+        let root = frames.root_address();
         paging::validate_physical::<Self>(root)?;
-        tables.table(root)?;
+        paging::validate_window(self, frames)?;
         let satp = (8usize << 60) | (root as usize >> 12);
         // SAFETY: 新页表须覆盖当前代码、栈和活动数据，中断须关闭且后备页须持续有效。
         unsafe {
@@ -151,8 +189,7 @@ impl Mmu for Sv39 {
         if !self.is_valid_virtual_address(address) {
             return Err(MmuError::InvalidAddress);
         }
-        // SAFETY: 处理器须允许执行 S 模式地址翻译同步指令。
-        unsafe { asm!("sfence.vma {address}, zero", address = in(reg) address, options(nostack)) };
+        invalidate_address(address);
         Ok(())
     }
 

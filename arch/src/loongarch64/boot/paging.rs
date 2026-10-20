@@ -2,6 +2,8 @@
 
 //! 临时启动页表、处理器映射配置与高半区切换。
 
+use crate::paging::PAGE_TABLE_WINDOW;
+
 const KERNEL_BASE: usize = 0xffff_8000_0020_0000;
 pub(super) const MMIO_BASE: usize = 0x8000_0000_0000_0000;
 pub(super) const FIRMWARE_BASE: usize = 0x9000_0000_0000_0000;
@@ -22,18 +24,23 @@ struct PageTables {
     root: PageTable,
     kernel_l2: PageTable,
     kernel_l1: PageTable,
+    window_l2: PageTable,
+    window_l1: PageTable,
 }
 
 #[used]
-#[unsafe(link_section = ".boot_tables")]
+#[unsafe(link_section = ".boot_tables.root")]
 static mut TABLES: PageTables = PageTables {
     root: PageTable::new(),
     kernel_l2: PageTable::new(),
     kernel_l1: PageTable::new(),
+    window_l2: PageTable::new(),
+    window_l1: PageTable::new(),
 };
 
 unsafe extern "C" {
     static mut _boot_tables_phys: PageTables;
+    static _boot_tables_window_phys: u8;
     static _kernel_phys_start: u8;
 }
 
@@ -98,9 +105,18 @@ impl PageTables {
         self.root.clear();
         self.kernel_l2.clear();
         self.kernel_l1.clear();
+        self.window_l2.clear();
+        self.window_l1.clear();
 
         self.root.link::<3>(KERNEL_BASE, &self.kernel_l2);
         self.kernel_l2.link::<2>(KERNEL_BASE, &self.kernel_l1);
+        self.root.link::<3>(PAGE_TABLE_WINDOW, &self.window_l2);
+        self.window_l2.link::<2>(PAGE_TABLE_WINDOW, &self.window_l1);
+        let window_table = core::ptr::addr_of!(_boot_tables_window_phys) as usize;
+        // SAFETY: 分页启用前，页表区可经物理地址独占写入。
+        unsafe { (&mut *(window_table as *mut PageTable)).clear() };
+        self.window_l1
+            .link_address::<1>(PAGE_TABLE_WINDOW, window_table);
         // 启动映像暂以一个可读写执行的 2 MiB 大页映射。
         self.kernel_l1.map(KERNEL_BASE, kernel);
     }
@@ -126,6 +142,11 @@ impl PageTable {
             virtual_address >> (12 + 9 * LEVEL),
             next as *const Self as usize,
         );
+    }
+
+    #[inline(always)]
+    fn link_address<const LEVEL: usize>(&mut self, virtual_address: usize, physical: usize) {
+        self.write(virtual_address >> (12 + 9 * LEVEL), physical);
     }
 
     #[inline(always)]
