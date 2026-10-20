@@ -5,6 +5,7 @@
 #![no_std]
 
 pub mod boot;
+pub mod hardware;
 pub mod logger;
 
 pub use boot::*;

@@ -28,6 +28,12 @@ path = "tests/boot/dtb/mod.rs"
 name = "uart"
 path = "tests/device/uart.rs"
 
+[[test]]
+name = "paging"
+path = "tests/paging.rs"
+harness = false
+required-features = ["baremetal"]
+
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
 fdt = "0.2.0-alpha3"

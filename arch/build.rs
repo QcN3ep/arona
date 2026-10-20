@@ -11,10 +11,14 @@ fn main() {
     let target = env::var("CARGO_CFG_TARGET_ARCH").expect("Cargo must set CARGO_CFG_TARGET_ARCH");
     let isa = match target.as_str() {
         "riscv64" | "loongarch64" => target,
-        _ => return,
+        _ => {
+            println!("cargo:rustc-link-arg=-Wl,-z,nostart-stop-gc");
+            return;
+        }
     };
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("Cargo must set CARGO_MANIFEST_DIR");
     println!("cargo:rustc-link-arg=-T{manifest_dir}/src/{isa}/link.ld");
     println!("cargo:rustc-link-arg=--gc-sections");
+    println!("cargo:rustc-link-arg-tests=--wrap=_start_native");
 }

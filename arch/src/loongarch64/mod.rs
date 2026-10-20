@@ -3,3 +3,4 @@
 //! LoongArch 64 ISA 实现。
 
 pub mod boot;
+pub mod paging;

@@ -4,6 +4,10 @@
 
 pub mod boot;
 pub mod device;
+pub mod hardware;
+
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+mod paging;
 
 #[cfg(target_arch = "loongarch64")]
 pub mod loongarch64;

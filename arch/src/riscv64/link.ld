@@ -39,6 +39,10 @@ SECTIONS
         QUAD(_kernel_phys_end)
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
+        . = ALIGN(8);
+        __start_arona_hardware = .;
+        KEEP(*(arona_hardware))
+        __stop_arona_hardware = .;
         . = ALIGN(4096);
     } :rodata
 

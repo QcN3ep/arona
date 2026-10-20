@@ -97,6 +97,7 @@ pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
         .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));
 
     log::debug!(target: "arch::boot", "Parsed DTB at {dtb:#x}");
+    crate::hardware::bind();
     // SAFETY: 启动信息须与实际硬件一致，处理器须处于内核运行所需的执行环境。
     kernel::boot_kernel(info)
 }
