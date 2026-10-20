@@ -80,6 +80,12 @@ impl HardwareDeviceInfo {
             (DeviceConfiguration::Syscon(info), HardwareDeviceKind::SYSCON) => {
                 info.validate(&self.mmio_regions)?
             }
+            (
+                DeviceConfiguration::Flash {
+                    bank_width: 1 | 2 | 4 | 8,
+                },
+                HardwareDeviceKind::CFI_FLASH,
+            ) => {}
             (DeviceConfiguration::None, kind)
                 if !matches!(
                     kind,
@@ -89,6 +95,7 @@ impl HardwareDeviceInfo {
                         | HardwareDeviceKind::LOONGARCH_PCH_PIC
                         | HardwareDeviceKind::LOONGARCH_PCH_MSI
                         | HardwareDeviceKind::SYSCON
+                        | HardwareDeviceKind::CFI_FLASH
                 ) => {}
             _ => return Err("device configuration does not match its kind"),
         }
@@ -150,6 +157,7 @@ impl HardwareDeviceKind {
     pub const SYSCON: Self = Self(11);
     pub const RISCV_CLINT: Self = Self(12);
     pub const GOLDFISH_RTC: Self = Self(13);
+    pub const CFI_FLASH: Self = Self(15);
 }
 
 /// 设备资源是否允许委托给用户态。
@@ -260,6 +268,9 @@ pub enum DeviceConfiguration {
         vectors: Range<u32>,
     },
     Syscon(SysconInfo),
+    Flash {
+        bank_width: u8,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

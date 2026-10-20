@@ -19,7 +19,7 @@ use kernel::{
 
 use super::{
     Dtb, Result,
-    nodes::{Node, Nodes, registers},
+    nodes::{Node, Nodes, property, registers},
     range,
 };
 
@@ -189,6 +189,12 @@ fn parse_device(
             | HardwareDeviceKind::LOONGARCH_PCH_PIC
             | HardwareDeviceKind::LOONGARCH_PCH_MSI => interrupts::configuration(node, kind)?,
             HardwareDeviceKind::SYSCON => DeviceConfiguration::Syscon(syscon::parse(node)?),
+            HardwareDeviceKind::CFI_FLASH => DeviceConfiguration::Flash {
+                bank_width: property::<u32>(node, "bank-width")?
+                    .ok_or("flash is missing bank-width")?
+                    .try_into()
+                    .map_err(|_| "invalid flash bank width")?,
+            },
             _ => DeviceConfiguration::None,
         },
         dma: dma(walk, kind)?,
@@ -227,6 +233,7 @@ fn kind(node: Node<'_>) -> Result<Option<HardwareDeviceKind>> {
         "syscon" => Some(HardwareDeviceKind::SYSCON),
         "riscv,clint0" | "sifive,clint0" => Some(HardwareDeviceKind::RISCV_CLINT),
         "google,goldfish-rtc" => Some(HardwareDeviceKind::GOLDFISH_RTC),
+        "cfi-flash" => Some(HardwareDeviceKind::CFI_FLASH),
         _ => None,
     }))
 }

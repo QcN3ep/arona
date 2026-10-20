@@ -361,7 +361,8 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
     // dtc -I dts -O dtb -o arch/tests/fixtures/loongarch.dtb arch/tests/fixtures/loongarch.dts
     let hardware = parse_hardware(LOONGARCH_DTB);
     assert_eq!(hardware.cpus.as_slice(), &[CpuInfo { hardware_id: 0 }]);
-    let [eiointc, syscon, msi, pci, pic, rtc, uarts @ ..] = hardware.devices.as_slice() else {
+    let [eiointc, flash, syscon, msi, pci, pic, rtc, uarts @ ..] = hardware.devices.as_slice()
+    else {
         panic!("missing LoongArch devices")
     };
     assert_eq!(
@@ -378,6 +379,11 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
         ),
         (CpuInterruptTarget::AllCpus, 3)
     );
+    assert_eq!(
+        flash.configuration,
+        DeviceConfiguration::Flash { bank_width: 4 }
+    );
+    assert_eq!(flash.mmio_regions.len(), 2);
     assert_eq!(
         msi.configuration,
         DeviceConfiguration::Msi { vectors: 32..256 }
