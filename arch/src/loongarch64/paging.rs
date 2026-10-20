@@ -151,6 +151,10 @@ impl Mmu for LoongArchMmu {
         paging::is_canonical(address, 48)
     }
 
+    fn physical_address_bits(&self) -> u32 {
+        Self::PHYSICAL_BITS
+    }
+
     fn initialize(&self, frames: &mut dyn PageTableFrames) -> Result<(), MmuError> {
         paging::initialize(self, frames)
     }
@@ -235,6 +239,15 @@ impl Mmu for LoongArchMmu {
                 options(nostack),
             );
         }
+        Ok(())
+    }
+
+    fn read_frame_link(&self, physical_address: u64) -> Result<u64, MmuError> {
+        self.with_table(physical_address, |table| table.read(0))
+    }
+
+    fn write_frame_link(&self, physical_address: u64, next: u64) -> Result<(), MmuError> {
+        self.with_table(physical_address, |table| table.write(0, next))?;
         Ok(())
     }
 

@@ -2,14 +2,15 @@
 
 use core::mem::size_of;
 
-use kernel::{HardwareInfo, MemoryRegionState, PhysRange, log, logger};
+use kernel::hardware::mmu::MemoryType;
+use kernel::{BootConsoleMapping, HardwareInfo, MemoryRegionState, PhysRange, log, logger};
 
 use crate::boot::{console::EarlyConsole, dtb::Dtb, kernel_image, prepare_boot_info};
 use crate::device::uart::Uart;
 
 mod paging;
 
-use paging::{FIRMWARE_BASE, LARGE_PAGE_SIZE, UART_BASE};
+use paging::{FIRMWARE_BASE, LARGE_PAGE_SIZE, UART_BASE, UART_PHYSICAL_BASE};
 
 static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
 // SAFETY: 地址须对应 QEMU virt 的字节宽度与步长均为 1 的 16550 UART，且普通访问须由此实例独占。
@@ -93,8 +94,13 @@ pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
         .memory
         .reserve(dtb_range, MemoryRegionState::BootReserved)
         .unwrap_or_else(|error| panic!("failed to reserve DTB: {error}"));
-    let info = prepare_boot_info(hartid as u64, kernel_image(), hardware)
+    let mut info = prepare_boot_info(hartid as u64, kernel_image(), hardware)
         .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));
+    info.early_console = Some(BootConsoleMapping {
+        virtual_address: UART_BASE,
+        physical_address: UART_PHYSICAL_BASE as u64,
+        memory_type: MemoryType::Normal,
+    });
 
     log::debug!(target: "arch::boot", "Parsed DTB at {dtb:#x}");
     crate::hardware::bind();

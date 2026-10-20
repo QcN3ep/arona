@@ -88,6 +88,9 @@ pub trait Mmu: Sync {
     /// 判断地址是否符合目标 ISA 的虚拟地址格式。
     fn is_valid_virtual_address(&self, address: usize) -> bool;
 
+    /// 返回当前分页模式可寻址的物理地址位数。
+    fn physical_address_bits(&self) -> u32;
+
     /// 清空根页并建立页表访问窗口；失败时保留原根页。
     ///
     /// # Safety
@@ -139,6 +142,12 @@ pub trait Mmu: Sync {
     ///
     /// 新页表须保留当前代码、栈和仍在使用的数据映射；存储及其后备页须在下次切换前保持有效。
     fn switch_root(&self, frames: &dyn PageTableFrames) -> Result<(), MmuError>;
+
+    /// 读取物理帧首字中的链表链接。
+    fn read_frame_link(&self, physical_address: u64) -> Result<u64, MmuError>;
+
+    /// 写入物理帧首字中的链表链接。
+    fn write_frame_link(&self, physical_address: u64, next: u64) -> Result<(), MmuError>;
 
     /// 使包含 address 的页在本地 TLB 失效，包括该地址的全局项。
     fn invalidate_page(&self, address: usize) -> Result<(), MmuError>;

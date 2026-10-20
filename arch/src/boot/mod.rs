@@ -31,6 +31,7 @@ pub fn prepare_boot_info(
     Ok(BootInfo {
         boot_cpu_id,
         kernel_image,
+        early_console: None,
         hardware,
     })
 }

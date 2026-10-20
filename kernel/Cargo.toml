@@ -16,4 +16,4 @@ path = "tests/hardware/mod.rs"
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
 log = { version = "0.4.34", default-features = false }
-spin = { version = "0.9.9", default-features = false, features = ["once", "rwlock"] }
+spin = { version = "0.9.9", default-features = false, features = ["mutex", "once", "rwlock", "spin_mutex"] }

@@ -7,12 +7,15 @@ use crate::paging::PAGE_TABLE_WINDOW;
 const KERNEL_BASE: usize = 0xffff_8000_0020_0000;
 pub(super) const MMIO_BASE: usize = 0x8000_0000_0000_0000;
 pub(super) const FIRMWARE_BASE: usize = 0x9000_0000_0000_0000;
+pub(super) const UART_BASE: usize = KERNEL_BASE + 0x20_0000;
+pub(super) const UART_PHYSICAL_BASE: usize = 0x1fe0_0000;
 
 // REFERENCE: https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html
 const VALID: usize = 1;
 const DIRTY: usize = 1 << 1;
 const CACHED: usize = 1 << 4;
 const HUGE: usize = 1 << 6;
+const NO_EXECUTE: usize = 1 << 62;
 
 #[repr(C, align(4096))]
 struct PageTable {
@@ -118,7 +121,13 @@ impl PageTables {
         self.window_l1
             .link_address::<1>(PAGE_TABLE_WINDOW, window_table);
         // 启动映像暂以一个可读写执行的 2 MiB 大页映射。
-        self.kernel_l1.map(KERNEL_BASE, kernel);
+        self.kernel_l1
+            .map(KERNEL_BASE, kernel, VALID | DIRTY | CACHED | HUGE);
+        self.kernel_l1.map(
+            UART_BASE,
+            UART_PHYSICAL_BASE,
+            VALID | DIRTY | HUGE | NO_EXECUTE,
+        );
     }
 }
 
@@ -150,11 +159,8 @@ impl PageTable {
     }
 
     #[inline(always)]
-    fn map(&mut self, virtual_address: usize, physical: usize) {
-        self.write(
-            virtual_address >> 21,
-            physical | VALID | DIRTY | CACHED | HUGE,
-        );
+    fn map(&mut self, virtual_address: usize, physical: usize, flags: usize) {
+        self.write(virtual_address >> 21, physical | flags);
     }
 
     #[inline(always)]

@@ -7,6 +7,7 @@
 pub mod boot;
 pub mod hardware;
 pub mod logger;
+pub mod memory;
 
 pub use boot::*;
 pub use log;

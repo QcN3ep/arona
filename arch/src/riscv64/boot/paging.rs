@@ -7,6 +7,7 @@ use crate::paging::PAGE_TABLE_WINDOW;
 pub(super) const LARGE_PAGE_SIZE: usize = 0x20_0000;
 const KERNEL_BASE: usize = 0xffff_ffc0_0000_0000;
 pub(super) const UART_BASE: usize = KERNEL_BASE + 0x20_0000;
+pub(super) const UART_PHYSICAL_BASE: usize = 0x1000_0000;
 pub(super) const FIRMWARE_BASE: usize = KERNEL_BASE + 0x40_0000;
 
 // REFERENCE: https://docs.riscv.org/reference/isa/priv/supervisor.html
@@ -97,7 +98,8 @@ impl PageTables {
             .link_address::<1>(PAGE_TABLE_WINDOW, window_table);
         // 启动映像暂以一个可读写执行的 2 MiB 大页映射。
         self.kernel_l1.map::<1>(KERNEL_BASE, kernel, PAGE_RWX);
-        self.kernel_l1.map::<1>(UART_BASE, 0x1000_0000, PAGE_RW);
+        self.kernel_l1
+            .map::<1>(UART_BASE, UART_PHYSICAL_BASE, PAGE_RW);
 
         let dtb_page = dtb & !(LARGE_PAGE_SIZE - 1);
         self.kernel_l1.map::<1>(FIRMWARE_BASE, dtb_page, PAGE_RO);

@@ -2,7 +2,8 @@
 
 use core::mem::size_of;
 
-use kernel::{HardwareInfo, MemoryRegionState, PhysRange, log, logger};
+use kernel::hardware::mmu::MemoryType;
+use kernel::{BootConsoleMapping, HardwareInfo, MemoryRegionState, PhysRange, log, logger};
 use uefi_raw::{
     guid,
     table::{configuration::ConfigurationTable, system::SystemTable},
@@ -13,12 +14,12 @@ use crate::device::uart::Uart;
 
 mod paging;
 
-use paging::{FIRMWARE_BASE, MMIO_BASE};
+use paging::FIRMWARE_BASE;
 
 static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
 // SAFETY: 地址须对应 QEMU virt 的字节宽度与步长均为 1 的 16550 UART，且普通访问须由此实例独占。
 static EARLY_CONSOLE: EarlyConsole =
-    EarlyConsole::new(unsafe { Uart::new(MMIO_BASE + 0x1fe0_01e0) });
+    EarlyConsole::new(unsafe { Uart::new(paging::UART_BASE + 0x1e0) });
 
 unsafe extern "C" {
     static _sbss: u8;
@@ -136,8 +137,13 @@ pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
             .reserve(range, MemoryRegionState::BootReserved)
             .unwrap_or_else(|error| panic!("failed to reserve firmware data: {error}"));
     }
-    let info = prepare_boot_info(boot_cpu_id, kernel_image(), hardware)
+    let mut info = prepare_boot_info(boot_cpu_id, kernel_image(), hardware)
         .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));
+    info.early_console = Some(BootConsoleMapping {
+        virtual_address: paging::UART_BASE,
+        physical_address: paging::UART_PHYSICAL_BASE as u64,
+        memory_type: MemoryType::Device,
+    });
 
     log::debug!(target: "arch::boot", "Parsed DTB at {dtb:#x}");
     crate::hardware::bind();
