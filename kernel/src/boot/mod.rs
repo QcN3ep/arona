@@ -4,13 +4,7 @@
 
 mod hardware;
 
-pub use hardware::{
-    CpuInfo, DeviceUsePolicy, DmaInfo, DmaIsolationRoute, HardwareDeviceInfo,
-    HardwareDeviceInstanceId, HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo,
-    HardwareInterruptInfo, InterruptPolarity, InterruptTrigger, MAX_CPUS, MAX_DEVICES,
-    MAX_INTERRUPTS, MAX_MEMORY_REGIONS, MAX_MMIO_REGIONS, MAX_PCI_MEMORY_WINDOWS, MemoryInfo,
-    MemoryRegion, MemoryRegionState, PhysRange,
-};
+pub use hardware::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BootInfo<'boot> {
