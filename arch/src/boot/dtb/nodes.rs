@@ -177,3 +177,15 @@ pub(super) fn ranges(node: Node<'_>) -> Result<Option<Ranges<'_>>> {
     }
     Ok(node.ranges()?)
 }
+
+pub(super) fn integer(node: Node<'_>, name: &str) -> Result<Option<u64>> {
+    node.raw_property(name)?
+        .map(|property| match property.value.len() {
+            4 => Ok(u64::from(u32::from_be_bytes(
+                property.value.try_into().unwrap(),
+            ))),
+            8 => Ok(u64::from_be_bytes(property.value.try_into().unwrap())),
+            _ => Err("integer property must contain 32 or 64 bits".into()),
+        })
+        .transpose()
+}

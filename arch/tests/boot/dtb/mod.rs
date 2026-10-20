@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod devices;
+
 mod memory;
 
 use std::{
@@ -9,12 +11,15 @@ use std::{
 
 use arch::boot::dtb::Dtb;
 use kernel::{
-    BootInfo, CpuInfo, DeviceUsePolicy, HardwareDeviceInstanceId, HardwareDeviceKind,
-    HardwareDeviceLocation, HardwareInfo, MemoryRegion, MemoryRegionState, PhysRange,
+    BootInfo, CpuInfo, CpuInterruptTarget, DeviceConfiguration, DeviceUsePolicy,
+    HardwareDeviceInstanceId, HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo,
+    InterruptPolarity, InterruptTrigger, MemoryRegion, MemoryRegionState, PhysRange,
 };
 
 // dtc -I dts -O dtb -o arch/tests/fixtures/boot.dtb arch/tests/fixtures/boot.dts
 const DTB: &[u8] = include_bytes!("../../fixtures/boot.dtb");
+const LOONGARCH_DTB: &[u8] = include_bytes!("../../fixtures/loongarch.dtb");
+const RISCV_DTB: &[u8] = include_bytes!("../../fixtures/riscv.dtb");
 const BOOT_CPU_ID: u64 = 7;
 
 thread_local! {
@@ -99,7 +104,7 @@ fn dtb_produces_complete_boot_data() {
         uart.mmio_regions.as_slice(),
         &[PhysRange {
             start: 0x10000000,
-            end: 0x10001000
+            end: 0x10000100
         }]
     );
     assert_eq!(uart.interrupts[0].controller, plic.instance_id);
@@ -176,7 +181,7 @@ fn pointer_and_slice_inputs_produce_the_same_hardware() {
 }
 
 #[test]
-fn rejects_firmware_assigning_the_same_memory_to_two_devices() {
+fn rejects_conflicting_device_resources() {
     let mut blob = DTB.to_vec();
     let fdt = fdt::Fdt::new_unaligned(&blob).unwrap();
     let reg = fdt
@@ -188,6 +193,33 @@ fn rejects_firmware_assigning_the_same_memory_to_two_devices() {
     blob[offset..offset + 8].copy_from_slice(&0_u64.to_be_bytes());
     let mut hardware = Box::new(HardwareInfo::new());
     assert!(Dtb::from_bytes(&blob).unwrap().dump(&mut hardware).is_err());
+
+    let mut hardware = parse_hardware(LOONGARCH_DTB);
+    let first = hardware
+        .devices
+        .iter()
+        .position(|device| device.kind == HardwareDeviceKind::UART_16550)
+        .unwrap()
+        + 1;
+    let second = first + 1;
+    hardware.devices[first].use_policy = DeviceUsePolicy::UserAssignable;
+    assert_eq!(
+        hardware.validate_resources(),
+        Err("assignable device shares a resource page")
+    );
+    hardware.devices[first].use_policy = DeviceUsePolicy::KernelReserved;
+    let registers = hardware.devices[second].mmio_regions[0];
+    hardware.devices[second].mmio_regions[0] = hardware.devices[first].mmio_regions[0];
+    assert_eq!(
+        hardware.validate_resources(),
+        Err("device register ranges overlap")
+    );
+    hardware.devices[second].mmio_regions[0] = registers;
+    hardware.devices[second].interrupts[0] = hardware.devices[first].interrupts[0];
+    assert_eq!(
+        hardware.validate_resources(),
+        Err("shared IRQs are not supported")
+    );
 }
 
 #[test]
@@ -197,13 +229,18 @@ fn conversion_runs_with_a_64_kib_stack() {
         .stack_size(64 * 1024)
         .spawn(move || {
             Dtb::from_bytes(DTB).unwrap().dump(&mut hardware).unwrap();
-            assert_eq!(hardware.cpus.len(), 2);
-            assert_eq!(hardware.devices.len(), 4);
             Dtb::from_bytes(include_bytes!("../../fixtures/nested.dtb"))
                 .unwrap()
                 .dump(&mut hardware)
                 .unwrap();
-            assert_eq!(hardware.devices.len(), 2);
+            Dtb::from_bytes(LOONGARCH_DTB)
+                .unwrap()
+                .dump(&mut hardware)
+                .unwrap();
+            Dtb::from_bytes(RISCV_DTB)
+                .unwrap()
+                .dump(&mut hardware)
+                .unwrap();
         })
         .unwrap()
         .join()
@@ -223,7 +260,7 @@ fn deep_buses_translate_addresses_and_inherit_interrupt_parents() {
         uart.mmio_regions.as_slice(),
         &[PhysRange {
             start: 0x10000000,
-            end: 0x10001000
+            end: 0x10000100
         }]
     );
     assert_eq!(uart.interrupts[0].controller, plic.instance_id);
@@ -272,6 +309,8 @@ fn dtb_conversion_does_not_allocate() {
     let mut hardware = Box::new(HardwareInfo::new());
     for bytes in [
         DTB,
+        LOONGARCH_DTB,
+        RISCV_DTB,
         include_bytes!("../../fixtures/nested.dtb").as_slice(),
         include_bytes!("../../fixtures/ordering.dtb").as_slice(),
     ] {
@@ -280,4 +319,113 @@ fn dtb_conversion_does_not_allocate() {
         let allocations = ALLOCATIONS.replace(None).unwrap();
         assert_eq!(allocations, 0);
     }
+}
+
+#[test]
+fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
+    // dtc -I dts -O dtb -o arch/tests/fixtures/loongarch.dtb arch/tests/fixtures/loongarch.dts
+    let hardware = parse_hardware(LOONGARCH_DTB);
+    assert_eq!(hardware.cpus.as_slice(), &[CpuInfo { hardware_id: 0 }]);
+    let [eiointc, msi, _pci, pic, uarts @ ..] = hardware.devices.as_slice() else {
+        panic!("missing LoongArch devices")
+    };
+    assert_eq!(
+        eiointc.location,
+        HardwareDeviceLocation::Iocsr {
+            registers: 0x1400..0x1c00
+        }
+    );
+    assert!(eiointc.mmio_regions.is_empty());
+    assert_eq!(
+        (
+            hardware.cpu_interrupts[0].target,
+            hardware.cpu_interrupts[0].line
+        ),
+        (CpuInterruptTarget::AllCpus, 3)
+    );
+    assert_eq!(
+        msi.configuration,
+        DeviceConfiguration::Msi { vectors: 32..256 }
+    );
+    assert_eq!(msi.interrupt_route.unwrap().controller, eiointc.instance_id);
+    assert_eq!(
+        (pic.mmio_regions[0].start, pic.mmio_regions[0].end),
+        (0x10000000, 0x10000400)
+    );
+    assert_eq!(
+        (
+            pic.interrupt_route.unwrap().controller,
+            pic.interrupt_route.unwrap().base_line
+        ),
+        (eiointc.instance_id, 0)
+    );
+    assert_eq!(uarts.len(), 4);
+    for (index, uart) in uarts.iter().enumerate() {
+        let start = 0x1fe001e0 + index as u64 * 0x100;
+        assert_eq!(
+            (uart.mmio_regions[0].start, uart.mmio_regions[0].end),
+            (start, start + 0x100)
+        );
+        assert_eq!(
+            (uart.interrupts[0].controller, uart.interrupts[0].line),
+            (pic.instance_id, index as u32 + 2)
+        );
+        assert_eq!(
+            (uart.interrupts[0].trigger, uart.interrupts[0].polarity),
+            (
+                Some(InterruptTrigger::Level),
+                Some(InterruptPolarity::ActiveHigh)
+            )
+        );
+    }
+}
+
+#[test]
+fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
+    let mut hardware = parse_hardware(RISCV_DTB);
+    BootInfo::new(
+        0,
+        PhysRange {
+            start: 0x80200000,
+            end: 0x80400000,
+        },
+        &mut hardware,
+    )
+    .validate();
+    assert_eq!(hardware.timebase_frequency_hz, Some(10_000_000));
+    assert_eq!(hardware.cpu_interrupts.len(), 4);
+    let plic = hardware
+        .devices
+        .iter()
+        .find(|device| device.kind == HardwareDeviceKind::RISCV_PLIC)
+        .unwrap();
+    assert_eq!(
+        plic.configuration,
+        DeviceConfiguration::InterruptController { lines: 1..96 }
+    );
+    let contexts = hardware
+        .cpu_interrupts
+        .iter()
+        .filter(|route| route.controller == plic.instance_id)
+        .collect::<Vec<_>>();
+    assert_eq!((contexts[0].output, contexts[0].line), (0, 11));
+    assert_eq!((contexts[1].output, contexts[1].line), (1, 9));
+    assert_eq!(contexts[1].target, CpuInterruptTarget::Cpu(0));
+    let mut blob = RISCV_DTB.to_vec();
+    let tree = fdt::Fdt::new_unaligned(&blob).unwrap();
+    let property = tree
+        .find_node("/soc/interrupt-controller@c000000")
+        .unwrap()
+        .raw_property("interrupts-extended")
+        .unwrap();
+    let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize + 4;
+    blob[offset..offset + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+    let hardware = parse_hardware(&blob);
+    let contexts = hardware
+        .cpu_interrupts
+        .iter()
+        .filter(|route| route.line == 9)
+        .collect::<Vec<_>>();
+    assert_eq!(contexts.len(), 1);
+    assert_eq!(contexts[0].output, 1);
 }

@@ -10,8 +10,8 @@ use core::ops::Range;
 use arrayvec::ArrayVec;
 use fdt::properties::Compatible;
 use kernel::{
-    DeviceUsePolicy, DmaInfo, HardwareDeviceInfo, HardwareDeviceInstanceId, HardwareDeviceKind,
-    HardwareDeviceLocation, PhysRange,
+    DeviceConfiguration, DeviceUsePolicy, DmaInfo, HardwareDeviceInfo, HardwareDeviceInstanceId,
+    HardwareDeviceKind, HardwareDeviceLocation, HardwareInfo, PhysRange,
     boot::{MAX_DEVICES, MAX_MMIO_REGIONS},
 };
 
@@ -30,13 +30,11 @@ struct DeviceNode<'a> {
     kind: HardwareDeviceKind,
 }
 
-pub(super) fn parse(
-    dtb: &Dtb<'_>,
-    output: &mut ArrayVec<HardwareDeviceInfo, MAX_DEVICES>,
-) -> Result<()> {
+pub(super) fn parse(dtb: &Dtb<'_>, hardware: &mut HardwareInfo) -> Result<()> {
     let mut nodes = ArrayVec::new();
     collect_nodes(dtb, &mut nodes)?;
-    output.clear();
+    hardware.devices.clear();
+    hardware.cpu_interrupts.clear();
     let mut walk = dtb.nodes();
     while let Some(node) = walk.next()? {
         let name = node.name()?.name;
@@ -44,10 +42,26 @@ pub(super) fn parse(
             .iter()
             .position(|device| core::ptr::eq(device.name, name))
         {
-            output.push(parse_device(dtb, &walk, index, &nodes)?);
+            hardware
+                .devices
+                .push(parse_device(dtb, &walk, index, &nodes)?);
+            match nodes[index].kind {
+                HardwareDeviceKind::RISCV_PLIC
+                | HardwareDeviceKind::RISCV_CLINT
+                | HardwareDeviceKind::LOONGARCH_EIOINTC => {
+                    interrupts::cpu_routes(
+                        dtb,
+                        &walk,
+                        instance_id(index),
+                        &mut hardware.cpu_interrupts,
+                    )?;
+                }
+                _ => {}
+            }
         }
     }
-    output
+    hardware
+        .devices
         .as_mut_slice()
         .sort_unstable_by_key(|device| device.instance_id.0);
     Ok(())
@@ -101,41 +115,50 @@ fn parse_device(
     let node = walk.node();
     let kind = nodes[index].kind;
     let virtio = kind == HardwareDeviceKind::VIRTIO_MMIO;
-    match kind {
-        HardwareDeviceKind::UART_16550 => match (
+    if kind == HardwareDeviceKind::UART_16550
+        && (
             property::<u32>(node, "reg-shift")?.unwrap_or(0),
             property::<u32>(node, "reg-io-width")?.unwrap_or(1),
             property::<u32>(node, "reg-offset")?.unwrap_or(0),
-        ) {
-            (0, 1, 0) => {}
-            _ => return Err("unsupported UART register layout".into()),
-        },
-        HardwareDeviceKind::VIRTIO_MMIO => {
-            if node.raw_property("iommus")?.is_some() {
-                return Err("IOMMU device bindings are not supported".into());
+        ) != (0, 1, 0)
+    {
+        return Err("unsupported UART register layout".into());
+    }
+    let location = match kind {
+        HardwareDeviceKind::PCI_HOST_BRIDGE => pci::parse(walk)?,
+        HardwareDeviceKind::LOONGARCH_EIOINTC => {
+            let mut entries = registers(node)?.iter::<u64, u64>();
+            let entry = entries.next().ok_or("EIOINTC is missing reg")??;
+            if entries.next().is_some() {
+                return Err("EIOINTC has multiple register ranges".into());
             }
-            for bus in walk.ancestors() {
-                if bus
-                    .raw_property("dma-ranges")?
-                    .is_some_and(|property| !property.value.is_empty())
-                {
-                    return Err("DMA address translation is not supported".into());
-                }
+            // REFERENCE: https://docs.kernel.org/arch/loongarch/irq-chip-model.html
+            let registers = range(entry.address, entry.len)?;
+            let start = registers
+                .start
+                .try_into()
+                .map_err(|_| "IOCSR address overflow")?;
+            let end = registers
+                .end
+                .try_into()
+                .map_err(|_| "IOCSR address overflow")?;
+            HardwareDeviceLocation::Iocsr {
+                registers: start..end,
             }
         }
-        _ => {}
-    }
-    let location = if kind == HardwareDeviceKind::PCI_HOST_BRIDGE {
-        pci::parse(walk)?
-    } else {
-        HardwareDeviceLocation::Platform
+        _ => HardwareDeviceLocation::Platform,
     };
     let mmio_regions = match &location {
         HardwareDeviceLocation::Platform => mmio(walk)?,
-        HardwareDeviceLocation::PciHostBridge { .. } => ArrayVec::new(),
+        _ => ArrayVec::new(),
     };
-    let interrupts = if kind == HardwareDeviceKind::RISCV_PLIC {
-        // PLIC 到 CPU 的输出属于 ISA 入口配置，不是设备的输入中断。
+    let interrupts = if matches!(
+        kind,
+        HardwareDeviceKind::RISCV_PLIC
+            | HardwareDeviceKind::RISCV_CLINT
+            | HardwareDeviceKind::LOONGARCH_EIOINTC
+            | HardwareDeviceKind::LOONGARCH_PCH_MSI
+    ) {
         ArrayVec::new()
     } else {
         interrupts::parse(dtb, walk, nodes)?
@@ -151,10 +174,22 @@ fn parse_device(
         location,
         mmio_regions,
         interrupts,
-        dma: virtio.then_some(DmaInfo {
-            address_bits: 64,
-            isolation: None,
-        }),
+        interrupt_route: if matches!(
+            kind,
+            HardwareDeviceKind::LOONGARCH_PCH_PIC | HardwareDeviceKind::LOONGARCH_PCH_MSI
+        ) {
+            Some(interrupts::cascade(dtb, walk, nodes, kind)?)
+        } else {
+            None
+        },
+        configuration: match kind {
+            HardwareDeviceKind::RISCV_PLIC
+            | HardwareDeviceKind::LOONGARCH_EIOINTC
+            | HardwareDeviceKind::LOONGARCH_PCH_PIC
+            | HardwareDeviceKind::LOONGARCH_PCH_MSI => interrupts::configuration(node, kind)?,
+            _ => DeviceConfiguration::None,
+        },
+        dma: dma(walk, kind)?,
     })
 }
 
@@ -167,19 +202,8 @@ fn mmio(walk: &Nodes<'_>) -> Result<ArrayVec<PhysRange, MAX_MMIO_REGIONS>> {
     for entry in registers(walk.node())?.iter::<u64, u64>() {
         let entry = entry?;
         let address = walk.translate(range(entry.address, entry.len)?)?;
-        if !address.start.is_multiple_of(PAGE_SIZE) {
-            return Err("device register base is not page-aligned".into());
-        }
-        let end = address
-            .end
-            .checked_add(PAGE_SIZE - 1)
-            .ok_or("device resource envelope overflow")?
-            & !(PAGE_SIZE - 1);
         output
-            .try_push(PhysRange {
-                start: address.start,
-                end,
-            })
+            .try_push(address)
             .map_err(|_| "too many MMIO ranges")?;
     }
     Ok(output)
@@ -194,6 +218,45 @@ fn kind(node: Node<'_>) -> Result<Option<HardwareDeviceKind>> {
         "riscv,plic0" | "sifive,plic-1.0.0" => Some(HardwareDeviceKind::RISCV_PLIC),
         "virtio,mmio" => Some(HardwareDeviceKind::VIRTIO_MMIO),
         "pci-host-ecam-generic" => Some(HardwareDeviceKind::PCI_HOST_BRIDGE),
+        "loongson,ls2k2000-eiointc" => Some(HardwareDeviceKind::LOONGARCH_EIOINTC),
+        "loongson,pch-pic-1.0" => Some(HardwareDeviceKind::LOONGARCH_PCH_PIC),
+        "loongson,pch-msi-1.0" => Some(HardwareDeviceKind::LOONGARCH_PCH_MSI),
+        "riscv,clint0" | "sifive,clint0" => Some(HardwareDeviceKind::RISCV_CLINT),
         _ => None,
+    }))
+}
+
+fn dma(walk: &Nodes<'_>, kind: HardwareDeviceKind) -> Result<Option<DmaInfo>> {
+    if !matches!(
+        kind,
+        HardwareDeviceKind::VIRTIO_MMIO | HardwareDeviceKind::PCI_HOST_BRIDGE
+    ) {
+        return Ok(None);
+    }
+    let node = walk.node();
+    if node.raw_property("iommus")?.is_some() || node.raw_property("iommu-map")?.is_some() {
+        return Err("IOMMU device bindings are not supported".into());
+    }
+    let mut coherent = None;
+    for bus in core::iter::once(node).chain(walk.ancestors()) {
+        if bus
+            .raw_property("dma-ranges")?
+            .is_some_and(|property| !property.value.is_empty())
+        {
+            return Err("DMA address translation is not supported".into());
+        }
+        let yes = bus.raw_property("dma-coherent")?.is_some();
+        let no = bus.raw_property("dma-noncoherent")?.is_some();
+        if yes && no {
+            return Err("conflicting DMA coherency properties".into());
+        }
+        if coherent.is_none() && (yes || no) {
+            coherent = Some(yes);
+        }
+    }
+    Ok(Some(DmaInfo {
+        address_bits: 64,
+        coherent: coherent.unwrap_or(false),
+        isolation: None,
     }))
 }

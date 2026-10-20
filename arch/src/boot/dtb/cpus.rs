@@ -7,10 +7,13 @@ use kernel::{CpuInfo, boot::MAX_CPUS};
 
 use super::{
     Dtb, Result,
-    nodes::{enabled, property, registers},
+    nodes::{enabled, integer, property, registers},
 };
 
-pub(super) fn parse(dtb: &Dtb<'_>, output: &mut ArrayVec<CpuInfo, MAX_CPUS>) -> Result<()> {
+pub(super) fn parse(
+    dtb: &Dtb<'_>,
+    output: &mut ArrayVec<CpuInfo, MAX_CPUS>,
+) -> Result<Option<u64>> {
     output.clear();
     let parent = dtb.root.child("cpus")?.ok_or("FDT is missing cpus")?;
     if !enabled(parent)? {
@@ -28,13 +31,14 @@ pub(super) fn parse(dtb: &Dtb<'_>, output: &mut ArrayVec<CpuInfo, MAX_CPUS>) -> 
         if !enabled(node)? || property::<&str>(node, "device_type")? != Some("cpu") {
             continue;
         }
-        for entry in registers(node)?.iter::<u64, u64>() {
-            output
-                .try_push(CpuInfo {
-                    hardware_id: entry?.address,
-                })
-                .map_err(|_| "too many CPUs")?;
+        let mut entries = registers(node)?.iter::<u64, u64>();
+        let hardware_id = entries.next().ok_or("CPU has no hardware ID")??.address;
+        if entries.next().is_some() {
+            return Err("CPU has multiple hardware IDs".into());
         }
+        output
+            .try_push(CpuInfo { hardware_id })
+            .map_err(|_| "too many CPUs")?;
     }
     if output.is_empty() {
         return Err("FDT contains no enabled CPUs".into());
@@ -47,5 +51,5 @@ pub(super) fn parse(dtb: &Dtb<'_>, output: &mut ArrayVec<CpuInfo, MAX_CPUS>) -> 
     {
         return Err("duplicate CPU hardware ID".into());
     }
-    Ok(())
+    integer(parent, "timebase-frequency")
 }

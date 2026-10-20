@@ -3,9 +3,11 @@
 //! 处理器、内存及设备的硬件描述。
 
 mod devices;
+mod interrupts;
 mod memory;
 
 pub use devices::*;
+pub use interrupts::*;
 pub use memory::*;
 
 use arrayvec::ArrayVec;
@@ -17,6 +19,8 @@ pub struct HardwareInfo {
     pub cpus: ArrayVec<CpuInfo, MAX_CPUS>,
     pub memory: MemoryInfo,
     pub devices: ArrayVec<HardwareDeviceInfo, MAX_DEVICES>,
+    pub timebase_frequency_hz: Option<u64>,
+    pub cpu_interrupts: ArrayVec<CpuInterruptRoute, MAX_CPU_INTERRUPT_ROUTES>,
 }
 
 impl HardwareInfo {
@@ -27,6 +31,8 @@ impl HardwareInfo {
                 regions: ArrayVec::new_const(),
             },
             devices: ArrayVec::new_const(),
+            timebase_frequency_hz: None,
+            cpu_interrupts: ArrayVec::new_const(),
         }
     }
 
@@ -53,48 +59,89 @@ impl HardwareInfo {
         {
             return Err("invalid memory region table");
         }
+        if self.timebase_frequency_hz == Some(0) {
+            return Err("timebase frequency is zero");
+        }
         for (index, device) in self.devices.iter().enumerate() {
-            for (position, address) in device.addresses().enumerate() {
-                if self
-                    .memory
-                    .regions
-                    .iter()
-                    .any(|region| region.range.overlaps(address))
-                {
-                    return Err("device resource envelope overlaps RAM");
+            device.validate_configuration()?;
+            if let Some(dma) = device.dma {
+                if !(1..=64).contains(&dma.address_bits) {
+                    return Err("invalid DMA address width");
                 }
-                if device
-                    .addresses()
-                    .take(position)
-                    .any(|other| address.overlaps(other))
+                if let Some(route) = dma.isolation
+                    && self.device(route.iommu)?.kind != HardwareDeviceKind::IOMMU
                 {
-                    return Err("device resources overlap within the same device");
-                }
-                if self.devices[..index]
-                    .iter()
-                    .flat_map(HardwareDeviceInfo::addresses)
-                    .any(|other| address.overlaps(other))
-                {
-                    return Err("device resource envelopes overlap");
+                    return Err("invalid DMA isolation controller");
                 }
             }
-            for (position, interrupt) in device.interrupts.iter().enumerate() {
-                let duplicate = self.devices[..index]
+            if device.instance_id.0 == 0
+                || self.devices[..index]
                     .iter()
-                    .flat_map(|device| &device.interrupts)
-                    .chain(&device.interrupts[..position])
-                    .any(|other| {
-                        other.controller == interrupt.controller && other.line == interrupt.line
-                    });
-                if duplicate {
-                    return Err("shared IRQs are not supported");
-                }
+                    .any(|other| other.instance_id == device.instance_id)
+            {
+                return Err("invalid or duplicate device instance ID");
+            }
+            self.validate_addresses(index, device)?;
+            if let HardwareDeviceLocation::Iocsr { registers } = &device.location
+                && (registers.is_empty() || device.use_policy != DeviceUsePolicy::KernelReserved)
+            {
+                return Err("invalid IOCSR resource");
             }
             if self.devices[..index]
                 .iter()
-                .any(|other| device.location.bus_range_overlaps(&other.location))
+                .any(|other| device.location.overlaps(&other.location))
             {
-                return Err("PCI host bridge bus ranges overlap");
+                return Err("device locations overlap");
+            }
+        }
+        self.validate_interrupts()?;
+        Ok(())
+    }
+
+    pub(super) fn device(
+        &self,
+        id: HardwareDeviceInstanceId,
+    ) -> Result<&HardwareDeviceInfo, &'static str> {
+        self.devices
+            .iter()
+            .find(|device| device.instance_id == id)
+            .ok_or("referenced device is missing from the device table")
+    }
+
+    fn validate_addresses(
+        &self,
+        index: usize,
+        device: &HardwareDeviceInfo,
+    ) -> Result<(), &'static str> {
+        for (position, address) in device.addresses().enumerate() {
+            let pages = address.page_envelope()?;
+            if self
+                .memory
+                .regions
+                .iter()
+                .any(|region| region.range.overlaps(pages))
+            {
+                return Err("device resource envelope overlaps RAM");
+            }
+            if device
+                .addresses()
+                .take(position)
+                .any(|other| address.overlaps(other))
+            {
+                return Err("device resources overlap within the same device");
+            }
+            for other in &self.devices[..index] {
+                for other_address in other.addresses() {
+                    if address.overlaps(other_address) {
+                        return Err("device register ranges overlap");
+                    }
+                    if (device.use_policy == DeviceUsePolicy::UserAssignable
+                        || other.use_policy == DeviceUsePolicy::UserAssignable)
+                        && pages.overlaps(other_address.page_envelope()?)
+                    {
+                        return Err("assignable device shares a resource page");
+                    }
+                }
             }
         }
         Ok(())
