@@ -234,24 +234,6 @@ impl FrameAllocator {
         self.metadata.write(index, record);
     }
 
-    pub fn replace_mapping_access(
-        &mut self,
-        frame: Frame,
-        old: FrameAccess,
-        new: FrameAccess,
-    ) -> Result<(), MemoryError> {
-        let index = self.metadata.index(frame.address())?;
-        let mut record = self.metadata.read(index);
-        record.allocation_head()?;
-        if old == new {
-            return Ok(());
-        }
-        record.release_access(ReferenceKind::Mapping, old);
-        record.reserve_access(ReferenceKind::Mapping, new)?;
-        self.metadata.write(index, record);
-        Ok(())
-    }
-
     pub fn release_owner(&mut self, head: u64) {
         let mut record = self.metadata.read(head);
         assert_eq!(

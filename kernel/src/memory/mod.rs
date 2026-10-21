@@ -1,23 +1,29 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod address_space;
 mod frame;
 mod frame_allocator;
+mod mapping;
 mod paging;
 mod region;
 
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::{Mutex, Once};
 
 use crate::hardware::mmu::MmuError;
 use frame_allocator::FrameAllocator;
 
+pub use address_space::{AddressSpace, USER_ADDRESS_RANGE};
 pub use frame::{
     Frame, FrameAccess, FrameAccessReference, FrameAllocation, FrameAllocationInfo,
     FrameAllocationReference, FrameOwner, FramePool, FramePurpose, Frames, ReferenceKind,
     ReservedRangeReference,
 };
 pub use frame_allocator::{MemoryStats, PoolStats};
-pub use paging::PageTable;
-pub use region::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRange};
+pub use mapping::{MappingInfo, MappingOptions, MappingRights};
+pub use region::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRange, VirtRange};
+
+pub const MAX_USER_MAPPING_RECORDS: usize = 65536;
 
 static MEMORY_MANAGER: Once<MemoryManager> = Once::new();
 
@@ -27,6 +33,7 @@ pub enum MemoryError {
     AlreadyInitialized,
     AlreadyMapped,
     NotMapped,
+    NotInitialized,
     InvalidFrame,
     InvalidRequest,
     InUse,
@@ -46,9 +53,48 @@ impl From<MmuError> for MemoryError {
 /// 操作及句柄析构期间须关闭本地中断并保留物理访问窗口。
 pub struct MemoryManager {
     allocator: Mutex<FrameAllocator>,
+    kernel_space: Once<AddressSpace>,
+    mapping_records: AtomicUsize,
 }
 
+struct MappingQuota(usize);
+
 impl MemoryManager {
+    pub fn initialize_kernel_address_space(&self) -> Result<(), MemoryError> {
+        let mut initialized = false;
+        self.kernel_space.try_call_once(|| {
+            let space = AddressSpace::kernel()?;
+            initialized = true;
+            Ok::<_, MemoryError>(space)
+        })?;
+        if initialized {
+            Ok(())
+        } else {
+            Err(MemoryError::AlreadyInitialized)
+        }
+    }
+
+    pub fn kernel_address_space(&self) -> &AddressSpace {
+        self.kernel_space
+            .get()
+            .expect("kernel address space is not initialized")
+    }
+
+    fn reserve_mapping_records(&self, count: usize) -> Result<MappingQuota, MemoryError> {
+        self.mapping_records
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current
+                    .checked_add(count)
+                    .filter(|total| *total <= MAX_USER_MAPPING_RECORDS)
+            })
+            .map_err(|_| MemoryError::NoMemory)?;
+        Ok(MappingQuota(count))
+    }
+
+    fn release_mapping_records(&self, count: usize) {
+        self.mapping_records.fetch_sub(count, Ordering::Relaxed);
+    }
+
     pub fn stats(&self) -> MemoryStats {
         self.allocator.lock().stats()
     }
@@ -139,11 +185,19 @@ pub fn initialize(regions: &[MemoryRegion]) -> Result<(), MemoryError> {
         initialized = true;
         Ok(MemoryManager {
             allocator: Mutex::new(allocator),
+            kernel_space: Once::new(),
+            mapping_records: AtomicUsize::new(0),
         })
     })?;
     if initialized {
         Ok(())
     } else {
         Err(MemoryError::AlreadyInitialized)
+    }
+}
+
+impl Drop for MappingQuota {
+    fn drop(&mut self) {
+        manager().release_mapping_records(self.0);
     }
 }

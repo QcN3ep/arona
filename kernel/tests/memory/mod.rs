@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod address_space;
 mod frame;
 mod frame_allocator;
 mod paging;
@@ -63,7 +64,7 @@ fn isolated(name: &str) -> bool {
         kernel::hardware::mmu::bind(&MMU).unwrap();
         return false;
     }
-    let levels = if name.starts_with("paging::") {
+    let levels = if name.starts_with("paging::") || name.starts_with("address_space::") {
         &[3, 4][..]
     } else {
         &[3][..]
@@ -91,6 +92,21 @@ fn initialize(regions: &[MemoryRegion]) -> &'static MemoryManager {
 }
 
 impl PhysicalMmu {
+    fn lookup(&self, root: Frame, address: usize) -> Option<PageMapping> {
+        let layout = self.layout();
+        let mut table = root;
+        for level in (0..layout.levels).rev() {
+            let slot = (address >> (12 + layout.index_bits * level as u32))
+                & ((1 << layout.index_bits) - 1);
+            match self.read_entry(table, slot, level).unwrap() {
+                PageTableEntry::Empty => return None,
+                PageTableEntry::Table(next) => table = next,
+                PageTableEntry::Mapping(mapping) => return Some(mapping),
+            }
+        }
+        panic!("missing leaf mapping");
+    }
+
     fn validate(&self, address: u64, offset: usize, length: usize) -> Result<(), MmuError> {
         if address >= 1 << self.bits {
             return Err(MmuError::InvalidAddress);
@@ -168,7 +184,8 @@ impl Mmu for PhysicalMmu {
     }
 
     fn is_valid_virtual_address(&self, address: usize) -> bool {
-        (((address as i64) << 25) >> 25) as usize == address
+        let shift = 64 - (12 + 9 * self.levels.load(Ordering::Relaxed));
+        (((address as i64) << shift) >> shift) as usize == address
     }
 
     fn read_entry(

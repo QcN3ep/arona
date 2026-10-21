@@ -26,6 +26,22 @@ pub struct PhysRange {
     pub end: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VirtRange {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl VirtRange {
+    pub fn contains(self, other: Self) -> bool {
+        self.start <= other.start && other.end <= self.end
+    }
+
+    pub fn overlaps(self, other: Self) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+}
+
 impl PhysRange {
     /// 返回覆盖整个范围的 4 KiB 页包络。
     pub fn page_envelope(self) -> Result<Self, &'static str> {

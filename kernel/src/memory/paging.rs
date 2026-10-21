@@ -3,16 +3,10 @@
 use arrayvec::ArrayVec;
 use spin::Mutex;
 
-use super::{
-    Frame, FrameAccess, FrameAllocation, FrameAllocationReference, FrameOwner, FramePurpose,
-    MemoryError, ReferenceKind, manager,
-};
+use super::{Frame, FrameAllocation, FrameOwner, FramePurpose, MemoryError, manager};
 use crate::hardware::{
     self,
-    mmu::{
-        MemoryType, MmuError, PAGE_SIZE, PageAttributes, PageMapping, PagePermissions,
-        PageTableEntry, PageTableLayout,
-    },
+    mmu::{MmuError, PAGE_SIZE, PageMapping, PageTableEntry, PageTableLayout},
 };
 
 const MAX_LEVELS: usize = 4;
@@ -21,23 +15,35 @@ const MAX_LEVELS: usize = 4;
 ///
 /// 操作及析构期间须满足 [`Mmu`](crate::hardware::mmu::Mmu) 的执行环境要求。
 /// 修改前须停止其他处理器使用该页表并清除其 TLB 项，析构前须让所有处理器切离该页表。
-pub struct PageTable {
+pub(super) struct PageTable {
     state: Mutex<PageTableState>,
 }
 
-struct PageTableState {
+pub(super) struct PageTableState {
     root: Frame,
     backing: FrameAllocation,
+    shared_kernel: Option<&'static PageTable>,
 }
 
-struct PageWalk {
-    tables: [Option<Frame>; MAX_LEVELS],
-    level: usize,
-    entry: PageTableEntry,
+pub(super) struct PageWalk {
+    pub tables: [Option<Frame>; MAX_LEVELS],
+    pub level: usize,
+    pub entry: PageTableEntry,
 }
 
 impl PageTable {
-    pub fn new() -> Result<Self, MemoryError> {
+    pub(super) fn kernel() -> Result<Self, MemoryError> {
+        Self::create(None)
+    }
+
+    pub(super) fn user(kernel: &'static Self) -> Result<Self, MemoryError> {
+        if kernel.is_user() {
+            return Err(MemoryError::InvalidRequest);
+        }
+        Self::create(Some(kernel))
+    }
+
+    fn create(shared_kernel: Option<&'static Self>) -> Result<Self, MemoryError> {
         let layout = hardware::mmu().layout();
         if !(2..=MAX_LEVELS).contains(&layout.levels)
             || !(1..=9).contains(&layout.index_bits)
@@ -47,83 +53,60 @@ impl PageTable {
         {
             return Err(MmuError::Unsupported.into());
         }
-        let backing = manager().allocate(FrameOwner::Kernel, FramePurpose::PageTable, 1)?;
+        let first_shared = 1 << (layout.index_bits - 1);
+        let frames = (1 + if shared_kernel.is_none() {
+            first_shared
+        } else {
+            0
+        }) as u64;
+        let backing = manager().allocate(FrameOwner::Kernel, FramePurpose::PageTable, frames)?;
         let root = backing.frames().next().expect("empty root allocation");
-        let mut state = PageTableState { root, backing };
-        state.install_window(layout)?;
+        let mut state = PageTableState {
+            root,
+            backing,
+            shared_kernel,
+        };
+        if let Some(kernel) = shared_kernel {
+            let kernel = kernel.state.lock();
+            for slot in first_shared..2 * first_shared {
+                let entry = hardware::mmu().read_entry(kernel.root, slot, layout.levels - 1)?;
+                if !matches!(entry, PageTableEntry::Table(_)) {
+                    return Err(MmuError::InvalidTable.into());
+                }
+                hardware::mmu().write_entry(root, slot, layout.levels - 1, entry)?;
+            }
+        } else {
+            // 共享分支在用户根创建前全部建立，且不参与运行期剪枝。
+            let mut branches = state.backing.frames().skip(1);
+            for slot in first_shared..2 * first_shared {
+                let frame = branches.next().expect("missing shared kernel branch");
+                hardware::mmu().write_entry(
+                    root,
+                    slot,
+                    layout.levels - 1,
+                    PageTableEntry::Table(frame),
+                )?;
+            }
+            state.install_window(layout)?;
+        }
         Ok(Self {
             state: Mutex::new(state),
         })
     }
 
-    pub fn root(&self) -> Frame {
+    pub(super) fn is_user(&self) -> bool {
+        self.state.lock().shared_kernel.is_some()
+    }
+
+    pub(super) fn root(&self) -> Frame {
         self.state.lock().root
     }
 
-    pub fn map(
-        &self,
-        virtual_address: usize,
-        allocation: &FrameAllocation,
-        frame: Frame,
-        attributes: PageAttributes,
-    ) -> Result<(), MemoryError> {
-        self.map_reference(
-            virtual_address,
-            allocation.reference(ReferenceKind::Mapping)?,
-            frame,
-            attributes,
-        )
+    pub(super) fn edit<R>(&self, operation: impl FnOnce(&mut PageTableState) -> R) -> R {
+        operation(&mut self.state.lock())
     }
 
-    pub fn map_reference(
-        &self,
-        virtual_address: usize,
-        reference: FrameAllocationReference,
-        frame: Frame,
-        attributes: PageAttributes,
-    ) -> Result<(), MemoryError> {
-        let info = reference.info();
-        if info.purpose == FramePurpose::PageTable
-            || attributes.memory_type != MemoryType::Normal
-            || (attributes.user_accessible && info.owner == FrameOwner::Kernel)
-            || !reference.contains(frame)
-        {
-            return Err(MemoryError::InvalidFrame);
-        }
-        let reference = if reference.kind == ReferenceKind::Mapping {
-            reference
-        } else {
-            reference.reference(ReferenceKind::Mapping)?
-        };
-        let reference = reference.access(frame, attributes.permissions.into())?;
-        let mut state = self.state.lock();
-        state.map(
-            virtual_address,
-            PageMapping {
-                physical_address: frame.address(),
-                attributes,
-            },
-        )?;
-        // 引用由已发布的页表项持有，撤销时通过页框记录释放。
-        core::mem::forget(reference);
-        Ok(())
-    }
-
-    pub fn unmap(&self, virtual_address: usize) -> Result<PageMapping, MemoryError> {
-        validate_address(virtual_address, true)?;
-        self.state.lock().unmap(virtual_address)
-    }
-
-    pub fn protect(
-        &self,
-        virtual_address: usize,
-        permissions: PagePermissions,
-    ) -> Result<(), MemoryError> {
-        validate_address(virtual_address, true)?;
-        self.state.lock().protect(virtual_address, permissions)
-    }
-
-    pub fn query(&self, address: usize) -> Result<Option<PageMapping>, MemoryError> {
+    pub(super) fn query(&self, address: usize) -> Result<Option<PageMapping>, MemoryError> {
         validate_address(address, false)?;
         match self.state.lock().walk(address)?.entry {
             PageTableEntry::Empty => Ok(None),
@@ -135,7 +118,7 @@ impl PageTable {
     /// # Safety
     ///
     /// 页表存续期间，后备存储须保持有效且不得被回收。
-    pub(crate) fn map_permanent(
+    pub(super) fn map_permanent(
         &self,
         virtual_address: usize,
         mapping: PageMapping,
@@ -151,6 +134,14 @@ impl PageTableState {
     fn install_window(&mut self, layout: PageTableLayout) -> Result<(), MemoryError> {
         let mut table = self.root;
         for level in ((layout.window.level + 1)..layout.levels).rev() {
+            if let PageTableEntry::Table(next) = hardware::mmu().read_entry(
+                table,
+                index(layout, layout.window.virtual_address, level),
+                level,
+            )? {
+                table = next;
+                continue;
+            }
             let next = manager().allocate(FrameOwner::Kernel, FramePurpose::PageTable, 1)?;
             let frame = next.frames().next().expect("empty table allocation");
             hardware::mmu().write_entry(
@@ -171,7 +162,7 @@ impl PageTableState {
         Ok(())
     }
 
-    fn walk(&self, address: usize) -> Result<PageWalk, MemoryError> {
+    pub(super) fn walk(&self, address: usize) -> Result<PageWalk, MemoryError> {
         let mmu = hardware::mmu();
         let layout = mmu.layout();
         let mut walk = PageWalk {
@@ -194,119 +185,141 @@ impl PageTableState {
     }
 
     fn map(&mut self, address: usize, mapping: PageMapping) -> Result<(), MemoryError> {
+        let walk = self.prepare(address)?;
+        if let Err(error) = Self::write_leaf(address, walk.tables[0].unwrap(), Some(mapping)) {
+            self.prune_empty(address)
+                .expect("failed to discard empty page tables");
+            return Err(error);
+        }
+        hardware::mmu().invalidate_all();
+        Ok(())
+    }
+
+    pub(super) fn prepare(&mut self, address: usize) -> Result<PageWalk, MemoryError> {
         validate_address(address, true)?;
+        self.validate_edit(address)?;
         let mmu = hardware::mmu();
         let layout = mmu.layout();
         let walk = self.walk(address)?;
         if walk.entry != PageTableEntry::Empty {
             return Err(MemoryError::AlreadyMapped);
         }
-        let mut entry = PageTableEntry::Mapping(mapping);
-        let branch = if walk.level == 0 {
-            None
-        } else {
+        if walk.level != 0 {
             let allocation = manager().allocate(
                 FrameOwner::Kernel,
                 FramePurpose::PageTable,
                 walk.level as u64,
             )?;
             let frames: ArrayVec<Frame, MAX_LEVELS> = allocation.frames().collect();
-            for (level, table) in frames.into_iter().enumerate() {
-                mmu.write_entry(table, index(layout, address, level), level, entry)?;
-                entry = PageTableEntry::Table(table);
+            for level in 1..frames.len() {
+                mmu.write_entry(
+                    frames[level],
+                    index(layout, address, level),
+                    level,
+                    PageTableEntry::Table(frames[level - 1]),
+                )?;
             }
-            Some(allocation)
-        };
-        mmu.write_entry(
-            walk.tables[walk.level].expect("missing parent table"),
-            index(layout, address, walk.level),
-            walk.level,
-            entry,
-        )?;
-        if let Some(branch) = branch {
-            self.backing.merge(branch);
+            mmu.write_entry(
+                walk.tables[walk.level].expect("missing parent table"),
+                index(layout, address, walk.level),
+                walk.level,
+                PageTableEntry::Table(*frames.last().unwrap()),
+            )?;
+            self.backing.merge(allocation);
         }
-        mmu.invalidate_all();
+        self.walk(address)
+    }
+
+    pub(super) fn write_leaf(
+        address: usize,
+        table: Frame,
+        mapping: Option<PageMapping>,
+    ) -> Result<(), MemoryError> {
+        hardware::mmu().write_entry(
+            table,
+            index(hardware::mmu().layout(), address, 0),
+            0,
+            mapping.map_or(PageTableEntry::Empty, PageTableEntry::Mapping),
+        )?;
         Ok(())
     }
 
-    fn unmap(&mut self, address: usize) -> Result<PageMapping, MemoryError> {
-        let mmu = hardware::mmu();
-        let layout = mmu.layout();
-        let walk = self.walk(address)?;
-        let PageTableEntry::Mapping(mapping) = walk.entry else {
-            return Err(MemoryError::NotMapped);
-        };
-        let frame = Frame::new(mapping.physical_address).ok_or(MemoryError::InvalidFrame)?;
-        if !manager().is_managed(frame.address()) {
-            return Err(MemoryError::InvalidFrame);
+    fn validate_edit(&self, address: usize) -> Result<(), MemoryError> {
+        if self.shared_kernel.is_some() && address > isize::MAX as usize {
+            return Err(MemoryError::InvalidRequest);
         }
-        let mut detach = 0;
-        while detach + 1 < layout.levels {
-            let table = walk.tables[detach].expect("missing child table");
-            let removed = index(layout, address, detach);
-            let mut occupied = false;
-            for slot in 0..(1 << layout.index_bits) {
-                if slot != removed && mmu.read_entry(table, slot, detach)? != PageTableEntry::Empty
-                {
-                    occupied = true;
-                    break;
-                }
-            }
-            if occupied {
-                break;
-            }
-            detach += 1;
-        }
-        mmu.write_entry(
-            walk.tables[detach].expect("missing parent table"),
-            index(layout, address, detach),
-            detach,
-            PageTableEntry::Empty,
-        )?;
-        mmu.invalidate_all();
-        for frame in walk.tables[..detach].iter().flatten() {
-            drop(self.backing.detach(*frame));
-        }
-        manager()
-            .release_mapping(frame, mapping.attributes.permissions.into())
-            .expect("lost mapping allocation");
-        Ok(mapping)
+        Ok(())
     }
 
-    fn protect(&mut self, address: usize, permissions: PagePermissions) -> Result<(), MemoryError> {
+    fn owned_levels(&self, address: usize) -> usize {
+        hardware::mmu().layout().levels
+            - usize::from(self.shared_kernel.is_none() && address > isize::MAX as usize)
+    }
+
+    pub(super) fn detach_empty(
+        &mut self,
+        address: usize,
+        tables: &[Option<Frame>; MAX_LEVELS],
+        mut detached: impl FnMut(usize),
+    ) -> Result<(), MemoryError> {
         let mmu = hardware::mmu();
         let layout = mmu.layout();
-        let walk = self.walk(address)?;
-        let PageTableEntry::Mapping(mut mapping) = walk.entry else {
-            return Err(MemoryError::NotMapped);
-        };
-        if !manager().is_managed(mapping.physical_address) {
-            return Err(MemoryError::InvalidFrame);
-        }
-        let frame = Frame::new(mapping.physical_address).ok_or(MemoryError::InvalidFrame)?;
-        let old = mapping.attributes.permissions.into();
-        let new = permissions.into();
-        let mut allocator = manager().allocator.lock();
-        allocator.replace_mapping_access(frame, old, new)?;
-        let result = (|| {
-            if new == FrameAccess::Execute && old != new {
-                mmu.synchronize_frame(frame)?;
+        for level in 0..self.owned_levels(address) - 1 {
+            let Some(table) = tables[level] else { continue };
+            let parent = tables[level + 1].expect("missing parent table");
+            let slot = index(layout, address, level + 1);
+            if mmu.read_entry(parent, slot, level + 1)? != PageTableEntry::Table(table) {
+                continue;
             }
-            mapping.attributes.permissions = permissions;
-            mmu.write_entry(
-                walk.tables[0].expect("missing leaf table"),
-                index(layout, address, 0),
-                0,
-                PageTableEntry::Mapping(mapping),
-            )?;
-            mmu.invalidate_all();
-            Ok(())
-        })();
+            for slot in 0..1 << layout.index_bits {
+                if mmu.read_entry(table, slot, level)? != PageTableEntry::Empty {
+                    return Ok(());
+                }
+            }
+            mmu.write_entry(parent, slot, level + 1, PageTableEntry::Empty)?;
+            detached(level);
+        }
+        Ok(())
+    }
+
+    pub(super) fn restore_tables(
+        address: usize,
+        tables: &[Option<Frame>; MAX_LEVELS],
+        detached: u64,
+    ) {
+        let mmu = hardware::mmu();
+        let layout = mmu.layout();
+        for level in (0..layout.levels - 1).rev() {
+            if detached & (1 << level) != 0 {
+                mmu.write_entry(
+                    tables[level + 1].unwrap(),
+                    index(layout, address, level + 1),
+                    level + 1,
+                    PageTableEntry::Table(tables[level].unwrap()),
+                )
+                .expect("failed to restore page table branch");
+            }
+        }
+    }
+
+    pub(super) fn release_tables(&mut self, tables: &[Option<Frame>; MAX_LEVELS], detached: u64) {
+        for (level, table) in tables.iter().enumerate() {
+            if detached & (1 << level) != 0 {
+                drop(self.backing.detach(table.unwrap()));
+            }
+        }
+    }
+
+    pub(super) fn prune_empty(&mut self, address: usize) -> Result<(), MemoryError> {
+        let walk = self.walk(address)?;
+        let mut detached = 0;
+        let result = self.detach_empty(address, &walk.tables, |level| detached |= 1 << level);
         if result.is_err() {
-            allocator
-                .replace_mapping_access(frame, new, old)
-                .expect("failed to restore frame access");
+            Self::restore_tables(address, &walk.tables, detached);
+        }
+        hardware::mmu().invalidate_all();
+        if result.is_ok() {
+            self.release_tables(&walk.tables, detached);
         }
         result
     }
@@ -315,6 +328,12 @@ impl PageTableState {
         let mmu = hardware::mmu();
         let layout = mmu.layout();
         for slot in 0..(1 << layout.index_bits) {
+            if level == layout.levels - 1
+                && self.shared_kernel.is_some()
+                && slot >= 1 << (layout.index_bits - 1)
+            {
+                continue;
+            }
             match mmu.read_entry(table, slot, level)? {
                 PageTableEntry::Empty => {}
                 PageTableEntry::Table(next) if next == layout.window.table => {}
@@ -337,7 +356,7 @@ fn index(layout: PageTableLayout, address: usize, level: usize) -> usize {
         & ((1 << layout.index_bits) - 1)
 }
 
-fn validate_address(address: usize, aligned: bool) -> Result<(), MemoryError> {
+pub(super) fn validate_address(address: usize, aligned: bool) -> Result<(), MemoryError> {
     let mmu = hardware::mmu();
     let layout = mmu.layout();
     let window_bits = PAGE_SIZE.trailing_zeros() + layout.index_bits * layout.window.level as u32;
