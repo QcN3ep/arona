@@ -4,6 +4,7 @@
 
 mod hardware;
 mod image;
+mod memory;
 
 pub use hardware::*;
 pub use image::*;
@@ -28,7 +29,7 @@ pub struct BootConsoleMapping {
 /// `info` 及其字段须合法且与实际硬件一致，当前处理器须处于内核运行所需的执行环境。
 pub fn boot_kernel(info: BootInfo<'_>) -> ! {
     log::info!("Entering kernel");
-    crate::memory::initialize(&info)
+    memory::initialize(&info)
         .unwrap_or_else(|error| panic!("failed to initialize memory: {error:?}"));
     log::info!("Memory initialized");
     loop {

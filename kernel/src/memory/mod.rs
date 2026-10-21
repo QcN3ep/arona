@@ -1,32 +1,35 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod frame;
+mod frame_allocator;
+mod paging;
 mod region;
 
+use spin::{Mutex, Once};
+
+use crate::hardware::mmu::MmuError;
+use frame_allocator::FrameAllocator;
+
+pub use frame::{
+    Frame, FrameAllocation, FrameAllocationInfo, FrameAllocationReference, FrameOwner, FramePool,
+    FramePurpose, Frames, ReferenceKind, ReservedRangeReference,
+};
+pub use frame_allocator::{MemoryStats, PoolStats};
+pub use paging::PageTable;
 pub use region::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRange};
 
-use arrayvec::ArrayVec;
-use spin::Mutex;
-
-use crate::{
-    BootInfo,
-    boot::{ImageSegment, MemoryInfo},
-    hardware::mmu::{
-        self, MemoryType, Mmu, MmuError, PAGE_SIZE, PageAttributes, PageMapping, PagePermissions,
-        PageTableFrames,
-    },
-};
-
-const PAGE_SIZE_U64: u64 = PAGE_SIZE as u64;
-const END_OF_FREE_LIST: u64 = u64::MAX;
-
-static MEMORY_MANAGER: Mutex<MemoryManager> = Mutex::new(MemoryManager::empty());
+static MEMORY_MANAGER: Once<MemoryManager> = Once::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryError {
     AlreadyInitialized,
+    AlreadyMapped,
+    NotMapped,
     InvalidFrame,
+    InvalidRequest,
+    InUse,
     NoMemory,
-    NotInitialized,
+    ReferenceOverflow,
     Mmu(MmuError),
 }
 
@@ -36,221 +39,93 @@ impl From<MmuError> for MemoryError {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct Frame {
-    address: u64,
-}
-
-impl Frame {
-    pub const fn physical_address(&self) -> u64 {
-        self.address
-    }
-}
-
-struct FrameRegion {
-    start: u64,
-    next: u64,
-    end: u64,
-}
-
-struct MemoryManager {
-    regions: ArrayVec<FrameRegion, MAX_MEMORY_REGIONS>,
-    root: Option<Frame>,
-    free: Option<Frame>,
-    initialized: bool,
+/// # Safety
+///
+/// 操作及句柄析构期间须关闭本地中断并保留物理访问窗口。
+pub struct MemoryManager {
+    allocator: Mutex<FrameAllocator>,
 }
 
 impl MemoryManager {
-    const fn empty() -> Self {
-        Self {
-            regions: ArrayVec::new_const(),
-            root: None,
-            free: None,
-            initialized: false,
-        }
+    pub fn stats(&self) -> MemoryStats {
+        self.allocator.lock().stats()
     }
 
-    fn configure(&mut self, info: &MemoryInfo, mmu: &dyn Mmu) -> Result<(), MemoryError> {
-        self.regions.clear();
-        self.root = None;
-        self.free = None;
-        let physical_limit = 1u64 << mmu.physical_address_bits();
-        for region in &info.regions {
-            if region.state != MemoryRegionState::Available {
-                continue;
-            }
-            let end = region.range.end.min(physical_limit);
-            if region.range.start < end {
-                self.regions.push(FrameRegion {
-                    start: region.range.start,
-                    next: region.range.start,
-                    end,
-                });
-            }
-        }
-        if self.regions.is_empty() {
-            return Err(MemoryError::NoMemory);
-        }
-        Ok(())
+    pub fn allocate(
+        &self,
+        owner: FrameOwner,
+        purpose: FramePurpose,
+        frames: u64,
+    ) -> Result<FrameAllocation, MemoryError> {
+        let head = self.allocator.lock().allocate(owner, purpose, frames)?;
+        Ok(FrameAllocation { head })
     }
 
-    fn allocate_frame(&mut self, mmu: &dyn Mmu) -> Result<Frame, MemoryError> {
-        if let Some(address) = self.free.as_ref().map(Frame::physical_address) {
-            let frame = Frame { address };
-            let mut words = [0];
-            mmu.read_frame(frame.address, 0, &mut words)?;
-            let next = words[0];
-            let free = if next == END_OF_FREE_LIST {
-                None
-            } else {
-                Some(self.frame_at(next)?)
-            };
-            self.free = free;
-            return Ok(frame);
-        }
-
-        let region = self
-            .regions
-            .iter_mut()
-            .find(|region| region.next < region.end)
-            .ok_or(MemoryError::NoMemory)?;
-        let address = region.next;
-        region.next += PAGE_SIZE_U64;
-        Ok(Frame { address })
+    fn reference(
+        &self,
+        head: u64,
+        kind: ReferenceKind,
+    ) -> Result<FrameAllocationReference, MemoryError> {
+        self.allocator.lock().reference(head, kind)?;
+        Ok(FrameAllocationReference { head, kind })
     }
 
-    fn release_frame(&mut self, frame: Frame, mmu: &dyn Mmu) -> Result<(), MemoryError> {
-        if !self.owns(frame.address) {
-            return Err(MemoryError::InvalidFrame);
-        }
-        mmu.write_frame(
-            frame.address,
-            0,
-            &[self
-                .free
-                .as_ref()
-                .map_or(END_OF_FREE_LIST, Frame::physical_address)],
-        )?;
-        self.free = Some(frame);
-        Ok(())
+    pub fn borrow_reserved(&self, range: PhysRange) -> Result<ReservedRangeReference, MemoryError> {
+        self.allocator.lock().borrow_reserved(range)?;
+        Ok(ReservedRangeReference { range })
     }
 
-    fn frame_at(&self, address: u64) -> Result<Frame, MemoryError> {
-        if !self.owns(address) {
-            return Err(MemoryError::InvalidFrame);
-        }
-        Ok(Frame { address })
+    /// # Safety
+    ///
+    /// 保留页须已脱离管理器之外的代码与硬件访问。
+    pub fn reclaim_reserved(&self, range: PhysRange, pool: FramePool) -> Result<(), MemoryError> {
+        self.allocator.lock().reclaim_reserved(range, pool)
     }
 
-    fn owns(&self, address: u64) -> bool {
-        address.is_multiple_of(PAGE_SIZE_U64)
-            && self
-                .regions
-                .iter()
-                .any(|region| region.start <= address && address < region.end)
+    fn info(&self, head: u64) -> FrameAllocationInfo {
+        self.allocator.lock().info(head)
     }
 
-    fn map_segment(
-        &mut self,
-        mmu: &dyn Mmu,
-        segment: ImageSegment,
-        permissions: PagePermissions,
-    ) -> Result<(), MemoryError> {
-        let length = segment.physical.end - segment.physical.start;
-        for offset in (0..length).step_by(PAGE_SIZE) {
-            let virtual_address = segment.virtual_start + offset as usize;
-            mmu.map(
-                self,
-                virtual_address,
-                PageMapping {
-                    physical_address: segment.physical.start + offset,
-                    attributes: PageAttributes {
-                        permissions,
-                        memory_type: MemoryType::Normal,
-                        user_accessible: false,
-                    },
-                },
-            )?;
-        }
-        Ok(())
+    fn contains(&self, head: u64, frame: Frame) -> bool {
+        self.allocator.lock().allocation_of(frame) == Ok(head)
+    }
+
+    fn frame(&self, index: u64) -> (u64, u64) {
+        self.allocator.lock().frame(index)
+    }
+
+    fn release_owner(&self, head: u64) {
+        self.allocator.lock().release_owner(head);
+    }
+
+    fn release_reference(&self, head: u64, kind: ReferenceKind) {
+        self.allocator.lock().release_reference(head, kind);
+    }
+
+    fn release_reserved_reference(&self, range: PhysRange) {
+        self.allocator.lock().release_reserved_reference(range);
     }
 }
 
-pub(crate) fn initialize(info: &BootInfo<'_>) -> Result<(), MemoryError> {
-    let mmu = mmu::mmu();
-    let mut manager = MEMORY_MANAGER.lock();
-    if manager.initialized {
-        return Err(MemoryError::AlreadyInitialized);
-    }
-
-    manager.configure(&info.hardware.memory, mmu)?;
-    manager.root = Some(manager.allocate_frame(mmu)?);
-    mmu.initialize(&mut *manager)?;
-    manager.map_segment(mmu, info.kernel_image.text, PagePermissions::ReadExecute)?;
-    manager.map_segment(mmu, info.kernel_image.rodata, PagePermissions::ReadOnly)?;
-    manager.map_segment(mmu, info.kernel_image.data, PagePermissions::ReadWrite)?;
-    if let Some(console) = info.early_console {
-        mmu.map(
-            &mut *manager,
-            console.virtual_address,
-            PageMapping {
-                physical_address: console.physical_address,
-                attributes: PageAttributes {
-                    permissions: PagePermissions::ReadWrite,
-                    memory_type: console.memory_type,
-                    user_accessible: false,
-                },
-            },
-        )?;
-    }
-
-    mmu.switch_root(&*manager)?;
-    manager.initialized = true;
-    Ok(())
-}
-
-pub fn allocate_frame() -> Result<Frame, MemoryError> {
-    let mut manager = MEMORY_MANAGER.lock();
-    if !manager.initialized {
-        return Err(MemoryError::NotInitialized);
-    }
-    manager.allocate_frame(mmu::mmu())
+pub fn manager() -> &'static MemoryManager {
+    MEMORY_MANAGER.get().expect("memory is not initialized")
 }
 
 /// # Safety
 ///
-/// 该帧不得被活动映射或设备引用。
-pub fn release_frame(frame: Frame) -> Result<(), MemoryError> {
-    let mut manager = MEMORY_MANAGER.lock();
-    if !manager.initialized {
-        return Err(MemoryError::NotInitialized);
-    }
-    manager.release_frame(frame, mmu::mmu())
-}
-
-impl PageTableFrames for MemoryManager {
-    fn root_address(&self) -> u64 {
-        self.root
-            .as_ref()
-            .expect("page table root is not allocated")
-            .physical_address()
-    }
-
-    fn take_table(&mut self) -> Result<u64, MmuError> {
-        self.allocate_frame(mmu::mmu())
-            .map(|frame| frame.physical_address())
-            .map_err(|error| match error {
-                MemoryError::NoMemory => MmuError::NoMemory,
-                MemoryError::Mmu(error) => error,
-                _ => MmuError::InvalidTable,
-            })
-    }
-
-    fn return_table(&mut self, physical_address: u64) {
-        let frame = self
-            .frame_at(physical_address)
-            .expect("page table returned a frame outside managed memory");
-        self.release_frame(frame, mmu::mmu())
-            .expect("failed to return page table frame");
+/// 本地中断须关闭，物理访问窗口须可用，交接 RAM 须已脱离外部使用。
+pub fn initialize(regions: &[MemoryRegion]) -> Result<(), MemoryError> {
+    let mut initialized = false;
+    MEMORY_MANAGER.try_call_once(|| -> Result<_, MemoryError> {
+        let allocator = FrameAllocator::new(regions)?;
+        initialized = true;
+        Ok(MemoryManager {
+            allocator: Mutex::new(allocator),
+        })
+    })?;
+    if initialized {
+        Ok(())
+    } else {
+        Err(MemoryError::AlreadyInitialized)
     }
 }
