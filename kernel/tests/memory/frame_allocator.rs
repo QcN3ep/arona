@@ -10,6 +10,7 @@ fn allocation_failure_rolls_back_every_taken_frame() {
     let mmu = &MMU;
     let manager = initialize(&memory(4));
     let initial = manager.stats();
+    mmu.inspect_on_zero.store(true, Ordering::Relaxed);
     mmu.zeros_until_failure.store(1, Ordering::Relaxed);
     assert!(matches!(
         manager.allocate(FrameOwner::User(1), FramePurpose::Data, 3),
@@ -398,6 +399,11 @@ fn region_directory_respects_capacity_and_fits_a_small_stack() {
                     MAX_MEMORY_REGIONS as u64,
                 )
                 .unwrap();
+            let first = frame.frames().next().unwrap();
+            let reads = MMU.reads.load(Ordering::Relaxed);
+            assert_eq!(frame.info().frames, MAX_MEMORY_REGIONS as u64);
+            assert!(frame.contains(first));
+            assert!(MMU.reads.load(Ordering::Relaxed) - reads <= 32);
             assert_eq!(
                 frame
                     .frames()

@@ -58,7 +58,11 @@ impl MemoryManager {
         frames: u64,
     ) -> Result<FrameAllocation, MemoryError> {
         let head = self.allocator.lock().allocate(owner, purpose, frames)?;
-        Ok(FrameAllocation { head })
+        let allocation = FrameAllocation { head };
+        for frame in allocation.frames() {
+            crate::hardware::mmu().zero_frame(frame.address())?;
+        }
+        Ok(allocation)
     }
 
     fn reference(

@@ -10,7 +10,7 @@ pub(super) const KERNEL_POOL_FRAMES: u64 = 32 * 1024 * 1024 / PAGE_SIZE as u64;
 
 const END: u64 = u64::MAX;
 const WORDS: usize = 8;
-const REGION_WORDS: usize = 4;
+const REGION_WORDS: usize = 5;
 const REGIONS_PER_FRAME: usize = PAGE_SIZE / (REGION_WORDS * size_of::<u64>());
 const DIRECTORY_FRAMES: usize = MAX_MEMORY_REGIONS.div_ceil(REGIONS_PER_FRAME);
 const RECORDS_PER_FRAME: u64 = (PAGE_SIZE / (WORDS * size_of::<u64>())) as u64;
@@ -41,6 +41,7 @@ struct ManagedRegion {
     range: PhysRange,
     state: MemoryRegionState,
     first: u64,
+    available_first: u64,
 }
 
 struct FrameMetadata {
@@ -84,9 +85,9 @@ impl FrameAllocator {
         for region in allocator.metadata.regions() {
             let metadata_frames = allocator
                 .metadata
-                .storage_ranges()
-                .find(|range| range.start == region.range.start)
-                .map_or(0, |range| (range.end - range.start) / PAGE_SIZE as u64);
+                .frames
+                .saturating_sub(region.available_first)
+                .min(region.frame_count());
             for offset in 0..region.frame_count() {
                 let index = region.first + offset;
                 let record = if region.state == MemoryRegionState::BootReserved {
@@ -143,11 +144,6 @@ impl FrameAllocator {
         for _ in 0..frames {
             let index = self.free[pool as usize];
             let mut record = self.metadata.read(index);
-            let address = self.metadata.physical_address(index);
-            if let Err(error) = hardware::mmu().zero_frame(address) {
-                self.recycle(head);
-                return Err(error.into());
-            }
             self.free[pool as usize] = record.next;
             self.pools[pool as usize].free_frames -= 1;
             record.next = head;
@@ -506,9 +502,14 @@ impl FrameMetadata {
             remaining -= prefix;
         }
         let mut first = 0;
+        let mut available_first = 0;
         for (index, mut region) in Self::input_regions(regions).enumerate() {
             region.first = first;
+            region.available_first = available_first;
             first += region.frame_count();
+            if region.state == MemoryRegionState::Available {
+                available_first += region.frame_count();
+            }
             metadata.write_region(index, region)?;
         }
         Ok(metadata)
@@ -533,6 +534,7 @@ impl FrameMetadata {
                 range,
                 state: region.state,
                 first: 0,
+                available_first: 0,
             })
         })
     }
@@ -546,83 +548,88 @@ impl FrameMetadata {
                 region.range.end,
                 region.first,
                 u64::from(region.state == MemoryRegionState::BootReserved),
+                region.available_first,
             ],
         )?;
         Ok(())
     }
 
     fn regions(&self) -> impl Iterator<Item = ManagedRegion> + '_ {
-        (0..self.region_count).map(|index| {
-            let mut words = [0; REGION_WORDS];
-            hardware::mmu()
-                .read_frame(
-                    self.directory[index / REGIONS_PER_FRAME],
-                    (index % REGIONS_PER_FRAME) * REGION_WORDS,
-                    &mut words,
-                )
-                .expect("failed to read memory region");
-            ManagedRegion {
-                range: PhysRange {
-                    start: words[0],
-                    end: words[1],
-                },
-                first: words[2],
-                state: if words[3] == 0 {
-                    MemoryRegionState::Available
-                } else {
-                    MemoryRegionState::BootReserved
-                },
-            }
-        })
+        (0..self.region_count).map(|index| self.region(index))
     }
 
-    fn storage_ranges(&self) -> impl Iterator<Item = PhysRange> + '_ {
-        self.regions()
-            .filter(|region| region.state == MemoryRegionState::Available)
-            .scan(self.frames, |remaining, region| {
-                if *remaining == 0 {
-                    return None;
-                }
-                let frames = (*remaining).min(region.frame_count());
-                *remaining -= frames;
-                Some(PhysRange {
-                    start: region.range.start,
-                    end: region.range.start + frames * PAGE_SIZE as u64,
-                })
-            })
+    fn region(&self, index: usize) -> ManagedRegion {
+        let mut words = [0; REGION_WORDS];
+        hardware::mmu()
+            .read_frame(
+                self.directory[index / REGIONS_PER_FRAME],
+                (index % REGIONS_PER_FRAME) * REGION_WORDS,
+                &mut words,
+            )
+            .expect("failed to read memory region");
+        ManagedRegion {
+            range: PhysRange {
+                start: words[0],
+                end: words[1],
+            },
+            first: words[2],
+            available_first: words[4],
+            state: if words[3] == 0 {
+                MemoryRegionState::Available
+            } else {
+                MemoryRegionState::BootReserved
+            },
+        }
+    }
+
+    fn find_region(&self, before: impl Fn(ManagedRegion) -> bool) -> Option<ManagedRegion> {
+        let mut start = 0;
+        let mut end = self.region_count;
+        while start < end {
+            let middle = start + (end - start) / 2;
+            let region = self.region(middle);
+            if before(region) {
+                start = middle + 1;
+            } else {
+                end = middle;
+            }
+        }
+        (start < self.region_count).then(|| self.region(start))
     }
 
     fn index(&self, address: u64) -> Result<u64, MemoryError> {
         if !address.is_multiple_of(PAGE_SIZE as u64) {
             return Err(MemoryError::InvalidFrame);
         }
-        self.regions()
-            .find(|region| region.range.start <= address && address < region.range.end)
+        self.find_region(|region| region.range.end <= address)
+            .filter(|region| region.range.start <= address)
             .map(|region| region.first + (address - region.range.start) / PAGE_SIZE as u64)
             .ok_or(MemoryError::InvalidFrame)
     }
 
     fn physical_address(&self, index: u64) -> u64 {
         let region = self
-            .regions()
-            .find(|region| region.first <= index && index - region.first < region.frame_count())
+            .find_region(|region| region.first + region.frame_count() <= index)
             .expect("frame index is outside managed memory");
         region.range.start + (index - region.first) * PAGE_SIZE as u64
     }
 
     fn location(&self, index: u64) -> (u64, usize) {
-        let mut frame = self.directory_frames + index / RECORDS_PER_FRAME;
-        for range in self.storage_ranges() {
-            let frames = (range.end - range.start) / PAGE_SIZE as u64;
-            if frame < frames {
-                return (
-                    range.start + frame * PAGE_SIZE as u64,
-                    (index % RECORDS_PER_FRAME) as usize * WORDS,
-                );
-            }
-            frame -= frames;
-        }
-        panic!("frame metadata is missing")
+        let frame = self.directory_frames + index / RECORDS_PER_FRAME;
+        let region = self
+            .find_region(|region| {
+                let available = if region.state == MemoryRegionState::Available {
+                    region.frame_count()
+                } else {
+                    0
+                };
+                region.available_first + available <= frame
+            })
+            .expect("frame metadata is missing");
+        (
+            region.range.start + (frame - region.available_first) * PAGE_SIZE as u64,
+            (index % RECORDS_PER_FRAME) as usize * WORDS,
+        )
     }
 
     fn read(&self, index: u64) -> FrameRecord {

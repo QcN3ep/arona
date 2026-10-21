@@ -8,7 +8,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
         Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -37,6 +37,8 @@ struct PhysicalMmu {
     writes_until_failure: AtomicU64,
     invalidations: AtomicU64,
     levels: AtomicUsize,
+    reads: AtomicU64,
+    inspect_on_zero: AtomicBool,
 }
 
 static MMU: PhysicalMmu = PhysicalMmu {
@@ -46,6 +48,8 @@ static MMU: PhysicalMmu = PhysicalMmu {
     writes_until_failure: AtomicU64::new(NO_FAILURE),
     invalidations: AtomicU64::new(0),
     levels: AtomicUsize::new(3),
+    reads: AtomicU64::new(0),
+    inspect_on_zero: AtomicBool::new(false),
 };
 
 fn isolated(name: &str) -> bool {
@@ -103,6 +107,7 @@ impl Mmu for PhysicalMmu {
     }
 
     fn read_frame(&self, address: u64, offset: usize, words: &mut [u64]) -> Result<(), MmuError> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         self.validate(address, offset, words.len())?;
         let memory = self.memory.lock().unwrap();
         if let Some(frame) = memory.get(&address) {
@@ -125,6 +130,9 @@ impl Mmu for PhysicalMmu {
     }
 
     fn zero_frame(&self, address: u64) -> Result<(), MmuError> {
+        if self.inspect_on_zero.load(Ordering::Relaxed) {
+            let _ = memory::manager().stats();
+        }
         self.validate(address, 0, PAGE_SIZE / 8)?;
         let remaining = self.zeros_until_failure.load(Ordering::Relaxed);
         if remaining != NO_FAILURE {
@@ -282,7 +290,7 @@ fn with_metadata(mut regions: Vec<MemoryRegion>) -> Vec<MemoryRegion> {
         })
         .map(|region| (region.range.end - region.range.start) / PAGE)
         .sum();
-    let directory = regions.len().div_ceil(PAGE_SIZE / 32) as u64;
+    let directory = regions.len().div_ceil(PAGE_SIZE / 40) as u64;
     let mut extra = 0;
     loop {
         let required = directory + (managed + extra).div_ceil(PAGE / 64);
