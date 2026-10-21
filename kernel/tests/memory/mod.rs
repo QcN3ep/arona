@@ -4,6 +4,7 @@ mod address_space;
 mod direct_map;
 mod frame;
 mod frame_allocator;
+mod heap_allocator;
 mod paging;
 
 use std::{
@@ -72,6 +73,7 @@ fn isolated(name: &str) -> bool {
     let levels = if name.starts_with("paging::")
         || name.starts_with("address_space::")
         || name.starts_with("direct_map::")
+        || name.starts_with("heap_allocator::")
     {
         &[3, 4][..]
     } else {

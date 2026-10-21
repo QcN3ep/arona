@@ -4,16 +4,19 @@ mod address_space;
 mod direct_map;
 mod frame;
 mod frame_allocator;
+mod heap_allocator;
 mod mapping;
 mod paging;
 mod region;
 
+use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::{Mutex, Once};
 
 use crate::hardware::mmu::MmuError;
 use direct_map::DirectMap;
 use frame_allocator::FrameAllocator;
+use heap_allocator::HeapAllocator;
 
 pub use address_space::{AddressSpace, USER_ADDRESS_RANGE};
 pub use frame::{
@@ -22,6 +25,7 @@ pub use frame::{
     ReservedRangeReference,
 };
 pub use frame_allocator::{MemoryStats, PoolStats};
+pub use heap_allocator::{HeapAllocation, HeapStats};
 pub use mapping::{MappingInfo, MappingOptions, MappingRights};
 pub use region::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRange, VirtRange};
 
@@ -32,6 +36,7 @@ static MEMORY_MANAGER: MemoryManager = MemoryManager {
     kernel_space: Once::new(),
     mapping_records: AtomicUsize::new(0),
     direct_map: DirectMap::new(),
+    heap_allocator: HeapAllocator::new(),
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,6 +70,7 @@ pub struct MemoryManager {
     kernel_space: Once<AddressSpace>,
     mapping_records: AtomicUsize,
     direct_map: DirectMap,
+    heap_allocator: HeapAllocator,
 }
 
 struct MappingQuota(usize);
@@ -123,6 +129,19 @@ impl MemoryManager {
 
     pub fn stats(&self) -> MemoryStats {
         self.allocator().lock().stats()
+    }
+
+    pub fn allocate_heap(&self, layout: Layout) -> Result<HeapAllocation, MemoryError> {
+        self.heap_allocator.allocate(layout)
+    }
+
+    pub fn heap_stats(&self) -> HeapStats {
+        self.heap_allocator.stats()
+    }
+
+    /// 回收堆缓存，返回归还的页框数。
+    pub fn reclaim_heap(&self) -> usize {
+        self.heap_allocator.reclaim()
     }
 
     pub fn allocate(

@@ -70,8 +70,12 @@ impl DirectMap {
         }
     }
 
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
+
     pub fn active_address(&self, frame: Frame) -> Option<usize> {
-        if !self.active.load(Ordering::Acquire) {
+        if !self.is_active() {
             return None;
         }
         self.address(frame)
