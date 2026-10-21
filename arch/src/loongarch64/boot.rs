@@ -180,34 +180,6 @@ fn firmware_address(physical: usize, size: usize) -> usize {
 
 /// # Safety
 ///
-/// 只能由处理器在配置有效的页表填充入口调用。
-#[unsafe(naked)]
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".text.entry.refill")]
-unsafe extern "C" fn _boot_tlb_refill() -> ! {
-    core::arch::naked_asm!(
-        "csrwr $t0, 0x8b",
-        "csrrd $t0, 0x1b",
-        "beqz $t0, .Lrefill_failed",
-        "lddir $t0, $t0, 3",
-        "beqz $t0, .Lrefill_failed",
-        "lddir $t0, $t0, 2",
-        "beqz $t0, .Lrefill_failed",
-        "lddir $t0, $t0, 1",
-        "beqz $t0, .Lrefill_failed",
-        "ldpte $t0, 0",
-        "ldpte $t0, 1",
-        "tlbfill",
-        "csrrd $t0, 0x8b",
-        "ertn",
-        ".Lrefill_failed:",
-        "idle 0",
-        "b .Lrefill_failed",
-    );
-}
-
-/// # Safety
-///
 /// 只能由处理器在高半区映射和异常入口有效时调用。
 #[unsafe(naked)]
 #[unsafe(no_mangle)]

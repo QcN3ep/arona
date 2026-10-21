@@ -1,8 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::arch::{asm, naked_asm};
+use core::{
+    arch::{asm, naked_asm},
+    sync::atomic::Ordering,
+};
 
-use kernel::memory::Frame;
+use kernel::{
+    hardware::{
+        self,
+        mmu::{PAGE_SIZE, PagePermissions, PageTableEntry},
+    },
+    memory::Frame,
+    trap::{FaultAccess, Trap, TrapEvent, TrapOrigin, TrapOutcome},
+};
 
 pub fn floating_enabled() -> bool {
     let extensions: usize;
@@ -145,6 +155,16 @@ pub extern "C" fn fault() -> ! {
 }
 
 #[unsafe(naked)]
+pub extern "C" fn kernel_page_fault() -> ! {
+    naked_asm!(
+        "li.d $t0, 0xffff900000000000",
+        "move $sp, $zero",
+        "ld.d $t1, $t0, 0",
+        "b .",
+    );
+}
+
+#[unsafe(naked)]
 pub extern "C" fn bounds_fault() -> ! {
     naked_asm!("asrtgt.d $zero, $zero", "b .");
 }
@@ -235,4 +255,100 @@ pub extern "C" fn user_code() -> ! {
 #[unsafe(link_section = ".text.test.user.finish")]
 pub extern "C" fn user_finish() -> ! {
     naked_asm!(".balign 4096", "addi.d $a7, $zero, 18", "syscall 0", "b .");
+}
+
+pub fn handle_refill(trap: Trap) -> TrapOutcome {
+    assert_eq!(trap.origin, TrapOrigin::User);
+    let mmu = hardware::mmu();
+    let root = Frame::new(arch::boot::kernel_image().boot_tables.start).unwrap();
+    match trap.event {
+        TrapEvent::Syscall { number: 20, .. } => {
+            mmu.switch_root(root).unwrap();
+            user_root(Frame::new(0).unwrap());
+            mmu.invalidate_all();
+            return TrapOutcome::Return {
+                status: 0,
+                values: [0; 2],
+            };
+        }
+        TrapEvent::Syscall { number: 18, .. } => {
+            assert_eq!(super::PAGE_FAULTS.load(Ordering::Relaxed), 6);
+            super::uart()
+                .write(format_args!("Trap tests passed: refill\n"))
+                .unwrap();
+            hardware::cpu().halt()
+        }
+        TrapEvent::PageFault { address, access } => {
+            let leaf = Frame::new(super::USER_LEAF.load(Ordering::Relaxed) as u64).unwrap();
+            let table = |offset| Frame::new(leaf.address() - offset * PAGE_SIZE as u64).unwrap();
+            match address {
+                0x10008 => {
+                    assert_eq!(access, FaultAccess::Execute);
+                    user_root(root);
+                }
+                0x40000 => {
+                    assert_eq!(access, FaultAccess::Write);
+                    let mapping = mmu.read_entry(leaf, 0x20, 0).unwrap();
+                    mmu.write_entry(leaf, 0, 0, mapping).unwrap();
+                    mmu.write_entry(leaf, 0x40, 0, mapping).unwrap();
+                }
+                0x200000 | 0x40000000 | 0x8000000000 => {
+                    assert_eq!(access, FaultAccess::Read);
+                    let (parent, child, level) = match address {
+                        0x200000 => (table(1), leaf, 1),
+                        0x40000000 => (table(2), table(1), 2),
+                        _ => (root, table(2), 3),
+                    };
+                    mmu.write_entry(parent, 1, level, PageTableEntry::Table(child))
+                        .unwrap();
+                }
+                0x41000 => {
+                    assert_eq!(access, FaultAccess::Execute);
+                    let PageTableEntry::Mapping(mut mapping) =
+                        mmu.read_entry(leaf, 0x32, 0).unwrap()
+                    else {
+                        panic!("missing test code mapping");
+                    };
+                    mapping.attributes.permissions = PagePermissions::ReadExecute;
+                    mmu.write_entry(leaf, 0x41, 0, PageTableEntry::Mapping(mapping))
+                        .unwrap();
+                }
+                _ => panic!("unexpected refill fault: {trap:?}"),
+            }
+            mmu.invalidate_page(address).unwrap();
+            super::PAGE_FAULTS.fetch_add(1, Ordering::Relaxed);
+        }
+        _ => panic!("unexpected refill trap: {trap:?}"),
+    }
+    TrapOutcome::Resume
+}
+
+#[unsafe(naked)]
+#[unsafe(link_section = ".text.test.refill")]
+pub extern "C" fn refill_user() -> ! {
+    naked_asm!(
+        ".balign 4096",
+        "addi.d $a7, $zero, 20",
+        "syscall 0",
+        "addi.d $t1, $zero, 73",
+        "li.d $t0, 0x40000",
+        "st.d $t1, $t0, 0",
+        "ld.d $t2, $t0, 0",
+        "bne $t1, $t2, 2f",
+        "li.d $t0, 0x200000",
+        "ld.d $t2, $t0, 0",
+        "bne $t1, $t2, 2f",
+        "li.d $t0, 0x40000000",
+        "ld.d $t2, $t0, 0",
+        "bne $t1, $t2, 2f",
+        "li.d $t0, 0x8000000000",
+        "ld.d $t2, $t0, 0",
+        "bne $t1, $t2, 2f",
+        "li.d $t0, 0x41000",
+        "jirl $zero, $t0, 0",
+        "2:",
+        "addi.d $a7, $zero, 99",
+        "syscall 0",
+        "b .",
+    );
 }

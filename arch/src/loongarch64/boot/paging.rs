@@ -2,7 +2,7 @@
 
 //! 临时启动页表、处理器映射配置与高半区切换。
 
-use crate::paging::PAGE_TABLE_WINDOW;
+use crate::{loongarch64::paging::refill, paging::PAGE_TABLE_WINDOW};
 
 const KERNEL_BASE: usize = 0xffff_8000_0020_0000;
 pub(super) const MMIO_BASE: usize = 0x8000_0000_0000_0000;
@@ -82,7 +82,7 @@ pub(super) unsafe extern "C" fn enter(system_table: usize) -> ! {
         write_csr::<0x1d>(39 | (9 << 6)); // PWCH
         write_csr::<0x1e>(12); // STLBPS
         write_csr::<0x8e>(12); // TLBREHI.PS
-        write_csr::<0x88>(super::_boot_tlb_refill as *const () as usize); // TLBRENTRY
+        write_csr::<0x88>(refill as *const () as usize); // TLBRENTRY
         write_csr::<0xc>(trap); // EENTRY
         write_csr::<0x180>(0x11); // 低地址 DMW 维持切换期间的取指。
         write_csr::<0x181>(MMIO_BASE | 1);

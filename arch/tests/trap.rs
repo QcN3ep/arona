@@ -99,6 +99,10 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
                 .unwrap();
         }
         "user" => enter_user(),
+        #[cfg(target_arch = "loongarch64")]
+        "refill" => enter_user(),
+        #[cfg(target_arch = "loongarch64")]
+        "refill-kernel" => isa::kernel_page_fault(),
         "fault" => isa::fault(),
         #[cfg(target_arch = "loongarch64")]
         "bounds" => isa::bounds_fault(),
@@ -116,6 +120,10 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
 fn handle(trap: Trap) -> TrapOutcome {
     assert_eq!(hardware::cpu().interrupt_state(), InterruptState::Disabled);
     assert!(!isa::floating_enabled());
+    #[cfg(target_arch = "loongarch64")]
+    if CASE == "refill" {
+        return isa::handle_refill(trap);
+    }
     match trap.event {
         TrapEvent::SoftwareInterrupt => {
             assert_eq!(trap.origin, TrapOrigin::Kernel);
@@ -209,10 +217,17 @@ fn enter_user() -> ! {
         parent = child;
     }
     USER_LEAF.store(parent.address() as usize, Ordering::Relaxed);
+    let user_code = isa::user_code as *const () as usize;
+    #[cfg(target_arch = "loongarch64")]
+    let user_code = if CASE == "refill" {
+        isa::refill_user as *const () as usize
+    } else {
+        user_code
+    };
     for (address, physical_address, permissions, user_accessible) in [
         (
             0x10000,
-            physical(isa::user_code as *const () as usize),
+            physical(user_code),
             PagePermissions::ReadExecute,
             true,
         ),

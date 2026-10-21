@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::arch::asm;
+use core::arch::{asm, naked_asm};
 use core::ops::Range;
 
 use kernel::hardware::mmu::{
@@ -189,11 +189,11 @@ impl Mmu for LoongArchMmu {
         if root == 0 {
             return Err(MmuError::InvalidTable);
         }
-        let physical_refill = refill_entry() - 0xffff_8000_0000_0000;
         // SAFETY: 新页表须覆盖当前代码、栈和活动数据，中断须关闭且后备页须持续有效。
         unsafe {
             asm!(
                 "dbar 0",
+                "la.abs {refill}, {refill_entry}",
                 "csrwr {refill}, 0x88",
                 "csrwr {pwcl}, 0x1c",
                 "csrwr {pwch}, 0x1d",
@@ -208,7 +208,8 @@ impl Mmu for LoongArchMmu {
                 "csrwr $zero, 0x183",
                 "invtlb 0, $zero, $zero",
                 "ibar 0",
-                refill = inout(reg) physical_refill => _,
+                refill = out(reg) _,
+                refill_entry = sym refill,
                 pwcl = inout(reg) PWCL => _,
                 pwch = inout(reg) PWCH => _,
                 page_size = inout(reg) 12usize => _,
@@ -302,36 +303,36 @@ fn synchronize_instructions() {
     unsafe { asm!("dbar 0", "ibar 0", options(nostack)) };
 }
 
-fn refill_entry() -> usize {
-    let entry: usize;
-    // SAFETY: refill 入口须在物理地址执行，不依赖栈或虚拟映射；页表根和遍历参数须有效。
-    unsafe {
-        asm!(
-            "la.local {entry}, 2f",
-            "b 4f",
-            ".balign 128",
-            "2:",
-            "csrwr $t0, 0x8b",
-            "csrrd $t0, 0x1b",
-            "beqz $t0, 3f",
-            "lddir $t0, $t0, 3",
-            "beqz $t0, 3f",
-            "lddir $t0, $t0, 2",
-            "beqz $t0, 3f",
-            "lddir $t0, $t0, 1",
-            "beqz $t0, 3f",
-            "ldpte $t0, 0",
-            "ldpte $t0, 1",
-            "tlbfill",
-            "csrrd $t0, 0x8b",
-            "ertn",
-            "3:",
-            "idle 0",
-            "b 3b",
-            "4:",
-            entry = out(reg) entry,
-            options(nomem, nostack),
-        );
-    }
-    entry
+/// # Safety
+///
+/// 只能作为物理 refill 入口执行，页表根和遍历参数须有效且持续可读。
+#[unsafe(naked)]
+#[unsafe(link_section = ".text.entry.refill")]
+pub(super) extern "C" fn refill() -> ! {
+    naked_asm!(
+        "csrwr $t0, 0x8b",
+        "csrrd $t0, 0x1b",
+        "beqz $t0, 2f",
+        "lddir $t0, $t0, 3",
+        "beqz $t0, 2f",
+        "lddir $t0, $t0, 2",
+        "beqz $t0, 2f",
+        "lddir $t0, $t0, 1",
+        "beqz $t0, 2f",
+        "ldpte $t0, 0",
+        "ldpte $t0, 1",
+        "b 3f",
+        "2:",
+        // 填入 4 KiB 无效项，重试后由硬件报告 PIL/PIS/PIF。
+        "csrwr $zero, 0x8c",
+        "csrwr $zero, 0x8d",
+        "csrrd $t0, 0x8e",
+        "bstrins.d $t0, $zero, 5, 0",
+        "ori $t0, $t0, 12",
+        "csrwr $t0, 0x8e",
+        "3:",
+        "tlbfill",
+        "csrrd $t0, 0x8b",
+        "ertn",
+    );
 }
