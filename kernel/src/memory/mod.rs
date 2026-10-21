@@ -97,7 +97,9 @@ impl MemoryManager {
     fn allocate_frame(&mut self, mmu: &dyn Mmu) -> Result<Frame, MemoryError> {
         if let Some(address) = self.free.as_ref().map(Frame::physical_address) {
             let frame = Frame { address };
-            let next = mmu.read_frame_link(frame.address)?;
+            let mut words = [0];
+            mmu.read_frame(frame.address, 0, &mut words)?;
+            let next = words[0];
             let free = if next == END_OF_FREE_LIST {
                 None
             } else {
@@ -121,11 +123,13 @@ impl MemoryManager {
         if !self.owns(frame.address) {
             return Err(MemoryError::InvalidFrame);
         }
-        mmu.write_frame_link(
+        mmu.write_frame(
             frame.address,
-            self.free
+            0,
+            &[self
+                .free
                 .as_ref()
-                .map_or(END_OF_FREE_LIST, Frame::physical_address),
+                .map_or(END_OF_FREE_LIST, Frame::physical_address)],
         )?;
         self.free = Some(frame);
         Ok(())

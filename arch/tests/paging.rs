@@ -166,6 +166,7 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     assert_eq!(bound.unmap(&mut first, TEST_ADDRESS).unwrap(), page);
 
     run_operations(&mmu, &mut first, data);
+    run_frame_access(&mmu, data);
     install_kernel(&mmu, &mut first);
     mmu.initialize(&mut second).unwrap();
     install_kernel(&mmu, &mut second);
@@ -324,6 +325,30 @@ fn run_operations(mmu: &dyn Mmu, storage: &mut Storage<'_>, data: u64) {
         mmu.invalidate_page(1usize << 55),
         Err(MmuError::InvalidAddress)
     );
+}
+
+fn run_frame_access(mmu: &dyn Mmu, address: u64) {
+    let mut words = [u64::MAX; PAGE_SIZE / size_of::<u64>()];
+    mmu.zero_frame(address).unwrap();
+    mmu.read_frame(address, 0, &mut words).unwrap();
+    assert_eq!(words, [0; PAGE_SIZE / size_of::<u64>()]);
+    let last = words.len() - 1;
+    mmu.write_frame(address, last, &[41]).unwrap();
+    assert_eq!(
+        mmu.write_frame(address, last, &[73, 42]),
+        Err(MmuError::InvalidRange)
+    );
+    assert_eq!(
+        mmu.read_frame(address, usize::MAX, &mut []),
+        Err(MmuError::InvalidRange)
+    );
+    assert_eq!(mmu.zero_frame(address + 1), Err(MmuError::InvalidAlignment));
+    mmu.read_frame(address, 0, &mut words).unwrap();
+    assert_eq!(words[last], 41);
+    assert!(words[..last].iter().all(|word| *word == 0));
+    mmu.zero_frame(address).unwrap();
+    mmu.read_frame(address, 0, &mut words).unwrap();
+    assert_eq!(words, [0; PAGE_SIZE / size_of::<u64>()]);
 }
 
 fn install_kernel(mmu: &dyn Mmu, storage: &mut Storage<'_>) {

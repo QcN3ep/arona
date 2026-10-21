@@ -76,6 +76,38 @@ pub(crate) fn window_table_physical() -> u64 {
     (core::ptr::addr_of!(PAGE_TABLE_WINDOW_TABLE) as usize - KERNEL_OFFSET) as u64
 }
 
+pub(crate) fn read_frame<F: Format>(
+    format: &F,
+    address: u64,
+    offset: usize,
+    words: &mut [u64],
+) -> Result<(), MmuError> {
+    if offset > ENTRIES || words.len() > ENTRIES - offset {
+        return Err(MmuError::InvalidRange);
+    }
+    format.with_table(address, |page| {
+        for (index, word) in words.iter_mut().enumerate() {
+            *word = page.read(offset + index);
+        }
+    })
+}
+
+pub(crate) fn write_frame<F: Format>(
+    format: &F,
+    address: u64,
+    offset: usize,
+    words: &[u64],
+) -> Result<(), MmuError> {
+    if offset > ENTRIES || words.len() > ENTRIES - offset {
+        return Err(MmuError::InvalidRange);
+    }
+    format.with_table(address, |page| {
+        for (index, word) in words.iter().enumerate() {
+            page.write(offset + index, *word);
+        }
+    })
+}
+
 pub(crate) fn validate_physical<F: Format>(address: u64) -> Result<(), MmuError> {
     if address >= 1 << F::PHYSICAL_BITS {
         return Err(MmuError::InvalidAddress);

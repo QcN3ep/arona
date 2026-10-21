@@ -143,11 +143,26 @@ pub trait Mmu: Sync {
     /// 新页表须保留当前代码、栈和仍在使用的数据映射；存储及其后备页须在下次切换前保持有效。
     fn switch_root(&self, frames: &dyn PageTableFrames) -> Result<(), MmuError>;
 
-    /// 读取物理帧首字中的链表链接。
-    fn read_frame_link(&self, physical_address: u64) -> Result<u64, MmuError>;
+    /// offset 以 u64 为单位。
+    ///
+    /// # Safety
+    ///
+    /// 物理访问须有有效的普通内存后备，且不得与活动 Rust 引用冲突。
+    fn read_frame(
+        &self,
+        physical_address: u64,
+        offset: usize,
+        words: &mut [u64],
+    ) -> Result<(), MmuError>;
 
-    /// 写入物理帧首字中的链表链接。
-    fn write_frame_link(&self, physical_address: u64, next: u64) -> Result<(), MmuError>;
+    fn write_frame(
+        &self,
+        physical_address: u64,
+        offset: usize,
+        words: &[u64],
+    ) -> Result<(), MmuError>;
+
+    fn zero_frame(&self, physical_address: u64) -> Result<(), MmuError>;
 
     /// 使包含 address 的页在本地 TLB 失效，包括该地址的全局项。
     fn invalidate_page(&self, address: usize) -> Result<(), MmuError>;

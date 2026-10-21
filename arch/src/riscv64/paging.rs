@@ -189,13 +189,26 @@ impl Mmu for Sv39 {
         Ok(())
     }
 
-    fn read_frame_link(&self, physical_address: u64) -> Result<u64, MmuError> {
-        self.with_table(physical_address, |table| table.read(0))
+    fn read_frame(
+        &self,
+        physical_address: u64,
+        offset: usize,
+        words: &mut [u64],
+    ) -> Result<(), MmuError> {
+        paging::read_frame(self, physical_address, offset, words)
     }
 
-    fn write_frame_link(&self, physical_address: u64, next: u64) -> Result<(), MmuError> {
-        self.with_table(physical_address, |table| table.write(0, next))?;
-        Ok(())
+    fn write_frame(
+        &self,
+        physical_address: u64,
+        offset: usize,
+        words: &[u64],
+    ) -> Result<(), MmuError> {
+        paging::write_frame(self, physical_address, offset, words)
+    }
+
+    fn zero_frame(&self, physical_address: u64) -> Result<(), MmuError> {
+        self.with_table(physical_address, PageTable::clear)
     }
 
     fn invalidate_page(&self, address: usize) -> Result<(), MmuError> {
