@@ -2,17 +2,21 @@
 
 mod frame;
 mod frame_allocator;
+mod paging;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
         Mutex,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 
 use kernel::{
-    hardware::mmu::{Mmu, MmuError, PAGE_SIZE, PageMapping, PagePermissions, PageTableFrames},
+    hardware::mmu::{
+        Mmu, MmuError, PAGE_SIZE, PageAttributes, PageMapping, PagePermissions, PageTableEntry,
+        PageTableLayout, TableWindow,
+    },
     memory::{
         self, Frame, FrameOwner, FramePool, FramePurpose, MAX_MEMORY_REGIONS, MemoryError,
         MemoryManager, MemoryRegion, MemoryRegionState, PhysRange, ReferenceKind,
@@ -30,30 +34,46 @@ struct PhysicalMmu {
     memory: Mutex<BTreeMap<u64, FrameBytes>>,
     zeros_until_failure: AtomicU64,
     bits: u32,
+    writes_until_failure: AtomicU64,
+    invalidations: AtomicU64,
+    levels: AtomicUsize,
 }
 
 static MMU: PhysicalMmu = PhysicalMmu {
     memory: Mutex::new(BTreeMap::new()),
     zeros_until_failure: AtomicU64::new(NO_FAILURE),
     bits: 56,
+    writes_until_failure: AtomicU64::new(NO_FAILURE),
+    invalidations: AtomicU64::new(0),
+    levels: AtomicUsize::new(3),
 };
 
 fn isolated(name: &str) -> bool {
     if std::env::var("ARONA_MEMORY_TEST").as_deref() == Ok(name) {
+        let levels = std::env::var("ARONA_TABLE_LEVELS").unwrap_or_else(|_| "3".into());
+        MMU.levels.store(levels.parse().unwrap(), Ordering::Relaxed);
         kernel::hardware::mmu::bind(&MMU).unwrap();
         return false;
     }
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", name, "--nocapture"])
-        .env("ARONA_MEMORY_TEST", name)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{name} failed:\n{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
+    let levels = if name.starts_with("paging::") {
+        &[3, 4][..]
+    } else {
+        &[3][..]
+    };
+    for levels in levels {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env("ARONA_MEMORY_TEST", name)
+            .env("ARONA_TABLE_LEVELS", levels.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{name} with {levels} levels failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
     true
 }
 
@@ -85,8 +105,8 @@ impl Mmu for PhysicalMmu {
     fn read_frame(&self, address: u64, offset: usize, words: &mut [u64]) -> Result<(), MmuError> {
         self.validate(address, offset, words.len())?;
         let memory = self.memory.lock().unwrap();
-        if let Some(page) = memory.get(&address) {
-            words.copy_from_slice(&page[offset..offset + words.len()]);
+        if let Some(frame) = memory.get(&address) {
+            words.copy_from_slice(&frame[offset..offset + words.len()]);
         } else {
             words.fill(u64::MAX);
         }
@@ -123,37 +143,110 @@ impl Mmu for PhysicalMmu {
         Ok(())
     }
 
-    fn is_valid_virtual_address(&self, _: usize) -> bool {
-        false
+    fn layout(&self) -> PageTableLayout {
+        PageTableLayout {
+            levels: self.levels.load(Ordering::Relaxed),
+            index_bits: 9,
+            window: TableWindow {
+                virtual_address: usize::MAX & !(PAGE_SIZE - 1),
+                table: Frame::new(0x1000).unwrap(),
+                level: 1,
+            },
+        }
     }
-    fn initialize(&self, _: &mut dyn PageTableFrames) -> Result<(), MmuError> {
-        Err(MmuError::Unsupported)
+
+    fn is_valid_virtual_address(&self, address: usize) -> bool {
+        (((address as i64) << 25) >> 25) as usize == address
     }
-    fn map(&self, _: &mut dyn PageTableFrames, _: usize, _: PageMapping) -> Result<(), MmuError> {
-        Err(MmuError::Unsupported)
-    }
-    fn unmap(&self, _: &mut dyn PageTableFrames, _: usize) -> Result<PageMapping, MmuError> {
-        Err(MmuError::Unsupported)
-    }
-    fn protect(
+
+    fn read_entry(
         &self,
-        _: &mut dyn PageTableFrames,
-        _: usize,
-        _: PagePermissions,
+        table: Frame,
+        index: usize,
+        level: usize,
+    ) -> Result<PageTableEntry, MmuError> {
+        if level >= self.layout().levels || index >= PAGE_SIZE / 8 {
+            return Err(MmuError::InvalidRange);
+        }
+        let mut words = [0];
+        self.read_frame(table.address(), index, &mut words)?;
+        let word = words[0];
+        if word == 0 {
+            return Ok(PageTableEntry::Empty);
+        }
+        let frame = Frame::new(word & !(PAGE - 1)).unwrap();
+        if level > 0 {
+            return Ok(PageTableEntry::Table(frame));
+        }
+        Ok(PageTableEntry::Mapping(PageMapping {
+            physical_address: frame.address(),
+            attributes: PageAttributes {
+                permissions: match (word >> 1) & 3 {
+                    0 => PagePermissions::ReadOnly,
+                    1 => PagePermissions::ReadWrite,
+                    2 => PagePermissions::ReadExecute,
+                    _ => PagePermissions::ExecuteOnly,
+                },
+                memory_type: kernel::hardware::mmu::MemoryType::Normal,
+                user_accessible: word & 16 != 0,
+            },
+        }))
+    }
+
+    fn write_entry(
+        &self,
+        table: Frame,
+        index: usize,
+        level: usize,
+        entry: PageTableEntry,
     ) -> Result<(), MmuError> {
-        Err(MmuError::Unsupported)
+        if level >= self.layout().levels || index >= PAGE_SIZE / 8 {
+            return Err(MmuError::InvalidRange);
+        }
+        let remaining = self.writes_until_failure.load(Ordering::Relaxed);
+        if remaining != NO_FAILURE {
+            if remaining == 0 {
+                self.writes_until_failure
+                    .store(NO_FAILURE, Ordering::Relaxed);
+                return Err(MmuError::InvalidTable);
+            }
+            self.writes_until_failure
+                .store(remaining - 1, Ordering::Relaxed);
+        }
+        let word = match entry {
+            PageTableEntry::Empty => 0,
+            PageTableEntry::Table(frame) if level > 0 => frame.address() | 1,
+            PageTableEntry::Mapping(mapping) if level == 0 => {
+                self.validate(mapping.physical_address, 0, 1)?;
+                let permissions = match mapping.attributes.permissions {
+                    PagePermissions::ReadOnly => 0,
+                    PagePermissions::ReadWrite => 1,
+                    PagePermissions::ReadExecute => 2,
+                    PagePermissions::ExecuteOnly => 3,
+                };
+                mapping.physical_address
+                    | 1
+                    | (permissions << 1)
+                    | if mapping.attributes.user_accessible {
+                        16
+                    } else {
+                        0
+                    }
+            }
+            _ => return Err(MmuError::InvalidTable),
+        };
+        self.write_frame(table.address(), index, &[word])
     }
-    fn query(&self, _: &dyn PageTableFrames, _: usize) -> Result<Option<PageMapping>, MmuError> {
-        Err(MmuError::Unsupported)
-    }
-    fn switch_root(&self, _: &dyn PageTableFrames) -> Result<(), MmuError> {
+
+    fn switch_root(&self, _: Frame) -> Result<(), MmuError> {
         Err(MmuError::Unsupported)
     }
     fn invalidate_page(&self, _: usize) -> Result<(), MmuError> {
-        Err(MmuError::Unsupported)
+        self.invalidate_all();
+        Ok(())
     }
     fn invalidate_all(&self) {
-        panic!("unexpected virtual memory operation");
+        self.invalidations.fetch_add(1, Ordering::Relaxed);
     }
     fn synchronize_code(&self, _: std::ops::Range<usize>) -> Result<(), MmuError> {
         Err(MmuError::Unsupported)

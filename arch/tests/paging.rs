@@ -6,15 +6,13 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use arch::device::uart::Uart;
-use kernel::hardware::mmu::{
-    MemoryType, Mmu, MmuError, PAGE_SIZE, PageAttributes, PageMapping, PagePermissions,
-    PageTableFrames,
+use kernel::{
+    hardware::mmu::{
+        MemoryType, Mmu, MmuError, PAGE_SIZE, PageAttributes, PageMapping, PagePermissions,
+        PageTableEntry,
+    },
+    memory::Frame,
 };
-
-#[cfg(target_arch = "loongarch64")]
-use arch::loongarch64::paging::LoongArchMmu;
-#[cfg(target_arch = "riscv64")]
-use arch::riscv64::paging::Sv39;
 
 #[cfg(target_arch = "riscv64")]
 const KERNEL_OFFSET: usize = 0xffff_ffbf_7fe0_0000;
@@ -23,93 +21,61 @@ const KERNEL_OFFSET: usize = 0xffff_8000_0000_0000;
 #[cfg(target_arch = "riscv64")]
 const UART: usize = 0xffff_ffc0_0020_0000;
 #[cfg(target_arch = "loongarch64")]
-const UART: usize = 0xffff_8000_4000_01e0;
-#[cfg(target_arch = "riscv64")]
-const BOOT_UART: usize = UART;
-#[cfg(target_arch = "loongarch64")]
-const BOOT_UART: usize = 0x8000_0000_1fe0_01e0;
-#[cfg(target_arch = "riscv64")]
-const UART_PHYSICAL: u64 = 0x1000_0000;
-#[cfg(target_arch = "loongarch64")]
-const UART_PHYSICAL: u64 = 0x1fe0_0000;
+const UART: usize = 0xffff_8000_0040_01e0;
 
-const TABLE_COUNT: usize = 16;
+const MAX_LEVELS: usize = 4;
 const TEST_ADDRESS: usize = 0x1_0000;
 const CODE_ADDRESS: usize = 0x2_0000;
 
 #[repr(C, align(4096))]
-struct Page([u8; PAGE_SIZE]);
+struct FrameBytes([u8; PAGE_SIZE]);
 
-static mut TABLES: [Page; 2 * TABLE_COUNT] = [const { Page([0; PAGE_SIZE]) }; 2 * TABLE_COUNT];
-static mut DATA: [Page; 2] = [const { Page([0; PAGE_SIZE]) }; 2];
-static mut CODE: Page = Page([0; PAGE_SIZE]);
-static CONSOLE: AtomicUsize = AtomicUsize::new(BOOT_UART);
+static mut TABLES: [FrameBytes; 2 * MAX_LEVELS] =
+    [const { FrameBytes([0; PAGE_SIZE]) }; 2 * MAX_LEVELS];
+static mut DATA: [FrameBytes; 2] = [const { FrameBytes([0; PAGE_SIZE]) }; 2];
+static mut CODE: FrameBytes = FrameBytes([0; PAGE_SIZE]);
+static CONSOLE: AtomicUsize = AtomicUsize::new(UART);
 
 unsafe extern "C" {
     static _sbss: u8;
     static _ebss: u8;
 }
 
-struct Storage<'a> {
-    pages: &'a mut [Page],
-    used: [bool; TABLE_COUNT],
-    remaining: usize,
+struct Tables {
+    root: Frame,
+    leaf: Frame,
 }
 
-impl<'a> Storage<'a> {
-    fn new(pages: &'a mut [Page]) -> Self {
-        let mut used = [false; TABLE_COUNT];
-        used[0] = true;
-        Self {
-            pages,
-            used,
-            remaining: usize::MAX,
+impl Tables {
+    fn new(mmu: &dyn Mmu, base: u64) -> Self {
+        let layout = mmu.layout();
+        let root = Frame::new(base).unwrap();
+        let mut words = [0; PAGE_SIZE / size_of::<u64>()];
+        mmu.read_frame(arch::boot::kernel_image().boot_tables.start, 0, &mut words)
+            .unwrap();
+        mmu.write_frame(base, 0, &words).unwrap();
+        let mut table = root;
+        for level in (1..layout.levels).rev() {
+            let child =
+                Frame::new(base + (layout.levels - level) as u64 * PAGE_SIZE as u64).unwrap();
+            mmu.zero_frame(child.address()).unwrap();
+            assert_eq!(
+                mmu.read_entry(table, 0, level).unwrap(),
+                PageTableEntry::Empty
+            );
+            mmu.write_entry(table, 0, level, PageTableEntry::Table(child))
+                .unwrap();
+            table = child;
         }
+        Self { root, leaf: table }
     }
 
-    fn index(&self, address: u64) -> Result<usize, MmuError> {
-        let offset = address
-            .checked_sub(self.root_address())
-            .ok_or(MmuError::InvalidTable)?;
-        if !offset.is_multiple_of(PAGE_SIZE as u64) {
-            return Err(MmuError::InvalidTable);
-        }
-        let index = (offset / PAGE_SIZE as u64) as usize;
-        if !self.used.get(index).copied().unwrap_or(false) {
-            return Err(MmuError::InvalidTable);
-        }
-        Ok(index)
+    fn set(&self, mmu: &dyn Mmu, address: usize, entry: PageTableEntry) -> Result<(), MmuError> {
+        mmu.write_entry(self.leaf, address / PAGE_SIZE, 0, entry)
     }
 
-    fn count(&self) -> usize {
-        self.used.iter().filter(|used| **used).count()
-    }
-}
-
-impl PageTableFrames for Storage<'_> {
-    fn root_address(&self) -> u64 {
-        physical(self.pages.as_ptr() as usize)
-    }
-
-    fn take_table(&mut self) -> Result<u64, MmuError> {
-        if self.remaining == 0 {
-            return Err(MmuError::NoMemory);
-        }
-        let index = self
-            .used
-            .iter()
-            .position(|used| !used)
-            .ok_or(MmuError::NoMemory)?;
-        self.remaining -= 1;
-        self.pages[index].0.fill(0);
-        self.used[index] = true;
-        Ok(physical(&raw const self.pages[index] as usize))
-    }
-
-    fn return_table(&mut self, address: u64) {
-        let index = self.index(address).unwrap();
-        assert_ne!(index, 0);
-        self.used[index] = false;
+    fn get(&self, mmu: &dyn Mmu, address: usize) -> Result<PageTableEntry, MmuError> {
+        mmu.read_entry(self.leaf, address / PAGE_SIZE, 0)
     }
 }
 
@@ -117,15 +83,15 @@ fn physical(address: usize) -> u64 {
     address.wrapping_sub(KERNEL_OFFSET) as u64
 }
 
-fn mapping(physical_address: u64, permissions: PagePermissions) -> PageMapping {
-    PageMapping {
+fn mapping(physical_address: u64, permissions: PagePermissions) -> PageTableEntry {
+    PageTableEntry::Mapping(PageMapping {
         physical_address,
         attributes: PageAttributes {
             permissions,
             memory_type: MemoryType::Normal,
             user_accessible: false,
         },
-    }
+    })
 }
 
 /// # Safety
@@ -141,189 +107,139 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
         cursor += 1;
     }
     // SAFETY: 地址须为当前 ISA 的启动 UART 映射，且仅由测试使用。
-    let uart = unsafe { Uart::new(BOOT_UART) };
+    let uart = unsafe { Uart::new(UART) };
     uart.init().unwrap();
     uart.write(format_args!("MMU tests started\n")).unwrap();
-
-    #[cfg(target_arch = "riscv64")]
-    let mmu = Sv39;
-    #[cfg(target_arch = "loongarch64")]
-    let mmu = LoongArchMmu;
-
-    // SAFETY: 测试须独占静态后备页，且页表启用后这些页不得移动或释放。
-    let pages = unsafe { &mut *core::ptr::addr_of_mut!(TABLES) };
-    let (first, second) = pages.split_at_mut(TABLE_COUNT);
-    let mut first = Storage::new(first);
-    let mut second = Storage::new(second);
-    let data = physical((&raw const DATA) as usize);
-
     arch::hardware::bind();
-    let bound = kernel::hardware::mmu();
-    bound.initialize(&mut first).unwrap();
-    let page = mapping(data, PagePermissions::ReadWrite);
-    bound.map(&mut first, TEST_ADDRESS, page).unwrap();
-    assert_eq!(bound.query(&first, TEST_ADDRESS).unwrap(), Some(page));
-    assert_eq!(bound.unmap(&mut first, TEST_ADDRESS).unwrap(), page);
-
-    run_operations(&mmu, &mut first, data);
-    run_frame_access(&mmu, data);
-    install_kernel(&mmu, &mut first);
-    mmu.initialize(&mut second).unwrap();
-    install_kernel(&mmu, &mut second);
-    mmu.map(
-        &mut first,
-        TEST_ADDRESS,
-        mapping(data, PagePermissions::ReadWrite),
-    )
-    .unwrap();
-    mmu.map(
-        &mut second,
-        TEST_ADDRESS,
-        mapping(data + PAGE_SIZE as u64, PagePermissions::ReadWrite),
-    )
-    .unwrap();
-
-    // SAFETY: DATA 须由测试独占且持续映射。
-    unsafe {
-        (&raw mut DATA[0].0[0]).write_volatile(41);
-        (&raw mut DATA[1].0[0]).write_volatile(73);
-    }
-    mmu.switch_root(&first).unwrap();
-    CONSOLE.store(UART, Ordering::Relaxed);
-    assert_eq!(read_test(), 41);
-    mmu.switch_root(&second).unwrap();
-    assert_eq!(read_test(), 73);
-    mmu.switch_root(&first).unwrap();
-    mmu.unmap(&mut first, TEST_ADDRESS).unwrap();
-    mmu.map(
-        &mut first,
-        TEST_ADDRESS,
-        mapping(data + PAGE_SIZE as u64, PagePermissions::ReadWrite),
-    )
-    .unwrap();
-    assert_eq!(read_test(), 73);
-    mmu.protect(&mut first, TEST_ADDRESS, PagePermissions::ReadOnly)
+    let mmu = kernel::hardware::mmu();
+    let base = physical(core::ptr::addr_of!(TABLES) as usize);
+    let first = Tables::new(mmu, base);
+    let second = Tables::new(mmu, base + (MAX_LEVELS * PAGE_SIZE) as u64);
+    let data = physical(core::ptr::addr_of!(DATA) as usize);
+    run_entries(mmu, &first, data);
+    run_frame_access(mmu, data);
+    first
+        .set(mmu, TEST_ADDRESS, mapping(data, PagePermissions::ReadWrite))
         .unwrap();
+    second
+        .set(
+            mmu,
+            TEST_ADDRESS,
+            mapping(data + PAGE_SIZE as u64, PagePermissions::ReadWrite),
+        )
+        .unwrap();
+    mmu.write_frame(data, 0, &[41]).unwrap();
+    mmu.write_frame(data + PAGE_SIZE as u64, 0, &[73]).unwrap();
+    mmu.switch_root(first.root).unwrap();
+    assert_eq!(read_test(), 41);
+    mmu.switch_root(second.root).unwrap();
     assert_eq!(read_test(), 73);
-    mmu.invalidate_page(TEST_ADDRESS + 1).unwrap();
+    mmu.switch_root(first.root).unwrap();
+    first
+        .set(
+            mmu,
+            TEST_ADDRESS,
+            mapping(data + PAGE_SIZE as u64, PagePermissions::ReadOnly),
+        )
+        .unwrap();
+    mmu.invalidate_page(TEST_ADDRESS).unwrap();
+    assert_eq!(read_test(), 73);
+    first.set(mmu, TEST_ADDRESS, PageTableEntry::Empty).unwrap();
     mmu.invalidate_all();
-    publish_code(&mmu, &mut first);
-
-    // SAFETY: UART 须在两个测试地址空间中保持设备映射。
-    let uart = unsafe { Uart::new(UART) };
+    assert_eq!(first.get(mmu, TEST_ADDRESS).unwrap(), PageTableEntry::Empty);
+    publish_code(mmu, &first);
     uart.write(format_args!("MMU tests passed\n")).unwrap();
     halt()
 }
 
-fn run_operations(mmu: &dyn Mmu, storage: &mut Storage<'_>, data: u64) {
-    let initialized_count = storage.count();
-    assert_eq!(mmu.query(storage, TEST_ADDRESS).unwrap(), None);
-    let page = mapping(data, PagePermissions::ReadWrite);
-    mmu.map(storage, TEST_ADDRESS, page).unwrap();
-    assert_eq!(mmu.query(storage, TEST_ADDRESS + 19).unwrap(), Some(page));
+fn run_entries(mmu: &dyn Mmu, tables: &Tables, data: u64) {
     assert_eq!(
-        mmu.map(storage, TEST_ADDRESS, page),
-        Err(MmuError::AlreadyMapped)
+        tables.get(mmu, TEST_ADDRESS).unwrap(),
+        PageTableEntry::Empty
     );
+    for permissions in [
+        PagePermissions::ReadOnly,
+        PagePermissions::ReadWrite,
+        PagePermissions::ReadExecute,
+        PagePermissions::ExecuteOnly,
+    ] {
+        let entry = mapping(data, permissions);
+        tables.set(mmu, TEST_ADDRESS, entry).unwrap();
+        assert_eq!(tables.get(mmu, TEST_ADDRESS).unwrap(), entry);
+    }
+    let original = tables.get(mmu, TEST_ADDRESS).unwrap();
     assert_eq!(
-        mmu.map(storage, TEST_ADDRESS + 1, page),
+        tables.set(
+            mmu,
+            TEST_ADDRESS,
+            mapping(data + 1, PagePermissions::ReadOnly)
+        ),
         Err(MmuError::InvalidAlignment)
     );
-    let window_region = (usize::MAX & !(PAGE_SIZE - 1)) & !((1 << 21) - 1);
     assert_eq!(
-        mmu.map(storage, window_region, page),
+        tables.set(
+            mmu,
+            TEST_ADDRESS,
+            mapping(!(PAGE_SIZE as u64 - 1), PagePermissions::ReadOnly)
+        ),
         Err(MmuError::InvalidAddress)
     );
     assert_eq!(
-        mmu.map(storage, 1usize << 55, page),
-        Err(MmuError::InvalidAddress)
+        tables.set(mmu, TEST_ADDRESS, PageTableEntry::Table(tables.root)),
+        Err(MmuError::InvalidTable)
     );
-    let mut unaligned = page;
-    unaligned.physical_address += 1;
     assert_eq!(
-        mmu.map(storage, TEST_ADDRESS + PAGE_SIZE, unaligned),
-        Err(MmuError::InvalidAlignment)
+        mmu.read_entry(tables.leaf, PAGE_SIZE / 8, 0),
+        Err(MmuError::InvalidRange)
     );
-    let mut invalid = page;
-    invalid.physical_address = !(PAGE_SIZE as u64 - 1);
     assert_eq!(
-        mmu.map(storage, TEST_ADDRESS + PAGE_SIZE, invalid),
-        Err(MmuError::InvalidAddress)
+        mmu.read_entry(tables.root, 0, mmu.layout().levels),
+        Err(MmuError::InvalidRange)
     );
-
-    let mut user = page;
-    user.attributes.user_accessible = true;
-    mmu.map(storage, TEST_ADDRESS + PAGE_SIZE, user).unwrap();
-    assert_eq!(
-        mmu.query(storage, TEST_ADDRESS + PAGE_SIZE).unwrap(),
-        Some(user)
-    );
-    storage.remaining = 0;
-    mmu.protect(storage, TEST_ADDRESS, PagePermissions::ReadOnly)
+    assert_eq!(tables.get(mmu, TEST_ADDRESS).unwrap(), original);
+    run_device_entries(mmu, tables, data);
+    tables
+        .set(mmu, TEST_ADDRESS, PageTableEntry::Empty)
         .unwrap();
-    assert_eq!(
-        mmu.query(storage, TEST_ADDRESS)
-            .unwrap()
-            .unwrap()
-            .attributes
-            .permissions,
-        PagePermissions::ReadOnly
-    );
-    mmu.unmap(storage, TEST_ADDRESS).unwrap();
-    assert_eq!(mmu.query(storage, TEST_ADDRESS).unwrap(), None);
-    assert_eq!(
-        mmu.query(storage, TEST_ADDRESS + PAGE_SIZE).unwrap(),
-        Some(user)
-    );
-    assert_eq!(mmu.unmap(storage, TEST_ADDRESS), Err(MmuError::NotMapped));
-    mmu.unmap(storage, TEST_ADDRESS + PAGE_SIZE).unwrap();
-    assert_eq!(storage.count(), initialized_count);
-
-    storage.remaining = 1;
-    assert_eq!(
-        mmu.map(storage, TEST_ADDRESS, page),
-        Err(MmuError::NoMemory)
-    );
-    assert_eq!(storage.count(), initialized_count);
-    assert_eq!(mmu.query(storage, TEST_ADDRESS).unwrap(), None);
-    storage.remaining = usize::MAX;
-    mmu.map(storage, TEST_ADDRESS, page).unwrap();
-    mmu.unmap(storage, TEST_ADDRESS).unwrap();
-    assert_eq!(storage.count(), initialized_count);
-
-    let mut device = page;
-    device.physical_address = UART_PHYSICAL;
-    device.attributes.memory_type = MemoryType::Device;
-    #[cfg(target_arch = "riscv64")]
-    assert_eq!(
-        mmu.map(storage, TEST_ADDRESS, device),
-        Err(MmuError::Unsupported)
-    );
-    #[cfg(target_arch = "riscv64")]
-    {
-        device.attributes.permissions = PagePermissions::ReadExecute;
-        assert_eq!(
-            mmu.map(storage, TEST_ADDRESS, device),
-            Err(MmuError::InvalidAttributes)
-        );
-    }
-    #[cfg(target_arch = "loongarch64")]
-    {
-        mmu.map(storage, TEST_ADDRESS, device).unwrap();
-        assert_eq!(mmu.query(storage, TEST_ADDRESS).unwrap(), Some(device));
-        assert_eq!(
-            mmu.protect(storage, TEST_ADDRESS, PagePermissions::ReadExecute),
-            Err(MmuError::InvalidAttributes)
-        );
-        assert_eq!(mmu.query(storage, TEST_ADDRESS).unwrap(), Some(device));
-        mmu.unmap(storage, TEST_ADDRESS).unwrap();
-    }
     assert_eq!(mmu.synchronize_code(19..19), Ok(()));
-    let reversed = core::ops::Range { start: 19, end: 0 };
-    assert_eq!(mmu.synchronize_code(reversed), Err(MmuError::InvalidRange));
+    assert_eq!(
+        mmu.synchronize_code(core::ops::Range { start: 19, end: 0 }),
+        Err(MmuError::InvalidRange)
+    );
     assert_eq!(
         mmu.invalidate_page(1usize << 55),
         Err(MmuError::InvalidAddress)
+    );
+}
+
+fn run_device_entries(mmu: &dyn Mmu, tables: &Tables, data: u64) {
+    let mut device = PageMapping {
+        physical_address: data,
+        attributes: PageAttributes {
+            permissions: PagePermissions::ReadOnly,
+            memory_type: MemoryType::Device,
+            user_accessible: false,
+        },
+    };
+    #[cfg(target_arch = "riscv64")]
+    assert_eq!(
+        tables.set(mmu, TEST_ADDRESS, PageTableEntry::Mapping(device)),
+        Err(MmuError::Unsupported)
+    );
+    #[cfg(target_arch = "loongarch64")]
+    {
+        tables
+            .set(mmu, TEST_ADDRESS, PageTableEntry::Mapping(device))
+            .unwrap();
+        assert_eq!(
+            tables.get(mmu, TEST_ADDRESS).unwrap(),
+            PageTableEntry::Mapping(device)
+        );
+    }
+    device.attributes.permissions = PagePermissions::ReadExecute;
+    assert_eq!(
+        tables.set(mmu, TEST_ADDRESS, PageTableEntry::Mapping(device)),
+        Err(MmuError::InvalidAttributes)
     );
 }
 
@@ -351,70 +267,37 @@ fn run_frame_access(mmu: &dyn Mmu, address: u64) {
     assert_eq!(words, [0; PAGE_SIZE / size_of::<u64>()]);
 }
 
-fn install_kernel(mmu: &dyn Mmu, storage: &mut Storage<'_>) {
-    let image = arch::boot::kernel_image();
-    for (segment, permissions) in [
-        (image.text, PagePermissions::ReadExecute),
-        (image.rodata, PagePermissions::ReadOnly),
-        (image.data, PagePermissions::ReadWrite),
-    ] {
-        for physical_address in (segment.physical.start..segment.physical.end).step_by(PAGE_SIZE) {
-            let virtual_address =
-                segment.virtual_start + (physical_address - segment.physical.start) as usize;
-            mmu.map(
-                storage,
-                virtual_address,
-                mapping(physical_address, permissions),
-            )
-            .unwrap();
-        }
-    }
-    mmu.map(
-        storage,
-        UART & !(PAGE_SIZE - 1),
-        PageMapping {
-            physical_address: UART_PHYSICAL,
-            attributes: PageAttributes {
-                permissions: PagePermissions::ReadWrite,
-                #[cfg(target_arch = "riscv64")]
-                memory_type: MemoryType::Normal,
-                #[cfg(target_arch = "loongarch64")]
-                memory_type: MemoryType::Device,
-                user_accessible: false,
-            },
-        },
-    )
-    .unwrap();
-}
-
 fn read_test() -> u8 {
     // SAFETY: TEST_ADDRESS 须由当前页表映射到有效数据页。
     unsafe { (TEST_ADDRESS as *const u8).read_volatile() }
 }
 
-fn publish_code(mmu: &dyn Mmu, storage: &mut Storage<'_>) {
-    let address = (&raw const CODE) as usize;
+fn publish_code(mmu: &dyn Mmu, tables: &Tables) {
+    let address = core::ptr::addr_of!(CODE) as usize;
     for (source, expected) in [
         (answer_42 as *const u8, 42usize),
         (answer_43 as *const u8, 43usize),
     ] {
-        mmu.protect(storage, address, PagePermissions::ReadWrite)
-            .unwrap();
         // SAFETY: source 须指向两个指令的测试函数，CODE 须为独占可写页。
-        unsafe { core::ptr::copy_nonoverlapping(source, (&raw mut CODE).cast::<u8>(), 8) };
-        mmu.protect(storage, address, PagePermissions::ReadOnly)
-            .unwrap();
+        unsafe {
+            core::ptr::copy_nonoverlapping(source, core::ptr::addr_of_mut!(CODE).cast::<u8>(), 8)
+        };
         mmu.synchronize_code(address..address + 8).unwrap();
-        mmu.map(
-            storage,
-            CODE_ADDRESS,
-            mapping(physical(address), PagePermissions::ReadExecute),
-        )
-        .unwrap();
+        tables
+            .set(
+                mmu,
+                CODE_ADDRESS,
+                mapping(physical(address), PagePermissions::ReadExecute),
+            )
+            .unwrap();
+        mmu.invalidate_page(CODE_ADDRESS).unwrap();
         // SAFETY: CODE_ADDRESS 须包含已同步的无参数 C ABI 测试函数。
         let execute: extern "C" fn() -> usize = unsafe { core::mem::transmute(CODE_ADDRESS) };
         assert_eq!(execute(), expected);
-        mmu.unmap(storage, CODE_ADDRESS).unwrap();
+        tables
+            .set(mmu, CODE_ADDRESS, PageTableEntry::Empty)
+            .unwrap();
+        mmu.invalidate_page(CODE_ADDRESS).unwrap();
     }
 }
 

@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use kernel::hardware::mmu::{
-    Mmu, MmuError, PAGE_SIZE, PageMapping, PagePermissions, PageTableFrames,
+use core::sync::atomic::{AtomicBool, Ordering};
+use kernel::{
+    hardware::mmu::{
+        Mmu, MmuError, PAGE_SIZE, PageMapping, PageTableEntry, PageTableLayout, TableWindow,
+    },
+    memory::Frame,
 };
 
 const ENTRIES: usize = PAGE_SIZE / size_of::<u64>();
-const MAX_LEVELS: usize = 4;
 pub(crate) const WINDOW_INDEX: usize = ENTRIES - 1;
-const WINDOW_REGION_SIZE: usize = 1 << 21;
 pub(crate) const PAGE_TABLE_WINDOW: usize = usize::MAX & !(PAGE_SIZE - 1);
 
 #[cfg(target_arch = "riscv64")]
@@ -42,10 +44,24 @@ pub(crate) struct PageTable {
 #[unsafe(link_section = ".boot_tables.window")]
 pub(crate) static mut PAGE_TABLE_WINDOW_TABLE: PageTable = PageTable::new();
 
-struct Walk {
-    tables: [u64; MAX_LEVELS],
-    level: usize,
-    entry: u64,
+static WINDOW_LOCK: AtomicBool = AtomicBool::new(false);
+
+pub(crate) struct WindowGuard;
+
+pub(crate) fn lock_window() -> WindowGuard {
+    while WINDOW_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    WindowGuard
+}
+
+impl Drop for WindowGuard {
+    fn drop(&mut self) {
+        WINDOW_LOCK.store(false, Ordering::Release);
+    }
 }
 
 impl PageTable {
@@ -118,19 +134,6 @@ pub(crate) fn validate_physical<F: Format>(address: u64) -> Result<(), MmuError>
     Ok(())
 }
 
-pub(crate) fn validate_page(mmu: &dyn Mmu, address: usize) -> Result<(), MmuError> {
-    if !mmu.is_valid_virtual_address(address) {
-        return Err(MmuError::InvalidAddress);
-    }
-    if !address.is_multiple_of(PAGE_SIZE) {
-        return Err(MmuError::InvalidAlignment);
-    }
-    if address & !(WINDOW_REGION_SIZE - 1) == PAGE_TABLE_WINDOW & !(WINDOW_REGION_SIZE - 1) {
-        return Err(MmuError::InvalidAddress);
-    }
-    Ok(())
-}
-
 pub(crate) fn is_canonical(address: usize, bits: u32) -> bool {
     (((address as i64) << (64 - bits)) >> (64 - bits)) as usize == address
 }
@@ -154,221 +157,69 @@ pub(crate) fn validate_code_range(
     Ok(())
 }
 
-pub(crate) fn initialize<F: Format>(
-    format: &F,
-    frames: &mut dyn PageTableFrames,
-) -> Result<(), MmuError> {
-    let root = frames.root_address();
-    validate_physical::<F>(root)?;
-    if format.encode_table(root) == 0 {
-        return Err(MmuError::InvalidTable);
+pub(crate) fn layout<F: Format>(format: &F) -> PageTableLayout {
+    PageTableLayout {
+        levels: F::LEVELS,
+        index_bits: 9,
+        window: TableWindow {
+            virtual_address: PAGE_TABLE_WINDOW,
+            table: Frame::new(format.window_table_address()).expect("unaligned table window"),
+            level: 1,
+        },
     }
-
-    let window = format.window_table_address();
-    validate_physical::<F>(window)?;
-    if root == window {
-        return Err(MmuError::InvalidTable);
-    }
-    let mut allocated = [0; MAX_LEVELS - 2];
-    let mut count = 0;
-    let result = (|| {
-        while count < F::LEVELS - 2 {
-            let table = frames.take_table()?;
-            if table == root || table == window || allocated[..count].contains(&table) {
-                return Err(MmuError::InvalidTable);
-            }
-            allocated[count] = table;
-            count += 1;
-            validate_physical::<F>(table)?;
-            if format.encode_table(table) == 0 {
-                return Err(MmuError::InvalidTable);
-            }
-        }
-        for table in &allocated[..count] {
-            format.with_table(*table, PageTable::clear)?;
-        }
-        for (index, table) in allocated[..count].iter().enumerate() {
-            let next = allocated
-                .get(index + 1)
-                .copied()
-                .filter(|_| index + 1 < count)
-                .unwrap_or(window);
-            format.with_table(*table, |page| {
-                page.write(WINDOW_INDEX, format.encode_table(next));
-            })?;
-        }
-        format.with_table(root, |page| {
-            page.clear();
-            page.write(WINDOW_INDEX, format.encode_table(allocated[0]));
-        })?;
-        Ok(())
-    })();
-    if result.is_err() {
-        for table in allocated[..count].iter().rev() {
-            // SAFETY: 初始化失败时这些页尚未从根页可达。
-            frames.return_table(*table);
-        }
-    }
-    result
 }
 
-pub(crate) fn validate_window<F: Format>(
-    format: &F,
-    frames: &dyn PageTableFrames,
-) -> Result<(), MmuError> {
-    let walk = walk(format, frames, PAGE_TABLE_WINDOW)?;
-    if walk.tables[0] != format.window_table_address() {
-        return Err(MmuError::InvalidTable);
+fn validate_entry<F: Format>(index: usize, level: usize) -> Result<(), MmuError> {
+    if index >= ENTRIES || level >= F::LEVELS {
+        return Err(MmuError::InvalidRange);
     }
     Ok(())
 }
 
-fn index(address: usize, level: usize) -> usize {
-    (address >> (12 + 9 * level)) & (ENTRIES - 1)
+pub(crate) fn read_entry<F: Format>(
+    format: &F,
+    table: Frame,
+    index: usize,
+    level: usize,
+) -> Result<PageTableEntry, MmuError> {
+    validate_entry::<F>(index, level)?;
+    let entry = format.with_table(table.address(), |table| table.read(index))?;
+    if entry == 0 {
+        Ok(PageTableEntry::Empty)
+    } else if level == 0 {
+        format.decode_mapping(entry).map(PageTableEntry::Mapping)
+    } else {
+        let address = format.decode_table(entry)?;
+        validate_physical::<F>(address)?;
+        Ok(PageTableEntry::Table(
+            Frame::new(address).ok_or(MmuError::InvalidAlignment)?,
+        ))
+    }
 }
 
-fn walk<F: Format>(
+pub(crate) fn write_entry<F: Format>(
     format: &F,
-    frames: &dyn PageTableFrames,
-    address: usize,
-) -> Result<Walk, MmuError> {
-    if !format.is_valid_virtual_address(address) {
-        return Err(MmuError::InvalidAddress);
-    }
-    let mut walk = Walk {
-        tables: [0; MAX_LEVELS],
-        level: F::LEVELS - 1,
-        entry: 0,
+    table: Frame,
+    index: usize,
+    level: usize,
+    entry: PageTableEntry,
+) -> Result<(), MmuError> {
+    validate_entry::<F>(index, level)?;
+    let encoded = match entry {
+        PageTableEntry::Empty => 0,
+        PageTableEntry::Table(next) if level > 0 => {
+            validate_physical::<F>(next.address())?;
+            let entry = format.encode_table(next.address());
+            if entry == 0 {
+                return Err(MmuError::InvalidTable);
+            }
+            entry
+        }
+        PageTableEntry::Mapping(mapping) if level == 0 => {
+            validate_physical::<F>(mapping.physical_address)?;
+            format.encode_mapping(mapping)?
+        }
+        _ => return Err(MmuError::InvalidTable),
     };
-    let mut table = frames.root_address();
-    loop {
-        validate_physical::<F>(table)?;
-        if format.encode_table(table) == 0 {
-            return Err(MmuError::InvalidTable);
-        }
-        if walk.tables[walk.level + 1..F::LEVELS].contains(&table) {
-            return Err(MmuError::InvalidTable);
-        }
-        walk.tables[walk.level] = table;
-        walk.entry = format.with_table(table, |page| page.read(index(address, walk.level)))?;
-        if walk.entry == 0 || walk.level == 0 {
-            return Ok(walk);
-        }
-        table = format.decode_table(walk.entry)?;
-        walk.level -= 1;
-    }
-}
-
-pub(crate) fn map<F: Format>(
-    format: &F,
-    frames: &mut dyn PageTableFrames,
-    address: usize,
-    mapping: PageMapping,
-) -> Result<(), MmuError> {
-    validate_page(format, address)?;
-    validate_physical::<F>(mapping.physical_address)?;
-    let mut entry = format.encode_mapping(mapping)?;
-    let walk = walk(format, frames, address)?;
-    if walk.entry != 0 {
-        format.decode_mapping(walk.entry)?;
-        return Err(MmuError::AlreadyMapped);
-    }
-
-    let mut spare = [0; MAX_LEVELS - 1];
-    let mut count = 0;
-    let result = (|| {
-        for level in 0..walk.level {
-            let table = frames.take_table()?;
-            spare[count] = table;
-            count += 1;
-            validate_physical::<F>(table)?;
-            let branch = format.encode_table(table);
-            if branch == 0 {
-                return Err(MmuError::InvalidTable);
-            }
-            format.with_table(table, |page| {
-                page.clear();
-                page.write(index(address, level), entry);
-            })?;
-            entry = branch;
-        }
-        format.with_table(walk.tables[walk.level], |page| {
-            page.write(index(address, walk.level), entry);
-        })?;
-        Ok(())
-    })();
-    if result.is_err() {
-        for table in spare[..count].iter().rev() {
-            // SAFETY: 这些帧由本次借出，且尚未向页表树发布。
-            frames.return_table(*table);
-        }
-        return result;
-    }
-    format.invalidate_all();
-    Ok(())
-}
-
-pub(crate) fn unmap<F: Format>(
-    format: &F,
-    frames: &mut dyn PageTableFrames,
-    address: usize,
-) -> Result<PageMapping, MmuError> {
-    validate_page(format, address)?;
-    let walk = walk(format, frames, address)?;
-    if walk.entry == 0 {
-        return Err(MmuError::NotMapped);
-    }
-    let mapping = format.decode_mapping(walk.entry)?;
-    let mut detach = 0;
-    while detach + 1 < F::LEVELS {
-        let occupied = format.with_table(walk.tables[detach], |table| {
-            (0..ENTRIES).any(|slot| slot != index(address, detach) && table.read(slot) != 0)
-        })?;
-        if occupied {
-            break;
-        }
-        detach += 1;
-    }
-    format.with_table(walk.tables[detach], |table| {
-        table.write(index(address, detach), 0);
-    })?;
-    format.invalidate_all();
-    for table in &walk.tables[..detach] {
-        // SAFETY: 空页表子树已断开，且本地硬件引用已失效。
-        frames.return_table(*table);
-    }
-    Ok(mapping)
-}
-
-pub(crate) fn protect<F: Format>(
-    format: &F,
-    frames: &mut dyn PageTableFrames,
-    address: usize,
-    permissions: PagePermissions,
-) -> Result<(), MmuError> {
-    validate_page(format, address)?;
-    let walk = walk(format, frames, address)?;
-    if walk.entry == 0 {
-        return Err(MmuError::NotMapped);
-    }
-    let mut mapping = format.decode_mapping(walk.entry)?;
-    mapping.attributes.permissions = permissions;
-    let entry = format.encode_mapping(mapping)?;
-    format.with_table(walk.tables[0], |table| {
-        table.write(index(address, 0), entry);
-    })?;
-    format.invalidate_all();
-    Ok(())
-}
-
-pub(crate) fn query<F: Format>(
-    format: &F,
-    frames: &dyn PageTableFrames,
-    address: usize,
-) -> Result<Option<PageMapping>, MmuError> {
-    let walk = walk(format, frames, address)?;
-    if walk.entry == 0 {
-        return Ok(None);
-    }
-    format.decode_mapping(walk.entry).map(Some)
+    format.with_table(table.address(), |table| table.write(index, encoded))
 }

@@ -4,8 +4,11 @@ use core::arch::asm;
 use core::ops::Range;
 
 use kernel::hardware::mmu::{
-    MemoryType, Mmu, MmuError, PageAttributes, PageMapping, PagePermissions, PageTableFrames,
+    MemoryType, Mmu, MmuError, PageAttributes, PageMapping, PagePermissions, PageTableEntry,
+    PageTableLayout,
 };
+
+use kernel::memory::Frame;
 
 use crate::paging::{
     self, Format, PAGE_TABLE_WINDOW, PAGE_TABLE_WINDOW_TABLE, PageTable, WINDOW_INDEX,
@@ -120,6 +123,7 @@ impl Format for LoongArchMmu {
         operation: impl FnOnce(&mut PageTable) -> T,
     ) -> Result<T, MmuError> {
         paging::validate_physical::<Self>(address)?;
+        let _access = paging::lock_window();
         let entry = self.encode_mapping(PageMapping {
             physical_address: address,
             attributes: PageAttributes {
@@ -129,7 +133,7 @@ impl Format for LoongArchMmu {
             },
         })?;
         let table = core::ptr::addr_of_mut!(PAGE_TABLE_WINDOW_TABLE);
-        // SAFETY: 调用方须串行化所有处理器上的 MMU 操作。
+        // SAFETY: 须持有物理访问窗口锁。
         unsafe {
             if (*table).read(WINDOW_INDEX) != 0 {
                 return Err(MmuError::InvalidTable);
@@ -139,7 +143,7 @@ impl Format for LoongArchMmu {
         invalidate_address(PAGE_TABLE_WINDOW);
         // SAFETY: 当前根须将 PAGE_TABLE_WINDOW 映射到保留的页表窗口。
         let result = unsafe { operation(&mut *(PAGE_TABLE_WINDOW as *mut PageTable)) };
-        // SAFETY: 调用方须串行化所有处理器上的 MMU 操作。
+        // SAFETY: 须持有物理访问窗口锁。
         unsafe { (*table).write(WINDOW_INDEX, 0) };
         invalidate_address(PAGE_TABLE_WINDOW);
         Ok(result)
@@ -155,62 +159,37 @@ impl Mmu for LoongArchMmu {
         Self::PHYSICAL_BITS
     }
 
-    fn initialize(&self, frames: &mut dyn PageTableFrames) -> Result<(), MmuError> {
-        paging::initialize(self, frames)
+    fn layout(&self) -> PageTableLayout {
+        paging::layout(self)
     }
 
-    fn map(
+    fn read_entry(
         &self,
-        frames: &mut dyn PageTableFrames,
-        address: usize,
-        mapping: PageMapping,
+        table: Frame,
+        index: usize,
+        level: usize,
+    ) -> Result<PageTableEntry, MmuError> {
+        paging::read_entry(self, table, index, level)
+    }
+
+    fn write_entry(
+        &self,
+        table: Frame,
+        index: usize,
+        level: usize,
+        entry: PageTableEntry,
     ) -> Result<(), MmuError> {
-        paging::map(self, frames, address, mapping)
+        paging::write_entry(self, table, index, level, entry)
     }
 
-    fn unmap(
-        &self,
-        frames: &mut dyn PageTableFrames,
-        address: usize,
-    ) -> Result<PageMapping, MmuError> {
-        paging::unmap(self, frames, address)
-    }
-
-    fn protect(
-        &self,
-        frames: &mut dyn PageTableFrames,
-        address: usize,
-        permissions: PagePermissions,
-    ) -> Result<(), MmuError> {
-        paging::protect(self, frames, address, permissions)
-    }
-
-    fn query(
-        &self,
-        frames: &dyn PageTableFrames,
-        address: usize,
-    ) -> Result<Option<PageMapping>, MmuError> {
-        paging::query(self, frames, address)
-    }
-
-    fn switch_root(&self, frames: &dyn PageTableFrames) -> Result<(), MmuError> {
-        let root = frames.root_address();
+    fn switch_root(&self, root: Frame) -> Result<(), MmuError> {
+        let _access = paging::lock_window();
+        let root = root.address();
         paging::validate_physical::<Self>(root)?;
         if root == 0 {
             return Err(MmuError::InvalidTable);
         }
-        paging::validate_window(self, frames)?;
-        let refill = refill_entry();
-        let mapping = self.query(frames, refill)?.ok_or(MmuError::NotMapped)?;
-        if !matches!(
-            mapping.attributes.permissions,
-            PagePermissions::ReadExecute | PagePermissions::ExecuteOnly
-        ) || mapping.attributes.memory_type != MemoryType::Normal
-            || mapping.attributes.user_accessible
-        {
-            return Err(MmuError::InvalidAttributes);
-        }
-        let physical_refill = mapping.physical_address as usize | (refill & 0xfff);
+        let physical_refill = refill_entry() - 0xffff_8000_0000_0000;
         // SAFETY: 新页表须覆盖当前代码、栈和活动数据，中断须关闭且后备页须持续有效。
         unsafe {
             asm!(

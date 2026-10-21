@@ -90,6 +90,17 @@ impl MemoryManager {
         self.allocator.lock().allocation_of(frame) == Ok(head)
     }
 
+    fn is_managed(&self, address: u64) -> bool {
+        self.allocator.lock().is_managed(address)
+    }
+
+    fn release_mapping(&self, frame: Frame) -> Result<(), MemoryError> {
+        let mut allocator = self.allocator.lock();
+        let head = allocator.allocation_of(frame)?;
+        allocator.release_reference(head, ReferenceKind::Mapping);
+        Ok(())
+    }
+
     fn frame(&self, index: u64) -> (u64, u64) {
         self.allocator.lock().frame(index)
     }

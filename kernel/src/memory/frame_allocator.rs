@@ -253,6 +253,10 @@ impl FrameAllocator {
         Ok(record.allocation)
     }
 
+    pub fn is_managed(&self, address: u64) -> bool {
+        self.metadata.index(address).is_ok()
+    }
+
     pub fn merge(&mut self, head: u64, other: u64) {
         let mut record = self.metadata.read(head);
         let source = self.metadata.read(other);
