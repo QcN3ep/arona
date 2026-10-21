@@ -137,12 +137,12 @@ fn reserved_range_failures_are_atomic_and_unmanaged_frames_stay_untouched() {
     ) {
         return;
     }
-    let info = [
+    let info = with_metadata(vec![
         region(BASE - 3 * PAGE, 1, MemoryRegionState::Reserved),
         region(BASE - 2 * PAGE, 1, MemoryRegionState::NoMap),
         region(BASE - PAGE, 1, MemoryRegionState::BootReserved),
         region(BASE, KERNEL_FRAMES, MemoryRegionState::Available),
-    ];
+    ]);
     let mmu = &MMU;
     let manager = initialize(&info);
     let initial = manager.stats();
@@ -201,13 +201,13 @@ fn metadata_can_span_disjoint_regions_without_allocating_the_holes() {
         return;
     }
     let mmu = &MMU;
-    let info = [
+    let info = with_metadata(vec![
         region(0, 1, MemoryRegionState::Available),
         region(PAGE, 2, MemoryRegionState::BootReserved),
         region(4 * PAGE, 2, MemoryRegionState::Available),
         region(7 * PAGE, 1, MemoryRegionState::BootReserved),
         region(BASE, KERNEL_FRAMES + 1, MemoryRegionState::Available),
-    ];
+    ]);
     let manager = initialize(&info);
     let storage: BTreeSet<_> = mmu.memory.lock().unwrap().keys().copied().collect();
     assert_eq!(storage.len() as u64, manager.stats().metadata_frames);
@@ -387,6 +387,7 @@ fn region_directory_respects_capacity_and_fits_a_small_stack() {
                 KERNEL_FRAMES + 1,
                 MemoryRegionState::Available,
             ));
+            let info = with_metadata(info);
             let manager = initialize(&info);
             assert_eq!(manager.stats().kernel.total_frames, KERNEL_FRAMES);
             assert_eq!(manager.stats().user.total_frames, MAX_MEMORY_REGIONS as u64);
@@ -413,4 +414,33 @@ fn region_directory_respects_capacity_and_fits_a_small_stack() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn metadata_does_not_consume_the_kernel_pool_or_limit_ram_to_two_gibibytes() {
+    if isolated(
+        "frame_allocator::metadata_does_not_consume_the_kernel_pool_or_limit_ram_to_two_gibibytes",
+    ) {
+        return;
+    }
+    let regions = [region(
+        BASE,
+        2 * 1024 * 1024 * 1024 / PAGE,
+        MemoryRegionState::Available,
+    )];
+    let manager = initialize(&regions);
+    let stats = manager.stats();
+    assert!(stats.metadata_frames > KERNEL_FRAMES);
+    assert_eq!(stats.kernel.total_frames, KERNEL_FRAMES);
+    assert_eq!(stats.kernel.free_frames, KERNEL_FRAMES);
+    assert_eq!(
+        stats.kernel.total_frames + stats.user.total_frames + stats.metadata_frames,
+        (regions[0].range.end - regions[0].range.start) / PAGE
+    );
+    let allocation = manager
+        .allocate(FrameOwner::Kernel, FramePurpose::Data, KERNEL_FRAMES)
+        .unwrap();
+    assert_eq!(manager.stats().kernel.free_frames, 0);
+    drop(allocation);
+    assert_eq!(manager.stats(), stats);
 }

@@ -264,9 +264,37 @@ fn region(start: u64, frames: u64, state: MemoryRegionState) -> MemoryRegion {
 }
 
 fn memory(user_frames: u64) -> Vec<MemoryRegion> {
-    vec![region(
+    with_metadata(vec![region(
         BASE,
         KERNEL_FRAMES + user_frames,
         MemoryRegionState::Available,
-    )]
+    )])
+}
+
+fn with_metadata(mut regions: Vec<MemoryRegion>) -> Vec<MemoryRegion> {
+    let managed: u64 = regions
+        .iter()
+        .filter(|region| {
+            matches!(
+                region.state,
+                MemoryRegionState::Available | MemoryRegionState::BootReserved
+            )
+        })
+        .map(|region| (region.range.end - region.range.start) / PAGE)
+        .sum();
+    let directory = regions.len().div_ceil(PAGE_SIZE / 32) as u64;
+    let mut extra = 0;
+    loop {
+        let required = directory + (managed + extra).div_ceil(PAGE / 64);
+        if required == extra {
+            break;
+        }
+        extra = required;
+    }
+    let last = regions
+        .iter_mut()
+        .rfind(|region| region.state == MemoryRegionState::Available)
+        .unwrap();
+    last.range.end += extra * PAGE;
+    regions
 }

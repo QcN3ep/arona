@@ -17,10 +17,7 @@ fn allocations_keep_ownership_and_return_zeroed_frames() {
     assert_eq!(memory::manager().stats(), initial);
     assert_eq!(initial.kernel.total_frames, KERNEL_FRAMES);
     assert_eq!(initial.user.free_frames, 16);
-    assert_eq!(
-        initial.kernel.free_frames + initial.metadata_frames,
-        KERNEL_FRAMES
-    );
+    assert_eq!(initial.kernel.free_frames, KERNEL_FRAMES);
     let frame = manager
         .allocate(FrameOwner::User(7), FramePurpose::Data, 3)
         .unwrap();

@@ -92,6 +92,8 @@ impl FrameAllocator {
                 let record = if region.state == MemoryRegionState::BootReserved {
                     allocator.reserved_frames += 1;
                     FrameRecord::new(FrameState::Reserved, FramePool::Kernel)
+                } else if offset < metadata_frames {
+                    FrameRecord::new(FrameState::Metadata, FramePool::Kernel)
                 } else {
                     let pool = if kernel_frames != 0 {
                         kernel_frames -= 1;
@@ -100,15 +102,11 @@ impl FrameAllocator {
                         FramePool::User
                     };
                     allocator.pools[pool as usize].total_frames += 1;
-                    if offset < metadata_frames {
-                        FrameRecord::new(FrameState::Metadata, pool)
-                    } else {
-                        let mut record = FrameRecord::new(FrameState::Free, pool);
-                        record.next = allocator.free[pool as usize];
-                        allocator.free[pool as usize] = index;
-                        allocator.pools[pool as usize].free_frames += 1;
-                        record
-                    }
+                    let mut record = FrameRecord::new(FrameState::Free, pool);
+                    record.next = allocator.free[pool as usize];
+                    allocator.free[pool as usize] = index;
+                    allocator.pools[pool as usize].free_frames += 1;
+                    record
                 };
                 allocator.metadata.write(index, record);
             }
@@ -481,7 +479,7 @@ impl FrameMetadata {
         }
         let directory_frames = region_count.div_ceil(REGIONS_PER_FRAME) as u64;
         let frames = directory_frames + count.div_ceil(RECORDS_PER_FRAME);
-        if available < KERNEL_POOL_FRAMES || frames >= KERNEL_POOL_FRAMES {
+        if available.saturating_sub(frames) < KERNEL_POOL_FRAMES {
             return Err(MemoryError::NoMemory);
         }
         let mut metadata = Self {
