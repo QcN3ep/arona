@@ -2,7 +2,8 @@
 
 //! 设备身份、拓扑、资源及配置属性。
 
-use super::{PciWindow, PhysRange};
+use super::PciWindow;
+use crate::memory::PhysRange;
 use arrayvec::{ArrayString, ArrayVec};
 use core::ops::Range;
 

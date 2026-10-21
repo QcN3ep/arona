@@ -2,7 +2,7 @@
 
 //! 读取链接脚本提供的内核映像布局。
 
-use kernel::{ImageSegment, KernelImage, PhysRange};
+use kernel::{ImageSegment, KernelImage, memory::PhysRange};
 
 unsafe extern "C" {
     static _kernel_image: [u64; 2];

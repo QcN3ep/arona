@@ -4,7 +4,8 @@
 
 use arrayvec::ArrayVec;
 
-use super::{HardwareDeviceInstanceId, HardwareInterruptInfo, PhysRange};
+use super::{HardwareDeviceInstanceId, HardwareInterruptInfo};
+use crate::memory::PhysRange;
 
 pub const MAX_PCI_INTERRUPT_ROUTES: usize = 64;
 pub const MAX_PCI_MSI_MAPS: usize = 32;

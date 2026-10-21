@@ -3,7 +3,10 @@
 //! 合并固件 RAM 和保留项，生成覆盖全部 RAM 的互斥区域表。
 
 use arrayvec::ArrayVec;
-use kernel::{MemoryInfo, MemoryRegion, MemoryRegionState, PhysRange};
+use kernel::{
+    MemoryInfo,
+    memory::{MemoryRegion, MemoryRegionState, PhysRange},
+};
 
 use super::{
     Dtb, Result,

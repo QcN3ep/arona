@@ -8,7 +8,7 @@ mod memory;
 mod nodes;
 
 use fdt::{Fdt, FdtError, FdtHeader, nodes::AsNode, properties::PHandle};
-use kernel::{HardwareInfo, PhysRange};
+use kernel::{HardwareInfo, memory::PhysRange};
 
 use nodes::{Node, Nodes};
 

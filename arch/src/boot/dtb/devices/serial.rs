@@ -3,7 +3,7 @@
 //! 按需解释 UART 配置与控制台参数。
 
 use fdt::properties::values::U32List;
-use kernel::{ConsoleInfo, HardwareDeviceInfo, HardwareInfo, PhysRange};
+use kernel::{ConsoleInfo, HardwareDeviceInfo, HardwareInfo, memory::PhysRange};
 
 use super::super::{Dtb, Result, nodes::property};
 use super::{DeviceNode, RegisterEndian, attribute, instance_id, resolve};

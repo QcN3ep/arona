@@ -9,7 +9,7 @@ use fdt::{
     parsing::{NoPanic, unaligned::UnalignedParser},
     properties::{Status, cells::CellSizes, ranges::Ranges, reg::Reg, values::PropertyValue},
 };
-use kernel::PhysRange;
+use kernel::memory::PhysRange;
 
 use super::{Result, range};
 

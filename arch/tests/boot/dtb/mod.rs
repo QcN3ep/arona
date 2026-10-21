@@ -24,8 +24,8 @@ use arch::boot::{
 };
 use kernel::{
     CpuInfo, CpuInterruptTarget, DeviceUsePolicy, HardwareDeviceInstanceId, HardwareDeviceLocation,
-    HardwareInfo, InterruptPolarity, InterruptTrigger, MemoryRegion, MemoryRegionState,
-    PciAddressSpace, PhysRange,
+    HardwareInfo, InterruptPolarity, InterruptTrigger, PciAddressSpace,
+    memory::{MemoryRegion, MemoryRegionState, PhysRange},
 };
 
 // dtc -I dts -O dtb -o arch/tests/fixtures/boot.dtb arch/tests/fixtures/boot.dts

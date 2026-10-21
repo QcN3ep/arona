@@ -7,7 +7,8 @@ use fdt::properties::values::U32List;
 use kernel::{
     CpuInterruptRoute, CpuInterruptTarget, HardwareDeviceInfo, HardwareDeviceInstanceId,
     HardwareDeviceLocation, HardwareInfo, HardwareInterruptInfo, HardwareInterruptRoute,
-    InterruptPolarity, InterruptTrigger, MAX_CPU_INTERRUPT_ROUTES, PhysRange, boot::MAX_INTERRUPTS,
+    InterruptPolarity, InterruptTrigger, MAX_CPU_INTERRUPT_ROUTES, boot::MAX_INTERRUPTS,
+    memory::PhysRange,
 };
 
 use super::super::{

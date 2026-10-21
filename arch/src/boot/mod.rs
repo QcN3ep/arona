@@ -8,7 +8,7 @@ pub mod dtb;
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 mod image;
 
-use kernel::{BootInfo, HardwareInfo, KernelImage, MemoryRegionState};
+use kernel::{BootInfo, HardwareInfo, KernelImage, memory::MemoryRegionState};
 
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 pub use image::kernel_image;

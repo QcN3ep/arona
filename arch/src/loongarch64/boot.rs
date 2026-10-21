@@ -3,7 +3,10 @@
 use core::mem::size_of;
 
 use kernel::hardware::mmu::MemoryType;
-use kernel::{BootConsoleMapping, HardwareInfo, MemoryRegionState, PhysRange, log, logger};
+use kernel::{
+    BootConsoleMapping, HardwareInfo, log, logger,
+    memory::{MemoryRegionState, PhysRange},
+};
 use uefi_raw::{
     guid,
     table::{configuration::ConfigurationTable, system::SystemTable},

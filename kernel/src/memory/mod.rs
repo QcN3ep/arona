@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod region;
+
+pub use region::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRange};
+
 use arrayvec::ArrayVec;
 use spin::Mutex;
 
 use crate::{
     BootInfo,
-    boot::{ImageSegment, MAX_MEMORY_REGIONS, MemoryInfo, MemoryRegionState},
+    boot::{ImageSegment, MemoryInfo},
     hardware::mmu::{
         self, MemoryType, Mmu, MmuError, PAGE_SIZE, PageAttributes, PageMapping, PagePermissions,
         PageTableFrames,

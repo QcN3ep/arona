@@ -2,7 +2,7 @@
 
 //! 内核映像的装载范围与常驻分段布局。
 
-use super::PhysRange;
+use crate::memory::PhysRange;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KernelImage {

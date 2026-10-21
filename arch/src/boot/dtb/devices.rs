@@ -14,8 +14,9 @@ use arrayvec::ArrayVec;
 use fdt::properties::{Compatible, values::PropertyValue};
 use kernel::{
     DeviceIdentity, DeviceProperty, DeviceUsePolicy, DmaInfo, HardwareDeviceInfo,
-    HardwareDeviceInstanceId, HardwareDeviceLocation, HardwareInfo, PciWindow, PhysRange,
+    HardwareDeviceInstanceId, HardwareDeviceLocation, HardwareInfo, PciWindow,
     boot::{MAX_DEVICE_PROPERTIES, MAX_DEVICES, MAX_MMIO_REGIONS},
+    memory::PhysRange,
 };
 
 use super::{

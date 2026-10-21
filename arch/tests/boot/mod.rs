@@ -4,7 +4,8 @@ mod dtb;
 
 use arch::boot::prepare_boot_info;
 use kernel::{
-    CpuInfo, HardwareInfo, ImageSegment, KernelImage, MemoryRegion, MemoryRegionState, PhysRange,
+    CpuInfo, HardwareInfo, ImageSegment, KernelImage,
+    memory::{MemoryRegion, MemoryRegionState, PhysRange},
 };
 
 const BOOT_CPU_ID: u64 = 7;

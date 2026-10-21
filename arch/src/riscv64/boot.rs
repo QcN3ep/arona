@@ -3,7 +3,10 @@
 use core::mem::size_of;
 
 use kernel::hardware::mmu::MemoryType;
-use kernel::{BootConsoleMapping, HardwareInfo, MemoryRegionState, PhysRange, log, logger};
+use kernel::{
+    BootConsoleMapping, HardwareInfo, log, logger,
+    memory::{MemoryRegionState, PhysRange},
+};
 
 use crate::boot::{console::EarlyConsole, dtb::Dtb, kernel_image, prepare_boot_info};
 use crate::device::uart::Uart;
