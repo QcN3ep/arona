@@ -32,6 +32,10 @@ impl EarlyConsole {
             let _ = self.uart.emergency_write(format_args!("\nPANIC: {info}\n"));
         }
     }
+
+    pub fn emergency_write(&self, arguments: fmt::Arguments<'_>) {
+        let _ = self.uart.emergency_write(arguments);
+    }
 }
 
 impl Sink for EarlyConsole {

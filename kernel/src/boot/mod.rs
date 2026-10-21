@@ -32,7 +32,16 @@ pub fn boot_kernel(info: BootInfo<'_>) -> ! {
     memory::initialize(&info)
         .unwrap_or_else(|error| panic!("failed to initialize memory: {error:?}"));
     log::info!("Memory initialized");
-    // TODO: 需要实现 Trap 以进行缺页处理。
+    let image = info.kernel_image;
+    let stack = crate::memory::VirtRange {
+        start: image.data.virtual_start
+            + (image.boot_stack.start - image.data.physical.start) as usize,
+        end: image.data.virtual_start + (image.boot_stack.end - image.data.physical.start) as usize,
+    };
+    crate::hardware::trap()
+        .install(stack, crate::trap::dispatch)
+        .unwrap_or_else(|error| panic!("failed to install trap entry: {error:?}"));
+    log::info!("Trap initialized");
     loop {
         core::hint::spin_loop();
     }

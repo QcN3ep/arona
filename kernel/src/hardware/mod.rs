@@ -6,8 +6,10 @@ use spin::Once;
 
 pub mod cpu;
 pub mod mmu;
+pub mod trap;
 pub use cpu::cpu;
 pub use mmu::mmu;
+pub use trap::trap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BindError {

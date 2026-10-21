@@ -8,6 +8,7 @@ pub mod boot;
 pub mod hardware;
 pub mod logger;
 pub mod memory;
+pub mod trap;
 
 pub use boot::*;
 pub use log;

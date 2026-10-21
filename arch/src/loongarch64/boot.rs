@@ -23,7 +23,7 @@ use paging::FIRMWARE_BASE;
 
 static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
 // SAFETY: 地址须对应 QEMU virt 的字节宽度与步长均为 1 的 16550 UART，且普通访问须由此实例独占。
-static EARLY_CONSOLE: EarlyConsole =
+pub(super) static EARLY_CONSOLE: EarlyConsole =
     EarlyConsole::new(unsafe { Uart::new(paging::UART_BASE + 0x1e0) });
 
 unsafe extern "C" {

@@ -5,3 +5,4 @@
 pub mod boot;
 mod cpu;
 pub mod paging;
+mod trap;
