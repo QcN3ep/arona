@@ -4,5 +4,6 @@
 
 pub mod boot;
 mod cpu;
+mod execution;
 pub mod paging;
 mod trap;

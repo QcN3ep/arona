@@ -42,6 +42,7 @@ unsafe extern "C" {
 unsafe extern "C" fn _start() -> ! {
     core::arch::naked_asm!(
         "csrwr $zero, 0x4",
+        "csrwr $zero, 0x2",
         "li.w $t0, 4",
         "csrxchg $zero, $t0, 0x0",
         "la.local $sp, _boot_stack_phys_top",

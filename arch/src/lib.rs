@@ -10,6 +10,9 @@ pub mod hardware;
 mod allocator;
 
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+mod execution;
+
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 mod paging;
 
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]

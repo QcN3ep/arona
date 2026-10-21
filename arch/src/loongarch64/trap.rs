@@ -14,28 +14,28 @@ use kernel::{
     trap::{ExceptionClass, FaultAccess, Trap, TrapEvent, TrapOrigin, TrapOutcome},
 };
 
-use super::{boot::EARLY_CONSOLE, cpu::CPU};
+use super::{boot::EARLY_CONSOLE, cpu::CPU, execution};
 use crate::trap::{EMERGENCY_STACK_SIZE, EmergencyStack, EntryReason, EntryState, STACK_HEADROOM};
 
 crate::declare_hardware!(static TRAP: LoongArchTrap = LoongArchTrap => kernel::hardware::trap::bind);
 
-static mut STATE: EntryState = EntryState::new();
+pub(super) static mut STATE: EntryState = EntryState::new();
 static mut EMERGENCY_STACK: EmergencyStack = EmergencyStack([0; EMERGENCY_STACK_SIZE]);
 
 #[repr(C, align(16))]
-struct TrapFrame {
-    registers: [usize; 32],
-    pc: usize,
-    status: usize,
-    cause: usize,
-    address: usize,
-    instruction: usize,
-    interrupt_mask: usize,
-    extensions: usize,
-    fcsr: usize,
-    fcc: usize,
-    reason: EntryReason,
-    floating: MaybeUninit<[u64; 32]>,
+pub(super) struct TrapFrame {
+    pub(super) registers: [usize; 32],
+    pub(super) pc: usize,
+    pub(super) status: usize,
+    pub(super) cause: usize,
+    pub(super) address: usize,
+    pub(super) instruction: usize,
+    pub(super) interrupt_mask: usize,
+    pub(super) extensions: usize,
+    pub(super) fcsr: usize,
+    pub(super) fcc: usize,
+    pub(super) reason: EntryReason,
+    pub(super) floating: MaybeUninit<[u64; 32]>,
 }
 
 struct LoongArchTrap;
@@ -224,9 +224,13 @@ extern "C" fn save_frame() -> ! {
         "move $a0, $sp",
         "bl {save_floating}",
         "move $a0, $sp",
+        "bl {capture}",
         "bl {handle}",
-        "move $a0, $sp",
+        "csrrd $t0, 0x30",
+        "st.d $zero, $t0, {active}",
+        "move $sp, $a0",
         "b {restore}",
+        active = const offset_of!(EntryState, active),
         scratch = const offset_of!(EntryState, scratch),
         tp = const offset_of!(EntryState, kernel_tp),
         pc = const offset_of!(TrapFrame, pc),
@@ -238,9 +242,10 @@ extern "C" fn save_frame() -> ! {
         extensions = const offset_of!(TrapFrame, extensions),
         fcsr = const offset_of!(TrapFrame, fcsr),
         fcc = const offset_of!(TrapFrame, fcc),
-        save_floating = sym save_floating,
+        capture = sym execution::capture,
+        save_floating = sym execution::save_floating,
         handle = sym handle,
-        restore = sym restore,
+        restore = sym execution::restore_frame,
     );
 }
 
@@ -255,203 +260,18 @@ extern "C" fn double_fault() -> ! {
     );
 }
 
-#[unsafe(naked)]
-extern "C" fn save_floating(_frame: &mut TrapFrame) {
-    naked_asm!(
-        "ld.d $t0, $a0, {extensions}",
-        "andi $t0, $t0, 1",
-        "beqz $t0, 2f",
-        "movfcsr2gr $t0, $fcsr0",
-        "st.d $t0, $a0, {fcsr}",
-        "movcf2gr $t0, $fcc0",
-        "st.b $t0, $a0, {fcc}+0",
-        "movcf2gr $t0, $fcc1",
-        "st.b $t0, $a0, {fcc}+1",
-        "movcf2gr $t0, $fcc2",
-        "st.b $t0, $a0, {fcc}+2",
-        "movcf2gr $t0, $fcc3",
-        "st.b $t0, $a0, {fcc}+3",
-        "movcf2gr $t0, $fcc4",
-        "st.b $t0, $a0, {fcc}+4",
-        "movcf2gr $t0, $fcc5",
-        "st.b $t0, $a0, {fcc}+5",
-        "movcf2gr $t0, $fcc6",
-        "st.b $t0, $a0, {fcc}+6",
-        "movcf2gr $t0, $fcc7",
-        "st.b $t0, $a0, {fcc}+7",
-        "addi.d $a0, $a0, {floating}",
-        "fst.d $f0, $a0, 0",
-        "fst.d $f1, $a0, 8",
-        "fst.d $f2, $a0, 16",
-        "fst.d $f3, $a0, 24",
-        "fst.d $f4, $a0, 32",
-        "fst.d $f5, $a0, 40",
-        "fst.d $f6, $a0, 48",
-        "fst.d $f7, $a0, 56",
-        "fst.d $f8, $a0, 64",
-        "fst.d $f9, $a0, 72",
-        "fst.d $f10, $a0, 80",
-        "fst.d $f11, $a0, 88",
-        "fst.d $f12, $a0, 96",
-        "fst.d $f13, $a0, 104",
-        "fst.d $f14, $a0, 112",
-        "fst.d $f15, $a0, 120",
-        "fst.d $f16, $a0, 128",
-        "fst.d $f17, $a0, 136",
-        "fst.d $f18, $a0, 144",
-        "fst.d $f19, $a0, 152",
-        "fst.d $f20, $a0, 160",
-        "fst.d $f21, $a0, 168",
-        "fst.d $f22, $a0, 176",
-        "fst.d $f23, $a0, 184",
-        "fst.d $f24, $a0, 192",
-        "fst.d $f25, $a0, 200",
-        "fst.d $f26, $a0, 208",
-        "fst.d $f27, $a0, 216",
-        "fst.d $f28, $a0, 224",
-        "fst.d $f29, $a0, 232",
-        "fst.d $f30, $a0, 240",
-        "fst.d $f31, $a0, 248",
-        "2:",
-        "addi.d $t0, $zero, 1",
-        "csrxchg $zero, $t0, 0x2",
-        "jirl $zero, $ra, 0",
-        extensions = const offset_of!(TrapFrame, extensions),
-        fcsr = const offset_of!(TrapFrame, fcsr),
-        fcc = const offset_of!(TrapFrame, fcc),
-        floating = const offset_of!(TrapFrame, floating),
-    );
-}
-
-#[unsafe(naked)]
-extern "C" fn restore_floating(_frame: &TrapFrame) {
-    naked_asm!(
-        "ld.d $t0, $a0, {extensions}",
-        "move $t1, $t0",
-        "csrwr $t1, 0x2",
-        "andi $t0, $t0, 1",
-        "beqz $t0, 2f",
-        "ld.d $t0, $a0, {fcsr}",
-        "movgr2fcsr $fcsr0, $t0",
-        "ld.bu $t0, $a0, {fcc}+0",
-        "movgr2cf $fcc0, $t0",
-        "ld.bu $t0, $a0, {fcc}+1",
-        "movgr2cf $fcc1, $t0",
-        "ld.bu $t0, $a0, {fcc}+2",
-        "movgr2cf $fcc2, $t0",
-        "ld.bu $t0, $a0, {fcc}+3",
-        "movgr2cf $fcc3, $t0",
-        "ld.bu $t0, $a0, {fcc}+4",
-        "movgr2cf $fcc4, $t0",
-        "ld.bu $t0, $a0, {fcc}+5",
-        "movgr2cf $fcc5, $t0",
-        "ld.bu $t0, $a0, {fcc}+6",
-        "movgr2cf $fcc6, $t0",
-        "ld.bu $t0, $a0, {fcc}+7",
-        "movgr2cf $fcc7, $t0",
-        "addi.d $a0, $a0, {floating}",
-        "fld.d $f0, $a0, 0",
-        "fld.d $f1, $a0, 8",
-        "fld.d $f2, $a0, 16",
-        "fld.d $f3, $a0, 24",
-        "fld.d $f4, $a0, 32",
-        "fld.d $f5, $a0, 40",
-        "fld.d $f6, $a0, 48",
-        "fld.d $f7, $a0, 56",
-        "fld.d $f8, $a0, 64",
-        "fld.d $f9, $a0, 72",
-        "fld.d $f10, $a0, 80",
-        "fld.d $f11, $a0, 88",
-        "fld.d $f12, $a0, 96",
-        "fld.d $f13, $a0, 104",
-        "fld.d $f14, $a0, 112",
-        "fld.d $f15, $a0, 120",
-        "fld.d $f16, $a0, 128",
-        "fld.d $f17, $a0, 136",
-        "fld.d $f18, $a0, 144",
-        "fld.d $f19, $a0, 152",
-        "fld.d $f20, $a0, 160",
-        "fld.d $f21, $a0, 168",
-        "fld.d $f22, $a0, 176",
-        "fld.d $f23, $a0, 184",
-        "fld.d $f24, $a0, 192",
-        "fld.d $f25, $a0, 200",
-        "fld.d $f26, $a0, 208",
-        "fld.d $f27, $a0, 216",
-        "fld.d $f28, $a0, 224",
-        "fld.d $f29, $a0, 232",
-        "fld.d $f30, $a0, 240",
-        "fld.d $f31, $a0, 248",
-        "2:",
-        "jirl $zero, $ra, 0",
-        extensions = const offset_of!(TrapFrame, extensions),
-        fcsr = const offset_of!(TrapFrame, fcsr),
-        fcc = const offset_of!(TrapFrame, fcc),
-        floating = const offset_of!(TrapFrame, floating),
-    );
-}
-
-#[unsafe(naked)]
-extern "C" fn restore(_frame: &TrapFrame) -> ! {
-    naked_asm!(
-        "bl {restore_floating}",
-        "ld.d $t0, $sp, {pc}",
-        "csrwr $t0, 0x6",
-        "ld.d $t0, $sp, {status}",
-        "csrwr $t0, 0x1",
-        "ld.d $r1, $sp, 8",
-        "ld.d $r2, $sp, 16",
-        "ld.d $r4, $sp, 32",
-        "ld.d $r5, $sp, 40",
-        "ld.d $r6, $sp, 48",
-        "ld.d $r7, $sp, 56",
-        "ld.d $r8, $sp, 64",
-        "ld.d $r9, $sp, 72",
-        "ld.d $r10, $sp, 80",
-        "ld.d $r11, $sp, 88",
-        "ld.d $r13, $sp, 104",
-        "ld.d $r14, $sp, 112",
-        "ld.d $r15, $sp, 120",
-        "ld.d $r16, $sp, 128",
-        "ld.d $r17, $sp, 136",
-        "ld.d $r18, $sp, 144",
-        "ld.d $r19, $sp, 152",
-        "ld.d $r20, $sp, 160",
-        "ld.d $r21, $sp, 168",
-        "ld.d $r22, $sp, 176",
-        "ld.d $r23, $sp, 184",
-        "ld.d $r24, $sp, 192",
-        "ld.d $r25, $sp, 200",
-        "ld.d $r26, $sp, 208",
-        "ld.d $r27, $sp, 216",
-        "ld.d $r28, $sp, 224",
-        "ld.d $r29, $sp, 232",
-        "ld.d $r30, $sp, 240",
-        "ld.d $r31, $sp, 248",
-        "csrrd $t0, 0x30",
-        "st.d $zero, $t0, {active}",
-        "ld.d $t0, $sp, 96",
-        "ld.d $sp, $sp, 24",
-        "ertn",
-        pc = const offset_of!(TrapFrame, pc),
-        status = const offset_of!(TrapFrame, status),
-        active = const offset_of!(EntryState, active),
-        restore_floating = sym restore_floating,
-    );
-}
-
-extern "C" fn handle(frame: &mut TrapFrame) {
+extern "C" fn handle(frame: &mut TrapFrame) -> *const TrapFrame {
     let trap = frame.decode();
     if frame.reason == EntryReason::Normal {
         // SAFETY: STATE 须已完成安装，访问期间须关闭本地中断。
         let handler = unsafe { (*core::ptr::addr_of!(STATE)).handler }.unwrap();
         match handler(trap) {
-            TrapOutcome::Resume => return,
+            TrapOutcome::Resume => return frame,
             TrapOutcome::Return { status, values } => {
                 if let TrapEvent::Syscall { successor, .. } = trap.event {
                     frame.registers[4..7].copy_from_slice(&[status, values[0], values[1]]);
                     frame.pc = successor;
-                    return;
+                    return frame;
                 }
             }
             TrapOutcome::Stop => {}

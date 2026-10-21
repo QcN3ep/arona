@@ -1,0 +1,428 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use core::{
+    alloc::Layout,
+    arch::{asm, naked_asm},
+    convert::Infallible,
+    mem::{MaybeUninit, offset_of, size_of},
+};
+
+use kernel::hardware::{
+    cpu::{Cpu, InterruptState},
+    execution::{ContextStart, ContextStorage, Execution, ExecutionError},
+};
+
+use super::{
+    cpu::CPU,
+    trap::{self, TrapFrame},
+};
+use crate::execution::{EntryContext, SavedContext, activate, capture_frame, pointer};
+
+const SIE: usize = 1 << 1;
+const SPIE: usize = 1 << 5;
+const SPP: usize = 1 << 8;
+const VS: usize = 3 << 9;
+const FS: usize = 3 << 13;
+const FS_CLEAN: usize = 2 << 13;
+const SUM: usize = 1 << 18;
+const MXR: usize = 1 << 19;
+
+crate::declare_hardware!(static EXECUTION: RiscvExecution = RiscvExecution => kernel::hardware::execution::bind);
+
+type Context = SavedContext<TrapFrame, KernelContinuation>;
+
+#[derive(Default)]
+#[repr(C)]
+struct KernelContinuation {
+    ra: usize,
+    sp: usize,
+    gp: usize,
+    tp: usize,
+    saved: [usize; 12],
+}
+
+struct RiscvExecution;
+
+impl Execution for RiscvExecution {
+    fn context_layout(&self) -> Layout {
+        Layout::new::<Context>()
+    }
+
+    fn initialize(
+        &self,
+        storage: &ContextStorage,
+        start: ContextStart,
+    ) -> Result<(), ExecutionError> {
+        check_environment()?;
+        let destination = pointer::<Context>(storage)?;
+        // SAFETY: 入口状态须由当前处理器在关中断时独占。
+        let state = unsafe { &mut *core::ptr::addr_of_mut!(trap::STATE) };
+        if matches!(start, ContextStart::Current) && !state.context.is_null() {
+            return Err(ExecutionError::InvalidState);
+        }
+        let entry = EntryContext::initial(start, size_of::<TrapFrame>(), 2)?;
+        let (status, gp, tp): (usize, usize, usize);
+        // SAFETY: 当前处理器须允许读取特权状态和内核 ABI 寄存器。
+        unsafe {
+            asm!(
+                "csrr {status}, sstatus",
+                "mv {gp}, gp",
+                "mv {tp}, tp",
+                status = out(reg) status,
+                gp = out(reg) gp,
+                tp = out(reg) tp,
+                options(nomem, nostack),
+            );
+        }
+        let mut frame = TrapFrame {
+            registers: [0; 32],
+            pc: 0,
+            status: (status & !(FS | VS | SIE | SPIE | SUM | MXR)) | SPP,
+            cause: 0,
+            address: 0,
+            fcsr: 0,
+            reason: crate::trap::EntryReason::Normal,
+            floating: MaybeUninit::new([0; 32]),
+        };
+        let mut continuation = KernelContinuation {
+            tp,
+            gp,
+            ..KernelContinuation::default()
+        };
+        match start {
+            ContextStart::Current => {}
+            ContextStart::Kernel {
+                stack,
+                entry,
+                argument,
+            } => {
+                continuation.ra = start_kernel as *const () as usize;
+                continuation.sp = stack.end;
+                continuation.saved[0] = entry as usize;
+                continuation.saved[1] = argument;
+            }
+            ContextStart::User { stack, entry } => {
+                continuation.ra = start_user as *const () as usize;
+                continuation.sp = stack.end;
+                continuation.saved[0] = destination as usize;
+                frame.status = (frame.status & !SPP) | SPIE | FS_CLEAN;
+                frame.pc = entry.pc;
+                frame.registers[2] = entry.stack_pointer;
+                frame.registers[4] = entry.thread_pointer;
+                frame.registers[10] = entry.argument;
+            }
+        }
+        // SAFETY: destination 须为该上下文独占且按声明布局分配的稳定存储。
+        unsafe {
+            destination.write(Context {
+                frame,
+                continuation,
+                entry,
+            });
+        }
+        if matches!(start, ContextStart::Current) {
+            state.context = destination.cast();
+        }
+        Ok(())
+    }
+
+    fn switch(
+        &self,
+        current: &ContextStorage,
+        next: &ContextStorage,
+    ) -> Result<(), ExecutionError> {
+        check_environment()?;
+        let current = pointer::<Context>(current)?;
+        let next = pointer::<Context>(next)?;
+        // SAFETY: 两份上下文须独占且已初始化，入口状态不得并发访问。
+        unsafe {
+            activate(current, next, &mut *core::ptr::addr_of_mut!(trap::STATE))?;
+            switch(core::ptr::addr_of_mut!((*current).continuation), next);
+        }
+        Ok(())
+    }
+
+    fn restore(
+        &self,
+        current: &ContextStorage,
+        next: &ContextStorage,
+    ) -> Result<Infallible, ExecutionError> {
+        check_environment()?;
+        let current = pointer::<Context>(current)?;
+        let next = pointer::<Context>(next)?;
+        // SAFETY: 两份上下文须独占且已初始化，目标现场及其栈须保持存活和映射。
+        unsafe {
+            activate(current, next, &mut *core::ptr::addr_of_mut!(trap::STATE))?;
+            restore(next)
+        }
+    }
+}
+
+fn check_environment() -> Result<(), ExecutionError> {
+    if CPU.interrupt_state() != InterruptState::Disabled {
+        return Err(ExecutionError::InterruptsEnabled);
+    }
+    let status: usize;
+    // SAFETY: 当前处理器须允许读取 sstatus。
+    unsafe {
+        asm!("csrr {}, sstatus", out(reg) status, options(nomem, nostack));
+    }
+    if status & (FS | VS) != 0 {
+        return Err(ExecutionError::ExtensionsEnabled);
+    }
+    // SAFETY: 入口状态须由当前处理器独占，访问期间中断须关闭。
+    let state = unsafe { &*core::ptr::addr_of!(trap::STATE) };
+    if state.handler.is_none() {
+        return Err(ExecutionError::NotInstalled);
+    }
+    if state.active > 1 {
+        return Err(ExecutionError::InvalidState);
+    }
+    Ok(())
+}
+
+pub(super) extern "C" fn capture(frame: *mut TrapFrame) -> *mut TrapFrame {
+    // SAFETY: frame 须为当前入口的完整现场，入口状态和当前上下文须由当前处理器独占。
+    unsafe { capture_frame(frame, &*core::ptr::addr_of!(trap::STATE)) }
+}
+
+/// # Safety
+///
+/// 两份上下文及其栈须保持存活和映射，中断与浮点须关闭。
+#[unsafe(naked)]
+unsafe extern "C" fn switch(_current: *mut KernelContinuation, _next: *const Context) {
+    naked_asm!(
+        "sd ra, 0(a0)",
+        "sd sp, 8(a0)",
+        "sd gp, 16(a0)",
+        "sd tp, 24(a0)",
+        "sd s0, 32(a0)",
+        "sd s1, 40(a0)",
+        "sd s2, 48(a0)",
+        "sd s3, 56(a0)",
+        "sd s4, 64(a0)",
+        "sd s5, 72(a0)",
+        "sd s6, 80(a0)",
+        "sd s7, 88(a0)",
+        "sd s8, 96(a0)",
+        "sd s9, 104(a0)",
+        "sd s10, 112(a0)",
+        "sd s11, 120(a0)",
+        "mv a0, a1",
+        "tail {restore}",
+        restore = sym restore,
+    );
+}
+
+// REFERENCE: https://docs.riscv.org/reference/isa/unpriv/zalrsc.html
+
+/// # Safety
+///
+/// 目标现场及其栈须可访问，入口状态须已匹配目标，中断与浮点须关闭。
+#[unsafe(naked)]
+unsafe extern "C" fn restore(_next: *const Context) -> ! {
+    naked_asm!(
+        ".option push",
+        ".option arch, +a",
+        "sc.d zero, zero, (a0)",
+        "addi a0, a0, {continuation}",
+        "ld ra, 0(a0)",
+        "ld sp, 8(a0)",
+        "ld gp, 16(a0)",
+        "ld tp, 24(a0)",
+        "ld s0, 32(a0)",
+        "ld s1, 40(a0)",
+        "ld s2, 48(a0)",
+        "ld s3, 56(a0)",
+        "ld s4, 64(a0)",
+        "ld s5, 72(a0)",
+        "ld s6, 80(a0)",
+        "ld s7, 88(a0)",
+        "ld s8, 96(a0)",
+        "ld s9, 104(a0)",
+        "ld s10, 112(a0)",
+        "ld s11, 120(a0)",
+        "ret",
+        ".option pop",
+        continuation = const offset_of!(Context, continuation),
+    );
+}
+
+#[unsafe(naked)]
+extern "C" fn start_kernel() -> ! {
+    naked_asm!("mv a0, s1", "jr s0",);
+}
+
+#[unsafe(naked)]
+extern "C" fn start_user() -> ! {
+    naked_asm!(
+        "mv sp, s0",
+        "mv a0, sp",
+        "tail {restore}",
+        restore = sym restore_frame,
+    );
+}
+
+#[unsafe(naked)]
+pub(super) extern "C" fn save_floating(_frame: &mut TrapFrame) {
+    naked_asm!(
+        ".option push",
+        ".option arch, +f, +d",
+        "ld t0, {status}(a0)",
+        "li t1, 0x6000",
+        "and t0, t0, t1",
+        "beqz t0, 2f",
+        "frcsr t0",
+        "sd t0, {fcsr}(a0)",
+        "addi a0, a0, {floating}",
+        "fsd f0, 0(a0)",
+        "fsd f1, 8(a0)",
+        "fsd f2, 16(a0)",
+        "fsd f3, 24(a0)",
+        "fsd f4, 32(a0)",
+        "fsd f5, 40(a0)",
+        "fsd f6, 48(a0)",
+        "fsd f7, 56(a0)",
+        "fsd f8, 64(a0)",
+        "fsd f9, 72(a0)",
+        "fsd f10, 80(a0)",
+        "fsd f11, 88(a0)",
+        "fsd f12, 96(a0)",
+        "fsd f13, 104(a0)",
+        "fsd f14, 112(a0)",
+        "fsd f15, 120(a0)",
+        "fsd f16, 128(a0)",
+        "fsd f17, 136(a0)",
+        "fsd f18, 144(a0)",
+        "fsd f19, 152(a0)",
+        "fsd f20, 160(a0)",
+        "fsd f21, 168(a0)",
+        "fsd f22, 176(a0)",
+        "fsd f23, 184(a0)",
+        "fsd f24, 192(a0)",
+        "fsd f25, 200(a0)",
+        "fsd f26, 208(a0)",
+        "fsd f27, 216(a0)",
+        "fsd f28, 224(a0)",
+        "fsd f29, 232(a0)",
+        "fsd f30, 240(a0)",
+        "fsd f31, 248(a0)",
+        "2:",
+        "li t0, 0x6000",
+        "csrc sstatus, t0",
+        "ret",
+        ".option pop",
+        status = const offset_of!(TrapFrame, status),
+        fcsr = const offset_of!(TrapFrame, fcsr),
+        floating = const offset_of!(TrapFrame, floating),
+    );
+}
+
+#[unsafe(naked)]
+extern "C" fn restore_floating(_frame: &TrapFrame) {
+    naked_asm!(
+        ".option push",
+        ".option arch, +f, +d",
+        "ld t0, {status}(a0)",
+        "li t1, 0x6000",
+        "and t0, t0, t1",
+        "csrc sstatus, t1",
+        "csrs sstatus, t0",
+        "beqz t0, 2f",
+        "ld t0, {fcsr}(a0)",
+        "fscsr t0",
+        "addi a0, a0, {floating}",
+        "fld f0, 0(a0)",
+        "fld f1, 8(a0)",
+        "fld f2, 16(a0)",
+        "fld f3, 24(a0)",
+        "fld f4, 32(a0)",
+        "fld f5, 40(a0)",
+        "fld f6, 48(a0)",
+        "fld f7, 56(a0)",
+        "fld f8, 64(a0)",
+        "fld f9, 72(a0)",
+        "fld f10, 80(a0)",
+        "fld f11, 88(a0)",
+        "fld f12, 96(a0)",
+        "fld f13, 104(a0)",
+        "fld f14, 112(a0)",
+        "fld f15, 120(a0)",
+        "fld f16, 128(a0)",
+        "fld f17, 136(a0)",
+        "fld f18, 144(a0)",
+        "fld f19, 152(a0)",
+        "fld f20, 160(a0)",
+        "fld f21, 168(a0)",
+        "fld f22, 176(a0)",
+        "fld f23, 184(a0)",
+        "fld f24, 192(a0)",
+        "fld f25, 200(a0)",
+        "fld f26, 208(a0)",
+        "fld f27, 216(a0)",
+        "fld f28, 224(a0)",
+        "fld f29, 232(a0)",
+        "fld f30, 240(a0)",
+        "fld f31, 248(a0)",
+        "2:",
+        "ret",
+        ".option pop",
+        status = const offset_of!(TrapFrame, status),
+        fcsr = const offset_of!(TrapFrame, fcsr),
+        floating = const offset_of!(TrapFrame, floating),
+    );
+}
+
+/// # Safety
+///
+/// sp 与首参数须指向同一有效现场，入口状态须已匹配目标且中断须关闭。
+#[unsafe(naked)]
+pub(super) unsafe extern "C" fn restore_frame(_frame: &TrapFrame) -> ! {
+    naked_asm!(
+        ".option push",
+        ".option arch, +a",
+        "call {restore_floating}",
+        // 清除上一个上下文遗留的 LR/SC 预约，写入的 x0 槽始终为零。
+        "sc.d zero, zero, (sp)",
+        "ld t0, {pc}(sp)",
+        "csrw sepc, t0",
+        "ld t0, {status}(sp)",
+        "csrw sstatus, t0",
+        "ld ra, 8(sp)",
+        "ld gp, 24(sp)",
+        "ld tp, 32(sp)",
+        "ld t1, 48(sp)",
+        "ld t2, 56(sp)",
+        "ld s0, 64(sp)",
+        "ld s1, 72(sp)",
+        "ld a0, 80(sp)",
+        "ld a1, 88(sp)",
+        "ld a2, 96(sp)",
+        "ld a3, 104(sp)",
+        "ld a4, 112(sp)",
+        "ld a5, 120(sp)",
+        "ld a6, 128(sp)",
+        "ld a7, 136(sp)",
+        "ld s2, 144(sp)",
+        "ld s3, 152(sp)",
+        "ld s4, 160(sp)",
+        "ld s5, 168(sp)",
+        "ld s6, 176(sp)",
+        "ld s7, 184(sp)",
+        "ld s8, 192(sp)",
+        "ld s9, 200(sp)",
+        "ld s10, 208(sp)",
+        "ld s11, 216(sp)",
+        "ld t3, 224(sp)",
+        "ld t4, 232(sp)",
+        "ld t5, 240(sp)",
+        "ld t6, 248(sp)",
+        "ld t0, 40(sp)",
+        "ld sp, 16(sp)",
+        "sret",
+        ".option pop",
+        pc = const offset_of!(TrapFrame, pc),
+        status = const offset_of!(TrapFrame, status),
+        restore_floating = sym restore_floating,
+    );
+}

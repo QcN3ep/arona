@@ -14,24 +14,24 @@ use kernel::{
     trap::{ExceptionClass, FaultAccess, Trap, TrapEvent, TrapOrigin, TrapOutcome},
 };
 
-use super::{boot::EARLY_CONSOLE, cpu::CPU};
+use super::{boot::EARLY_CONSOLE, cpu::CPU, execution};
 use crate::trap::{EMERGENCY_STACK_SIZE, EmergencyStack, EntryReason, EntryState, STACK_HEADROOM};
 
 crate::declare_hardware!(static TRAP: RiscvTrap = RiscvTrap => kernel::hardware::trap::bind);
 
-static mut STATE: EntryState = EntryState::new();
+pub(super) static mut STATE: EntryState = EntryState::new();
 static mut EMERGENCY_STACK: EmergencyStack = EmergencyStack([0; EMERGENCY_STACK_SIZE]);
 
 #[repr(C, align(16))]
-struct TrapFrame {
-    registers: [usize; 32],
-    pc: usize,
-    status: usize,
-    cause: usize,
-    address: usize,
-    fcsr: usize,
-    reason: EntryReason,
-    floating: MaybeUninit<[u64; 32]>,
+pub(super) struct TrapFrame {
+    pub(super) registers: [usize; 32],
+    pub(super) pc: usize,
+    pub(super) status: usize,
+    pub(super) cause: usize,
+    pub(super) address: usize,
+    pub(super) fcsr: usize,
+    pub(super) reason: EntryReason,
+    pub(super) floating: MaybeUninit<[u64; 32]>,
 }
 
 struct RiscvTrap;
@@ -214,9 +214,13 @@ extern "C" fn save_frame() -> ! {
         "mv a0, sp",
         "call {save_floating}",
         "mv a0, sp",
+        "call {capture}",
         "call {handle}",
-        "mv a0, sp",
+        "csrr t0, sscratch",
+        "sd zero, {active}(t0)",
+        "mv sp, a0",
         "tail {restore}",
+        active = const offset_of!(EntryState, active),
         scratch = const offset_of!(EntryState, scratch),
         tp = const offset_of!(EntryState, kernel_tp),
         gp = const offset_of!(EntryState, kernel_gp),
@@ -225,9 +229,10 @@ extern "C" fn save_frame() -> ! {
         cause = const offset_of!(TrapFrame, cause),
         address = const offset_of!(TrapFrame, address),
         fcsr = const offset_of!(TrapFrame, fcsr),
-        save_floating = sym save_floating,
+        capture = sym execution::capture,
+        save_floating = sym execution::save_floating,
         handle = sym handle,
-        restore = sym restore,
+        restore = sym execution::restore_frame,
     );
 }
 
@@ -236,177 +241,18 @@ extern "C" fn double_fault() -> ! {
     naked_asm!("csrci sstatus, 2", "2:", "wfi", "j 2b");
 }
 
-#[unsafe(naked)]
-extern "C" fn save_floating(_frame: &mut TrapFrame) {
-    naked_asm!(
-        ".option push",
-        ".option arch, +f, +d",
-        "ld t0, {status}(a0)",
-        "li t1, 0x6000",
-        "and t0, t0, t1",
-        "beqz t0, 2f",
-        "frcsr t0",
-        "sd t0, {fcsr}(a0)",
-        "addi a0, a0, {floating}",
-        "fsd f0, 0(a0)",
-        "fsd f1, 8(a0)",
-        "fsd f2, 16(a0)",
-        "fsd f3, 24(a0)",
-        "fsd f4, 32(a0)",
-        "fsd f5, 40(a0)",
-        "fsd f6, 48(a0)",
-        "fsd f7, 56(a0)",
-        "fsd f8, 64(a0)",
-        "fsd f9, 72(a0)",
-        "fsd f10, 80(a0)",
-        "fsd f11, 88(a0)",
-        "fsd f12, 96(a0)",
-        "fsd f13, 104(a0)",
-        "fsd f14, 112(a0)",
-        "fsd f15, 120(a0)",
-        "fsd f16, 128(a0)",
-        "fsd f17, 136(a0)",
-        "fsd f18, 144(a0)",
-        "fsd f19, 152(a0)",
-        "fsd f20, 160(a0)",
-        "fsd f21, 168(a0)",
-        "fsd f22, 176(a0)",
-        "fsd f23, 184(a0)",
-        "fsd f24, 192(a0)",
-        "fsd f25, 200(a0)",
-        "fsd f26, 208(a0)",
-        "fsd f27, 216(a0)",
-        "fsd f28, 224(a0)",
-        "fsd f29, 232(a0)",
-        "fsd f30, 240(a0)",
-        "fsd f31, 248(a0)",
-        "2:",
-        "li t0, 0x6000",
-        "csrc sstatus, t0",
-        "ret",
-        ".option pop",
-        status = const offset_of!(TrapFrame, status),
-        fcsr = const offset_of!(TrapFrame, fcsr),
-        floating = const offset_of!(TrapFrame, floating),
-    );
-}
-
-#[unsafe(naked)]
-extern "C" fn restore_floating(_frame: &TrapFrame) {
-    naked_asm!(
-        ".option push",
-        ".option arch, +f, +d",
-        "ld t0, {status}(a0)",
-        "li t1, 0x6000",
-        "and t0, t0, t1",
-        "csrc sstatus, t1",
-        "csrs sstatus, t0",
-        "beqz t0, 2f",
-        "ld t0, {fcsr}(a0)",
-        "fscsr t0",
-        "addi a0, a0, {floating}",
-        "fld f0, 0(a0)",
-        "fld f1, 8(a0)",
-        "fld f2, 16(a0)",
-        "fld f3, 24(a0)",
-        "fld f4, 32(a0)",
-        "fld f5, 40(a0)",
-        "fld f6, 48(a0)",
-        "fld f7, 56(a0)",
-        "fld f8, 64(a0)",
-        "fld f9, 72(a0)",
-        "fld f10, 80(a0)",
-        "fld f11, 88(a0)",
-        "fld f12, 96(a0)",
-        "fld f13, 104(a0)",
-        "fld f14, 112(a0)",
-        "fld f15, 120(a0)",
-        "fld f16, 128(a0)",
-        "fld f17, 136(a0)",
-        "fld f18, 144(a0)",
-        "fld f19, 152(a0)",
-        "fld f20, 160(a0)",
-        "fld f21, 168(a0)",
-        "fld f22, 176(a0)",
-        "fld f23, 184(a0)",
-        "fld f24, 192(a0)",
-        "fld f25, 200(a0)",
-        "fld f26, 208(a0)",
-        "fld f27, 216(a0)",
-        "fld f28, 224(a0)",
-        "fld f29, 232(a0)",
-        "fld f30, 240(a0)",
-        "fld f31, 248(a0)",
-        "2:",
-        "ret",
-        ".option pop",
-        status = const offset_of!(TrapFrame, status),
-        fcsr = const offset_of!(TrapFrame, fcsr),
-        floating = const offset_of!(TrapFrame, floating),
-    );
-}
-
-#[unsafe(naked)]
-extern "C" fn restore(_frame: &TrapFrame) -> ! {
-    naked_asm!(
-        "call {restore_floating}",
-        "ld t0, {pc}(sp)",
-        "csrw sepc, t0",
-        "ld t0, {status}(sp)",
-        "csrw sstatus, t0",
-        "ld ra, 8(sp)",
-        "ld gp, 24(sp)",
-        "ld tp, 32(sp)",
-        "ld t1, 48(sp)",
-        "ld t2, 56(sp)",
-        "ld s0, 64(sp)",
-        "ld s1, 72(sp)",
-        "ld a0, 80(sp)",
-        "ld a1, 88(sp)",
-        "ld a2, 96(sp)",
-        "ld a3, 104(sp)",
-        "ld a4, 112(sp)",
-        "ld a5, 120(sp)",
-        "ld a6, 128(sp)",
-        "ld a7, 136(sp)",
-        "ld s2, 144(sp)",
-        "ld s3, 152(sp)",
-        "ld s4, 160(sp)",
-        "ld s5, 168(sp)",
-        "ld s6, 176(sp)",
-        "ld s7, 184(sp)",
-        "ld s8, 192(sp)",
-        "ld s9, 200(sp)",
-        "ld s10, 208(sp)",
-        "ld s11, 216(sp)",
-        "ld t3, 224(sp)",
-        "ld t4, 232(sp)",
-        "ld t5, 240(sp)",
-        "ld t6, 248(sp)",
-        "csrr t0, sscratch",
-        "sd zero, {active}(t0)",
-        "ld t0, 40(sp)",
-        "ld sp, 16(sp)",
-        "sret",
-        pc = const offset_of!(TrapFrame, pc),
-        status = const offset_of!(TrapFrame, status),
-        active = const offset_of!(EntryState, active),
-        restore_floating = sym restore_floating,
-    );
-}
-
-extern "C" fn handle(frame: &mut TrapFrame) {
+extern "C" fn handle(frame: &mut TrapFrame) -> *const TrapFrame {
     let trap = frame.decode();
     if frame.reason == EntryReason::Normal {
         // SAFETY: STATE 须已完成安装，访问期间须关闭本地中断。
         let handler = unsafe { (*core::ptr::addr_of!(STATE)).handler }.unwrap();
         match handler(trap) {
-            TrapOutcome::Resume => return,
+            TrapOutcome::Resume => return frame,
             TrapOutcome::Return { status, values } => {
                 if let TrapEvent::Syscall { successor, .. } = trap.event {
                     frame.registers[10..13].copy_from_slice(&[status, values[0], values[1]]);
                     frame.pc = successor;
-                    return;
+                    return frame;
                 }
             }
             TrapOutcome::Stop => {}

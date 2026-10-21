@@ -31,6 +31,7 @@ pub(crate) struct EntryState {
     pub kernel_tp: usize,
     pub kernel_gp: usize,
     pub handler: Option<Handler>,
+    pub context: *mut (),
 }
 
 impl EntryState {
@@ -44,6 +45,7 @@ impl EntryState {
             kernel_tp: 0,
             kernel_gp: 0,
             handler: None,
+            context: core::ptr::null_mut(),
         }
     }
 
@@ -51,6 +53,13 @@ impl EntryState {
         if self.active != 0 {
             return Err(TrapError::Busy);
         }
+        Self::validate_stack(stack, frame_size)?;
+        self.stack_start = stack.start;
+        self.stack_end = stack.end;
+        Ok(())
+    }
+
+    pub fn validate_stack(stack: VirtRange, frame_size: usize) -> Result<(), TrapError> {
         if stack.start <= isize::MAX as usize
             || !stack.start.is_multiple_of(16)
             || !stack.end.is_multiple_of(16)
@@ -61,8 +70,6 @@ impl EntryState {
         {
             return Err(TrapError::InvalidStack);
         }
-        self.stack_start = stack.start;
-        self.stack_end = stack.end;
         Ok(())
     }
 }
