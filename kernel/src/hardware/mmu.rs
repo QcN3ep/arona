@@ -83,7 +83,7 @@ pub struct PageTableLayout {
 /// # Safety
 ///
 /// 当前处理器须允许执行分页与缓存维护指令，本地中断须关闭，当前页表须保留物理访问窗口。
-/// 启用的页表及其后备页框须持续存活，物理访问不得与活动 Rust 引用冲突，修改不得破坏当前执行所依赖的映射。
+/// 启用的页表及其后备页框须持续存活，内存访问不得与活动 Rust 引用冲突，修改不得破坏当前执行所依赖的映射。
 pub trait Mmu: Sync {
     fn layout(&self) -> PageTableLayout;
     fn is_valid_virtual_address(&self, address: usize) -> bool;
@@ -123,6 +123,26 @@ pub trait Mmu: Sync {
     ) -> Result<(), MmuError>;
 
     fn zero_frame(&self, physical_address: u64) -> Result<(), MmuError>;
+
+    /// # Safety
+    ///
+    /// 访问期间须保持完整的普通内存页可读。
+    fn read_mapped_frame(
+        &self,
+        address: usize,
+        offset: usize,
+        words: &mut [u64],
+    ) -> Result<(), MmuError>;
+
+    /// # Safety
+    ///
+    /// 访问期间须保持完整的普通内存页可写。
+    fn write_mapped_frame(
+        &self,
+        address: usize,
+        offset: usize,
+        words: &[u64],
+    ) -> Result<(), MmuError>;
     /// 使该页的本地 TLB 项失效，包括全局项。
     fn invalidate_page(&self, address: usize) -> Result<(), MmuError>;
     /// 清除本地全部 TLB 项，包括全局项。

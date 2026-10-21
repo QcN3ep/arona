@@ -6,6 +6,7 @@ use spin::Mutex;
 use super::{
     Frame, FrameAccess, FrameAllocation, FrameAllocationReference, MemoryError, ReferenceKind,
     VirtRange,
+    direct_map::{DirectMap, DirectMapLayout},
     frame_allocator::FrameAllocator,
     manager,
     mapping::{
@@ -85,7 +86,37 @@ impl AddressSpace {
 
     pub fn activate(&self) -> Result<(), MemoryError> {
         hardware::mmu().switch_root(self.root())?;
+        manager().direct_map.activate();
         Ok(())
+    }
+
+    pub(super) fn install_direct_map(
+        &self,
+        direct_map: &DirectMap,
+    ) -> Result<DirectMapLayout, MemoryError> {
+        let physical = direct_map.physical_range()?;
+        let length =
+            usize::try_from(physical.end - physical.start).map_err(|_| MemoryError::NoMemory)?;
+        let mut state = self.state.lock();
+        let range = state
+            .mappings
+            .gap(self.bounds, length, PAGE_SIZE)
+            .ok_or(MemoryError::NoMemory)?;
+        let generation = state.next_generation()?;
+        state.mappings.insert(MappingRecord {
+            range,
+            maximum: MappingRights::READ | MappingRights::WRITE,
+            generation,
+            kind: MappingKind::DirectMap,
+            journal: MappingJournal::default(),
+        })?;
+        match direct_map.populate(&self.table, range) {
+            Ok(layout) => Ok(layout),
+            Err(error) => {
+                state.mappings.remove(range.start);
+                Err(error)
+            }
+        }
     }
 
     pub fn map(
@@ -191,36 +222,43 @@ impl AddressSpace {
         let mut quota =
             manager().reserve_mapping_records(if user { pages(range).len() } else { 0 })?;
         let generation = state.next_generation()?;
-        let result = self.table.edit(|table| {
-            for (address, frame) in pages(range).zip(
-                reference
-                    .frames()
-                    .skip(frames.start as usize)
-                    .take((frames.end - frames.start) as usize),
-            ) {
-                let mut record = MappingRecord {
-                    range: page_range(address),
-                    maximum: options.maximum,
-                    generation,
-                    kind: MappingKind::Preparing,
-                    journal: MappingJournal {
-                        mapping: Some(PageMapping {
-                            physical_address: frame.address(),
-                            attributes: PageAttributes {
-                                permissions: options.permissions,
-                                memory_type: MemoryType::Normal,
-                                user_accessible: user,
-                            },
-                        }),
-                        ..MappingJournal::default()
-                    },
-                };
-                state.mappings.insert(record)?;
-                record.journal.tables = table.prepare(address)?.tables;
-                state.mappings.set(record);
+        let result = (|| {
+            self.table.edit(|table| {
+                for (address, frame) in pages(range).zip(
+                    reference
+                        .frames()
+                        .skip(frames.start as usize)
+                        .take((frames.end - frames.start) as usize),
+                ) {
+                    let mut record = MappingRecord {
+                        range: page_range(address),
+                        maximum: options.maximum,
+                        generation,
+                        kind: MappingKind::Preparing,
+                        journal: MappingJournal {
+                            mapping: Some(PageMapping {
+                                physical_address: frame.address(),
+                                attributes: PageAttributes {
+                                    permissions: options.permissions,
+                                    memory_type: MemoryType::Normal,
+                                    user_accessible: user,
+                                },
+                            }),
+                            ..MappingJournal::default()
+                        },
+                    };
+                    state.mappings.insert(record)?;
+                    record.journal.tables = table.prepare(address)?.tables;
+                    state.mappings.set(record);
+                }
+                Ok::<_, MemoryError>(())
+            })?;
+            for address in pages(range) {
+                let mut record = state.record(address);
                 let access = reference
                     .reference(ReferenceKind::Mapping)?
-                    .access(frame, options.permissions.into())?;
+                    .access(record.journal.frame(), options.permissions.into())?;
+                record.journal.direct_was_writable = access.direct_was_writable;
                 core::mem::forget(access);
                 record.journal.referenced = true;
                 state.mappings.set(record);
@@ -236,7 +274,7 @@ impl AddressSpace {
                 state.mappings.set(record);
             }
             Ok(())
-        });
+        })();
         if result.is_err() {
             self.table.edit(|table| state.rollback_map(table, range));
             return result;
@@ -366,7 +404,12 @@ impl AddressSpace {
             state.clear_journals(range);
             return Err(error);
         }
-        let mut allocator = manager().allocator.lock();
+        if let Err(error) = state.withdraw_entries(range) {
+            state.restore_entries(range);
+            state.clear_journals(range);
+            return Err(error);
+        }
+        let mut allocator = manager().allocator().lock();
         // 同一页框的多个别名须一起撤销旧访问计数，才能一起切换权限。
         for address in pages(range) {
             let journal = state.record(address).journal;
@@ -381,7 +424,8 @@ impl AddressSpace {
                 let mut record = state.record(address);
                 let frame = record.journal.frame();
                 let head = allocator.allocation_of(frame)?;
-                allocator.reserve_access(
+                record.journal.direct_was_writable = manager().reserve_access(
+                    &mut allocator,
                     head,
                     frame,
                     ReferenceKind::Mapping,
@@ -390,13 +434,6 @@ impl AddressSpace {
                 record.journal.referenced = true;
                 state.mappings.set(record);
             }
-            for address in pages(range) {
-                let mut record = state.record(address);
-                PageTableState::write_leaf(address, record.journal.tables[0].unwrap(), None)?;
-                record.journal.written = true;
-                state.mappings.set(record);
-            }
-            hardware::mmu().invalidate_all();
             for address in pages(range) {
                 let record = state.record(address);
                 let mut mapping = record.journal.mapping.unwrap();
@@ -415,8 +452,11 @@ impl AddressSpace {
             Ok(())
         })();
         if result.is_err() {
-            state.restore_entries(range);
+            state
+                .withdraw_entries(range)
+                .expect("failed to withdraw changed mappings");
             state.restore_access(&mut allocator, range, permissions);
+            state.restore_entries(range);
         } else {
             hardware::mmu().invalidate_all();
             for address in pages(range) {
@@ -570,6 +610,17 @@ impl AddressSpaceState {
         }
     }
 
+    fn withdraw_entries(&mut self, range: VirtRange) -> Result<(), MemoryError> {
+        for address in pages(range) {
+            let mut record = self.record(address);
+            PageTableState::write_leaf(address, record.journal.tables[0].unwrap(), None)?;
+            record.journal.written = true;
+            self.mappings.set(record);
+        }
+        hardware::mmu().invalidate_all();
+        Ok(())
+    }
+
     fn restore_entries(&self, range: VirtRange) {
         for address in pages(range).rev() {
             if let Some(record) = self.mappings.get(address) {
@@ -615,6 +666,25 @@ impl AddressSpaceState {
                     .release_mapping(record.journal.frame(), record.journal.permissions().into())
                     .expect("lost mapping allocation");
             }
+        }
+        let allocator = manager().allocator().lock();
+        for address in pages(range).rev() {
+            if let Some(record) = self.mappings.get(address)
+                && record.journal.referenced
+                && FrameAccess::from(record.journal.permissions()) != FrameAccess::Read
+            {
+                manager().restore_direct_access(
+                    &allocator,
+                    record.journal.frame(),
+                    record.journal.direct_was_writable,
+                );
+            }
+        }
+        drop(allocator);
+        for address in pages(range) {
+            if self.mappings.get(address).is_none() {
+                break;
+            }
             table
                 .prune_empty(address)
                 .expect("failed to discard prepared page tables");
@@ -638,14 +708,27 @@ impl AddressSpaceState {
                 );
             }
         }
+        if FrameAccess::from(permissions) != FrameAccess::Read {
+            for address in pages(range).rev() {
+                let journal = self.record(address).journal;
+                if journal.referenced {
+                    manager().restore_direct_access(
+                        allocator,
+                        journal.frame(),
+                        journal.direct_was_writable,
+                    );
+                }
+            }
+        }
         for address in pages(range) {
             let journal = self.record(address).journal;
             let frame = journal.frame();
             let head = allocator
                 .allocation_of(frame)
                 .expect("lost mapping allocation");
-            allocator
+            manager()
                 .reserve_access(
+                    allocator,
                     head,
                     frame,
                     ReferenceKind::Mapping,

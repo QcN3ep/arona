@@ -124,7 +124,7 @@ impl Format for LoongArchMmu {
         operation: impl FnOnce(usize) -> T,
     ) -> Result<T, MmuError> {
         paging::validate_physical::<Self>(address)?;
-        let _access = paging::lock_window();
+        let _access = paging::lock_memory();
         let entry = self.encode_mapping(PageMapping {
             physical_address: address,
             attributes: PageAttributes {
@@ -183,7 +183,7 @@ impl Mmu for LoongArchMmu {
     }
 
     fn switch_root(&self, root: Frame) -> Result<(), MmuError> {
-        let _access = paging::lock_window();
+        let _access = paging::lock_memory();
         let root = root.address();
         paging::validate_physical::<Self>(root)?;
         if root == 0 {
@@ -241,6 +241,24 @@ impl Mmu for LoongArchMmu {
 
     fn zero_frame(&self, physical_address: u64) -> Result<(), MmuError> {
         self.with_table(physical_address, PageTable::clear)
+    }
+
+    fn read_mapped_frame(
+        &self,
+        address: usize,
+        offset: usize,
+        words: &mut [u64],
+    ) -> Result<(), MmuError> {
+        paging::read_mapped_frame(self, address, offset, words)
+    }
+
+    fn write_mapped_frame(
+        &self,
+        address: usize,
+        offset: usize,
+        words: &[u64],
+    ) -> Result<(), MmuError> {
+        paging::write_mapped_frame(self, address, offset, words)
     }
 
     fn invalidate_page(&self, address: usize) -> Result<(), MmuError> {

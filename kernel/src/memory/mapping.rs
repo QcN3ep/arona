@@ -78,6 +78,7 @@ pub(super) enum MappingKind {
     Preparing,
     Mapped,
     Permanent,
+    DirectMap,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -88,6 +89,7 @@ pub(super) struct MappingJournal {
     pub detached: u64,
     pub written: bool,
     pub referenced: bool,
+    pub direct_was_writable: bool,
 }
 
 impl MappingJournal {
@@ -525,6 +527,7 @@ impl MappingNode {
                     1 => MappingKind::Preparing,
                     2 => MappingKind::Mapped,
                     3 => MappingKind::Permanent,
+                    4 => MappingKind::DirectMap,
                     _ => panic!("invalid mapping kind"),
                 },
                 journal: MappingJournal {
@@ -535,6 +538,7 @@ impl MappingNode {
                     detached: words[10] & 15,
                     written: words[10] & 16 != 0,
                     referenced: words[10] & 32 != 0,
+                    direct_was_writable: words[10] & 128 != 0,
                 },
             },
             parent: words[11],
@@ -579,7 +583,8 @@ impl MappingNode {
                 journal.detached
                     | u64::from(journal.written) << 4
                     | u64::from(journal.referenced) << 5
-                    | u64::from(journal.mapping.is_some()) << 6,
+                    | u64::from(journal.mapping.is_some()) << 6
+                    | u64::from(journal.direct_was_writable) << 7,
                 self.parent,
                 self.left,
                 self.right,

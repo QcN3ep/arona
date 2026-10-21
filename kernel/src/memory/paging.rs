@@ -163,6 +163,10 @@ impl PageTableState {
     }
 
     pub(super) fn walk(&self, address: usize) -> Result<PageWalk, MemoryError> {
+        Self::walk_from(self.root, address)
+    }
+
+    pub(super) fn walk_from(root: Frame, address: usize) -> Result<PageWalk, MemoryError> {
         let mmu = hardware::mmu();
         let layout = mmu.layout();
         let mut walk = PageWalk {
@@ -170,7 +174,7 @@ impl PageTableState {
             level: layout.levels - 1,
             entry: PageTableEntry::Empty,
         };
-        let mut table = self.root;
+        let mut table = root;
         loop {
             walk.tables[walk.level] = Some(table);
             walk.entry = mmu.read_entry(table, index(layout, address, walk.level), walk.level)?;

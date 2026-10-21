@@ -56,23 +56,23 @@ pub(crate) struct PageTable {
 #[unsafe(link_section = ".boot_tables.window")]
 pub(crate) static mut PAGE_TABLE_WINDOW_TABLE: PageTable = PageTable::new();
 
-static WINDOW_LOCK: AtomicBool = AtomicBool::new(false);
+static MEMORY_ACCESS_LOCK: AtomicBool = AtomicBool::new(false);
 
-pub(crate) struct WindowGuard;
+pub(crate) struct MemoryAccessGuard;
 
-pub(crate) fn lock_window() -> WindowGuard {
-    while WINDOW_LOCK
+pub(crate) fn lock_memory() -> MemoryAccessGuard {
+    while MEMORY_ACCESS_LOCK
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         core::hint::spin_loop();
     }
-    WindowGuard
+    MemoryAccessGuard
 }
 
-impl Drop for WindowGuard {
+impl Drop for MemoryAccessGuard {
     fn drop(&mut self) {
-        WINDOW_LOCK.store(false, Ordering::Release);
+        MEMORY_ACCESS_LOCK.store(false, Ordering::Release);
     }
 }
 
@@ -136,6 +136,56 @@ pub(crate) fn write_frame<F: Format>(
             page.write(offset + index, *word);
         }
     })
+}
+
+fn validate_mapped_frame(
+    mmu: &dyn Mmu,
+    address: usize,
+    offset: usize,
+    length: usize,
+) -> Result<(), MmuError> {
+    if !mmu.is_valid_virtual_address(address) {
+        return Err(MmuError::InvalidAddress);
+    }
+    if !address.is_multiple_of(PAGE_SIZE) {
+        return Err(MmuError::InvalidAlignment);
+    }
+    if offset > ENTRIES || length > ENTRIES - offset {
+        return Err(MmuError::InvalidRange);
+    }
+    Ok(())
+}
+
+pub(crate) fn read_mapped_frame(
+    mmu: &dyn Mmu,
+    address: usize,
+    offset: usize,
+    words: &mut [u64],
+) -> Result<(), MmuError> {
+    validate_mapped_frame(mmu, address, offset, words.len())?;
+    let _access = lock_memory();
+    for (index, word) in words.iter_mut().enumerate() {
+        let pointer = (address + (offset + index) * size_of::<u64>()) as *const u64;
+        // SAFETY: 映射须保持可读，访问不得与活动写引用冲突。
+        *word = unsafe { pointer.read_volatile() };
+    }
+    Ok(())
+}
+
+pub(crate) fn write_mapped_frame(
+    mmu: &dyn Mmu,
+    address: usize,
+    offset: usize,
+    words: &[u64],
+) -> Result<(), MmuError> {
+    validate_mapped_frame(mmu, address, offset, words.len())?;
+    let _access = lock_memory();
+    for (index, word) in words.iter().enumerate() {
+        let pointer = (address + (offset + index) * size_of::<u64>()) as *mut u64;
+        // SAFETY: 映射须保持可写，访问不得与活动 Rust 引用冲突。
+        unsafe { pointer.write_volatile(*word) };
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_physical<F: Format>(address: u64) -> Result<(), MmuError> {

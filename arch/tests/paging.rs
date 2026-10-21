@@ -132,6 +132,19 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     mmu.write_frame(data + PAGE_SIZE as u64, 0, &[73]).unwrap();
     mmu.switch_root(first.root).unwrap();
     assert_eq!(read_test(), 41);
+    let mut word = [0];
+    mmu.read_mapped_frame(TEST_ADDRESS, 0, &mut word).unwrap();
+    assert_eq!(word, [41]);
+    mmu.write_mapped_frame(TEST_ADDRESS, 0, &[42]).unwrap();
+    assert_eq!(read_test(), 42);
+    assert_eq!(
+        mmu.write_mapped_frame(TEST_ADDRESS, PAGE_SIZE / 8, &[1]),
+        Err(MmuError::InvalidRange)
+    );
+    assert_eq!(
+        mmu.read_mapped_frame(TEST_ADDRESS + 1, 0, &mut word),
+        Err(MmuError::InvalidAlignment)
+    );
     mmu.switch_root(second.root).unwrap();
     assert_eq!(read_test(), 73);
     mmu.switch_root(first.root).unwrap();
@@ -144,6 +157,8 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
         .unwrap();
     mmu.invalidate_page(TEST_ADDRESS).unwrap();
     assert_eq!(read_test(), 73);
+    mmu.read_mapped_frame(TEST_ADDRESS, 0, &mut word).unwrap();
+    assert_eq!(word, [73]);
     first.set(mmu, TEST_ADDRESS, PageTableEntry::Empty).unwrap();
     mmu.invalidate_all();
     assert_eq!(first.get(mmu, TEST_ADDRESS).unwrap(), PageTableEntry::Empty);

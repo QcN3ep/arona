@@ -221,6 +221,18 @@ impl FrameAllocator {
         Ok(())
     }
 
+    pub fn has_executors(&self, frame: Frame) -> bool {
+        self.metadata
+            .index(frame.address())
+            .is_ok_and(|index| self.metadata.read(index).executors != 0)
+    }
+
+    pub fn has_writers(&self, frame: Frame) -> bool {
+        self.metadata
+            .index(frame.address())
+            .is_ok_and(|index| self.metadata.read(index).writers != [0; 3])
+    }
+
     pub fn release_access(&mut self, frame: Frame, kind: ReferenceKind, access: FrameAccess) {
         if access == FrameAccess::Read {
             return;

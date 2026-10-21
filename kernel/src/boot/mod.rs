@@ -32,6 +32,7 @@ pub fn boot_kernel(info: BootInfo<'_>) -> ! {
     memory::initialize(&info)
         .unwrap_or_else(|error| panic!("failed to initialize memory: {error:?}"));
     log::info!("Memory initialized");
+    // TODO: 需要实现 Trap 以进行缺页处理。
     loop {
         core::hint::spin_loop();
     }

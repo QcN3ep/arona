@@ -108,6 +108,7 @@ pub struct FrameAccessReference {
     allocation: FrameAllocationReference,
     frame: Frame,
     access: FrameAccess,
+    pub(super) direct_was_writable: bool,
 }
 
 pub struct Frames<'frame> {
@@ -123,12 +124,12 @@ pub struct ReservedRangeReference {
 
 impl FrameAllocation {
     pub(super) fn merge(&mut self, other: Self) {
-        manager().allocator.lock().merge(self.head, other.head);
+        manager().allocator().lock().merge(self.head, other.head);
         core::mem::forget(other);
     }
 
     pub(super) fn detach(&mut self, frame: Frame) -> Self {
-        let head = manager().allocator.lock().detach(self.head, frame);
+        let head = manager().allocator().lock().detach(self.head, frame);
         Self { head }
     }
 
@@ -186,19 +187,23 @@ impl FrameAllocationReference {
         frame: Frame,
         access: FrameAccess,
     ) -> Result<FrameAccessReference, MemoryError> {
-        manager()
-            .allocator
-            .lock()
-            .reserve_access(self.head, frame, self.kind, access)?;
-        let reference = FrameAccessReference {
+        let mut allocator = manager().allocator().lock();
+        let direct_was_writable =
+            manager().reserve_access(&mut allocator, self.head, frame, self.kind, access)?;
+        if access == FrameAccess::Execute
+            && let Err(error) = hardware::mmu().synchronize_frame(frame)
+        {
+            allocator.release_access(frame, self.kind, access);
+            manager().restore_direct_access(&allocator, frame, direct_was_writable);
+            return Err(error.into());
+        }
+        drop(allocator);
+        Ok(FrameAccessReference {
             allocation: self,
             frame,
             access,
-        };
-        if access == FrameAccess::Execute {
-            hardware::mmu().synchronize_frame(frame)?;
-        }
-        Ok(reference)
+            direct_was_writable,
+        })
     }
 }
 
@@ -207,8 +212,16 @@ impl FrameAccessReference {
         self.frame
     }
 
+    pub fn virtual_address(&self) -> Option<usize> {
+        manager().direct_map.active_address(self.frame)
+    }
+
     pub fn read(&self, word_offset: usize, words: &mut [u64]) -> Result<(), MemoryError> {
-        hardware::mmu().read_frame(self.frame.address(), word_offset, words)?;
+        if let Some(address) = self.virtual_address() {
+            hardware::mmu().read_mapped_frame(address, word_offset, words)?;
+        } else {
+            hardware::mmu().read_frame(self.frame.address(), word_offset, words)?;
+        }
         Ok(())
     }
 
@@ -216,7 +229,11 @@ impl FrameAccessReference {
         if self.access != FrameAccess::Write {
             return Err(MemoryError::AccessConflict);
         }
-        hardware::mmu().write_frame(self.frame.address(), word_offset, words)?;
+        if let Some(address) = self.virtual_address() {
+            hardware::mmu().write_mapped_frame(address, word_offset, words)?;
+        } else {
+            hardware::mmu().write_frame(self.frame.address(), word_offset, words)?;
+        }
         Ok(())
     }
 }
@@ -224,7 +241,7 @@ impl FrameAccessReference {
 impl Drop for FrameAccessReference {
     fn drop(&mut self) {
         manager()
-            .allocator
+            .allocator()
             .lock()
             .release_access(self.frame, self.allocation.kind, self.access);
     }

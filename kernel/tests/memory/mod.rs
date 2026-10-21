@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod address_space;
+mod direct_map;
 mod frame;
 mod frame_allocator;
 mod paging;
@@ -33,6 +34,8 @@ type FrameBytes = Box<[u64; PAGE_SIZE / size_of::<u64>()]>;
 
 struct PhysicalMmu {
     memory: Mutex<BTreeMap<u64, FrameBytes>>,
+    root: AtomicU64,
+    mapped_accesses: AtomicU64,
     zeros_until_failure: AtomicU64,
     bits: u32,
     writes_until_failure: AtomicU64,
@@ -46,6 +49,8 @@ struct PhysicalMmu {
 
 static MMU: PhysicalMmu = PhysicalMmu {
     memory: Mutex::new(BTreeMap::new()),
+    root: AtomicU64::new(0),
+    mapped_accesses: AtomicU64::new(0),
     zeros_until_failure: AtomicU64::new(NO_FAILURE),
     bits: 56,
     writes_until_failure: AtomicU64::new(NO_FAILURE),
@@ -64,7 +69,10 @@ fn isolated(name: &str) -> bool {
         kernel::hardware::mmu::bind(&MMU).unwrap();
         return false;
     }
-    let levels = if name.starts_with("paging::") || name.starts_with("address_space::") {
+    let levels = if name.starts_with("paging::")
+        || name.starts_with("address_space::")
+        || name.starts_with("direct_map::")
+    {
         &[3, 4][..]
     } else {
         &[3][..]
@@ -267,8 +275,44 @@ impl Mmu for PhysicalMmu {
         self.write_frame(table.address(), index, &[word])
     }
 
-    fn switch_root(&self, _: Frame) -> Result<(), MmuError> {
-        Err(MmuError::Unsupported)
+    fn read_mapped_frame(
+        &self,
+        address: usize,
+        offset: usize,
+        words: &mut [u64],
+    ) -> Result<(), MmuError> {
+        let mapping = self
+            .lookup(
+                Frame::new(self.root.load(Ordering::Relaxed)).unwrap(),
+                address,
+            )
+            .ok_or(MmuError::InvalidAddress)?;
+        self.mapped_accesses.fetch_add(1, Ordering::Relaxed);
+        self.read_frame(mapping.physical_address, offset, words)
+    }
+
+    fn write_mapped_frame(
+        &self,
+        address: usize,
+        offset: usize,
+        words: &[u64],
+    ) -> Result<(), MmuError> {
+        let mapping = self
+            .lookup(
+                Frame::new(self.root.load(Ordering::Relaxed)).unwrap(),
+                address,
+            )
+            .ok_or(MmuError::InvalidAddress)?;
+        if mapping.attributes.permissions != PagePermissions::ReadWrite {
+            return Err(MmuError::InvalidAttributes);
+        }
+        self.mapped_accesses.fetch_add(1, Ordering::Relaxed);
+        self.write_frame(mapping.physical_address, offset, words)
+    }
+
+    fn switch_root(&self, root: Frame) -> Result<(), MmuError> {
+        self.root.store(root.address(), Ordering::Relaxed);
+        Ok(())
     }
     fn invalidate_page(&self, _: usize) -> Result<(), MmuError> {
         self.invalidate_all();

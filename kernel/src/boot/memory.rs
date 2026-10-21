@@ -26,6 +26,7 @@ pub(super) fn initialize(info: &BootInfo<'_>) -> Result<(), MemoryError> {
             },
         )?;
     }
+    memory::manager().initialize_direct_map()?;
     table.activate()?;
     Ok(())
 }
