@@ -2,12 +2,14 @@
 
 use core::mem::size_of;
 
+use kernel::hardware::cpu::Cpu;
 use kernel::hardware::mmu::MemoryType;
 use kernel::{
     BootConsoleMapping, HardwareInfo, log, logger,
     memory::{MemoryRegionState, PhysRange},
 };
 
+use super::cpu::CPU;
 use crate::boot::{console::EarlyConsole, dtb::Dtb, kernel_image, prepare_boot_info};
 use crate::device::uart::Uart;
 
@@ -135,19 +137,7 @@ unsafe extern "C" fn _boot_trap() -> ! {
 }
 
 pub fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    // SAFETY: 调用方须处于允许写入 `sstatus` 的特权级。
-    unsafe {
-        core::arch::asm!("csrci sstatus, 2", options(nostack));
-    }
+    CPU.disable_interrupts();
     EARLY_CONSOLE.panic(info);
-    halt()
-}
-
-pub fn halt() -> ! {
-    loop {
-        // SAFETY: 需要处理器位于 S-mode 且 mstatus.TW = 0
-        unsafe {
-            core::arch::asm!("wfi", options(nomem, nostack, preserves_flags));
-        }
-    }
+    CPU.halt()
 }

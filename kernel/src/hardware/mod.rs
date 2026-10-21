@@ -4,7 +4,9 @@
 
 use spin::Once;
 
+pub mod cpu;
 pub mod mmu;
+pub use cpu::cpu;
 pub use mmu::mmu;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

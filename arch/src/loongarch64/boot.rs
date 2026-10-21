@@ -2,6 +2,7 @@
 
 use core::mem::size_of;
 
+use kernel::hardware::cpu::Cpu;
 use kernel::hardware::mmu::MemoryType;
 use kernel::{
     BootConsoleMapping, HardwareInfo, log, logger,
@@ -12,6 +13,7 @@ use uefi_raw::{
     table::{configuration::ConfigurationTable, system::SystemTable},
 };
 
+use super::cpu::CPU;
 use crate::boot::{console::EarlyConsole, dtb::Dtb, kernel_image, prepare_boot_info};
 use crate::device::uart::Uart;
 
@@ -215,24 +217,7 @@ unsafe extern "C" fn _boot_trap() -> ! {
 }
 
 pub fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    // SAFETY: 调用方须处于允许写入 `CRMD` 的特权级。
-    unsafe {
-        core::arch::asm!(
-            "li.d $t0, 4",
-            "csrxchg $zero, $t0, 0x0",
-            out("$t0") _,
-            options(nostack),
-        );
-    }
+    CPU.disable_interrupts();
     EARLY_CONSOLE.panic(info);
-    halt()
-}
-
-pub fn halt() -> ! {
-    loop {
-        // SAFETY: 执行环境须允许执行 idle 指令。
-        unsafe {
-            core::arch::asm!("idle 0", options(nomem, nostack));
-        }
-    }
+    CPU.halt()
 }
