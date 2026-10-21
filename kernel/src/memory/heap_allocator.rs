@@ -5,6 +5,9 @@
 use core::alloc::Layout;
 use spin::Mutex;
 
+pub use allocator_api2::boxed::Box as HeapBox;
+pub use triomphe::Arc as HeapArc;
+
 use super::{
     Frame, FrameAccess, FrameAccessReference, FrameAllocation, FrameOwner, FramePurpose,
     MappingOptions, MemoryError, ReferenceKind, manager, mapping::OwnedMapping,

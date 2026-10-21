@@ -10,6 +10,7 @@ mod paging;
 mod region;
 
 use core::alloc::Layout;
+use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::{Mutex, Once};
 
@@ -25,7 +26,7 @@ pub use frame::{
     ReservedRangeReference,
 };
 pub use frame_allocator::{MemoryStats, PoolStats};
-pub use heap_allocator::{HeapAllocation, HeapStats};
+pub use heap_allocator::{HeapAllocation, HeapArc, HeapBox, HeapStats};
 pub use mapping::{MappingInfo, MappingOptions, MappingRights};
 pub use region::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRange, VirtRange};
 
@@ -133,6 +134,18 @@ impl MemoryManager {
 
     pub fn allocate_heap(&self, layout: Layout) -> Result<HeapAllocation, MemoryError> {
         self.heap_allocator.allocate(layout)
+    }
+
+    pub fn allocate_box<T>(&self, value: T) -> Result<HeapBox<T>, MemoryError> {
+        HeapBox::try_new(value).map_err(|_| MemoryError::NoMemory)
+    }
+
+    pub fn allocate_arc<T>(&self, value: T) -> Result<HeapArc<T>, MemoryError> {
+        HeapArc::try_new(value).map_err(|_| MemoryError::NoMemory)
+    }
+
+    pub fn allocate_pinned<T>(&self, value: T) -> Result<Pin<HeapBox<T>>, MemoryError> {
+        self.allocate_box(value).map(HeapBox::into_pin)
     }
 
     pub fn heap_stats(&self) -> HeapStats {
@@ -249,8 +262,11 @@ impl MemoryManager {
 }
 
 pub fn manager() -> &'static MemoryManager {
-    let _ = MEMORY_MANAGER.allocator();
-    &MEMORY_MANAGER
+    try_manager().expect("memory is not initialized")
+}
+
+pub fn try_manager() -> Option<&'static MemoryManager> {
+    MEMORY_MANAGER.allocator.get().map(|_| &MEMORY_MANAGER)
 }
 
 /// # Safety

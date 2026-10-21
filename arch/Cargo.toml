@@ -34,6 +34,12 @@ path = "tests/paging.rs"
 harness = false
 required-features = ["baremetal"]
 
+[[test]]
+name = "allocator"
+path = "tests/allocator.rs"
+harness = false
+required-features = ["baremetal"]
+
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
 fdt = "0.2.0-alpha3"
