@@ -79,6 +79,12 @@ pub(super) enum MappingKind {
     Mapped,
     Permanent,
     DirectMap,
+    Owned,
+}
+
+pub(super) struct OwnedMapping {
+    pub range: VirtRange,
+    pub generation: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -528,6 +534,7 @@ impl MappingNode {
                     2 => MappingKind::Mapped,
                     3 => MappingKind::Permanent,
                     4 => MappingKind::DirectMap,
+                    5 => MappingKind::Owned,
                     _ => panic!("invalid mapping kind"),
                 },
                 journal: MappingJournal {

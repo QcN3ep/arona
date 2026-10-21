@@ -7,7 +7,7 @@ use spin::Mutex;
 
 use super::{
     Frame, FrameAccess, FrameAccessReference, FrameAllocation, FrameOwner, FramePurpose,
-    MappingOptions, MemoryError, ReferenceKind, VirtRange, manager,
+    MappingOptions, MemoryError, ReferenceKind, manager, mapping::OwnedMapping,
 };
 use crate::hardware::{
     self,
@@ -55,7 +55,7 @@ pub struct HeapAllocation {
 enum HeapStorage {
     Empty,
     Slab(SlabAllocation),
-    Mapped(VirtRange),
+    Mapped(OwnedMapping),
 }
 
 struct SlabAllocator {
@@ -153,10 +153,10 @@ impl HeapAllocator {
         let mut state = self.state.lock();
         match &allocation.storage {
             HeapStorage::Slab(slab) => state.slabs.release(slab),
-            HeapStorage::Mapped(range) => {
+            HeapStorage::Mapped(mapping) => {
                 manager()
                     .kernel_address_space()
-                    .unmap(*range)
+                    .unmap_owned(mapping)
                     .expect("failed to unmap heap allocation");
                 state.mapped_frames -= allocation.capacity() / PAGE_SIZE;
             }
@@ -180,7 +180,7 @@ impl HeapAllocatorState {
             .ok_or(MemoryError::NoMemory)?;
         let frames = length / PAGE_SIZE;
         let backing = manager().allocate(FrameOwner::Kernel, FramePurpose::Data, frames as u64)?;
-        let range = manager().kernel_address_space().map(
+        let mapping = manager().kernel_address_space().map_owned(
             &backing,
             0..frames as u64,
             MappingOptions {
@@ -189,7 +189,7 @@ impl HeapAllocatorState {
             },
         )?;
         self.mapped_frames += frames;
-        Ok(HeapStorage::Mapped(range))
+        Ok(HeapStorage::Mapped(mapping))
     }
 }
 
@@ -198,7 +198,7 @@ impl HeapAllocation {
         match &self.storage {
             HeapStorage::Empty => self.layout.align(),
             HeapStorage::Slab(slab) => slab.address,
-            HeapStorage::Mapped(range) => range.start,
+            HeapStorage::Mapped(mapping) => mapping.range.start,
         }
     }
 
@@ -210,7 +210,7 @@ impl HeapAllocation {
         match &self.storage {
             HeapStorage::Empty => 0,
             HeapStorage::Slab(_) => class_size(size_class(self.layout).unwrap()),
-            HeapStorage::Mapped(range) => range.end - range.start,
+            HeapStorage::Mapped(mapping) => mapping.range.end - mapping.range.start,
         }
     }
 }

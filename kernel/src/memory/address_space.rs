@@ -11,7 +11,7 @@ use super::{
     manager,
     mapping::{
         MappingIndex, MappingInfo, MappingJournal, MappingKind, MappingOptions, MappingRecord,
-        MappingRights,
+        MappingRights, OwnedMapping,
     },
     paging::{PageTable, PageTableState},
 };
@@ -144,8 +144,45 @@ impl AddressSpace {
             .mappings
             .gap(self.bounds, length, options.alignment)
             .ok_or(MemoryError::NoMemory)?;
-        self.map_locked(&mut state, range, &reference, frames, options)?;
+        self.map_locked(
+            &mut state,
+            range,
+            &reference,
+            frames,
+            options,
+            MappingKind::Mapped,
+        )?;
         Ok(range)
+    }
+
+    pub(super) fn map_owned(
+        &self,
+        allocation: &FrameAllocation,
+        frames: Range<u64>,
+        options: MappingOptions,
+    ) -> Result<OwnedMapping, MemoryError> {
+        if self.table.is_user() {
+            return Err(MemoryError::InvalidRequest);
+        }
+        let reference = allocation.reference(ReferenceKind::Mapping)?;
+        let length = self.validate_source(&reference, &frames, options)?;
+        let mut state = self.state.lock();
+        let range = state
+            .mappings
+            .gap(self.bounds, length, options.alignment)
+            .ok_or(MemoryError::NoMemory)?;
+        self.map_locked(
+            &mut state,
+            range,
+            &reference,
+            frames,
+            options,
+            MappingKind::Owned,
+        )?;
+        Ok(OwnedMapping {
+            range,
+            generation: state.record(range.start).generation,
+        })
     }
 
     pub fn map_at(
@@ -181,7 +218,14 @@ impl AddressSpace {
         if !address.is_multiple_of(options.alignment) {
             return Err(MemoryError::InvalidRequest);
         }
-        self.map_locked(&mut self.state.lock(), range, &reference, frames, options)?;
+        self.map_locked(
+            &mut self.state.lock(),
+            range,
+            &reference,
+            frames,
+            options,
+            MappingKind::Mapped,
+        )?;
         Ok(range)
     }
 
@@ -214,6 +258,7 @@ impl AddressSpace {
         reference: &FrameAllocationReference,
         frames: Range<u64>,
         options: MappingOptions,
+        kind: MappingKind,
     ) -> Result<(), MemoryError> {
         if state.mappings.overlaps(range) {
             return Err(MemoryError::AlreadyMapped);
@@ -282,7 +327,7 @@ impl AddressSpace {
         hardware::mmu().invalidate_all();
         for address in pages(range) {
             let mut record = state.record(address);
-            record.kind = MappingKind::Mapped;
+            record.kind = kind;
             record.journal = MappingJournal::default();
             state.mappings.set(record);
         }
@@ -341,9 +386,19 @@ impl AddressSpace {
     }
 
     pub fn unmap(&self, range: VirtRange) -> Result<(), MemoryError> {
+        self.unmap_inner(range, None)
+    }
+
+    pub(super) fn unmap_owned(&self, mapping: &OwnedMapping) -> Result<(), MemoryError> {
+        self.unmap_inner(mapping.range, Some(mapping.generation))
+    }
+
+    fn unmap_inner(&self, range: VirtRange, owner: Option<u64>) -> Result<(), MemoryError> {
         self.validate_range(range)?;
         let mut state = self.state.lock();
-        let staged = self.table.edit(|table| state.stage(table, range, None));
+        let staged = self
+            .table
+            .edit(|table| state.stage(table, range, None, owner));
         if let Err(error) = staged {
             state.clear_journals(range);
             return Err(error);
@@ -399,7 +454,7 @@ impl AddressSpace {
         let generation = state.next_generation()?;
         let staged = self
             .table
-            .edit(|table| state.stage(table, range, Some(permissions)));
+            .edit(|table| state.stage(table, range, Some(permissions), None));
         if let Err(error) = staged {
             state.clear_journals(range);
             return Err(error);
@@ -574,10 +629,14 @@ impl AddressSpaceState {
         table: &PageTableState,
         range: VirtRange,
         permissions: Option<PagePermissions>,
+        owner: Option<u64>,
     ) -> Result<(), MemoryError> {
         for address in pages(range) {
             let mut record = self.mappings.get(address).ok_or(MemoryError::NotMapped)?;
-            if record.kind != MappingKind::Mapped {
+            let owned = owner.is_some_and(|generation| {
+                record.kind == MappingKind::Owned && record.generation == generation
+            });
+            if !(owned || owner.is_none() && record.kind == MappingKind::Mapped) {
                 return Err(MemoryError::InUse);
             }
             if permissions.is_some_and(|permissions| !record.maximum.allows(permissions)) {

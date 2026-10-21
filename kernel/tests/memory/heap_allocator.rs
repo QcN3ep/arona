@@ -48,6 +48,20 @@ fn large_and_overaligned_allocations_own_writable_kernel_mappings() {
         assert_eq!(stats.backing_frames, allocation.capacity() / PAGE_SIZE);
         assert_eq!(stats.metadata_frames, 0);
         let start = allocation.address();
+        let range = kernel::memory::VirtRange {
+            start,
+            end: start + allocation.capacity(),
+        };
+        assert_eq!(
+            manager.kernel_address_space().unmap(range),
+            Err(MemoryError::InUse)
+        );
+        assert_eq!(
+            manager
+                .kernel_address_space()
+                .protect(range, PagePermissions::ReadOnly),
+            Err(MemoryError::InUse)
+        );
         for offset in (0..allocation.capacity()).step_by(PAGE_SIZE) {
             let mapping = manager
                 .kernel_address_space()
