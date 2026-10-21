@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use super::{
-    Frame, FrameAllocationInfo, FrameOwner, FramePool, FramePurpose, MAX_MEMORY_REGIONS,
-    MemoryError, MemoryRegion, MemoryRegionState, PhysRange, ReferenceKind,
+    Frame, FrameAccess, FrameAllocationInfo, FrameOwner, FramePool, FramePurpose,
+    MAX_MEMORY_REGIONS, MemoryError, MemoryRegion, MemoryRegionState, PhysRange, ReferenceKind,
 };
 use crate::hardware::{self, mmu::PAGE_SIZE};
 
 pub(super) const KERNEL_POOL_FRAMES: u64 = 32 * 1024 * 1024 / PAGE_SIZE as u64;
 
 const END: u64 = u64::MAX;
-const WORDS: usize = 8;
+const WORDS: usize = 12;
 const REGION_WORDS: usize = 5;
 const REGIONS_PER_FRAME: usize = PAGE_SIZE / (REGION_WORDS * size_of::<u64>());
 const DIRECTORY_FRAMES: usize = MAX_MEMORY_REGIONS.div_ceil(REGIONS_PER_FRAME);
@@ -70,6 +70,8 @@ struct FrameRecord {
     purpose: FramePurpose,
     frames: u64,
     references: [u64; 3],
+    writers: [u64; 3],
+    executors: u64,
 }
 
 impl FrameAllocator {
@@ -199,6 +201,57 @@ impl FrameAllocator {
         Ok(())
     }
 
+    pub fn reserve_access(
+        &mut self,
+        head: u64,
+        frame: Frame,
+        kind: ReferenceKind,
+        access: FrameAccess,
+    ) -> Result<(), MemoryError> {
+        let index = self.metadata.index(frame.address())?;
+        let mut record = self.metadata.read(index);
+        if record.allocation_head()? != head {
+            return Err(MemoryError::InvalidFrame);
+        }
+        if access == FrameAccess::Read {
+            return Ok(());
+        }
+        record.reserve_access(kind, access)?;
+        self.metadata.write(index, record);
+        Ok(())
+    }
+
+    pub fn release_access(&mut self, frame: Frame, kind: ReferenceKind, access: FrameAccess) {
+        if access == FrameAccess::Read {
+            return;
+        }
+        let index = self
+            .metadata
+            .index(frame.address())
+            .expect("unmanaged frame access");
+        let mut record = self.metadata.read(index);
+        record.release_access(kind, access);
+        self.metadata.write(index, record);
+    }
+
+    pub fn replace_mapping_access(
+        &mut self,
+        frame: Frame,
+        old: FrameAccess,
+        new: FrameAccess,
+    ) -> Result<(), MemoryError> {
+        let index = self.metadata.index(frame.address())?;
+        let mut record = self.metadata.read(index);
+        record.allocation_head()?;
+        if old == new {
+            return Ok(());
+        }
+        record.release_access(ReferenceKind::Mapping, old);
+        record.reserve_access(ReferenceKind::Mapping, new)?;
+        self.metadata.write(index, record);
+        Ok(())
+    }
+
     pub fn release_owner(&mut self, head: u64) {
         let mut record = self.metadata.read(head);
         assert_eq!(
@@ -240,11 +293,7 @@ impl FrameAllocator {
 
     pub fn allocation_of(&self, frame: Frame) -> Result<u64, MemoryError> {
         let index = self.metadata.index(frame.address())?;
-        let record = self.metadata.read(index);
-        if !matches!(record.state, FrameState::Owned | FrameState::Referenced) {
-            return Err(MemoryError::InvalidFrame);
-        }
-        Ok(record.allocation)
+        self.metadata.read(index).allocation_head()
     }
 
     pub fn is_managed(&self, address: u64) -> bool {
@@ -391,11 +440,51 @@ impl FrameRecord {
             purpose: FramePurpose::Data,
             frames: 0,
             references: [0; 3],
+            writers: [0; 3],
+            executors: 0,
         }
     }
 
     fn is_referenced(self) -> bool {
         self.references.iter().any(|count| *count != 0)
+    }
+
+    fn allocation_head(self) -> Result<u64, MemoryError> {
+        if matches!(self.state, FrameState::Owned | FrameState::Referenced) {
+            Ok(self.allocation)
+        } else {
+            Err(MemoryError::InvalidFrame)
+        }
+    }
+
+    fn reserve_access(
+        &mut self,
+        kind: ReferenceKind,
+        access: FrameAccess,
+    ) -> Result<(), MemoryError> {
+        let count = match access {
+            FrameAccess::Read => return Ok(()),
+            FrameAccess::Write if self.executors == 0 => &mut self.writers[kind as usize],
+            FrameAccess::Execute
+                if kind == ReferenceKind::Mapping
+                    && self.purpose == FramePurpose::Data
+                    && self.writers == [0; 3] =>
+            {
+                &mut self.executors
+            }
+            _ => return Err(MemoryError::AccessConflict),
+        };
+        *count = count.checked_add(1).ok_or(MemoryError::ReferenceOverflow)?;
+        Ok(())
+    }
+
+    fn release_access(&mut self, kind: ReferenceKind, access: FrameAccess) {
+        let count = match access {
+            FrameAccess::Read => return,
+            FrameAccess::Write => &mut self.writers[kind as usize],
+            FrameAccess::Execute => &mut self.executors,
+        };
+        *count = count.checked_sub(1).expect("frame access count underflow");
     }
 
     fn words(self) -> [u64; WORDS] {
@@ -408,6 +497,10 @@ impl FrameRecord {
             self.references[1],
             self.references[2],
             self.allocation,
+            self.writers[0],
+            self.writers[1],
+            self.writers[2],
+            self.executors,
         ]
     }
 
@@ -440,6 +533,8 @@ impl FrameRecord {
             purpose,
             frames: words[3],
             references: [words[4], words[5], words[6]],
+            writers: [words[8], words[9], words[10]],
+            executors: words[11],
         }
     }
 }

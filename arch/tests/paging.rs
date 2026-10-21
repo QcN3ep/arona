@@ -210,6 +210,10 @@ fn run_entries(mmu: &dyn Mmu, tables: &Tables, data: u64) {
         mmu.invalidate_page(1usize << 55),
         Err(MmuError::InvalidAddress)
     );
+    assert_eq!(
+        mmu.synchronize_frame(Frame::new(!(PAGE_SIZE as u64 - 1)).unwrap()),
+        Err(MmuError::InvalidAddress)
+    );
 }
 
 fn run_device_entries(mmu: &dyn Mmu, tables: &Tables, data: u64) {
@@ -282,7 +286,12 @@ fn publish_code(mmu: &dyn Mmu, tables: &Tables) {
         unsafe {
             core::ptr::copy_nonoverlapping(source, core::ptr::addr_of_mut!(CODE).cast::<u8>(), 8)
         };
-        mmu.synchronize_code(address..address + 8).unwrap();
+        if expected == 42 {
+            mmu.synchronize_frame(Frame::new(physical(address)).unwrap())
+                .unwrap();
+        } else {
+            mmu.synchronize_code(address..address + 8).unwrap();
+        }
         tables
             .set(
                 mmu,

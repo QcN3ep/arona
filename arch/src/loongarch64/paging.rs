@@ -117,17 +117,18 @@ impl Format for LoongArchMmu {
         })
     }
 
-    fn with_table<T>(
+    fn with_frame<T>(
         &self,
         address: u64,
-        operation: impl FnOnce(&mut PageTable) -> T,
+        permissions: PagePermissions,
+        operation: impl FnOnce(usize) -> T,
     ) -> Result<T, MmuError> {
         paging::validate_physical::<Self>(address)?;
         let _access = paging::lock_window();
         let entry = self.encode_mapping(PageMapping {
             physical_address: address,
             attributes: PageAttributes {
-                permissions: PagePermissions::ReadWrite,
+                permissions,
                 memory_type: MemoryType::Normal,
                 user_accessible: false,
             },
@@ -141,8 +142,7 @@ impl Format for LoongArchMmu {
             (*table).write(WINDOW_INDEX, entry);
         }
         invalidate_address(PAGE_TABLE_WINDOW);
-        // SAFETY: 当前根须将 PAGE_TABLE_WINDOW 映射到保留的页表窗口。
-        let result = unsafe { operation(&mut *(PAGE_TABLE_WINDOW as *mut PageTable)) };
+        let result = operation(PAGE_TABLE_WINDOW);
         // SAFETY: 须持有物理访问窗口锁。
         unsafe { (*table).write(WINDOW_INDEX, 0) };
         invalidate_address(PAGE_TABLE_WINDOW);
@@ -265,45 +265,23 @@ impl Mmu for LoongArchMmu {
 
     fn synchronize_code(&self, range: Range<usize>) -> Result<(), MmuError> {
         paging::validate_code_range(&range, 48)?;
-        if range.is_empty() {
-            return Ok(());
+        if !range.is_empty() {
+            synchronize_instructions();
         }
-        // SAFETY: 范围须为保持有效的普通内存映射，且同步期间不得写入。
-        unsafe {
-            asm!("dbar 0", options(nostack));
-            cache_lines::<0x11>(&range, cache_line_size(0x12));
-            asm!("dbar 0", options(nostack));
-            cache_lines::<0x10>(&range, cache_line_size(0x11));
-            asm!("dbar 0", "ibar 0", options(nostack));
-        }
+        Ok(())
+    }
+
+    fn synchronize_frame(&self, frame: Frame) -> Result<(), MmuError> {
+        paging::validate_physical::<Self>(frame.address())?;
+        synchronize_instructions();
         Ok(())
     }
 }
 
-fn cache_line_size(index: usize) -> usize {
-    let configuration: usize;
-    // SAFETY: CPUCFG 的索引须对应 LA464 的一级缓存描述。
-    unsafe {
-        asm!("cpucfg {value}, {index}", value = out(reg) configuration, index = in(reg) index, options(nomem, nostack))
-    };
-    1 << ((configuration >> 24) & 0x7f)
-}
-
-/// # Safety
-///
-/// range 须为有效普通内存映射，line_size 须为目标一级缓存行大小。
-unsafe fn cache_lines<const OPERATION: u32>(range: &Range<usize>, line_size: usize) {
-    let mut address = range.start & !(line_size - 1);
-    loop {
-        // SAFETY: 地址须对应 range 覆盖的有效缓存行，操作码须选择对应一级缓存。
-        unsafe {
-            asm!("cacop {operation}, {address}, 0", operation = const OPERATION, address = in(reg) address, options(nostack))
-        };
-        if range.end - address <= line_size {
-            break;
-        }
-        address += line_size;
-    }
+fn synchronize_instructions() {
+    // REFERENCE: https://github.com/torvalds/linux/blob/master/arch/loongarch/include/asm/cacheflush.h
+    // SAFETY: 此前代码写入须已完成，处理器须允许执行内存与取指同步。
+    unsafe { asm!("dbar 0", "ibar 0", options(nostack)) };
 }
 
 fn refill_entry() -> usize {

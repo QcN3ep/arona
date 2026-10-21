@@ -3,7 +3,10 @@
 use core::marker::PhantomData;
 
 use super::{MemoryError, PhysRange, manager};
-use crate::hardware::mmu::PAGE_SIZE;
+use crate::hardware::{
+    self,
+    mmu::{PAGE_SIZE, PagePermissions},
+};
 
 /// 物理页框的地址标识，不保证后备内存存活。
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -59,6 +62,23 @@ pub enum ReferenceKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameAccess {
+    Read,
+    Write,
+    Execute,
+}
+
+impl From<PagePermissions> for FrameAccess {
+    fn from(permissions: PagePermissions) -> Self {
+        match permissions {
+            PagePermissions::ReadOnly => Self::Read,
+            PagePermissions::ReadWrite => Self::Write,
+            PagePermissions::ReadExecute | PagePermissions::ExecuteOnly => Self::Execute,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FrameAllocationInfo {
     pub owner: FrameOwner,
     pub purpose: FramePurpose,
@@ -78,6 +98,16 @@ pub struct FrameAllocation {
 pub struct FrameAllocationReference {
     pub(super) head: u64,
     pub(super) kind: ReferenceKind,
+}
+
+#[must_use]
+/// # Safety
+///
+/// DMA 访问须在引用释放前停止并排空。
+pub struct FrameAccessReference {
+    allocation: FrameAllocationReference,
+    frame: Frame,
+    access: FrameAccess,
 }
 
 pub struct Frames<'frame> {
@@ -117,6 +147,15 @@ impl FrameAllocation {
     pub fn reference(&self, kind: ReferenceKind) -> Result<FrameAllocationReference, MemoryError> {
         manager().reference(self.head, kind)
     }
+
+    pub fn access(
+        &self,
+        frame: Frame,
+        kind: ReferenceKind,
+        access: FrameAccess,
+    ) -> Result<FrameAccessReference, MemoryError> {
+        self.reference(kind)?.access(frame, access)
+    }
 }
 
 impl Drop for FrameAllocation {
@@ -140,6 +179,54 @@ impl FrameAllocationReference {
 
     pub fn reference(&self, kind: ReferenceKind) -> Result<Self, MemoryError> {
         manager().reference(self.head, kind)
+    }
+
+    pub fn access(
+        self,
+        frame: Frame,
+        access: FrameAccess,
+    ) -> Result<FrameAccessReference, MemoryError> {
+        manager()
+            .allocator
+            .lock()
+            .reserve_access(self.head, frame, self.kind, access)?;
+        let reference = FrameAccessReference {
+            allocation: self,
+            frame,
+            access,
+        };
+        if access == FrameAccess::Execute {
+            hardware::mmu().synchronize_frame(frame)?;
+        }
+        Ok(reference)
+    }
+}
+
+impl FrameAccessReference {
+    pub fn frame(&self) -> Frame {
+        self.frame
+    }
+
+    pub fn read(&self, word_offset: usize, words: &mut [u64]) -> Result<(), MemoryError> {
+        hardware::mmu().read_frame(self.frame.address(), word_offset, words)?;
+        Ok(())
+    }
+
+    pub fn write(&self, word_offset: usize, words: &[u64]) -> Result<(), MemoryError> {
+        if self.access != FrameAccess::Write {
+            return Err(MemoryError::AccessConflict);
+        }
+        hardware::mmu().write_frame(self.frame.address(), word_offset, words)?;
+        Ok(())
+    }
+}
+
+impl Drop for FrameAccessReference {
+    fn drop(&mut self) {
+        manager()
+            .allocator
+            .lock()
+            .release_access(self.frame, self.allocation.kind, self.access);
     }
 }
 

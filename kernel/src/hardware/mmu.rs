@@ -131,4 +131,6 @@ pub trait Mmu: Sync {
     ///
     /// 同步期间须保持普通内存映射有效，且不得写入该范围。
     fn synchronize_code(&self, range: Range<usize>) -> Result<(), MmuError>;
+    /// 同步物理页框的此前写入与后续取指，不依赖目标虚拟映射。
+    fn synchronize_frame(&self, frame: Frame) -> Result<(), MmuError>;
 }

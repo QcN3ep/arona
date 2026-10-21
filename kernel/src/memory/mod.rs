@@ -11,8 +11,9 @@ use crate::hardware::mmu::MmuError;
 use frame_allocator::FrameAllocator;
 
 pub use frame::{
-    Frame, FrameAllocation, FrameAllocationInfo, FrameAllocationReference, FrameOwner, FramePool,
-    FramePurpose, Frames, ReferenceKind, ReservedRangeReference,
+    Frame, FrameAccess, FrameAccessReference, FrameAllocation, FrameAllocationInfo,
+    FrameAllocationReference, FrameOwner, FramePool, FramePurpose, Frames, ReferenceKind,
+    ReservedRangeReference,
 };
 pub use frame_allocator::{MemoryStats, PoolStats};
 pub use paging::PageTable;
@@ -22,6 +23,7 @@ static MEMORY_MANAGER: Once<MemoryManager> = Once::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MemoryError {
+    AccessConflict,
     AlreadyInitialized,
     AlreadyMapped,
     NotMapped,
@@ -98,9 +100,10 @@ impl MemoryManager {
         self.allocator.lock().is_managed(address)
     }
 
-    fn release_mapping(&self, frame: Frame) -> Result<(), MemoryError> {
+    fn release_mapping(&self, frame: Frame, access: FrameAccess) -> Result<(), MemoryError> {
         let mut allocator = self.allocator.lock();
         let head = allocator.allocation_of(frame)?;
+        allocator.release_access(frame, ReferenceKind::Mapping, access);
         allocator.release_reference(head, ReferenceKind::Mapping);
         Ok(())
     }

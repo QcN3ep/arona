@@ -95,17 +95,18 @@ impl Format for Sv39 {
         })
     }
 
-    fn with_table<T>(
+    fn with_frame<T>(
         &self,
         address: u64,
-        operation: impl FnOnce(&mut PageTable) -> T,
+        permissions: PagePermissions,
+        operation: impl FnOnce(usize) -> T,
     ) -> Result<T, MmuError> {
         paging::validate_physical::<Self>(address)?;
         let _access = paging::lock_window();
         let entry = self.encode_mapping(PageMapping {
             physical_address: address,
             attributes: PageAttributes {
-                permissions: PagePermissions::ReadWrite,
+                permissions,
                 memory_type: MemoryType::Normal,
                 user_accessible: false,
             },
@@ -119,8 +120,7 @@ impl Format for Sv39 {
             (*table).write(WINDOW_INDEX, entry);
         }
         invalidate_address(PAGE_TABLE_WINDOW);
-        // SAFETY: 当前根须将 PAGE_TABLE_WINDOW 映射到保留的页表窗口。
-        let result = unsafe { operation(&mut *(PAGE_TABLE_WINDOW as *mut PageTable)) };
+        let result = operation(PAGE_TABLE_WINDOW);
         // SAFETY: 须持有物理访问窗口锁。
         unsafe { (*table).write(WINDOW_INDEX, 0) };
         invalidate_address(PAGE_TABLE_WINDOW);
@@ -219,6 +219,13 @@ impl Mmu for Sv39 {
             // SAFETY: 范围须为有效普通内存映射，且此前写入须已完成。
             unsafe { asm!("fence.i", options(nostack)) };
         }
+        Ok(())
+    }
+
+    fn synchronize_frame(&self, frame: Frame) -> Result<(), MmuError> {
+        paging::validate_physical::<Self>(frame.address())?;
+        // SAFETY: 此前页框写入须已完成，处理器须允许执行指令缓存同步。
+        unsafe { asm!("fence.i", options(nostack)) };
         Ok(())
     }
 }

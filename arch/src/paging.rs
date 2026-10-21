@@ -3,7 +3,8 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::{
     hardware::mmu::{
-        Mmu, MmuError, PAGE_SIZE, PageMapping, PageTableEntry, PageTableLayout, TableWindow,
+        Mmu, MmuError, PAGE_SIZE, PageMapping, PagePermissions, PageTableEntry, PageTableLayout,
+        TableWindow,
     },
     memory::Frame,
 };
@@ -32,6 +33,17 @@ pub(crate) trait Format: Mmu {
         &self,
         address: u64,
         operation: impl FnOnce(&mut PageTable) -> T,
+    ) -> Result<T, MmuError> {
+        self.with_frame(address, PagePermissions::ReadWrite, |address| {
+            // SAFETY: 窗口须独占映射完整可写页框。
+            operation(unsafe { &mut *(address as *mut PageTable) })
+        })
+    }
+    fn with_frame<T>(
+        &self,
+        address: u64,
+        permissions: PagePermissions,
+        operation: impl FnOnce(usize) -> T,
     ) -> Result<T, MmuError>;
 }
 
@@ -101,7 +113,9 @@ pub(crate) fn read_frame<F: Format>(
     if offset > ENTRIES || words.len() > ENTRIES - offset {
         return Err(MmuError::InvalidRange);
     }
-    format.with_table(address, |page| {
+    format.with_frame(address, PagePermissions::ReadOnly, |address| {
+        // SAFETY: 窗口须只读映射完整页框，访问期间不得与写引用冲突。
+        let page = unsafe { &*(address as *const PageTable) };
         for (index, word) in words.iter_mut().enumerate() {
             *word = page.read(offset + index);
         }
@@ -183,7 +197,9 @@ pub(crate) fn read_entry<F: Format>(
     level: usize,
 ) -> Result<PageTableEntry, MmuError> {
     validate_entry::<F>(index, level)?;
-    let entry = format.with_table(table.address(), |table| table.read(index))?;
+    let mut words = [0];
+    read_frame(format, table.address(), index, &mut words)?;
+    let entry = words[0];
     if entry == 0 {
         Ok(PageTableEntry::Empty)
     } else if level == 0 {

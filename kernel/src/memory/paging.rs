@@ -4,8 +4,8 @@ use arrayvec::ArrayVec;
 use spin::Mutex;
 
 use super::{
-    Frame, FrameAllocation, FrameAllocationReference, FrameOwner, FramePurpose, MemoryError,
-    ReferenceKind, manager,
+    Frame, FrameAccess, FrameAllocation, FrameAllocationReference, FrameOwner, FramePurpose,
+    MemoryError, ReferenceKind, manager,
 };
 use crate::hardware::{
     self,
@@ -21,7 +21,6 @@ const MAX_LEVELS: usize = 4;
 ///
 /// 操作及析构期间须满足 [`Mmu`](crate::hardware::mmu::Mmu) 的执行环境要求。
 /// 修改前须停止其他处理器使用该页表并清除其 TLB 项，析构前须让所有处理器切离该页表。
-/// 发布执行映射前须关闭该物理页的全部写入路径并完成代码同步。
 pub struct PageTable {
     state: Mutex<PageTableState>,
 }
@@ -96,6 +95,7 @@ impl PageTable {
         } else {
             reference.reference(ReferenceKind::Mapping)?
         };
+        let reference = reference.access(frame, attributes.permissions.into())?;
         let mut state = self.state.lock();
         state.map(
             virtual_address,
@@ -269,7 +269,7 @@ impl PageTableState {
             drop(self.backing.detach(*frame));
         }
         manager()
-            .release_mapping(frame)
+            .release_mapping(frame, mapping.attributes.permissions.into())
             .expect("lost mapping allocation");
         Ok(mapping)
     }
@@ -284,16 +284,33 @@ impl PageTableState {
         if !manager().is_managed(mapping.physical_address) {
             return Err(MemoryError::InvalidFrame);
         }
-        mapping.attributes.permissions = permissions;
-        mmu.write_entry(
-            walk.tables[0].expect("missing leaf table"),
-            index(layout, address, 0),
-            0,
-            PageTableEntry::Mapping(mapping),
-        )?;
-        mmu.invalidate_all();
-        Ok(())
+        let frame = Frame::new(mapping.physical_address).ok_or(MemoryError::InvalidFrame)?;
+        let old = mapping.attributes.permissions.into();
+        let new = permissions.into();
+        let mut allocator = manager().allocator.lock();
+        allocator.replace_mapping_access(frame, old, new)?;
+        let result = (|| {
+            if new == FrameAccess::Execute && old != new {
+                mmu.synchronize_frame(frame)?;
+            }
+            mapping.attributes.permissions = permissions;
+            mmu.write_entry(
+                walk.tables[0].expect("missing leaf table"),
+                index(layout, address, 0),
+                0,
+                PageTableEntry::Mapping(mapping),
+            )?;
+            mmu.invalidate_all();
+            Ok(())
+        })();
+        if result.is_err() {
+            allocator
+                .replace_mapping_access(frame, new, old)
+                .expect("failed to restore frame access");
+        }
+        result
     }
+
     fn release_mappings(&self, table: Frame, level: usize) -> Result<(), MemoryError> {
         let mmu = hardware::mmu();
         let layout = mmu.layout();
@@ -306,7 +323,7 @@ impl PageTableState {
                     let frame =
                         Frame::new(mapping.physical_address).ok_or(MemoryError::InvalidFrame)?;
                     if manager().is_managed(frame.address()) {
-                        manager().release_mapping(frame)?;
+                        manager().release_mapping(frame, mapping.attributes.permissions.into())?;
                     }
                 }
             }

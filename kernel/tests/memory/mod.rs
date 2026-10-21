@@ -18,8 +18,8 @@ use kernel::{
         PageTableLayout, TableWindow,
     },
     memory::{
-        self, Frame, FrameOwner, FramePool, FramePurpose, MAX_MEMORY_REGIONS, MemoryError,
-        MemoryManager, MemoryRegion, MemoryRegionState, PhysRange, ReferenceKind,
+        self, Frame, FrameAccess, FrameOwner, FramePool, FramePurpose, MAX_MEMORY_REGIONS,
+        MemoryError, MemoryManager, MemoryRegion, MemoryRegionState, PhysRange, ReferenceKind,
     },
 };
 
@@ -39,6 +39,8 @@ struct PhysicalMmu {
     levels: AtomicUsize,
     reads: AtomicU64,
     inspect_on_zero: AtomicBool,
+    synchronizations: AtomicU64,
+    fail_synchronization: AtomicBool,
 }
 
 static MMU: PhysicalMmu = PhysicalMmu {
@@ -50,6 +52,8 @@ static MMU: PhysicalMmu = PhysicalMmu {
     levels: AtomicUsize::new(3),
     reads: AtomicU64::new(0),
     inspect_on_zero: AtomicBool::new(false),
+    synchronizations: AtomicU64::new(0),
+    fail_synchronization: AtomicBool::new(false),
 };
 
 fn isolated(name: &str) -> bool {
@@ -259,6 +263,14 @@ impl Mmu for PhysicalMmu {
     fn synchronize_code(&self, _: std::ops::Range<usize>) -> Result<(), MmuError> {
         Err(MmuError::Unsupported)
     }
+    fn synchronize_frame(&self, frame: Frame) -> Result<(), MmuError> {
+        self.validate(frame.address(), 0, PAGE_SIZE / 8)?;
+        if self.fail_synchronization.swap(false, Ordering::Relaxed) {
+            return Err(MmuError::InvalidTable);
+        }
+        self.synchronizations.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 fn region(start: u64, frames: u64, state: MemoryRegionState) -> MemoryRegion {
@@ -293,7 +305,7 @@ fn with_metadata(mut regions: Vec<MemoryRegion>) -> Vec<MemoryRegion> {
     let directory = regions.len().div_ceil(PAGE_SIZE / 40) as u64;
     let mut extra = 0;
     loop {
-        let required = directory + (managed + extra).div_ceil(PAGE / 64);
+        let required = directory + (managed + extra).div_ceil(PAGE / 96);
         if required == extra {
             break;
         }

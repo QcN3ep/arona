@@ -239,3 +239,174 @@ fn tables_release_their_own_backing_without_disturbing_other_tables() {
     drop(second);
     assert_eq!(manager.stats(), initial);
 }
+
+#[test]
+fn writable_and_executable_aliases_conflict_across_tables_but_not_between_frames() {
+    if isolated(
+        "paging::writable_and_executable_aliases_conflict_across_tables_but_not_between_frames",
+    ) {
+        return;
+    }
+    let manager = initialize(&memory(2));
+    let initial = manager.stats();
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 2)
+        .unwrap();
+    let frames: Vec<_> = allocation.frames().collect();
+    let writable = attributes(PagePermissions::ReadWrite);
+    let executable = attributes(PagePermissions::ReadExecute);
+    let execute_only = attributes(PagePermissions::ExecuteOnly);
+    let first = PageTable::new().unwrap();
+    let second = PageTable::new().unwrap();
+    first
+        .map(ADDRESS, &allocation, frames[0], writable)
+        .unwrap();
+    assert_eq!(
+        second.map(ADDRESS, &allocation, frames[0], executable),
+        Err(MemoryError::AccessConflict)
+    );
+    second
+        .map(ADDRESS, &allocation, frames[1], executable)
+        .unwrap();
+    assert_eq!(
+        first.map(ADDRESS + PAGE_SIZE, &allocation, frames[1], writable),
+        Err(MemoryError::AccessConflict)
+    );
+    first
+        .protect(ADDRESS, PagePermissions::ReadExecute)
+        .unwrap();
+    second
+        .map(ADDRESS + PAGE_SIZE, &allocation, frames[0], execute_only)
+        .unwrap();
+    assert_eq!(
+        first.protect(ADDRESS, PagePermissions::ReadWrite),
+        Err(MemoryError::AccessConflict)
+    );
+    second.unmap(ADDRESS + PAGE_SIZE).unwrap();
+    first.protect(ADDRESS, PagePermissions::ReadWrite).unwrap();
+    first.protect(ADDRESS, PagePermissions::ReadOnly).unwrap();
+    second
+        .map(ADDRESS + PAGE_SIZE, &allocation, frames[0], executable)
+        .unwrap();
+    assert_eq!(
+        first.protect(ADDRESS, PagePermissions::ReadWrite),
+        Err(MemoryError::AccessConflict)
+    );
+    drop(allocation);
+    drop(first);
+    drop(second);
+    assert_eq!(manager.stats(), initial);
+}
+
+#[test]
+fn dma_and_temporary_writers_block_execution_until_released() {
+    if isolated("paging::dma_and_temporary_writers_block_execution_until_released") {
+        return;
+    }
+    let manager = initialize(&memory(1));
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
+        .unwrap();
+    let frame = allocation.frames().next().unwrap();
+    let executable = attributes(PagePermissions::ReadExecute);
+    let table = PageTable::new().unwrap();
+    for kind in [ReferenceKind::Dma, ReferenceKind::Temporary] {
+        let writer = allocation.access(frame, kind, FrameAccess::Write).unwrap();
+        assert_eq!(
+            table.map(ADDRESS, &allocation, frame, executable),
+            Err(MemoryError::AccessConflict)
+        );
+        assert_eq!(allocation.info().mappings, 0);
+        drop(writer);
+        let reader = allocation.access(frame, kind, FrameAccess::Read).unwrap();
+        table.map(ADDRESS, &allocation, frame, executable).unwrap();
+        assert!(matches!(
+            allocation.access(frame, kind, FrameAccess::Write),
+            Err(MemoryError::AccessConflict)
+        ));
+        let mut word = [0];
+        reader.read(0, &mut word).unwrap();
+        assert_eq!(word, [0]);
+        table.unmap(ADDRESS).unwrap();
+        drop(allocation.access(frame, kind, FrameAccess::Write).unwrap());
+    }
+}
+
+#[test]
+fn execution_publication_failures_restore_permissions_and_access_counts() {
+    if isolated("paging::execution_publication_failures_restore_permissions_and_access_counts") {
+        return;
+    }
+    let manager = initialize(&memory(1));
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
+        .unwrap();
+    let frame = allocation.frames().next().unwrap();
+    let writable = attributes(PagePermissions::ReadWrite);
+    let executable = attributes(PagePermissions::ReadExecute);
+    let table = PageTable::new().unwrap();
+    let initial = manager.stats();
+    for synchronization_failure in [true, false] {
+        MMU.fail_synchronization
+            .store(synchronization_failure, Ordering::Relaxed);
+        if !synchronization_failure {
+            MMU.writes_until_failure.store(0, Ordering::Relaxed);
+        }
+        assert_eq!(
+            table.map(ADDRESS, &allocation, frame, executable),
+            Err(MemoryError::Mmu(MmuError::InvalidTable))
+        );
+        assert_eq!(table.query(ADDRESS).unwrap(), None);
+        assert_eq!(allocation.info().mappings, 0);
+        assert_eq!(manager.stats(), initial);
+        drop(
+            allocation
+                .access(frame, ReferenceKind::Temporary, FrameAccess::Write)
+                .unwrap(),
+        );
+    }
+    table.map(ADDRESS, &allocation, frame, writable).unwrap();
+    let original = table.query(ADDRESS).unwrap();
+    for synchronization_failure in [true, false] {
+        MMU.fail_synchronization
+            .store(synchronization_failure, Ordering::Relaxed);
+        if !synchronization_failure {
+            MMU.writes_until_failure.store(0, Ordering::Relaxed);
+        }
+        assert_eq!(
+            table.protect(ADDRESS, PagePermissions::ReadExecute),
+            Err(MemoryError::Mmu(MmuError::InvalidTable))
+        );
+        assert_eq!(table.query(ADDRESS).unwrap(), original);
+        assert_eq!(allocation.info().mappings, 1);
+        drop(
+            allocation
+                .access(frame, ReferenceKind::Temporary, FrameAccess::Write)
+                .unwrap(),
+        );
+    }
+    let synchronizations = MMU.synchronizations.load(Ordering::Relaxed);
+    table
+        .protect(ADDRESS, PagePermissions::ReadExecute)
+        .unwrap();
+    assert!(MMU.synchronizations.load(Ordering::Relaxed) > synchronizations);
+    assert!(matches!(
+        allocation.access(frame, ReferenceKind::Dma, FrameAccess::Write),
+        Err(MemoryError::AccessConflict)
+    ));
+    MMU.writes_until_failure.store(0, Ordering::Relaxed);
+    assert_eq!(
+        table.unmap(ADDRESS),
+        Err(MemoryError::Mmu(MmuError::InvalidTable))
+    );
+    assert!(matches!(
+        allocation.access(frame, ReferenceKind::Temporary, FrameAccess::Write),
+        Err(MemoryError::AccessConflict)
+    ));
+    table.unmap(ADDRESS).unwrap();
+    drop(
+        allocation
+            .access(frame, ReferenceKind::Dma, FrameAccess::Write)
+            .unwrap(),
+    );
+}
