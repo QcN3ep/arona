@@ -77,6 +77,7 @@ pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
     logger::init(log::LevelFilter::Debug).expect("failed to initialize logger");
     // REFERENCE: https://github.com/torvalds/linux/blob/v6.18/arch/loongarch/include/asm/loongarch.h
     let cpu_id: usize;
+    // SAFETY: 执行环境须允许读取 CPUID 寄存器。
     unsafe {
         core::arch::asm!("csrrd {}, 0x20", out(reg) cpu_id, options(nomem, nostack));
     }
@@ -229,6 +230,7 @@ pub fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
 
 pub fn halt() -> ! {
     loop {
+        // SAFETY: 执行环境须允许执行 idle 指令。
         unsafe {
             core::arch::asm!("idle 0", options(nomem, nostack));
         }

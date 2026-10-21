@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: MPL-2.0
+
+check-private-items = true
+too-many-lines-threshold = 80
