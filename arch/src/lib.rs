@@ -13,6 +13,9 @@ mod allocator;
 mod execution;
 
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+mod interrupt;
+
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 mod paging;
 
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
