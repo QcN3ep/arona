@@ -77,9 +77,10 @@ pub(super) enum MappingKind {
     Reserved,
     Preparing,
     Mapped,
-    Permanent,
+    Permanent { physical_start: u64 },
     DirectMap,
     Owned,
+    Device { physical_start: u64 },
 }
 
 pub(super) struct OwnedMapping {
@@ -161,6 +162,17 @@ impl MappingIndex {
             1 + count(node.left) + count(node.right)
         }
         count(self.root)
+    }
+
+    pub fn any(&self, predicate: impl Fn(&MappingRecord) -> bool) -> bool {
+        fn visit(address: u64, predicate: &impl Fn(&MappingRecord) -> bool) -> bool {
+            if address == NIL {
+                return false;
+            }
+            let node = MappingNode::read(address);
+            predicate(&node.record) || visit(node.left, predicate) || visit(node.right, predicate)
+        }
+        visit(self.root, &predicate)
     }
 
     pub fn get(&self, address: usize) -> Option<MappingRecord> {
@@ -532,9 +544,14 @@ impl MappingNode {
                     0 => MappingKind::Reserved,
                     1 => MappingKind::Preparing,
                     2 => MappingKind::Mapped,
-                    3 => MappingKind::Permanent,
+                    3 => MappingKind::Permanent {
+                        physical_start: words[8],
+                    },
                     4 => MappingKind::DirectMap,
                     5 => MappingKind::Owned,
+                    6 => MappingKind::Device {
+                        physical_start: words[8],
+                    },
                     _ => panic!("invalid mapping kind"),
                 },
                 journal: MappingJournal {
@@ -561,7 +578,7 @@ impl MappingNode {
     fn write(self, address: u64) {
         let record = self.record;
         let journal = record.journal;
-        let (physical, attributes) = journal.mapping.map_or((0, 0), |mapping| {
+        let (mut physical, attributes) = journal.mapping.map_or((0, 0), |mapping| {
             let attributes = mapping.attributes;
             (
                 mapping.physical_address,
@@ -574,13 +591,28 @@ impl MappingNode {
                     | u64::from(attributes.user_accessible) << 3,
             )
         });
+        let kind = match record.kind {
+            MappingKind::Reserved => 0,
+            MappingKind::Preparing => 1,
+            MappingKind::Mapped => 2,
+            MappingKind::Permanent { physical_start } => {
+                physical = physical_start;
+                3
+            }
+            MappingKind::DirectMap => 4,
+            MappingKind::Owned => 5,
+            MappingKind::Device { physical_start } => {
+                physical = physical_start;
+                6
+            }
+        };
         write(
             address,
             &[
                 record.range.start as u64,
                 record.range.end as u64,
                 record.generation,
-                record.maximum.0 as u64 | (record.kind as u64) << 8,
+                record.maximum.0 as u64 | kind << 8,
                 journal.tables[0].map_or(NIL, Frame::address),
                 journal.tables[1].map_or(NIL, Frame::address),
                 journal.tables[2].map_or(NIL, Frame::address),

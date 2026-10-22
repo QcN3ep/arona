@@ -151,6 +151,10 @@ impl Format for LoongArchMmu {
 }
 
 impl Mmu for LoongArchMmu {
+    fn device_memory_type(&self) -> MemoryType {
+        MemoryType::Device
+    }
+
     fn is_valid_virtual_address(&self, address: usize) -> bool {
         paging::is_canonical(address, 48)
     }

@@ -89,6 +89,9 @@ pub trait Mmu: Sync {
     fn is_valid_virtual_address(&self, address: usize) -> bool;
     fn physical_address_bits(&self) -> u32;
 
+    /// 设备寄存器的分页属性。
+    fn device_memory_type(&self) -> MemoryType;
+
     fn read_entry(
         &self,
         table: Frame,

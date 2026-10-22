@@ -4,8 +4,8 @@ use core::ops::Range;
 use spin::Mutex;
 
 use super::{
-    Frame, FrameAccess, FrameAllocation, FrameAllocationReference, MemoryError, ReferenceKind,
-    VirtRange,
+    DeviceMapping, Frame, FrameAccess, FrameAllocation, FrameAllocationReference, MemoryError,
+    PhysRange, ReferenceKind, VirtRange,
     direct_map::{DirectMap, DirectMapLayout},
     frame_allocator::FrameAllocator,
     manager,
@@ -553,6 +553,100 @@ impl AddressSpace {
         }))
     }
 
+    pub(super) fn map_device(&self, physical: PhysRange) -> Result<(VirtRange, u64), MemoryError> {
+        let mmu = hardware::mmu();
+        let bits = mmu.physical_address_bits();
+        if self.table.is_user() || bits < 64 && physical.end > 1u64 << bits {
+            return Err(MemoryError::InvalidRequest);
+        }
+        let length = usize::try_from(physical.end - physical.start)
+            .map_err(|_| MemoryError::InvalidRequest)?;
+        let attributes = PageAttributes {
+            permissions: PagePermissions::ReadWrite,
+            memory_type: mmu.device_memory_type(),
+            user_accessible: false,
+        };
+        let mut state = self.state.lock();
+        if state.mappings.any(|record| {
+            let (MappingKind::Device { physical_start }
+            | MappingKind::Permanent { physical_start }) = record.kind
+            else {
+                return false;
+            };
+            PhysRange {
+                start: physical_start,
+                end: physical_start.saturating_add((record.range.end - record.range.start) as u64),
+            }
+            .overlaps(physical)
+        }) {
+            return Err(MemoryError::InUse);
+        }
+        let range = state
+            .mappings
+            .gap(self.bounds, length, PAGE_SIZE)
+            .ok_or(MemoryError::NoMemory)?;
+        let generation = state.next_generation()?;
+        state.mappings.insert(MappingRecord {
+            range,
+            maximum: MappingRights::READ | MappingRights::WRITE,
+            generation,
+            kind: MappingKind::Device {
+                physical_start: physical.start,
+            },
+            journal: MappingJournal::default(),
+        })?;
+        self.table.edit(|table| {
+            let mut attempted_end = range.start;
+            let result: Result<(), MemoryError> = (|| {
+                for address in pages(range) {
+                    attempted_end = address + PAGE_SIZE;
+                    let walk = table.prepare(address)?;
+                    PageTableState::write_leaf(
+                        address,
+                        walk.tables[0].unwrap(),
+                        Some(PageMapping {
+                            physical_address: physical.start + (address - range.start) as u64,
+                            attributes,
+                        }),
+                    )?;
+                }
+                Ok(())
+            })();
+            mmu.invalidate_all();
+            if result.is_err() {
+                // 回滚失败时保留记录，避免残余映射被重新分配或产生别名。
+                clear_device_pages(
+                    table,
+                    VirtRange {
+                        start: range.start,
+                        end: attempted_end,
+                    },
+                )?;
+                state.mappings.remove(range.start);
+            }
+            result
+        })?;
+        Ok((range, generation))
+    }
+
+    pub(super) fn unmap_device(&self, mapping: &DeviceMapping) -> Result<(), MemoryError> {
+        let mut state = self.state.lock();
+        let record = state
+            .mappings
+            .get(mapping.pages.start)
+            .ok_or(MemoryError::NotMapped)?;
+        if !matches!(record.kind, MappingKind::Device { .. })
+            || record.range != mapping.pages
+            || record.generation != mapping.generation
+        {
+            return Err(MemoryError::InvalidRequest);
+        }
+        self.table
+            .edit(|table| clear_device_pages(table, record.range))?;
+        state.mappings.remove(record.range.start);
+        Ok(())
+    }
+
     /// # Safety
     ///
     /// 后备存储须在内核运行期间持续有效。
@@ -577,7 +671,9 @@ impl AddressSpace {
             range,
             maximum: mapping.attributes.permissions.into(),
             generation,
-            kind: MappingKind::Permanent,
+            kind: MappingKind::Permanent {
+                physical_start: mapping.physical_address,
+            },
             journal: MappingJournal::default(),
         })?;
         if let Err(error) = self.table.map_permanent(address, mapping) {
@@ -804,6 +900,30 @@ impl Drop for AddressSpace {
             manager().release_mapping_records(self.state.lock().mappings.len());
         }
     }
+}
+
+fn clear_device_pages(table: &mut PageTableState, range: VirtRange) -> Result<(), MemoryError> {
+    let result: Result<(), MemoryError> = (|| {
+        for address in pages(range) {
+            let walk = table.walk(address)?;
+            if matches!(walk.entry, PageTableEntry::Mapping(_)) {
+                PageTableState::write_leaf(address, walk.tables[0].unwrap(), None)?;
+            }
+        }
+        Ok(())
+    })();
+    hardware::mmu().invalidate_all();
+    result?;
+    let block_bits = PAGE_SIZE.trailing_zeros() + hardware::mmu().layout().index_bits;
+    let mut previous = None;
+    for address in pages(range) {
+        let block = address >> block_bits;
+        if previous != Some(block) {
+            table.prune_empty(address)?;
+            previous = Some(block);
+        }
+    }
+    Ok(())
 }
 
 fn pages(range: VirtRange) -> core::iter::StepBy<Range<usize>> {

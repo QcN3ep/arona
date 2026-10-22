@@ -6,6 +6,7 @@ use spin::Once;
 
 pub mod cpu;
 pub mod execution;
+pub mod mmio;
 pub mod mmu;
 pub mod timer;
 pub mod trap;

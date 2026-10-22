@@ -6,6 +6,7 @@ mod frame;
 mod frame_allocator;
 mod heap_allocator;
 mod mapping;
+mod mmio;
 mod paging;
 mod region;
 
@@ -28,6 +29,7 @@ pub use frame::{
 pub use frame_allocator::{MemoryStats, PoolStats};
 pub use heap_allocator::{HeapAllocation, HeapArc, HeapBox, HeapStats};
 pub use mapping::{MappingInfo, MappingOptions, MappingRights};
+pub use mmio::DeviceMapping;
 pub use region::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRange, VirtRange};
 
 pub const MAX_USER_MAPPING_RECORDS: usize = 65536;

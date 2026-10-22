@@ -64,6 +64,13 @@ impl DirectMap {
         self.layout.get().map(|layout| layout.range)
     }
 
+    pub fn overlaps_ram(&self, range: PhysRange) -> bool {
+        self.regions
+            .lock()
+            .iter()
+            .any(|region| region.range.overlaps(range))
+    }
+
     pub fn activate(&self) {
         if self.layout.get().is_some() {
             self.active.store(true, Ordering::Release);

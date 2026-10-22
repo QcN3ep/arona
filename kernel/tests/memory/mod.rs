@@ -17,8 +17,8 @@ use std::{
 
 use kernel::{
     hardware::mmu::{
-        Mmu, MmuError, PAGE_SIZE, PageAttributes, PageMapping, PagePermissions, PageTableEntry,
-        PageTableLayout, TableWindow,
+        MemoryType, Mmu, MmuError, PAGE_SIZE, PageAttributes, PageMapping, PagePermissions,
+        PageTableEntry, PageTableLayout, TableWindow,
     },
     memory::{
         self, Frame, FrameAccess, FrameOwner, FramePool, FramePurpose, MAX_MEMORY_REGIONS,
@@ -132,6 +132,10 @@ impl PhysicalMmu {
 }
 
 impl Mmu for PhysicalMmu {
+    fn device_memory_type(&self) -> MemoryType {
+        MemoryType::Device
+    }
+
     fn physical_address_bits(&self) -> u32 {
         self.bits
     }

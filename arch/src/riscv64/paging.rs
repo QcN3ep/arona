@@ -129,6 +129,10 @@ impl Format for Sv39 {
 }
 
 impl Mmu for Sv39 {
+    fn device_memory_type(&self) -> MemoryType {
+        MemoryType::Normal
+    }
+
     fn is_valid_virtual_address(&self, address: usize) -> bool {
         paging::is_canonical(address, 39)
     }
