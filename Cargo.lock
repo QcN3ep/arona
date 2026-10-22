@@ -15,6 +15,7 @@ dependencies = [
  "arona-kernel",
  "arrayvec",
  "fdt",
+ "spin",
  "uefi-raw",
 ]
 

@@ -7,10 +7,12 @@ use spin::Once;
 pub mod cpu;
 pub mod execution;
 pub mod mmu;
+pub mod timer;
 pub mod trap;
 pub use cpu::cpu;
 pub use execution::execution;
 pub use mmu::mmu;
+pub use timer::timer;
 pub use trap::trap;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

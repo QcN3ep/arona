@@ -42,6 +42,10 @@ pub fn boot_kernel(info: BootInfo<'_>) -> ! {
         .install(stack, crate::trap::dispatch)
         .unwrap_or_else(|error| panic!("failed to install trap entry: {error:?}"));
     log::info!("Trap initialized");
+    crate::hardware::timer()
+        .initialize(info.hardware.timebase_frequency_hz)
+        .unwrap_or_else(|error| panic!("failed to initialize timer: {error:?}"));
+    log::info!("Timer initialized");
     loop {
         core::hint::spin_loop();
     }

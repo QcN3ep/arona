@@ -16,6 +16,9 @@ mod execution;
 mod paging;
 
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+mod timer;
+
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 mod trap;
 
 #[cfg(target_arch = "loongarch64")]

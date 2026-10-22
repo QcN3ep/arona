@@ -55,10 +55,17 @@ path = "tests/execution.rs"
 harness = false
 required-features = ["baremetal"]
 
+[[test]]
+name = "timer"
+path = "tests/timer.rs"
+harness = false
+required-features = ["baremetal"]
+
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
 fdt = "0.2.0-alpha3"
 kernel = { package = "arona-kernel", path = "../kernel" }
+spin = { version = "0.9.9", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 uefi-raw = "0.14.0"
