@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::{Mutex, Once};
 
 use kernel::{
@@ -21,6 +22,11 @@ static CODE: Once<[u64; PAGE_SIZE / 8]> = Once::new();
 static BOOT: Mutex<Option<Fixture>> = Mutex::new(None);
 static OWNER: Mutex<Option<Waker>> = Mutex::new(None);
 static WAIT_TARGET: Mutex<Option<Task>> = Mutex::new(None);
+static TIMERS: AtomicUsize = AtomicUsize::new(0);
+static REQUEST_ON_TIMER: AtomicBool = AtomicBool::new(false);
+static RELEASE_ON_TIMER: AtomicBool = AtomicBool::new(false);
+
+const BUSY: u64 = u64::MAX - 2;
 
 struct Fixture {
     task: Task,
@@ -36,6 +42,18 @@ enum Action {
 }
 
 pub fn handle(trap: Trap) -> TrapOutcome {
+    if trap.event == TrapEvent::TimerInterrupt {
+        TIMERS.fetch_add(1, Ordering::Relaxed);
+        if REQUEST_ON_TIMER.swap(false, Ordering::Relaxed) {
+            scheduler::request_preemption().unwrap();
+        }
+        if RELEASE_ON_TIMER.swap(false, Ordering::Relaxed) {
+            let fixture = BOOT.lock();
+            let fixture = fixture.as_ref().unwrap();
+            assert_eq!(fixture.entered(), fixture.entry.argument as u64);
+            fixture.write_tls(1, &[1]);
+        }
+    }
     match handle_user(trap) {
         Action::Return(outcome) => outcome,
         Action::Exit(status) => thread::exit(status),
@@ -81,6 +99,8 @@ pub fn run(code: &[u64], set_floating_enabled: fn(bool)) {
     let heap = manager.heap_stats();
     let frames = manager.stats();
     entry_rollback_and_creator_exit(set_floating_enabled);
+    preemption();
+    preemption_deadlines();
     let worker = Thread::new(scenarios, 0).unwrap();
     worker.start().unwrap();
     scheduler::run_ready().unwrap();
@@ -89,6 +109,128 @@ pub fn run(code: &[u64], set_floating_enabled: fn(bool)) {
     manager.reclaim_heap();
     assert_eq!(manager.heap_stats(), heap);
     assert_eq!(manager.stats(), frames);
+}
+
+fn preemption() {
+    let (fixture, creator) = preemption_fixture(73);
+    fixture.thread.start().unwrap();
+    *BOOT.lock() = Some(fixture);
+    RELEASE_ON_TIMER.store(true, Ordering::Relaxed);
+    let count = TIMERS.load(Ordering::Relaxed);
+    scheduler::set_preemption_deadline(Some(hardware::timer().now_ns().unwrap() + 5_000_000))
+        .unwrap();
+    scheduler::run_ready().unwrap();
+    assert_eq!(TIMERS.load(Ordering::Relaxed), count + 1);
+    let fixture = BOOT.lock().take().unwrap();
+    fixture.assert_exit(73);
+    assert_eq!(fixture.marker(), 73);
+    drop(fixture);
+    assert!(creator.wake());
+    scheduler::run_ready().unwrap();
+    drop(creator);
+
+    for terminate in [false, true] {
+        let (fixture, creator) = preemption_fixture(73);
+        let (other, other_creator) = preemption_fixture(42);
+        let observer = Thread::new(preemption_observer, usize::from(terminate)).unwrap();
+        fixture.thread.start().unwrap();
+        other.thread.start().unwrap();
+        observer.start().unwrap();
+        *BOOT.lock() = Some(fixture);
+        scheduler::set_preemption_deadline(Some(hardware::timer().now_ns().unwrap() + 5_000_000))
+            .unwrap();
+        scheduler::run_ready().unwrap();
+        let fixture = BOOT.lock().take().unwrap();
+        fixture.assert_exit(if terminate { 19 } else { 73 });
+        assert_eq!(fixture.marker(), if terminate { 0 } else { 73 });
+        other.assert_exit(42);
+        assert_eq!(other.marker(), 42);
+        assert_eq!(observer.state(), ThreadState::Dead(0));
+        assert!(creator.wake());
+        assert!(other_creator.wake());
+        scheduler::run_ready().unwrap();
+    }
+}
+
+fn preemption_fixture(status: usize) -> (Fixture, Waker) {
+    let creator = Thread::new(
+        |status| {
+            *BOOT.lock() = Some(Fixture::new(status, if status == 73 { BUSY } else { 2 }));
+            let wait = thread::prepare_wait().unwrap();
+            *OWNER.lock() = Some(wait.waker());
+            wait.wait().unwrap();
+            0
+        },
+        status,
+    )
+    .unwrap();
+    creator.start().unwrap();
+    scheduler::run_ready().unwrap();
+    assert_eq!(creator.state(), ThreadState::Blocked);
+    (BOOT.lock().take().unwrap(), OWNER.lock().take().unwrap())
+}
+
+fn preemption_observer(terminate: usize) -> usize {
+    let fixture = BOOT.lock();
+    let fixture = fixture.as_ref().unwrap();
+    assert_eq!(fixture.thread.state(), ThreadState::Ready);
+    assert_eq!(fixture.entered(), 73);
+    assert_eq!(fixture.marker(), 0);
+    fixture.write_tls(1, &[1]);
+    if terminate != 0 {
+        fixture.thread.terminate(19).unwrap();
+    }
+    0
+}
+
+fn preemption_deadlines() {
+    for (wait_first, request) in [(true, false), (false, false), (true, true)] {
+        let (fixture, creator) = preemption_fixture(73);
+        let observer = Thread::new(preemption_observer, 0).unwrap();
+        let now = hardware::timer().now_ns().unwrap();
+        let early = now + 50_000_000;
+        let late = now + 100_000_000;
+        let waiter = Thread::new(
+            |deadline| {
+                thread::sleep_until(deadline as u64).unwrap();
+                42
+            },
+            if wait_first { early } else { late } as usize,
+        )
+        .unwrap();
+        waiter.start().unwrap();
+        scheduler::run_ready().unwrap();
+        assert_eq!(waiter.state(), ThreadState::Blocked);
+        fixture.thread.start().unwrap();
+        observer.start().unwrap();
+        *BOOT.lock() = Some(fixture);
+        let count = TIMERS.load(Ordering::Relaxed);
+        if request {
+            REQUEST_ON_TIMER.store(true, Ordering::Relaxed);
+        } else {
+            scheduler::set_preemption_deadline(Some(now)).unwrap();
+            scheduler::set_preemption_deadline(None).unwrap();
+            scheduler::set_preemption_deadline(Some(late)).unwrap();
+            scheduler::set_preemption_deadline(Some(if wait_first { late } else { early }))
+                .unwrap();
+        }
+        scheduler::run_ready().unwrap();
+        assert_eq!(
+            TIMERS.load(Ordering::Relaxed),
+            count + if wait_first && !request { 2 } else { 1 }
+        );
+        let fixture = BOOT.lock().take().unwrap();
+        fixture.assert_exit(73);
+        assert_eq!(fixture.marker(), 73);
+        assert_eq!(observer.state(), ThreadState::Dead(0));
+        while waiter.state() == ThreadState::Blocked {
+            hardware::cpu().idle_until_interrupt();
+            scheduler::run_ready().unwrap();
+        }
+        assert_eq!(waiter.state(), ThreadState::Dead(42));
+        assert!(creator.wake());
+        scheduler::run_ready().unwrap();
+    }
 }
 
 fn entry_rollback_and_creator_exit(set_floating_enabled: fn(bool)) {
@@ -348,11 +490,11 @@ impl Fixture {
             stack,
             entry,
         };
-        fixture.write_rounds(rounds);
+        fixture.write_tls(0, &[rounds, 0, 0]);
         fixture
     }
 
-    fn write_rounds(&self, rounds: u64) {
+    fn write_tls(&self, word_offset: usize, words: &[u64]) {
         let access = self
             .stack
             .access(
@@ -361,7 +503,21 @@ impl Fixture {
                 FrameAccess::Write,
             )
             .unwrap();
-        access.write(0, &[rounds]).unwrap();
+        access.write(word_offset, words).unwrap();
+    }
+
+    fn entered(&self) -> u64 {
+        let access = self
+            .stack
+            .access(
+                self.stack.frames().next().unwrap(),
+                ReferenceKind::Temporary,
+                FrameAccess::Read,
+            )
+            .unwrap();
+        let mut word = [0];
+        access.read(2, &mut word).unwrap();
+        word[0]
     }
 
     fn marker(&self) -> u64 {

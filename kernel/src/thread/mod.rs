@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 线程的生命周期、协作切换与等待唤醒。
+//! 线程的生命周期、切换与等待唤醒。
 
 mod deadline;
 pub mod scheduler;

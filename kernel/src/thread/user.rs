@@ -30,7 +30,7 @@ fn handle(trap: Trap) -> UserAction {
     if let ThreadState::Dying(status) = thread.state() {
         return UserAction::Exit(status);
     }
-    UserAction::Return(match trap.event {
+    let outcome = match trap.event {
         TrapEvent::TimerInterrupt => match scheduler::timer_interrupt() {
             Ok(()) => TrapOutcome::Resume,
             Err(error) => {
@@ -46,5 +46,15 @@ fn handle(trap: Trap) -> UserAction {
             log::warn!("User exception at {:#x}: {:?}", trap.pc, trap.event);
             return UserAction::Exit(FAULT_STATUS);
         }
-    })
+    };
+    if outcome != TrapOutcome::Stop {
+        if let Err(error) = scheduler::preempt_if_requested() {
+            log::error!("Failed to preempt user thread: {error:?}");
+            return UserAction::Return(TrapOutcome::Stop);
+        }
+        if let ThreadState::Dying(status) = thread.state() {
+            return UserAction::Exit(status);
+        }
+    }
+    UserAction::Return(outcome)
 }

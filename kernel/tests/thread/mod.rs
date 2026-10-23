@@ -81,6 +81,7 @@ pub fn run() {
     drop(parked);
     drop(Thread::new(|_| panic!("unstarted thread executed"), 0).unwrap());
     interrupt_round_trips();
+    deferred_preemption();
     wait::run();
     manager.reclaim_heap();
     assert_eq!(manager.heap_stats(), before);
@@ -137,11 +138,51 @@ pub fn handle(trap: Trap) -> TrapOutcome {
     assert_eq!(trap.origin, TrapOrigin::Kernel);
     assert_eq!(trap.event, TrapEvent::TimerInterrupt);
     assert_eq!(hardware::cpu().interrupt_state(), InterruptState::Disabled);
-    assert!(thread::current().is_none());
+    if let Some(current) = thread::current() {
+        assert!(current.task().is_none());
+        assert_eq!(current.state(), ThreadState::Running);
+    }
     let outcome = kernel::trap::dispatch(trap);
     assert_eq!(outcome, TrapOutcome::Resume);
     INTERRUPTS.fetch_add(1, Ordering::Relaxed);
     outcome
+}
+
+fn deferred_preemption() {
+    let worker = Thread::new(
+        |_| {
+            let current = thread::current().unwrap();
+            let count = INTERRUPTS.load(Ordering::Relaxed);
+            scheduler::request_preemption().unwrap();
+            scheduler::set_preemption_deadline(Some(
+                hardware::timer().now_ns().unwrap() + 1_000_000,
+            ))
+            .unwrap();
+            while INTERRUPTS.load(Ordering::Relaxed) == count {
+                hardware::cpu().idle_until_interrupt();
+            }
+            assert_eq!(current.state(), ThreadState::Running);
+            assert_eq!(ORDER.load(Ordering::Relaxed), 6);
+            thread::yield_now().unwrap();
+            assert_eq!(ORDER.load(Ordering::Relaxed), 7);
+            73
+        },
+        0,
+    )
+    .unwrap();
+    let observer = Thread::new(
+        |_| {
+            step(6);
+            42
+        },
+        0,
+    )
+    .unwrap();
+    worker.start().unwrap();
+    observer.start().unwrap();
+    scheduler::run_ready().unwrap();
+    assert_eq!(worker.state(), ThreadState::Dead(73));
+    assert_eq!(observer.state(), ThreadState::Dead(42));
 }
 
 fn waiter(argument: usize) -> usize {

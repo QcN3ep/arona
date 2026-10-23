@@ -27,6 +27,8 @@ static STATE: Mutex<Scheduler> = Mutex::new(Scheduler {
     reap: None,
     current: None,
     request: None,
+    preemption_requested: false,
+    preemption_deadline: None,
     deadlines: DeadlineQueue::new(),
 });
 
@@ -36,6 +38,8 @@ pub(super) struct Scheduler {
     reap: Option<Thread>,
     pub current: Option<Thread>,
     request: Option<SuspendReason>,
+    preemption_requested: bool,
+    preemption_deadline: Option<u64>,
     pub deadlines: DeadlineQueue,
 }
 
@@ -47,6 +51,7 @@ pub(super) struct ReadyQueue {
 #[derive(Clone, Copy)]
 pub(super) enum SuspendReason {
     Yield,
+    Preempt,
     Block,
     Exit(usize),
 }
@@ -96,6 +101,48 @@ pub fn current() -> Option<Thread> {
 
 pub fn yield_now() -> Result<(), ThreadError> {
     suspend(SuspendReason::Yield)
+}
+
+/// 请求在返回用户态前重新调度，内核执行不会被异步切出。
+pub fn request_preemption() -> Result<(), ThreadError> {
+    dispatcher()?;
+    with_scheduler(|scheduler| scheduler.preemption_requested = true);
+    Ok(())
+}
+
+/// 设置一次性绝对 deadline；切出时失效，`None` 取消尚未到期的请求。
+pub fn set_preemption_deadline(deadline_ns: Option<u64>) -> Result<(), ThreadError> {
+    dispatcher()?;
+    with_scheduler(|scheduler| {
+        let previous = scheduler.preemption_deadline;
+        scheduler.preemption_deadline = deadline_ns;
+        if let Err(error) = scheduler.arm_timer() {
+            scheduler.preemption_deadline = previous;
+            return Err(error);
+        }
+        Ok(())
+    })
+}
+
+pub(super) fn preempt_if_requested() -> Result<(), ThreadError> {
+    let _interrupts = InterruptGuard::new();
+    let requested = with_scheduler(|scheduler| {
+        if !scheduler.preemption_requested
+            || !scheduler
+                .current
+                .as_ref()
+                .is_some_and(|thread| matches!(thread.0.kind, ThreadKind::User(_)))
+        {
+            return false;
+        }
+        scheduler.preemption_requested = false;
+        true
+    });
+    if requested && let Err(error) = suspend(SuspendReason::Preempt) {
+        with_scheduler(|scheduler| scheduler.preemption_requested = true);
+        return Err(error);
+    }
+    Ok(())
 }
 
 pub(super) fn suspend(reason: SuspendReason) -> Result<(), ThreadError> {
@@ -157,6 +204,13 @@ pub(crate) fn timer_interrupt() -> Result<(), ThreadError> {
         let generation = thread.0.data.lock().wait.as_ref().unwrap().generation;
         scheduler.finish_wait(&thread, generation, WaitOutcome::TimedOut);
     }
+    if scheduler
+        .preemption_deadline
+        .is_some_and(|deadline| deadline <= now)
+    {
+        scheduler.preemption_deadline = None;
+        scheduler.preemption_requested = true;
+    }
     scheduler.arm_timer()
 }
 
@@ -178,6 +232,7 @@ fn dispatch() -> Result<bool, ThreadError> {
         if scheduler.current.is_some() {
             return Err(ThreadError::InvalidState);
         }
+        scheduler.preemption_requested = false;
         let Some(thread) = scheduler.ready.pop() else {
             return Ok(false);
         };
@@ -233,6 +288,8 @@ fn complete(thread: Thread, resources: ThreadResources) {
         .take()
         .expect("missing suspension request");
     scheduler.current = None;
+    scheduler.preemption_requested = false;
+    scheduler.preemption_deadline = None;
     let mut data = thread.0.data.lock();
     if let ThreadState::Dying(status) = data.state {
         reason = SuspendReason::Exit(status);
@@ -252,7 +309,7 @@ fn complete(thread: Thread, resources: ThreadResources) {
     }
     data.resources = Some(resources);
     let ready = match reason {
-        SuspendReason::Yield => true,
+        SuspendReason::Yield | SuspendReason::Preempt => true,
         SuspendReason::Block => data
             .wait
             .as_ref()
@@ -350,7 +407,11 @@ pub(super) fn with_scheduler<T>(action: impl FnOnce(&mut Scheduler) -> T) -> T {
 impl Scheduler {
     fn arm_timer(&self) -> Result<(), ThreadError> {
         let timer = hardware::timer();
-        let Some(deadline) = self.deadlines.next_deadline() else {
+        let deadline = match (self.deadlines.next_deadline(), self.preemption_deadline) {
+            (Some(wait), Some(preemption)) => Some(wait.min(preemption)),
+            (wait, preemption) => wait.or(preemption),
+        };
+        let Some(deadline) = deadline else {
             return timer.cancel().map_err(Into::into);
         };
         let now = timer.now_ns()?;
