@@ -2,6 +2,8 @@
 
 //! FIFO 调度器
 
+// TODO: 需要更好的调度算法
+
 use spin::{Mutex, Once};
 
 use super::{
@@ -209,6 +211,7 @@ fn complete(thread: Thread, resources: ThreadResources) {
         scheduler.remove_live(&thread);
         drop(scheduler);
         drop(resources);
+        crate::task::creator_exited(&thread, status);
         with_scheduler(|scheduler| scheduler.finish_exit(&thread, status));
         return;
     }

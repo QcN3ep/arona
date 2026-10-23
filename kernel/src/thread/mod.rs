@@ -22,6 +22,7 @@ use crate::{
 
 pub use scheduler::{current, yield_now};
 pub use wait::{Wait, WaitOutcome, Waker, prepare_wait, sleep_until};
+pub(crate) use wait::{finish_task_exit, wait_for_task};
 
 pub const MAX_THREADS: usize = 4096;
 const STACK_SIZE: usize = 16 * 1024;
@@ -102,7 +103,7 @@ struct WaitState {
 }
 
 struct ExitWait {
-    target: Thread,
+    target: wait::ExitTarget,
     previous: Option<Thread>,
     next: Option<Thread>,
 }
@@ -151,7 +152,7 @@ impl Thread {
         self.0.data.lock().state
     }
 
-    fn same(&self, other: &Self) -> bool {
+    pub(crate) fn same(&self, other: &Self) -> bool {
         HeapArc::ptr_eq(&self.0, &other.0)
     }
 }

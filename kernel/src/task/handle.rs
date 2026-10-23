@@ -2,6 +2,7 @@
 
 use core::{mem, ops::BitOr, ptr};
 
+use super::Task;
 use allocator_api2::vec::Vec;
 use spin::Mutex;
 
@@ -91,6 +92,7 @@ impl BitOr for Rights {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectType {
+    Task,
     Thread,
     FrameAllocation,
 }
@@ -100,6 +102,7 @@ pub enum ObjectType {
 /// 析构期间须关闭本地中断并保留内存管理器所需的内核映射。
 #[derive(Clone)]
 pub enum Object {
+    Task(Task),
     Thread(Thread),
     FrameAllocation(HeapArc<FrameAllocation>),
 }
@@ -107,6 +110,7 @@ pub enum Object {
 impl Object {
     pub fn kind(&self) -> ObjectType {
         match self {
+            Self::Task(_) => ObjectType::Task,
             Self::Thread(_) => ObjectType::Thread,
             Self::FrameAllocation(_) => ObjectType::FrameAllocation,
         }
@@ -116,6 +120,16 @@ impl Object {
         let common = Rights::DUPLICATE | Rights::TRANSFER;
         common
             | match self {
+                Self::Task(_) => {
+                    Rights::WAIT
+                        | Rights::CREATE_THREAD
+                        | Rights::TERMINATE
+                        | Rights::MAP_MEMORY
+                        | Rights::INSTALL_HANDLE
+                        | Rights::SET_TRAP
+                        | Rights::READ_MEMORY
+                        | Rights::WRITE_MEMORY
+                }
                 Self::Thread(_) => {
                     Rights::WAIT
                         | Rights::TERMINATE

@@ -4,7 +4,16 @@ use super::{
     ExitWait, Thread, ThreadError, ThreadState, WaitState,
     scheduler::{self, Scheduler, SuspendReason},
 };
-use crate::hardware;
+use crate::{
+    hardware,
+    task::{Task, TaskState},
+};
+
+#[derive(Clone)]
+pub(super) enum ExitTarget {
+    Thread(Thread),
+    Task(Task),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WaitOutcome {
@@ -58,17 +67,43 @@ pub fn sleep_until(deadline_ns: u64) -> Result<(), ThreadError> {
 
 impl Thread {
     pub fn wait(&self) -> Result<usize, ThreadError> {
-        self.prepare_exit_wait(None)?.wait()?;
-        Ok(self.exit_status())
+        Ok(ExitTarget::Thread(self.clone()).wait(None)?.unwrap())
     }
 
     /// 等待退出，超时返回 None。
     pub fn wait_until(&self, deadline_ns: u64) -> Result<Option<usize>, ThreadError> {
-        match self
-            .prepare_exit_wait(Some(deadline_ns))?
-            .wait_until(deadline_ns)?
-        {
-            WaitOutcome::Notified => Ok(Some(self.exit_status())),
+        ExitTarget::Thread(self.clone()).wait(Some(deadline_ns))
+    }
+}
+
+pub(crate) fn wait_for_task(
+    task: Task,
+    deadline: Option<u64>,
+) -> Result<Option<usize>, ThreadError> {
+    ExitTarget::Task(task).wait(deadline)
+}
+
+pub(crate) fn finish_task_exit(task: &Task, status: usize) {
+    scheduler::with_scheduler(|scheduler| {
+        scheduler.finish_target_exit(ExitTarget::Task(task.clone()), status)
+    });
+}
+
+impl ExitTarget {
+    fn wait(self, deadline: Option<u64>) -> Result<Option<usize>, ThreadError> {
+        let wait = self.prepare_exit_wait(deadline)?;
+        let outcome = match deadline {
+            Some(deadline) => wait.wait_until(deadline)?,
+            None => {
+                wait.wait()?;
+                WaitOutcome::Notified
+            }
+        };
+        match outcome {
+            WaitOutcome::Notified => Ok(Some(
+                self.exit_status()
+                    .expect("exit wait completed before target died"),
+            )),
             WaitOutcome::TimedOut => Ok(None),
         }
     }
@@ -76,11 +111,10 @@ impl Thread {
     fn prepare_exit_wait(&self, deadline: Option<u64>) -> Result<Wait, ThreadError> {
         let wait = prepare_wait()?;
         scheduler::with_scheduler(|scheduler| {
-            if self.same(&wait.thread) {
+            if matches!(self, Self::Thread(thread) if thread.same(&wait.thread)) {
                 return Err(ThreadError::InvalidState);
             }
-            let mut data = self.0.data.lock();
-            let outcome = if matches!(data.state, ThreadState::Dead(_)) {
+            let outcome = if self.exit_status().is_some() {
                 Some(WaitOutcome::Notified)
             } else if let Some(deadline) = deadline {
                 (deadline <= hardware::timer().now_ns()?).then_some(WaitOutcome::TimedOut)
@@ -88,31 +122,45 @@ impl Thread {
                 None
             };
             if let Some(outcome) = outcome {
-                drop(data);
                 scheduler.finish_wait(&wait.thread, wait.generation, outcome);
                 return Ok(());
             }
-            let next = data.exit_waiters.take();
-            if let Some(next) = &next {
-                let mut next = next.0.data.lock();
-                let exit = next.wait.as_mut().unwrap().exit.as_mut().unwrap();
-                exit.previous = Some(wait.thread.clone());
-            }
-            wait.thread.0.data.lock().wait.as_mut().unwrap().exit = Some(ExitWait {
-                target: self.clone(),
-                previous: None,
-                next,
+            self.with_waiters(|waiters| {
+                let next = waiters.take();
+                if let Some(next) = &next {
+                    let mut next = next.0.data.lock();
+                    let exit = next.wait.as_mut().unwrap().exit.as_mut().unwrap();
+                    exit.previous = Some(wait.thread.clone());
+                }
+                wait.thread.0.data.lock().wait.as_mut().unwrap().exit = Some(ExitWait {
+                    target: self.clone(),
+                    previous: None,
+                    next,
+                });
+                *waiters = Some(wait.thread.clone());
             });
-            data.exit_waiters = Some(wait.thread.clone());
             Ok(())
         })?;
         Ok(wait)
     }
 
-    fn exit_status(&self) -> usize {
-        match self.state() {
-            ThreadState::Dead(status) => status,
-            _ => unreachable!("exit wait completed before thread died"),
+    fn exit_status(&self) -> Option<usize> {
+        match self {
+            Self::Thread(thread) => match thread.state() {
+                ThreadState::Dead(status) => Some(status),
+                _ => None,
+            },
+            Self::Task(task) => match task.state() {
+                TaskState::Dead(status) => Some(status),
+                _ => None,
+            },
+        }
+    }
+
+    fn with_waiters<T>(&self, action: impl FnOnce(&mut Option<Thread>) -> T) -> T {
+        match self {
+            Self::Thread(thread) => action(&mut thread.0.data.lock().exit_waiters),
+            Self::Task(task) => task.with_exit_waiters(action),
         }
     }
 }
@@ -232,9 +280,16 @@ impl Scheduler {
     }
 
     pub fn finish_exit(&mut self, thread: &Thread, status: usize) {
-        thread.0.data.lock().state = ThreadState::Dead(status);
+        self.finish_target_exit(ExitTarget::Thread(thread.clone()), status);
+    }
+
+    fn finish_target_exit(&mut self, target: ExitTarget, status: usize) {
+        match &target {
+            ExitTarget::Thread(thread) => thread.0.data.lock().state = ThreadState::Dead(status),
+            ExitTarget::Task(task) => task.finish_exit(status),
+        }
         loop {
-            let waiter = thread.0.data.lock().exit_waiters.clone();
+            let waiter = target.with_waiters(|waiters| waiters.clone());
             let Some(waiter) = waiter else {
                 break;
             };
@@ -252,7 +307,8 @@ impl Scheduler {
             let mut previous = previous.0.data.lock();
             previous.wait.as_mut().unwrap().exit.as_mut().unwrap().next = exit.next.clone();
         } else {
-            exit.target.0.data.lock().exit_waiters = exit.next.clone();
+            exit.target
+                .with_waiters(|waiters| *waiters = exit.next.clone());
         }
         if let Some(next) = exit.next {
             let mut next = next.0.data.lock();
