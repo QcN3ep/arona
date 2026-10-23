@@ -2,7 +2,7 @@
 
 //! 独占上下文存储及其创建、恢复和切换能力。
 
-use core::{alloc::Layout, cell::Cell, convert::Infallible};
+use core::{alloc::Layout, convert::Infallible};
 
 use crate::memory::{self, HeapAllocation, MemoryError, VirtRange};
 
@@ -73,14 +73,6 @@ impl ContextStorage {
 
 pub struct Context {
     storage: ContextStorage,
-    state: Cell<ContextState>,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum ContextState {
-    Running,
-    Suspended,
-    Retired,
 }
 
 impl Context {
@@ -104,14 +96,7 @@ impl Context {
                 .map_err(ExecutionError::Memory)?,
         };
         provider.initialize(&storage, start)?;
-        Ok(Self {
-            storage,
-            state: Cell::new(if matches!(start, ContextStart::Current) {
-                ContextState::Running
-            } else {
-                ContextState::Suspended
-            }),
-        })
+        Ok(Self { storage })
     }
 
     /// 返回表示当前控制流再次被恢复；失败时两个上下文均保持原状。
@@ -122,22 +107,15 @@ impl Context {
     /// 页表和当前线程的选择由调用方在切换前完成，离开的活动栈须由其他控制流回收。
     pub fn switch_to(&self, next: &Self) -> Result<(), ExecutionError> {
         check_interrupts()?;
-        if core::ptr::eq(self, next)
-            || self.state.get() != ContextState::Running
-            || next.state.get() != ContextState::Suspended
-        {
-            return Err(ExecutionError::InvalidState);
-        }
-        self.state.set(ContextState::Suspended);
-        next.state.set(ContextState::Running);
-        match execution().switch(&self.storage, &next.storage) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                self.state.set(ContextState::Running);
-                next.state.set(ContextState::Suspended);
-                Err(error)
-            }
-        }
+        execution().switch(&self.storage, &next.storage)
+    }
+
+    /// # Safety
+    ///
+    /// 执行环境同 switch_to，当前上下文及其栈须由恢复方持有至切出完成。
+    pub fn switch_from_current(&self) -> Result<(), ExecutionError> {
+        check_interrupts()?;
+        execution().switch_current(&self.storage)
     }
 
     /// 放弃当前控制流并恢复 next；被放弃的上下文不再可用。
@@ -147,20 +125,7 @@ impl Context {
     /// 调用环境同 switch_to；当前控制流不再恢复，其活动栈须延后回收。
     pub fn restore(&self, next: &Self) -> Result<Infallible, ExecutionError> {
         check_interrupts()?;
-        if core::ptr::eq(self, next)
-            || self.state.get() != ContextState::Running
-            || next.state.get() != ContextState::Suspended
-        {
-            return Err(ExecutionError::InvalidState);
-        }
-        self.state.set(ContextState::Retired);
-        next.state.set(ContextState::Running);
-        execution()
-            .restore(&self.storage, &next.storage)
-            .inspect_err(|_| {
-                self.state.set(ContextState::Running);
-                next.state.set(ContextState::Suspended);
-            })
+        execution().restore(&self.storage, &next.storage)
     }
 }
 
@@ -184,6 +149,7 @@ pub trait Execution: Sync {
     ) -> Result<(), ExecutionError>;
     fn switch(&self, current: &ContextStorage, next: &ContextStorage)
     -> Result<(), ExecutionError>;
+    fn switch_current(&self, next: &ContextStorage) -> Result<(), ExecutionError>;
     fn restore(
         &self,
         current: &ContextStorage,

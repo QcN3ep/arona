@@ -16,7 +16,9 @@ use super::{
     cpu::CPU,
     trap::{self, TrapFrame},
 };
-use crate::execution::{EntryContext, SavedContext, activate, capture_frame, pointer};
+use crate::execution::{
+    ContextStatus, EntryContext, SavedContext, activate, capture_frame, pointer,
+};
 
 const SIE: usize = 1 << 1;
 const SPIE: usize = 1 << 5;
@@ -118,6 +120,7 @@ impl Execution for RiscvExecution {
                 frame,
                 continuation,
                 entry,
+                status: ContextStatus::initial(start),
             });
         }
         if matches!(start, ContextStart::Current) {
@@ -136,7 +139,25 @@ impl Execution for RiscvExecution {
         let next = pointer::<Context>(next)?;
         // SAFETY: 两份上下文须独占且已初始化，入口状态不得并发访问。
         unsafe {
-            activate(current, next, &mut *core::ptr::addr_of_mut!(trap::STATE))?;
+            activate(
+                current,
+                next,
+                &mut *core::ptr::addr_of_mut!(trap::STATE),
+                ContextStatus::Suspended,
+            )?;
+            switch(core::ptr::addr_of_mut!((*current).continuation), next);
+        }
+        Ok(())
+    }
+
+    fn switch_current(&self, next: &ContextStorage) -> Result<(), ExecutionError> {
+        check_environment()?;
+        let next = pointer::<Context>(next)?;
+        // SAFETY: 当前上下文及目标存储须存活，入口状态须由当前处理器独占。
+        unsafe {
+            let state = &mut *core::ptr::addr_of_mut!(trap::STATE);
+            let current = state.context.cast::<Context>();
+            activate(current, next, state, ContextStatus::Suspended)?;
             switch(core::ptr::addr_of_mut!((*current).continuation), next);
         }
         Ok(())
@@ -152,7 +173,12 @@ impl Execution for RiscvExecution {
         let next = pointer::<Context>(next)?;
         // SAFETY: 两份上下文须独占且已初始化，目标现场及其栈须保持存活和映射。
         unsafe {
-            activate(current, next, &mut *core::ptr::addr_of_mut!(trap::STATE))?;
+            activate(
+                current,
+                next,
+                &mut *core::ptr::addr_of_mut!(trap::STATE),
+                ContextStatus::Retired,
+            )?;
             restore(next)
         }
     }

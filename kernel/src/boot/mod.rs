@@ -9,6 +9,8 @@ mod memory;
 pub use hardware::*;
 pub use image::*;
 
+use crate::thread::scheduler;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BootInfo<'boot> {
     pub boot_cpu_id: u64,
@@ -54,7 +56,8 @@ pub fn boot_kernel(info: BootInfo<'_>) -> ! {
         .initialize(info.hardware.timebase_frequency_hz)
         .unwrap_or_else(|error| panic!("failed to initialize timer: {error:?}"));
     log::info!("Timer initialized");
-    loop {
-        core::hint::spin_loop();
-    }
+    scheduler::initialize()
+        .unwrap_or_else(|error| panic!("failed to initialize scheduler: {error:?}"));
+    log::info!("Scheduler initialized");
+    scheduler::run()
 }

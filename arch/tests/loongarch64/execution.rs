@@ -3,6 +3,17 @@
 use core::arch::{asm, naked_asm};
 use kernel::hardware::execution::Context;
 
+pub fn frequency(_firmware: usize) -> Option<u64> {
+    None
+}
+
+pub fn set_floating_enabled(enabled: bool) {
+    // SAFETY: 当前处理器须允许修改 EUEN，修改期间不得执行浮点指令。
+    unsafe {
+        asm!("csrxchg {}, {}, 0x2", inout(reg) usize::from(enabled) => _, in(reg) 1usize, options(nomem, nostack));
+    }
+}
+
 pub fn floating_enabled() -> bool {
     let extensions: usize;
     // SAFETY: 执行环境须允许读取 EUEN。

@@ -81,6 +81,7 @@ pub(super) enum MappingKind {
     DirectMap,
     Owned,
     Device { physical_start: u64 },
+    Guard,
 }
 
 pub(super) struct OwnedMapping {
@@ -552,6 +553,7 @@ impl MappingNode {
                     6 => MappingKind::Device {
                         physical_start: words[8],
                     },
+                    7 => MappingKind::Guard,
                     _ => panic!("invalid mapping kind"),
                 },
                 journal: MappingJournal {
@@ -605,6 +607,7 @@ impl MappingNode {
                 physical = physical_start;
                 6
             }
+            MappingKind::Guard => 7,
         };
         write(
             address,

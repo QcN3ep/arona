@@ -3,6 +3,29 @@
 use core::arch::{asm, naked_asm};
 use kernel::hardware::execution::Context;
 
+pub fn frequency(dtb: usize) -> Option<u64> {
+    let pointer = (0xffff_ffc0_0040_0000 + (dtb & 0x1f_ffff)) as *const u32;
+    // SAFETY: 固件 DTB 须完整映射到启动固件窗口且解析期间保持不变。
+    let tree = unsafe { fdt::Fdt::from_ptr_fallible(pointer) }.unwrap();
+    tree.root()
+        .unwrap()
+        .cpus()
+        .unwrap()
+        .common_timebase_frequency()
+        .unwrap()
+}
+
+pub fn set_floating_enabled(enabled: bool) {
+    // SAFETY: 当前处理器须允许修改 sstatus，修改期间不得执行浮点指令。
+    unsafe {
+        if enabled {
+            asm!("csrs sstatus, {}", in(reg) 2usize << 13, options(nomem, nostack));
+        } else {
+            asm!("csrc sstatus, {}", in(reg) 3usize << 13, options(nomem, nostack));
+        }
+    }
+}
+
 pub fn floating_enabled() -> bool {
     let status: usize;
     // SAFETY: 执行环境须允许读取 sstatus。

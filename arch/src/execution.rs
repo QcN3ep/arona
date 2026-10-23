@@ -18,6 +18,24 @@ pub(crate) struct SavedContext<F, C> {
     // 内核调用续点不得覆盖挂起 handler 的用户现场。
     pub continuation: C,
     pub entry: EntryContext,
+    pub status: ContextStatus,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ContextStatus {
+    Running,
+    Suspended,
+    Retired,
+}
+
+impl ContextStatus {
+    pub fn initial(start: ContextStart) -> Self {
+        if matches!(start, ContextStart::Current) {
+            Self::Running
+        } else {
+            Self::Suspended
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -102,14 +120,21 @@ pub(crate) unsafe fn activate<F, C>(
     current: *mut SavedContext<F, C>,
     next: *mut SavedContext<F, C>,
     state: &mut EntryState,
+    leaving: ContextStatus,
 ) -> Result<(), ExecutionError> {
-    if current == next || state.context != current.cast() {
+    if current.is_null() || current == next || state.context != current.cast() {
         return Err(ExecutionError::InvalidState);
     }
     // SAFETY: 当前和目标存储须有效且互不重叠。
     unsafe {
+        if (*current).status != ContextStatus::Running || (*next).status != ContextStatus::Suspended
+        {
+            return Err(ExecutionError::InvalidState);
+        }
         (*current).entry = EntryContext::capture(state);
         (*next).entry.apply(state);
+        (*current).status = leaving;
+        (*next).status = ContextStatus::Running;
     }
     state.context = next.cast();
     Ok(())

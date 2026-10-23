@@ -9,6 +9,7 @@ mod mapping;
 mod mmio;
 mod paging;
 mod region;
+mod stack;
 
 use core::alloc::Layout;
 use core::pin::Pin;
@@ -31,6 +32,7 @@ pub use heap_allocator::{HeapAllocation, HeapArc, HeapBox, HeapStats};
 pub use mapping::{MappingInfo, MappingOptions, MappingRights};
 pub use mmio::DeviceMapping;
 pub use region::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRange, VirtRange};
+pub use stack::KernelStack;
 
 pub const MAX_USER_MAPPING_RECORDS: usize = 65536;
 

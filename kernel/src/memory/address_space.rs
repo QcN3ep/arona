@@ -185,6 +185,72 @@ impl AddressSpace {
         })
     }
 
+    pub(super) fn map_stack(
+        &self,
+        allocation: &FrameAllocation,
+    ) -> Result<(VirtRange, OwnedMapping), MemoryError> {
+        if self.table.is_user() {
+            return Err(MemoryError::InvalidRequest);
+        }
+        let reference = allocation.reference(ReferenceKind::Mapping)?;
+        let frames = 0..reference.info().frames;
+        let options = MappingOptions::new(PagePermissions::ReadWrite);
+        let length = self.validate_source(&reference, &frames, options)?;
+        let mut state = self.state.lock();
+        let full = state
+            .mappings
+            .gap(
+                self.bounds,
+                length.checked_add(PAGE_SIZE).ok_or(MemoryError::NoMemory)?,
+                PAGE_SIZE,
+            )
+            .ok_or(MemoryError::NoMemory)?;
+        let guard = VirtRange {
+            start: full.start,
+            end: full.start + PAGE_SIZE,
+        };
+        let generation = state.next_generation()?;
+        state.mappings.insert(MappingRecord {
+            range: guard,
+            generation,
+            maximum: MappingRights(0),
+            kind: MappingKind::Guard,
+            journal: MappingJournal::default(),
+        })?;
+        let range = VirtRange {
+            start: guard.end,
+            end: full.end,
+        };
+        if let Err(error) = self.map_locked(
+            &mut state,
+            range,
+            &reference,
+            frames,
+            options,
+            MappingKind::Owned,
+        ) {
+            state.mappings.remove(guard.start);
+            return Err(error);
+        }
+        Ok((
+            guard,
+            OwnedMapping {
+                range,
+                generation: state.record(range.start).generation,
+            },
+        ))
+    }
+
+    pub(super) fn unmap_stack(
+        &self,
+        guard: VirtRange,
+        mapping: &OwnedMapping,
+    ) -> Result<(), MemoryError> {
+        self.unmap_owned(mapping)?;
+        self.state.lock().mappings.remove(guard.start);
+        Ok(())
+    }
+
     pub fn map_at(
         &self,
         address: usize,
@@ -533,7 +599,7 @@ impl AddressSpace {
         let Some(record) = state.mappings.get(address) else {
             return Ok(None);
         };
-        let mapping = if record.kind == MappingKind::Reserved {
+        let mapping = if matches!(record.kind, MappingKind::Reserved | MappingKind::Guard) {
             None
         } else {
             self.table.query(address)?

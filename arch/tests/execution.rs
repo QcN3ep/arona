@@ -26,6 +26,9 @@ use kernel::{
     trap::{Trap, TrapEvent, TrapOrigin, TrapOutcome},
 };
 
+#[path = "../../kernel/tests/thread/mod.rs"]
+mod thread_tests;
+
 #[cfg(target_arch = "riscv64")]
 #[path = "riscv64/execution.rs"]
 mod isa;
@@ -48,6 +51,7 @@ static CONTEXTS: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 static RETIRED: AtomicUsize = AtomicUsize::new(0);
 static KERNEL_ROUNDS: AtomicUsize = AtomicUsize::new(0);
+static THREAD_ORDER: AtomicUsize = AtomicUsize::new(0);
 static USER_ROUNDS: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
 static USER_DONE: [AtomicBool; 2] = [const { AtomicBool::new(false) }; 2];
 static STACKS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
@@ -78,7 +82,7 @@ unsafe extern "C" {
 ///
 /// 启动映像及栈须已映射到高半区，测试 RAM 须独占且本地中断须关闭。
 #[unsafe(no_mangle)]
-unsafe extern "C" fn __wrap__start_native() -> ! {
+unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
     let start = core::ptr::addr_of!(_sbss) as *mut u8;
     let length = core::ptr::addr_of!(_ebss) as usize - start as usize;
     // SAFETY: 该范围须为启动入口尚未使用的独占 BSS。
@@ -99,6 +103,12 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
             handle,
         )
         .unwrap();
+    if option_env!("ARONA_EXECUTION_TEST") == Some("thread") {
+        hardware::timer()
+            .initialize(isa::frequency(firmware))
+            .unwrap();
+        thread_round_trips();
+    }
     let stacks: [HeapAllocation; 3] = core::array::from_fn(|index| {
         let stack = manager
             .allocate_heap(Layout::from_size_align(STACK_SIZE, PAGE_SIZE).unwrap())
@@ -156,6 +166,70 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     uart()
         .write(format_args!("Execution tests passed\n"))
         .unwrap();
+    hardware::cpu().halt()
+}
+
+fn thread_round_trips() -> ! {
+    use kernel::thread::{self, Thread, ThreadError, ThreadState, scheduler};
+
+    scheduler::initialize().unwrap();
+    assert_eq!(
+        scheduler::initialize(),
+        Err(ThreadError::AlreadyInitialized)
+    );
+    let thread = Thread::new(
+        |_| {
+            assert_eq!(THREAD_ORDER.fetch_add(1, Ordering::Relaxed), 0);
+            isa::set_floating_enabled(true);
+            let result = thread::yield_now();
+            isa::set_floating_enabled(false);
+            assert_eq!(
+                result,
+                Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
+            );
+            assert_eq!(thread::current().unwrap().state(), ThreadState::Running);
+            let wait = thread::prepare_wait().unwrap();
+            let waker = wait.waker();
+            isa::set_floating_enabled(true);
+            let result = wait.wait();
+            isa::set_floating_enabled(false);
+            assert_eq!(
+                result,
+                Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
+            );
+            assert!(!waker.wake());
+            thread::yield_now().unwrap();
+            19
+        },
+        0,
+    )
+    .unwrap();
+    let next = Thread::new(
+        |_| {
+            assert_eq!(THREAD_ORDER.fetch_add(1, Ordering::Relaxed), 1);
+            42
+        },
+        0,
+    )
+    .unwrap();
+    thread.start().unwrap();
+    next.start().unwrap();
+    isa::set_floating_enabled(true);
+    let result = scheduler::run_ready();
+    isa::set_floating_enabled(false);
+    assert_eq!(
+        result,
+        Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
+    );
+    assert_eq!(thread.state(), ThreadState::Ready);
+    assert!(thread::current().is_none());
+    scheduler::run_ready().unwrap();
+    assert_eq!(thread.state(), ThreadState::Dead(19));
+    assert_eq!(next.state(), ThreadState::Dead(42));
+    drop(thread);
+    drop(next);
+    thread_tests::run();
+    uart().write(format_args!("Thread tests passed\n")).unwrap();
     hardware::cpu().halt()
 }
 
@@ -238,6 +312,9 @@ extern "C" fn switch_context(current: &Context, next: &Context) {
 }
 
 fn handle(trap: Trap) -> TrapOutcome {
+    if option_env!("ARONA_EXECUTION_TEST") == Some("thread") {
+        return thread_tests::handle(trap);
+    }
     assert_eq!(trap.origin, TrapOrigin::User);
     assert_eq!(hardware::cpu().interrupt_state(), InterruptState::Disabled);
     assert!(!isa::floating_enabled());
