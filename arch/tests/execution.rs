@@ -26,6 +26,8 @@ use kernel::{
     trap::{Trap, TrapEvent, TrapOrigin, TrapOutcome},
 };
 
+#[path = "../../kernel/tests/ipc/mod.rs"]
+mod ipc_tests;
 #[path = "../../kernel/tests/task/mod.rs"]
 mod task_tests;
 #[path = "../../kernel/tests/thread/mod.rs"]
@@ -244,6 +246,7 @@ fn thread_round_trips() -> ! {
     drop(next);
     thread_tests::run();
     task_tests::run();
+    ipc_tests::run();
     // SAFETY: 测试代码须独占一个完整且可读的内核代码页。
     let code = unsafe {
         core::slice::from_raw_parts(
