@@ -2,8 +2,12 @@
 
 use kernel::{
     hardware::{self, cpu::InterruptState},
-    memory::{self, FrameAllocation, FrameOwner, FramePurpose, HeapArc},
-    task::{Handle, HandleError, HandleTable, Object, ObjectType, Rights, TransferRequest},
+    ipc::{Channel, ChannelError, Message},
+    memory::{self, FrameAllocation, FrameOwner, FramePurpose, HeapArc, MemoryError},
+    task::{
+        Handle, HandleError, HandleTable, Object, ObjectReference, ObjectType, Rights,
+        TransferRequest,
+    },
     thread::{Thread, ThreadState, scheduler},
 };
 use spin::Mutex;
@@ -17,6 +21,7 @@ pub fn run() {
     let frames = manager.stats().kernel.free_frames;
     thread_lifecycle();
     transfer_lifecycle();
+    channel_lifecycle();
     allocation_failure();
     manager.reclaim_heap();
     assert_eq!(manager.heap_stats(), heap);
@@ -64,7 +69,7 @@ fn thread_lifecycle() {
         table.get(wait, ObjectType::Thread, Rights::START),
         Err(HandleError::Denied)
     ));
-    let Object::Thread(thread) = table
+    let ObjectReference::Thread(thread) = table
         .get(handle, ObjectType::Thread, Rights::START)
         .unwrap()
     else {
@@ -79,7 +84,9 @@ fn thread_lifecycle() {
     scheduler::run_ready().unwrap();
     assert_eq!(thread.state(), ThreadState::Dead(73));
     assert_eq!(waiter.state(), ThreadState::Dead(73));
-    let Object::Thread(result) = table.get(wait, ObjectType::Thread, Rights::WAIT).unwrap() else {
+    let ObjectReference::Thread(result) =
+        table.get(wait, ObjectType::Thread, Rights::WAIT).unwrap()
+    else {
         panic!("expected thread");
     };
     assert_eq!(result.state(), ThreadState::Dead(73));
@@ -99,7 +106,8 @@ fn thread_lifecycle() {
 
 fn wait_from_handle(_: usize) -> usize {
     let (table, handle) = THREAD_HANDLE.lock().take().unwrap();
-    let Object::Thread(target) = table.get(handle, ObjectType::Thread, Rights::WAIT).unwrap()
+    let ObjectReference::Thread(target) =
+        table.get(handle, ObjectType::Thread, Rights::WAIT).unwrap()
     else {
         panic!("expected thread");
     };
@@ -221,6 +229,73 @@ fn successful_transfers(source: &HandleTable, target: &HandleTable, first: Handl
     target.close(moved).unwrap();
 }
 
+fn channel_lifecycle() {
+    let source = HandleTable::new();
+    let target = HandleTable::new();
+    let (channel, peer) = Channel::pair().unwrap();
+    let rights = Rights::DUPLICATE | Rights::TRANSFER | Rights::WAIT | Rights::READ | Rights::WRITE;
+    let handle = source.insert(Object::Channel(channel), rights).unwrap();
+    assert!(matches!(
+        source.get(handle, ObjectType::Thread, Rights::WAIT),
+        Err(HandleError::WrongType)
+    ));
+    assert_eq!(
+        source.duplicate(handle, Rights::EXECUTE),
+        Err(HandleError::Denied)
+    );
+    let duplicate = source.duplicate(handle, Rights::READ).unwrap();
+    assert!(matches!(
+        source.get(duplicate, ObjectType::Channel, Rights::WRITE),
+        Err(HandleError::Denied)
+    ));
+    assert_eq!(
+        source.duplicate(duplicate, Rights::READ),
+        Err(HandleError::Denied)
+    );
+    let ObjectReference::Channel(reference) = source
+        .get(handle, ObjectType::Channel, Rights::WRITE)
+        .unwrap()
+    else {
+        panic!("expected channel");
+    };
+    let requests = [TransferRequest {
+        handle,
+        rights: Rights::READ | Rights::WRITE,
+    }];
+    drop(source.prepare_transfer(&target, &requests).unwrap());
+    assert_eq!(peer.try_receive(), Err(ChannelError::WouldBlock));
+    let transfer = source.prepare_transfer(&target, &requests).unwrap();
+    let moved = transfer.handles().next().unwrap();
+    assert!(matches!(
+        target.get(moved, ObjectType::Channel, Rights::READ),
+        Err(HandleError::BadHandle)
+    ));
+    transfer.commit().unwrap();
+    assert_eq!(source.close(handle), Err(HandleError::BadHandle));
+    source.close(duplicate).unwrap();
+    let ObjectReference::Channel(transferred) = target
+        .get(moved, ObjectType::Channel, Rights::WRITE)
+        .unwrap()
+    else {
+        panic!("expected channel");
+    };
+    let message = Message::new(73, &[19, 42]).unwrap();
+    transferred.try_send(message).unwrap();
+    target.close(moved).unwrap();
+    assert_eq!(reference.try_send(message), Err(ChannelError::Closed));
+    assert_eq!(transferred.try_receive(), Err(ChannelError::Closed));
+    assert_eq!(peer.try_receive(), Ok(message));
+    assert_eq!(peer.try_receive(), Err(ChannelError::EndOfStream));
+    assert_eq!(peer.try_send(message), Err(ChannelError::PeerClosed));
+
+    let (channel, peer) = Channel::pair().unwrap();
+    assert_eq!(
+        source.insert(Object::Channel(channel), Rights::EXECUTE),
+        Err(HandleError::InvalidArgument)
+    );
+    assert_eq!(peer.try_receive(), Err(ChannelError::EndOfStream));
+}
+
 fn allocation_failure() {
     let manager = memory::manager();
     let source = HandleTable::new();
@@ -261,6 +336,12 @@ fn allocation_failure() {
     }
     let pressure = HandleTable::new();
     let exhausted = exhaust_memory(&pressure, object.clone());
+    let heap = manager.heap_stats();
+    assert!(matches!(
+        Channel::pair(),
+        Err(ChannelError::Memory(MemoryError::NoMemory))
+    ));
+    assert_eq!(manager.heap_stats(), heap);
     assert!(matches!(
         source.prepare_transfer(
             &pressure,
@@ -285,7 +366,7 @@ fn allocation_failure() {
     }
     pending.commit().unwrap();
     assert_eq!(source.close(handle), Err(HandleError::BadHandle));
-    let Object::FrameAllocation(reference) = target
+    let ObjectReference::FrameAllocation(reference) = target
         .get(destination, ObjectType::FrameAllocation, Rights::READ)
         .unwrap()
     else {

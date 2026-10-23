@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::ops::Deref;
+
+use alloc::collections::VecDeque;
 use allocator_api2::vec::Vec;
 use spin::Mutex;
 
@@ -22,6 +25,7 @@ pub struct Message {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChannelError {
     InvalidMessage,
+    Closed,
     WouldBlock,
     PeerClosed,
     EndOfStream,
@@ -33,23 +37,28 @@ pub enum ChannelError {
 /// # Safety
 ///
 /// 操作及析构期间须保留内存管理器所需的内核映射。
-#[derive(Clone)]
-pub struct Channel(HeapArc<Endpoint>);
+pub struct Channel {
+    reference: ChannelReference,
+}
 
-struct Endpoint {
+/// 保持端点存储存活，不计入开放引用。
+///
+/// # Safety
+///
+/// 操作及析构期间须保留内存管理器所需的内核映射。
+#[derive(Clone)]
+pub struct ChannelReference {
     channel: HeapArc<Mutex<ChannelState>>,
     side: usize,
 }
 
 struct ChannelState {
-    open: [bool; 2],
+    credits: [usize; 2],
     directions: [Direction; 2],
 }
 
 struct Direction {
-    messages: Vec<Option<Message>>,
-    head: usize,
-    length: usize,
+    messages: VecDeque<Message>,
     senders: WaitQueue,
     receivers: WaitQueue,
 }
@@ -113,18 +122,51 @@ impl Message {
 impl Channel {
     pub fn pair() -> Result<(Self, Self), ChannelError> {
         let _interrupts = InterruptGuard::new();
-        let channel = memory::manager().allocate_arc(Mutex::new(ChannelState {
-            open: [true; 2],
-            directions: [Direction::new()?, Direction::new()?],
-        }))?;
-        let first = memory::manager().allocate_arc(Endpoint {
-            channel: channel.clone(),
-            side: 0,
-        })?;
-        let second = memory::manager().allocate_arc(Endpoint { channel, side: 1 })?;
-        Ok((Self(first), Self(second)))
+        // 分开构造状态与分配队列，降低内核栈峰值。
+        let channel = ChannelState::allocate()?;
+        for direction in &mut channel.lock().directions {
+            direction
+                .messages
+                .try_reserve_exact(CAPACITY)
+                .map_err(|_| MemoryError::NoMemory)?;
+        }
+        Ok((
+            Self {
+                reference: ChannelReference {
+                    channel: channel.clone(),
+                    side: 0,
+                },
+            },
+            Self {
+                reference: ChannelReference { channel, side: 1 },
+            },
+        ))
     }
 
+    pub fn reference(&self) -> ChannelReference {
+        self.reference.clone()
+    }
+}
+
+impl Clone for Channel {
+    fn clone(&self) -> Self {
+        let _interrupts = InterruptGuard::new();
+        self.reference.channel.lock().credits[self.reference.side] += 1;
+        Self {
+            reference: self.reference(),
+        }
+    }
+}
+
+impl Deref for Channel {
+    type Target = ChannelReference;
+
+    fn deref(&self) -> &Self::Target {
+        &self.reference
+    }
+}
+
+impl ChannelReference {
     pub fn try_send(&self, message: Message) -> Result<(), ChannelError> {
         self.send_with(message, WaitMode::NonBlocking)
     }
@@ -153,19 +195,20 @@ impl Channel {
         loop {
             let (wait, mut registration) = {
                 let _interrupts = InterruptGuard::new();
-                let mut state = self.0.channel.lock();
-                if !state.open[1 - self.0.side] {
+                let mut state = self.channel.lock();
+                if state.credits[self.side] == 0 {
+                    return Err(ChannelError::Closed);
+                }
+                if state.credits[1 - self.side] == 0 {
                     return Err(ChannelError::PeerClosed);
                 }
-                let direction = &mut state.directions[self.0.side];
-                if direction.length < CAPACITY {
-                    let index = (direction.head + direction.length) % CAPACITY;
-                    direction.messages[index] = Some(message);
-                    direction.length += 1;
+                let direction = &mut state.directions[self.side];
+                if direction.messages.len() < CAPACITY {
+                    direction.messages.push_back(message);
                     direction.receivers.wake_one();
                     return Ok(());
                 }
-                self.register(&mut state, self.0.side, Condition::Writable, mode)?
+                self.register(&mut state, self.side, Condition::Writable, mode)?
             };
             let result = mode.wait(wait);
             registration.retrying = result.is_ok();
@@ -175,20 +218,20 @@ impl Channel {
     }
 
     fn receive_with(&self, mode: WaitMode) -> Result<Message, ChannelError> {
-        let incoming = 1 - self.0.side;
+        let incoming = 1 - self.side;
         loop {
             let (wait, mut registration) = {
                 let _interrupts = InterruptGuard::new();
-                let mut state = self.0.channel.lock();
+                let mut state = self.channel.lock();
+                if state.credits[self.side] == 0 {
+                    return Err(ChannelError::Closed);
+                }
                 let direction = &mut state.directions[incoming];
-                if direction.length != 0 {
-                    let message = direction.messages[direction.head].take().unwrap();
-                    direction.head = (direction.head + 1) % CAPACITY;
-                    direction.length -= 1;
+                if let Some(message) = direction.messages.pop_front() {
                     direction.senders.wake_one();
                     return Ok(message);
                 }
-                if !state.open[incoming] {
+                if state.credits[incoming] == 0 {
                     return Err(ChannelError::EndOfStream);
                 }
                 self.register(&mut state, incoming, Condition::Readable, mode)?
@@ -212,7 +255,7 @@ impl Channel {
         Ok((
             wait,
             Registration {
-                channel: self.0.channel.clone(),
+                channel: self.channel.clone(),
                 direction,
                 condition,
                 index,
@@ -223,6 +266,13 @@ impl Channel {
 }
 
 impl ChannelState {
+    fn allocate() -> Result<HeapArc<Mutex<Self>>, ChannelError> {
+        Ok(memory::manager().allocate_arc(Mutex::new(Self {
+            credits: [1; 2],
+            directions: [Direction::new(), Direction::new()],
+        }))?)
+    }
+
     fn waiters(&mut self, direction: usize, condition: Condition) -> &mut WaitQueue {
         match condition {
             Condition::Readable => &mut self.directions[direction].receivers,
@@ -231,34 +281,28 @@ impl ChannelState {
     }
 
     fn ready(&self, direction: usize, condition: Condition) -> bool {
+        if self.credits.contains(&0) {
+            return true;
+        }
         match condition {
-            Condition::Readable => self.directions[direction].length != 0 || !self.open[direction],
-            Condition::Writable => {
-                self.directions[direction].length < CAPACITY || !self.open[1 - direction]
-            }
+            Condition::Readable => !self.directions[direction].messages.is_empty(),
+            Condition::Writable => self.directions[direction].messages.len() < CAPACITY,
         }
     }
 }
 
 impl Direction {
-    fn new() -> Result<Self, ChannelError> {
-        let mut messages = Vec::new();
-        messages
-            .try_reserve_exact(CAPACITY)
-            .map_err(|_| MemoryError::NoMemory)?;
-        messages.resize_with(CAPACITY, || None);
-        Ok(Self {
-            messages,
-            head: 0,
-            length: 0,
+    const fn new() -> Self {
+        Self {
+            messages: VecDeque::new(),
             senders: WaitQueue::new(),
             receivers: WaitQueue::new(),
-        })
+        }
     }
 }
 
 impl WaitQueue {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             entries: Vec::new(),
             first: None,
@@ -379,14 +423,17 @@ impl Drop for Registration {
     }
 }
 
-impl Drop for Endpoint {
+impl Drop for Channel {
     fn drop(&mut self) {
         let _interrupts = InterruptGuard::new();
-        let mut state = self.channel.lock();
-        state.open[self.side] = false;
-        let incoming = &mut state.directions[1 - self.side];
-        incoming.messages.fill(None);
-        incoming.length = 0;
+        let endpoint = &self.reference;
+        let mut state = endpoint.channel.lock();
+        state.credits[endpoint.side] -= 1;
+        if state.credits[endpoint.side] != 0 {
+            return;
+        }
+        let incoming = &mut state.directions[1 - endpoint.side];
+        incoming.messages.clear();
         for direction in &mut state.directions {
             direction.senders.wake_all();
             direction.receivers.wake_all();

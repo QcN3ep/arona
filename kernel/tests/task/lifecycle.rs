@@ -4,10 +4,11 @@ use spin::Mutex;
 
 use kernel::{
     hardware::{self, mmu::PagePermissions},
+    ipc::{Channel, ChannelError, ChannelReference},
     memory::{self, FrameOwner, FramePurpose, MappingOptions, MemoryError},
     task::{
-        Handle, HandleError, Object, ObjectType, Rights, Task, TaskError, TaskState,
-        TransferRequest,
+        Handle, HandleError, Object, ObjectReference, ObjectType, Rights, Task, TaskError,
+        TaskState, TransferRequest,
     },
     thread::{self, Thread, ThreadState, scheduler},
 };
@@ -15,6 +16,7 @@ use kernel::{
 static TASK: Mutex<Option<Task>> = Mutex::new(None);
 static CHILD: Mutex<Option<Task>> = Mutex::new(None);
 static PUBLISHED: Mutex<Option<Handle>> = Mutex::new(None);
+static CHANNEL: Mutex<Option<(ChannelReference, Channel)>> = Mutex::new(None);
 
 pub fn run() {
     let manager = memory::manager();
@@ -48,6 +50,7 @@ pub fn run() {
     drop(parent);
     drop(child);
     drop(owner);
+    channel_lifecycle();
     waiting_lifecycle();
     deep_cleanup();
     allocation_failure();
@@ -87,7 +90,7 @@ fn owner_lifecycle(_: usize) -> usize {
     );
     assert!(matches!(
         child.get(installed, ObjectType::Task, Rights::WAIT),
-        Ok(Object::Task(_))
+        Ok(ObjectReference::Task(_))
     ));
     let allocation = memory::manager()
         .allocate(FrameOwner::User(1), FramePurpose::Data, 2)
@@ -123,6 +126,32 @@ fn owner_lifecycle(_: usize) -> usize {
     *TASK.lock() = Some(parent);
     *CHILD.lock() = Some(child);
     *PUBLISHED.lock() = Some(installed);
+    73
+}
+
+fn channel_lifecycle() {
+    let owner = Thread::new(channel_owner, 0).unwrap();
+    owner.start().unwrap();
+    scheduler::run_ready().unwrap();
+    assert_eq!(owner.state(), ThreadState::Dead(73));
+    let task = TASK.lock().take().unwrap();
+    assert_eq!(task.state(), TaskState::Dead(73));
+    let (reference, peer) = CHANNEL.lock().take().unwrap();
+    assert_eq!(reference.try_receive(), Err(ChannelError::Closed));
+    assert_eq!(peer.try_receive(), Err(ChannelError::EndOfStream));
+}
+
+fn channel_owner(_: usize) -> usize {
+    let task = Task::new().unwrap();
+    let (channel, peer) = Channel::pair().unwrap();
+    let handle = task.insert(Object::Channel(channel), Rights::READ).unwrap();
+    let ObjectReference::Channel(reference) =
+        task.get(handle, ObjectType::Channel, Rights::READ).unwrap()
+    else {
+        panic!("expected channel");
+    };
+    *CHANNEL.lock() = Some((reference, peer));
+    *TASK.lock() = Some(task);
     73
 }
 

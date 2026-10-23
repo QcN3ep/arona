@@ -5,12 +5,14 @@ use spin::Mutex;
 
 use kernel::{
     hardware,
-    ipc::{Channel, ChannelError, Message},
+    ipc::{Channel, ChannelError, ChannelReference, Message},
     memory,
+    task::{HandleTable, Object, ObjectReference, ObjectType, Rights},
     thread::{Thread, ThreadError, ThreadState, scheduler},
 };
 
 static ENDPOINTS: Mutex<[Option<Channel>; 3]> = Mutex::new([const { None }; 3]);
+static REFERENCES: Mutex<[Option<ChannelReference>; 2]> = Mutex::new([const { None }; 2]);
 static RECEIVED: AtomicUsize = AtomicUsize::new(0);
 static DEADLINE: AtomicU64 = AtomicU64::new(0);
 
@@ -24,7 +26,9 @@ pub fn run() {
     senders_close();
     receive_deadline();
     send_deadline();
+    borrowed_waiters_close();
     assert!(ENDPOINTS.lock().iter().all(Option::is_none));
+    assert!(REFERENCES.lock().iter().all(Option::is_none));
     manager.reclaim_heap();
     assert_eq!(manager.heap_stats(), before);
     assert_eq!(manager.stats().kernel.free_frames, frames);
@@ -273,6 +277,65 @@ fn send_deadline() {
     assert_eq!(sender.try_receive(), Ok(message(73)));
     sender.try_send(message(42)).unwrap();
     assert_eq!(receiver.try_receive(), Ok(message(42)));
+}
+
+fn borrowed_waiters_close() {
+    let table = HandleTable::new();
+    let (channel, peer) = Channel::pair().unwrap();
+    let handle = table
+        .insert(Object::Channel(channel), Rights::READ | Rights::WRITE)
+        .unwrap();
+    let ObjectReference::Channel(reference) = table
+        .get(handle, ObjectType::Channel, Rights::READ | Rights::WRITE)
+        .unwrap()
+    else {
+        panic!("expected channel");
+    };
+    for tag in 0..32 {
+        reference.try_send(message(tag)).unwrap();
+    }
+    let workers: [Thread; 2] = core::array::from_fn(|index| {
+        REFERENCES.lock()[index] = Some(reference.clone());
+        Thread::new(
+            |index| {
+                let channel = REFERENCES.lock()[index].take().unwrap();
+                if index == 0 {
+                    assert_eq!(channel.receive(), Err(ChannelError::Closed));
+                } else {
+                    assert_eq!(channel.send(message(32)), Err(ChannelError::Closed));
+                }
+                index
+            },
+            index,
+        )
+        .unwrap()
+    });
+    for worker in &workers {
+        worker.start().unwrap();
+    }
+    scheduler::run_ready().unwrap();
+    assert!(
+        workers
+            .iter()
+            .all(|worker| worker.state() == ThreadState::Blocked)
+    );
+    table.close(handle).unwrap();
+    assert!(
+        workers
+            .iter()
+            .all(|worker| worker.state() == ThreadState::Ready)
+    );
+    assert_eq!(peer.try_send(message(73)), Err(ChannelError::PeerClosed));
+    scheduler::run_ready().unwrap();
+    for (index, worker) in workers.iter().enumerate() {
+        assert_eq!(worker.state(), ThreadState::Dead(index));
+    }
+    for tag in 0..32 {
+        assert_eq!(peer.try_receive(), Ok(message(tag)));
+    }
+    assert_eq!(peer.try_receive(), Err(ChannelError::EndOfStream));
+    assert_eq!(reference.try_receive(), Err(ChannelError::Closed));
+    assert_eq!(reference.try_send(message(73)), Err(ChannelError::Closed));
 }
 
 fn wait_for_deadline(worker: &Thread) {

@@ -5,7 +5,9 @@
 use core::ops::Range;
 use spin::Mutex;
 
-use super::{Handle, HandleError, HandleTable, Object, ObjectType, Rights, TransferRequest};
+use super::{
+    Handle, HandleError, HandleTable, Object, ObjectReference, ObjectType, Rights, TransferRequest,
+};
 use crate::{
     hardware::{
         self,
@@ -123,7 +125,7 @@ impl Task {
         handle: Handle,
         kind: ObjectType,
         rights: Rights,
-    ) -> Result<Object, TaskError> {
+    ) -> Result<ObjectReference, TaskError> {
         let _interrupts = InterruptGuard::new();
         let registry = TASKS.lock();
         Ok(registry.find(self)?.handles.get(handle, kind, rights)?)

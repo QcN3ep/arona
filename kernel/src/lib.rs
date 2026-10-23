@@ -4,6 +4,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 pub mod boot;
 pub mod hardware;
 pub mod ipc;

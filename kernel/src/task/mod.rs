@@ -4,7 +4,8 @@ mod handle;
 mod lifecycle;
 
 pub use handle::{
-    Handle, HandleError, HandleTable, Object, ObjectType, PreparedTransfer, Rights, TransferRequest,
+    Handle, HandleError, HandleTable, Object, ObjectReference, ObjectType, PreparedTransfer,
+    Rights, TransferRequest,
 };
 pub use lifecycle::{Task, TaskError, TaskState};
 pub(crate) use lifecycle::{reclaim_finished, thread_exited};

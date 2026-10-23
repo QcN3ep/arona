@@ -8,6 +8,7 @@ use spin::Mutex;
 
 use crate::{
     hardware::{self, cpu::InterruptState},
+    ipc::{Channel, ChannelReference},
     memory::{FrameAllocation, HeapArc},
     thread::Thread,
 };
@@ -95,6 +96,7 @@ pub enum ObjectType {
     Task,
     Thread,
     FrameAllocation,
+    Channel,
 }
 
 /// # Safety
@@ -105,6 +107,18 @@ pub enum Object {
     Task(Task),
     Thread(Thread),
     FrameAllocation(HeapArc<FrameAllocation>),
+    Channel(Channel),
+}
+
+/// # Safety
+///
+/// 析构期间须关闭本地中断并保留内存管理器所需的内核映射。
+#[derive(Clone)]
+pub enum ObjectReference {
+    Task(Task),
+    Thread(Thread),
+    FrameAllocation(HeapArc<FrameAllocation>),
+    Channel(ChannelReference),
 }
 
 impl Object {
@@ -113,6 +127,18 @@ impl Object {
             Self::Task(_) => ObjectType::Task,
             Self::Thread(_) => ObjectType::Thread,
             Self::FrameAllocation(_) => ObjectType::FrameAllocation,
+            Self::Channel(_) => ObjectType::Channel,
+        }
+    }
+
+    fn reference(&self) -> ObjectReference {
+        match self {
+            Self::Task(task) => ObjectReference::Task(task.clone()),
+            Self::Thread(thread) => ObjectReference::Thread(thread.clone()),
+            Self::FrameAllocation(allocation) => {
+                ObjectReference::FrameAllocation(allocation.clone())
+            }
+            Self::Channel(channel) => ObjectReference::Channel(channel.reference()),
         }
     }
 
@@ -140,6 +166,7 @@ impl Object {
                 Self::FrameAllocation(_) => {
                     Rights::READ | Rights::WRITE | Rights::MAP | Rights::EXECUTE | Rights::DMA_MAP
                 }
+                Self::Channel(_) => Rights::WAIT | Rights::READ | Rights::WRITE,
             }
     }
 }
@@ -235,7 +262,7 @@ impl HandleTable {
         handle: Handle,
         kind: ObjectType,
         rights: Rights,
-    ) -> Result<Object, HandleError> {
+    ) -> Result<ObjectReference, HandleError> {
         let _interrupts = InterruptGuard::new();
         let state = self.state.lock();
         let entry = state.entry(handle)?;
@@ -243,7 +270,7 @@ impl HandleTable {
             return Err(HandleError::WrongType);
         }
         entry.require(rights)?;
-        Ok(entry.object.clone())
+        Ok(entry.object.reference())
     }
 
     pub fn close(&self, handle: Handle) -> Result<(), HandleError> {

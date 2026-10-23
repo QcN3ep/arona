@@ -4,4 +4,4 @@
 
 mod channel;
 
-pub use channel::{Channel, ChannelError, Message};
+pub use channel::{Channel, ChannelError, ChannelReference, Message};
