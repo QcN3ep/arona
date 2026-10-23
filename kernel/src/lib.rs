@@ -8,6 +8,7 @@ pub mod boot;
 pub mod hardware;
 pub mod logger;
 pub mod memory;
+pub mod task;
 pub mod thread;
 pub mod trap;
 

@@ -26,6 +26,8 @@ use kernel::{
     trap::{Trap, TrapEvent, TrapOrigin, TrapOutcome},
 };
 
+#[path = "../../kernel/tests/task/mod.rs"]
+mod task_tests;
 #[path = "../../kernel/tests/thread/mod.rs"]
 mod thread_tests;
 
@@ -241,6 +243,7 @@ fn thread_round_trips() -> ! {
     drop(thread);
     drop(next);
     thread_tests::run();
+    task_tests::run();
     uart().write(format_args!("Thread tests passed\n")).unwrap();
     hardware::cpu().halt()
 }
