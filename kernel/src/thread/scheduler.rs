@@ -29,6 +29,7 @@ static STATE: Mutex<Scheduler> = Mutex::new(Scheduler {
     request: None,
     preemption_requested: false,
     preemption_deadline: None,
+    timer_target: None,
     deadlines: DeadlineQueue::new(),
 });
 
@@ -40,6 +41,7 @@ pub(super) struct Scheduler {
     request: Option<SuspendReason>,
     preemption_requested: bool,
     preemption_deadline: Option<u64>,
+    timer_target: Option<u64>,
     pub deadlines: DeadlineQueue,
 }
 
@@ -179,7 +181,7 @@ pub fn run_ready() -> Result<(), ThreadError> {
     let _interrupts = InterruptGuard::new();
     dispatcher()?;
     {
-        let scheduler = STATE.lock();
+        let mut scheduler = STATE.lock();
         if scheduler.current.is_some() {
             return Err(ThreadError::InvalidState);
         }
@@ -200,6 +202,7 @@ pub(crate) fn timer_interrupt() -> Result<(), ThreadError> {
     hardware::timer().acknowledge()?;
     let now = hardware::timer().now_ns()?;
     let mut scheduler = STATE.lock();
+    scheduler.timer_target = None;
     while let Some(thread) = scheduler.deadlines.pop_due(now) {
         let generation = thread.0.data.lock().wait.as_ref().unwrap().generation;
         scheduler.finish_wait(&thread, generation, WaitOutcome::TimedOut);
@@ -405,24 +408,34 @@ pub(super) fn with_scheduler<T>(action: impl FnOnce(&mut Scheduler) -> T) -> T {
 }
 
 impl Scheduler {
-    fn arm_timer(&self) -> Result<(), ThreadError> {
+    fn arm_timer(&mut self) -> Result<(), ThreadError> {
         let timer = hardware::timer();
-        let deadline = match (self.deadlines.next_deadline(), self.preemption_deadline) {
+        let target = match (self.deadlines.next_deadline(), self.preemption_deadline) {
             (Some(wait), Some(preemption)) => Some(wait.min(preemption)),
             (wait, preemption) => wait.or(preemption),
         };
-        let Some(deadline) = deadline else {
-            return timer.cancel().map_err(Into::into);
+        // 相同目标不重装，避免清除已经置位的定时中断。
+        if target == self.timer_target {
+            return Ok(());
+        }
+        let Some(target) = target else {
+            timer.cancel()?;
+            self.timer_target = None;
+            return Ok(());
         };
         let now = timer.now_ns()?;
-        let mut deadline = deadline.max(now);
+        let mut deadline = target.max(now);
         loop {
             match timer.set_deadline(deadline) {
                 // 长 deadline 分段计时，中间中断不完成尚未到期的等待。
                 Err(TimerError::DeadlineOutOfRange) if deadline > now => {
                     deadline = now + (deadline - now) / 2;
                 }
-                result => return result.map_err(Into::into),
+                result => {
+                    result?;
+                    self.timer_target = Some(target);
+                    return Ok(());
+                }
             }
         }
     }
