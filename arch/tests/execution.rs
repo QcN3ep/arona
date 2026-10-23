@@ -191,7 +191,7 @@ fn thread_round_trips() -> ! {
             let wait = thread::prepare_wait().unwrap();
             let waker = wait.waker();
             isa::set_floating_enabled(true);
-            let result = wait.wait();
+            let result = wait.wait_until(u64::MAX);
             isa::set_floating_enabled(false);
             assert_eq!(
                 result,

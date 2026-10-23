@@ -4,11 +4,15 @@
 
 use spin::{Mutex, Once};
 
-use super::{InterruptGuard, Thread, ThreadError, ThreadResources, ThreadState};
+use super::{
+    InterruptGuard, Thread, ThreadError, ThreadResources, ThreadState, WaitOutcome,
+    deadline::DeadlineQueue,
+};
 use crate::hardware::{
     self,
     cpu::InterruptState,
     execution::{Context, ContextStart},
+    timer::TimerError,
 };
 
 static DISPATCHER: Once<Context> = Once::new();
@@ -20,6 +24,7 @@ static STATE: Mutex<Scheduler> = Mutex::new(Scheduler {
     live: None,
     current: None,
     request: None,
+    deadlines: DeadlineQueue::new(),
 });
 
 pub(super) struct Scheduler {
@@ -27,6 +32,7 @@ pub(super) struct Scheduler {
     live: Option<Thread>,
     pub current: Option<Thread>,
     request: Option<SuspendReason>,
+    pub deadlines: DeadlineQueue,
 }
 
 pub(super) struct ReadyQueue {
@@ -114,12 +120,34 @@ pub(super) fn suspend(reason: SuspendReason) -> Result<(), ThreadError> {
 
 pub fn run_ready() -> Result<(), ThreadError> {
     let _interrupts = InterruptGuard::new();
+    dispatcher()?;
+    {
+        let scheduler = STATE.lock();
+        if scheduler.current.is_some() {
+            return Err(ThreadError::InvalidState);
+        }
+        scheduler.arm_timer()?;
+    }
     while dispatch()? {
+        STATE.lock().arm_timer()?;
         // 线程状态已提交且资源已回收，此处不持有锁。
         hardware::cpu().restore_interrupts(InterruptState::Enabled);
         hardware::cpu().disable_interrupts();
     }
     Ok(())
+}
+
+pub(crate) fn timer_interrupt() -> Result<(), ThreadError> {
+    let _interrupts = InterruptGuard::new();
+    dispatcher()?;
+    hardware::timer().acknowledge()?;
+    let now = hardware::timer().now_ns()?;
+    let mut scheduler = STATE.lock();
+    while let Some(thread) = scheduler.deadlines.pop_due(now) {
+        let generation = thread.0.data.lock().wait.as_ref().unwrap().generation;
+        scheduler.finish_wait(&thread, generation, WaitOutcome::TimedOut);
+    }
+    scheduler.arm_timer()
 }
 
 pub fn run() -> ! {
@@ -187,7 +215,10 @@ fn complete(thread: Thread, resources: ThreadResources) {
     data.resources = Some(resources);
     let ready = match reason {
         SuspendReason::Yield => true,
-        SuspendReason::Block => data.wait.as_ref().is_some_and(|wait| wait.notified),
+        SuspendReason::Block => data
+            .wait
+            .as_ref()
+            .is_some_and(|wait| wait.outcome.is_some()),
         SuspendReason::Exit(_) => unreachable!(),
     };
     data.state = if ready {
@@ -219,6 +250,24 @@ pub(super) fn with_scheduler<T>(action: impl FnOnce(&mut Scheduler) -> T) -> T {
 }
 
 impl Scheduler {
+    fn arm_timer(&self) -> Result<(), ThreadError> {
+        let timer = hardware::timer();
+        let Some(deadline) = self.deadlines.next_deadline() else {
+            return timer.cancel().map_err(Into::into);
+        };
+        let now = timer.now_ns()?;
+        let mut deadline = deadline.max(now);
+        loop {
+            match timer.set_deadline(deadline) {
+                // 长 deadline 分段计时，中间中断不完成尚未到期的等待。
+                Err(TimerError::DeadlineOutOfRange) if deadline > now => {
+                    deadline = now + (deadline - now) / 2;
+                }
+                result => return result.map_err(Into::into),
+            }
+        }
+    }
+
     fn remove_live(&mut self, target: &Thread) {
         let mut previous: Option<Thread> = None;
         let mut cursor = self.live.clone();

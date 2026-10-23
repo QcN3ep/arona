@@ -10,9 +10,11 @@ use kernel::{
         mmu::{PAGE_SIZE, PagePermissions},
     },
     memory::{self, MemoryError, VirtRange},
-    thread::{self, Thread, ThreadError, ThreadState, Waker, scheduler},
+    thread::{self, Thread, ThreadError, ThreadState, WaitOutcome, Waker, scheduler},
     trap::{Trap, TrapEvent, TrapOrigin, TrapOutcome},
 };
+
+mod wait;
 
 static ORDER: AtomicUsize = AtomicUsize::new(0);
 static WAKER: Mutex<Option<Waker>> = Mutex::new(None);
@@ -76,6 +78,7 @@ pub fn run() {
     drop(parked);
     drop(Thread::new(|_| panic!("unstarted thread executed"), 0).unwrap());
     interrupt_round_trips();
+    wait::run();
     manager.reclaim_heap();
     assert_eq!(manager.heap_stats(), before);
     assert_eq!(manager.stats().kernel.free_frames, frames);
@@ -87,12 +90,11 @@ fn interrupt_round_trips() {
         let waiter = Thread::new(
             |_| {
                 let wait = thread::prepare_wait().unwrap();
-                *WAKER.lock() = Some(wait.waker());
                 let timer = hardware::timer();
-                timer
-                    .set_deadline(timer.now_ns().unwrap() + 1_000_000)
-                    .unwrap();
-                wait.wait().unwrap();
+                assert_eq!(
+                    wait.wait_until(timer.now_ns().unwrap() + 1_000_000),
+                    Ok(WaitOutcome::TimedOut)
+                );
                 73
             },
             0,
@@ -133,13 +135,10 @@ pub fn handle(trap: Trap) -> TrapOutcome {
     assert_eq!(trap.event, TrapEvent::TimerInterrupt);
     assert_eq!(hardware::cpu().interrupt_state(), InterruptState::Disabled);
     assert!(thread::current().is_none());
-    hardware::timer().acknowledge().unwrap();
-    let waker = WAKER.lock();
-    let waker = waker.as_ref().unwrap();
-    assert!(waker.wake());
-    assert!(!waker.wake());
+    let outcome = kernel::trap::dispatch(trap);
+    assert_eq!(outcome, TrapOutcome::Resume);
     INTERRUPTS.fetch_add(1, Ordering::Relaxed);
-    TrapOutcome::Resume
+    outcome
 }
 
 fn waiter(argument: usize) -> usize {

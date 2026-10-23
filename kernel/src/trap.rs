@@ -67,7 +67,16 @@ pub enum TrapOutcome {
 }
 
 pub fn dispatch(trap: Trap) -> TrapOutcome {
-    // TODO: 接入缺页处理、系统调用和中断处理。
+    if trap.event == TrapEvent::TimerInterrupt {
+        return match crate::thread::scheduler::timer_interrupt() {
+            Ok(()) => TrapOutcome::Resume,
+            Err(error) => {
+                log::error!("Failed to handle timer interrupt: {error:?}");
+                TrapOutcome::Stop
+            }
+        };
+    }
+    // TODO: 接入缺页处理、系统调用和外部中断处理。
     log::error!(
         "Unhandled {:?} trap at {:#x}: {:?}",
         trap.origin,

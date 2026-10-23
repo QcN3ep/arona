@@ -2,6 +2,7 @@
 
 //! 线程的生命周期、协作切换与等待唤醒。
 
+mod deadline;
 pub mod scheduler;
 mod wait;
 
@@ -14,12 +15,13 @@ use crate::{
         cpu::InterruptState,
         execution::{Context, ContextStart, ExecutionError},
         mmu::PAGE_SIZE,
+        timer::TimerError,
     },
     memory::{self, HeapArc, KernelStack, MemoryError},
 };
 
 pub use scheduler::{current, yield_now};
-pub use wait::{Wait, Waker, prepare_wait};
+pub use wait::{Wait, WaitOutcome, Waker, prepare_wait, sleep_until};
 
 pub const MAX_THREADS: usize = 4096;
 const STACK_SIZE: usize = 16 * 1024;
@@ -46,6 +48,7 @@ pub enum ThreadError {
     GenerationExhausted,
     Memory(MemoryError),
     Execution(ExecutionError),
+    Timer(TimerError),
 }
 
 impl From<MemoryError> for ThreadError {
@@ -57,6 +60,12 @@ impl From<MemoryError> for ThreadError {
 impl From<ExecutionError> for ThreadError {
     fn from(error: ExecutionError) -> Self {
         Self::Execution(error)
+    }
+}
+
+impl From<TimerError> for ThreadError {
+    fn from(error: TimerError) -> Self {
+        Self::Timer(error)
     }
 }
 
@@ -86,7 +95,8 @@ struct ThreadResources {
 
 struct WaitState {
     generation: u64,
-    notified: bool,
+    outcome: Option<WaitOutcome>,
+    deadline_index: Option<usize>,
 }
 
 struct ThreadCapacity;
