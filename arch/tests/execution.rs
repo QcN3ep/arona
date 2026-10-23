@@ -52,6 +52,7 @@ static CURRENT: AtomicUsize = AtomicUsize::new(0);
 static RETIRED: AtomicUsize = AtomicUsize::new(0);
 static KERNEL_ROUNDS: AtomicUsize = AtomicUsize::new(0);
 static THREAD_ORDER: AtomicUsize = AtomicUsize::new(0);
+static THREAD_TARGET: spin::Mutex<Option<kernel::thread::Thread>> = spin::Mutex::new(None);
 static USER_ROUNDS: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
 static USER_DONE: [AtomicBool; 2] = [const { AtomicBool::new(false) }; 2];
 static STACKS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
@@ -198,6 +199,15 @@ fn thread_round_trips() -> ! {
                 Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
             );
             assert!(!waker.wake());
+            let target = THREAD_TARGET.lock().as_ref().unwrap().clone();
+            isa::set_floating_enabled(true);
+            let result = target.wait_until(u64::MAX);
+            isa::set_floating_enabled(false);
+            assert_eq!(
+                result,
+                Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
+            );
+            drop(thread::prepare_wait().unwrap());
             thread::yield_now().unwrap();
             19
         },
@@ -212,6 +222,7 @@ fn thread_round_trips() -> ! {
         0,
     )
     .unwrap();
+    *THREAD_TARGET.lock() = Some(next.clone());
     thread.start().unwrap();
     next.start().unwrap();
     isa::set_floating_enabled(true);
@@ -226,6 +237,7 @@ fn thread_round_trips() -> ! {
     scheduler::run_ready().unwrap();
     assert_eq!(thread.state(), ThreadState::Dead(19));
     assert_eq!(next.state(), ThreadState::Dead(42));
+    *THREAD_TARGET.lock() = None;
     drop(thread);
     drop(next);
     thread_tests::run();

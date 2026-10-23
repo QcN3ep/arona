@@ -85,6 +85,7 @@ struct ThreadData {
     ready_next: Option<Thread>,
     live_next: Option<Thread>,
     wait: Option<WaitState>,
+    exit_waiters: Option<Thread>,
     generation: u64,
 }
 
@@ -97,6 +98,13 @@ struct WaitState {
     generation: u64,
     outcome: Option<WaitOutcome>,
     deadline_index: Option<usize>,
+    exit: Option<ExitWait>,
+}
+
+struct ExitWait {
+    target: Thread,
+    previous: Option<Thread>,
+    next: Option<Thread>,
 }
 
 struct ThreadCapacity;
@@ -126,6 +134,7 @@ impl Thread {
                 ready_next: None,
                 live_next: None,
                 wait: None,
+                exit_waiters: None,
                 generation: 0,
             }),
             _capacity: capacity,

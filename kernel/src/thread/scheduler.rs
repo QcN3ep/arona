@@ -209,7 +209,7 @@ fn complete(thread: Thread, resources: ThreadResources) {
         scheduler.remove_live(&thread);
         drop(scheduler);
         drop(resources);
-        thread.0.data.lock().state = ThreadState::Dead(status);
+        with_scheduler(|scheduler| scheduler.finish_exit(&thread, status));
         return;
     }
     data.resources = Some(resources);
