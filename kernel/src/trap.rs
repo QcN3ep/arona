@@ -67,6 +67,9 @@ pub enum TrapOutcome {
 }
 
 pub fn dispatch(trap: Trap) -> TrapOutcome {
+    if trap.origin == TrapOrigin::User {
+        return crate::thread::handle_trap(trap);
+    }
     if trap.event == TrapEvent::TimerInterrupt {
         return match crate::thread::scheduler::timer_interrupt() {
             Ok(()) => TrapOutcome::Resume,

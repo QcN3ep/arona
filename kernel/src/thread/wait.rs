@@ -191,6 +191,9 @@ impl Wait {
                 return Err(ThreadError::InvalidState);
             }
             let data = self.thread.0.data.lock();
+            if matches!(data.state, ThreadState::Dying(_)) {
+                return Err(ThreadError::Terminated);
+            }
             if data.state != ThreadState::Running {
                 return Err(ThreadError::InvalidState);
             }
@@ -218,6 +221,9 @@ impl Wait {
         scheduler::suspend(SuspendReason::Block)?;
         scheduler::with_scheduler(|_| {
             let data = self.thread.0.data.lock();
+            if matches!(data.state, ThreadState::Dying(_)) {
+                return Err(ThreadError::Terminated);
+            }
             Ok(data.wait.as_ref().unwrap().outcome.unwrap())
         })
     }
@@ -254,6 +260,20 @@ impl Waker {
 }
 
 impl Scheduler {
+    pub fn cancel_wait(&mut self, thread: &Thread) {
+        let data = thread.0.data.lock();
+        let Some(wait) = &data.wait else {
+            return;
+        };
+        let index = wait.deadline_index;
+        drop(data);
+        if let Some(index) = index {
+            self.deadlines.remove(index);
+        }
+        self.remove_exit_wait(thread);
+        thread.0.data.lock().wait = None;
+    }
+
     pub fn finish_wait(&mut self, thread: &Thread, generation: u64, outcome: WaitOutcome) -> bool {
         let index = {
             let mut data = thread.0.data.lock();

@@ -14,7 +14,10 @@ use kernel::{
     trap::{Trap, TrapEvent, TrapOrigin, TrapOutcome},
 };
 
+mod user;
 mod wait;
+
+pub use user::{handle as handle_user, run as run_user};
 
 static ORDER: AtomicUsize = AtomicUsize::new(0);
 static WAKER: Mutex<Option<Waker>> = Mutex::new(None);

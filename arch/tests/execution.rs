@@ -244,6 +244,14 @@ fn thread_round_trips() -> ! {
     drop(next);
     thread_tests::run();
     task_tests::run();
+    // SAFETY: 测试代码须独占一个完整且可读的内核代码页。
+    let code = unsafe {
+        core::slice::from_raw_parts(
+            isa::task_user_code as *const () as *const u64,
+            PAGE_SIZE / 8,
+        )
+    };
+    thread_tests::run_user(code, isa::set_floating_enabled);
     uart().write(format_args!("Thread tests passed\n")).unwrap();
     hardware::cpu().halt()
 }
@@ -328,6 +336,9 @@ extern "C" fn switch_context(current: &Context, next: &Context) {
 
 fn handle(trap: Trap) -> TrapOutcome {
     if option_env!("ARONA_EXECUTION_TEST") == Some("thread") {
+        if trap.origin == TrapOrigin::User {
+            return thread_tests::handle_user(trap);
+        }
         return thread_tests::handle(trap);
     }
     assert_eq!(trap.origin, TrapOrigin::User);

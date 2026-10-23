@@ -4,6 +4,7 @@
 
 mod deadline;
 pub mod scheduler;
+mod user;
 mod wait;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -13,14 +14,15 @@ use crate::{
     hardware::{
         self,
         cpu::InterruptState,
-        execution::{Context, ContextStart, ExecutionError},
+        execution::{Context, ContextStart, ExecutionError, UserEntry},
         mmu::PAGE_SIZE,
         timer::TimerError,
     },
     memory::{self, HeapArc, KernelStack, MemoryError},
 };
 
-pub use scheduler::{current, yield_now};
+pub use scheduler::{current, exit, yield_now};
+pub(crate) use user::handle_trap;
 pub use wait::{Wait, WaitOutcome, Waker, prepare_wait, sleep_until};
 pub(crate) use wait::{finish_task_exit, wait_for_task};
 
@@ -45,6 +47,7 @@ pub enum ThreadError {
     NotInitialized,
     AlreadyInitialized,
     InvalidState,
+    Terminated,
     Capacity,
     GenerationExhausted,
     Memory(MemoryError),
@@ -74,10 +77,14 @@ impl From<TimerError> for ThreadError {
 pub struct Thread(HeapArc<ThreadInner>);
 
 struct ThreadInner {
-    entry: ThreadEntry,
-    argument: usize,
+    kind: ThreadKind,
     data: Mutex<ThreadData>,
     _capacity: ThreadCapacity,
+}
+
+enum ThreadKind {
+    Kernel { entry: ThreadEntry, argument: usize },
+    User(crate::task::Task),
 }
 
 struct ThreadData {
@@ -85,6 +92,8 @@ struct ThreadData {
     resources: Option<ThreadResources>,
     ready_next: Option<Thread>,
     live_next: Option<Thread>,
+    task_next: Option<Thread>,
+    reap_next: Option<Thread>,
     wait: Option<WaitState>,
     exit_waiters: Option<Thread>,
     generation: u64,
@@ -93,6 +102,7 @@ struct ThreadData {
 struct ThreadResources {
     context: Context,
     _stack: KernelStack,
+    initial: Option<UserEntry>,
 }
 
 struct WaitState {
@@ -123,17 +133,53 @@ impl Thread {
             entry: scheduler::enter,
             argument: 0,
         })?;
-        let inner = memory::manager().allocate_arc(ThreadInner {
+        Self::create(
+            ThreadKind::Kernel { entry, argument },
+            capacity,
+            stack,
+            context,
+            None,
+        )
+    }
+
+    pub(crate) fn new_user(task: crate::task::Task, entry: UserEntry) -> Result<Self, ThreadError> {
+        let _interrupts = InterruptGuard::new();
+        scheduler::dispatcher()?;
+        let capacity = ThreadCapacity::reserve()?;
+        let stack = KernelStack::new((STACK_SIZE / PAGE_SIZE) as u64)?;
+        let context = Context::new(ContextStart::User {
+            stack: stack.range(),
             entry,
-            argument,
+        })?;
+        Self::create(
+            ThreadKind::User(task),
+            capacity,
+            stack,
+            context,
+            Some(entry),
+        )
+    }
+
+    fn create(
+        kind: ThreadKind,
+        capacity: ThreadCapacity,
+        stack: KernelStack,
+        context: Context,
+        initial: Option<UserEntry>,
+    ) -> Result<Self, ThreadError> {
+        let inner = memory::manager().allocate_arc(ThreadInner {
+            kind,
             data: Mutex::new(ThreadData {
                 state: ThreadState::Created,
                 resources: Some(ThreadResources {
                     context,
                     _stack: stack,
+                    initial,
                 }),
                 ready_next: None,
                 live_next: None,
+                task_next: None,
+                reap_next: None,
                 wait: None,
                 exit_waiters: None,
                 generation: 0,
@@ -144,7 +190,45 @@ impl Thread {
     }
 
     pub fn start(&self) -> Result<(), ThreadError> {
-        scheduler::start(self)
+        match self.task() {
+            Some(task) => task.start_thread(self),
+            None => scheduler::start(self),
+        }
+    }
+
+    pub fn terminate(&self, status: usize) -> Result<(), ThreadError> {
+        let _interrupts = InterruptGuard::new();
+        if self.task().is_none() || current().as_ref().is_some_and(|current| current.same(self)) {
+            return Err(ThreadError::InvalidState);
+        }
+        scheduler::terminate(self, status);
+        scheduler::reap_terminated();
+        crate::task::reclaim_finished();
+        Ok(())
+    }
+
+    pub fn task(&self) -> Option<crate::task::Task> {
+        match &self.0.kind {
+            ThreadKind::User(task) => Some(task.clone()),
+            ThreadKind::Kernel { .. } => None,
+        }
+    }
+
+    pub(crate) fn initial_entry(&self) -> Option<UserEntry> {
+        self.0
+            .data
+            .lock()
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.initial)
+    }
+
+    pub(crate) fn task_next(&self) -> Option<Thread> {
+        self.0.data.lock().task_next.clone()
+    }
+
+    pub(crate) fn set_task_next(&self, next: Option<Thread>) {
+        self.0.data.lock().task_next = next;
     }
 
     pub fn state(&self) -> ThreadState {

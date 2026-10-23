@@ -7,12 +7,17 @@ use spin::Mutex;
 
 use super::{Handle, HandleError, HandleTable, Object, ObjectType, Rights, TransferRequest};
 use crate::{
-    hardware::{self, cpu::InterruptState},
+    hardware::{
+        self,
+        cpu::InterruptState,
+        execution::{ExecutionError, UserEntry},
+        mmu::PagePermissions,
+    },
     memory::{
         self, AddressSpace, FrameAllocation, HeapArc, HeapBox, MappingInfo, MappingOptions,
         MemoryError, VirtRange,
     },
-    thread::{self, Thread, ThreadError},
+    thread::{self, Thread, ThreadError, ThreadState, scheduler},
 };
 
 static TASKS: Mutex<TaskRegistry> = Mutex::new(TaskRegistry { first: None });
@@ -20,6 +25,7 @@ static TASKS: Mutex<TaskRegistry> = Mutex::new(TaskRegistry { first: None });
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskState {
     Created,
+    Active,
     Dying(usize),
     Dead(usize),
 }
@@ -71,9 +77,10 @@ struct TaskRegistry {
 
 struct TaskResources {
     task: Task,
-    creator: Creator,
+    creator: Option<Creator>,
     space: AddressSpace,
     handles: HandleTable,
+    threads: Option<Thread>,
     next: Option<HeapBox<TaskResources>>,
 }
 
@@ -88,7 +95,10 @@ impl Task {
     pub fn new() -> Result<Self, TaskError> {
         let _interrupts = InterruptGuard::new();
         let creator = thread::current().ok_or(TaskError::InvalidState)?;
-        TASKS.lock().create(Creator::Thread(creator))
+        let owner = creator
+            .task()
+            .map_or(Creator::Thread(creator), Creator::Task);
+        TASKS.lock().create(owner)
     }
 
     pub fn create_child(&self) -> Result<Self, TaskError> {
@@ -138,8 +148,14 @@ impl Task {
     ) -> Result<Handle, TaskError> {
         let _interrupts = InterruptGuard::new();
         let registry = TASKS.lock();
+        let resources = registry.find(self)?;
+        if self.state() != TaskState::Created
+            || !matches!(&resources.creator, Some(Creator::Task(parent)) if parent.same(source))
+        {
+            return Err(TaskError::InvalidState);
+        }
         let source = &registry.find(source)?.handles;
-        let target = &registry.find(self)?.handles;
+        let target = &resources.handles;
         let transfer = source.prepare_transfer(target, &[request])?;
         let handle = transfer.handles().next().unwrap();
         transfer.commit()?;
@@ -174,10 +190,11 @@ impl Task {
 
     pub fn terminate(&self, status: usize) {
         let _interrupts = InterruptGuard::new();
-        let cleanup = TASKS
+        TASKS
             .lock()
-            .detach(|resources| resources.task.same(self), status);
-        reclaim(cleanup);
+            .signal(|resources| resources.task.same(self), status);
+        scheduler::reap_terminated();
+        reclaim_finished();
     }
 
     pub fn wait(&self) -> Result<usize, TaskError> {
@@ -188,7 +205,43 @@ impl Task {
         Ok(thread::wait_for_task(self.clone(), Some(deadline_ns))?)
     }
 
-    fn same(&self, other: &Self) -> bool {
+    pub fn create_thread(&self, entry: UserEntry) -> Result<Thread, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        let mut registry = TASKS.lock();
+        registry.find(self)?.validate_entry(entry)?;
+        let thread = Thread::new_user(self.clone(), entry)?;
+        let resources = registry.find_mut(self)?;
+        thread.set_task_next(resources.threads.take());
+        resources.threads = Some(thread.clone());
+        Ok(thread)
+    }
+
+    pub(crate) fn start_thread(&self, thread: &Thread) -> Result<(), ThreadError> {
+        let _interrupts = InterruptGuard::new();
+        let mut registry = TASKS.lock();
+        let resources = registry.find(self).map_err(|_| ThreadError::InvalidState)?;
+        if thread.state() != ThreadState::Created {
+            return Err(ThreadError::InvalidState);
+        }
+        resources.validate_entry(thread.initial_entry().ok_or(ThreadError::InvalidState)?)?;
+        scheduler::start(thread)?;
+        if self.state() == TaskState::Created {
+            self.0.data.lock().state = TaskState::Active;
+            registry.find_mut(self).unwrap().creator = None;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn activate(&self) -> Result<(), ThreadError> {
+        let mut registry = TASKS.lock();
+        let resources = registry
+            .find_mut(self)
+            .map_err(|_| ThreadError::InvalidState)?;
+        resources.space.activate()?;
+        Ok(())
+    }
+
+    pub(crate) fn same(&self, other: &Self) -> bool {
         HeapArc::ptr_eq(&self.0, &other.0)
     }
 
@@ -206,7 +259,10 @@ impl TaskRegistry {
         // 子 Task 排在创建者之后，使终止可按祖先顺序单次遍历。
         let position = match &creator {
             Creator::Thread(_) => &mut self.first,
-            Creator::Task(parent) => &mut self.find_mut(parent)?.next,
+            Creator::Task(parent) => {
+                self.find(parent)?;
+                &mut self.find_mut(parent)?.next
+            }
         };
         let space = AddressSpace::new()?;
         let task = Task(memory::manager().allocate_arc(TaskRecord {
@@ -217,9 +273,10 @@ impl TaskRegistry {
         })?);
         let mut resources = HeapBox::try_new(TaskResources {
             task: task.clone(),
-            creator,
+            creator: Some(creator),
             space,
             handles: HandleTable::new(),
+            threads: None,
             next: None,
         })
         .map_err(|_| MemoryError::NoMemory)?;
@@ -229,6 +286,9 @@ impl TaskRegistry {
     }
 
     fn find(&self, task: &Task) -> Result<&TaskResources, TaskError> {
+        if !matches!(task.state(), TaskState::Created | TaskState::Active) {
+            return Err(TaskError::InvalidState);
+        }
         let mut cursor = self.first.as_deref();
         while let Some(resources) = cursor {
             if resources.task.same(task) {
@@ -250,19 +310,32 @@ impl TaskRegistry {
         Err(TaskError::InvalidState)
     }
 
-    fn detach(
-        &mut self,
-        matches: impl Fn(&TaskResources) -> bool,
-        status: usize,
-    ) -> Option<HeapBox<TaskResources>> {
+    fn signal(&mut self, matches: impl Fn(&TaskResources) -> bool, status: usize) {
+        let mut cursor = self.first.as_deref();
+        while let Some(resources) = cursor {
+            let parent_dying = matches!(&resources.creator, Some(Creator::Task(task)) if matches!(task.state(), TaskState::Dying(_)));
+            if (matches(resources) || parent_dying)
+                && !matches!(resources.task.state(), TaskState::Dying(_))
+            {
+                resources.task.0.data.lock().state = TaskState::Dying(status);
+                let mut thread = resources.threads.clone();
+                while let Some(current) = thread {
+                    thread = current.task_next();
+                    scheduler::terminate(&current, status);
+                }
+            }
+            cursor = resources.next.as_deref();
+        }
+    }
+
+    fn detach_finished(&mut self) -> Option<HeapBox<TaskResources>> {
         let mut cleanup = None;
         let mut cursor = &mut self.first;
         while let Some(resources) = cursor.as_ref() {
-            let parent_dying = matches!(&resources.creator, Creator::Task(task) if matches!(task.state(), TaskState::Dying(_)));
-            if matches(resources) || parent_dying {
+            if matches!(resources.task.state(), TaskState::Dying(_)) && resources.threads.is_none()
+            {
                 let mut resources = cursor.take().unwrap();
                 *cursor = resources.next.take();
-                resources.task.0.data.lock().state = TaskState::Dying(status);
                 resources.next = cleanup;
                 cleanup = Some(resources);
             } else {
@@ -273,13 +346,79 @@ impl TaskRegistry {
     }
 }
 
-pub(crate) fn creator_exited(thread: &Thread, status: usize) {
+pub(crate) fn thread_exited(thread: &Thread, status: usize) {
     let _interrupts = InterruptGuard::new();
-    let cleanup = TASKS.lock().detach(
-        |resources| matches!(&resources.creator, Creator::Thread(creator) if creator.same(thread)),
-        status,
-    );
+    let mut registry = TASKS.lock();
+    if let Some(task) = thread.task() {
+        let resources = registry.find_mut(&task).expect("missing thread task");
+        resources.remove_thread(thread);
+        if resources.threads.is_none() && task.state() == TaskState::Active {
+            registry.signal(|resources| resources.task.same(&task), status);
+        }
+    } else {
+        registry.signal(|resources| matches!(&resources.creator, Some(Creator::Thread(creator)) if creator.same(thread)), status);
+    }
+}
+
+pub(crate) fn reclaim_finished() {
+    let cleanup = TASKS.lock().detach_finished();
     reclaim(cleanup);
+}
+
+impl TaskResources {
+    fn validate_entry(&self, entry: UserEntry) -> Result<(), ThreadError> {
+        let permissions = |address| -> Result<Option<PagePermissions>, ThreadError> {
+            Ok(self
+                .space
+                .query(address)?
+                .and_then(|info| info.mapping)
+                .map(|mapping| mapping.attributes.permissions))
+        };
+        if !matches!(
+            permissions(entry.pc)?,
+            Some(PagePermissions::ReadExecute | PagePermissions::ExecuteOnly)
+        ) {
+            return Err(ExecutionError::InvalidEntry.into());
+        }
+        let stack = entry
+            .stack_pointer
+            .checked_sub(1)
+            .ok_or(ExecutionError::InvalidStack)?;
+        if !entry.stack_pointer.is_multiple_of(16)
+            || permissions(stack)? != Some(PagePermissions::ReadWrite)
+        {
+            return Err(ExecutionError::InvalidStack.into());
+        }
+        if entry.thread_pointer != 0
+            && !matches!(
+                permissions(entry.thread_pointer)?,
+                Some(PagePermissions::ReadOnly | PagePermissions::ReadWrite)
+            )
+        {
+            return Err(ExecutionError::InvalidEntry.into());
+        }
+        Ok(())
+    }
+
+    fn remove_thread(&mut self, target: &Thread) {
+        let mut previous: Option<Thread> = None;
+        let mut cursor = self.threads.clone();
+        while let Some(thread) = cursor {
+            let next = thread.task_next();
+            if thread.same(target) {
+                if let Some(previous) = previous {
+                    previous.set_task_next(next);
+                } else {
+                    self.threads = next;
+                }
+                thread.set_task_next(None);
+                return;
+            }
+            previous = Some(thread);
+            cursor = next;
+        }
+        panic!("missing task thread");
+    }
 }
 
 fn reclaim(mut cleanup: Option<HeapBox<TaskResources>>) {

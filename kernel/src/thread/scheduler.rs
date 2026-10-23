@@ -7,7 +7,7 @@
 use spin::{Mutex, Once};
 
 use super::{
-    InterruptGuard, Thread, ThreadError, ThreadResources, ThreadState, WaitOutcome,
+    InterruptGuard, Thread, ThreadError, ThreadKind, ThreadResources, ThreadState, WaitOutcome,
     deadline::DeadlineQueue,
 };
 use crate::hardware::{
@@ -24,6 +24,7 @@ static STATE: Mutex<Scheduler> = Mutex::new(Scheduler {
         last: None,
     },
     live: None,
+    reap: None,
     current: None,
     request: None,
     deadlines: DeadlineQueue::new(),
@@ -32,6 +33,7 @@ static STATE: Mutex<Scheduler> = Mutex::new(Scheduler {
 pub(super) struct Scheduler {
     pub ready: ReadyQueue,
     live: Option<Thread>,
+    reap: Option<Thread>,
     pub current: Option<Thread>,
     request: Option<SuspendReason>,
     pub deadlines: DeadlineQueue,
@@ -71,7 +73,7 @@ pub(super) fn dispatcher() -> Result<&'static Context, ThreadError> {
     DISPATCHER.get().ok_or(ThreadError::NotInitialized)
 }
 
-pub(super) fn start(thread: &Thread) -> Result<(), ThreadError> {
+pub(crate) fn start(thread: &Thread) -> Result<(), ThreadError> {
     let _interrupts = InterruptGuard::new();
     dispatcher()?;
     let mut scheduler = STATE.lock();
@@ -106,7 +108,13 @@ pub(super) fn suspend(reason: SuspendReason) -> Result<(), ThreadError> {
             .as_ref()
             .ok_or(ThreadError::InvalidState)?;
         let data = thread.0.data.lock();
-        if data.state != ThreadState::Running || scheduler.request.is_some() {
+        if matches!(data.state, ThreadState::Dying(_)) && !matches!(reason, SuspendReason::Exit(_))
+        {
+            return Err(ThreadError::Terminated);
+        }
+        if !matches!(data.state, ThreadState::Running | ThreadState::Dying(_))
+            || scheduler.request.is_some()
+        {
             return Err(ThreadError::InvalidState);
         }
         drop(data);
@@ -165,7 +173,7 @@ pub fn run() -> ! {
 fn dispatch() -> Result<bool, ThreadError> {
     let _interrupts = InterruptGuard::new();
     let dispatcher = dispatcher()?;
-    let (thread, resources) = {
+    let (thread, mut resources, previous) = {
         let mut scheduler = STATE.lock();
         if scheduler.current.is_some() {
             return Err(ThreadError::InvalidState);
@@ -173,24 +181,46 @@ fn dispatch() -> Result<bool, ThreadError> {
         let Some(thread) = scheduler.ready.pop() else {
             return Ok(false);
         };
-        let resources = {
+        let (resources, previous) = {
             let mut data = thread.0.data.lock();
-            assert_eq!(data.state, ThreadState::Ready);
-            data.state = ThreadState::Running;
-            data.resources.take().expect("missing thread resources")
+            let previous = data.state;
+            assert!(matches!(
+                previous,
+                ThreadState::Ready | ThreadState::Dying(_)
+            ));
+            if previous == ThreadState::Ready {
+                data.state = ThreadState::Running;
+            }
+            (
+                data.resources.take().expect("missing thread resources"),
+                previous,
+            )
         };
         scheduler.current = Some(thread.clone());
-        (thread, resources)
+        (thread, resources, previous)
     };
-    if let Err(error) = dispatcher.switch_to(&resources.context) {
+    let task = thread.task();
+    let initial = resources.initial.take();
+    let result = task
+        .as_ref()
+        .map_or(Ok(()), |task| task.activate())
+        .and_then(|()| dispatcher.switch_to(&resources.context).map_err(Into::into));
+    if task.is_some() {
+        crate::memory::manager()
+            .kernel_address_space()
+            .activate()
+            .expect("failed to restore kernel address space");
+    }
+    if let Err(error) = result {
         let mut scheduler = STATE.lock();
         let mut data = thread.0.data.lock();
+        resources.initial = initial;
         data.resources = Some(resources);
-        data.state = ThreadState::Ready;
+        data.state = previous;
         drop(data);
         scheduler.current = None;
         scheduler.ready.push_front(thread);
-        return Err(error.into());
+        return Err(error);
     }
     complete(thread, resources);
     Ok(true)
@@ -198,12 +228,15 @@ fn dispatch() -> Result<bool, ThreadError> {
 
 fn complete(thread: Thread, resources: ThreadResources) {
     let mut scheduler = STATE.lock();
-    let reason = scheduler
+    let mut reason = scheduler
         .request
         .take()
         .expect("missing suspension request");
     scheduler.current = None;
     let mut data = thread.0.data.lock();
+    if let ThreadState::Dying(status) = data.state {
+        reason = SuspendReason::Exit(status);
+    }
     if let SuspendReason::Exit(status) = reason {
         data.state = ThreadState::Dying(status);
         data.wait = None;
@@ -211,8 +244,10 @@ fn complete(thread: Thread, resources: ThreadResources) {
         scheduler.remove_live(&thread);
         drop(scheduler);
         drop(resources);
-        crate::task::creator_exited(&thread, status);
+        crate::task::thread_exited(&thread, status);
         with_scheduler(|scheduler| scheduler.finish_exit(&thread, status));
+        reap_terminated();
+        crate::task::reclaim_finished();
         return;
     }
     data.resources = Some(resources);
@@ -239,12 +274,72 @@ pub(super) extern "C" fn enter(_: usize) -> ! {
     let (entry, argument) = {
         let scheduler = STATE.lock();
         let thread = scheduler.current.as_ref().expect("missing current thread");
-        (thread.0.entry, thread.0.argument)
+        match thread.0.kind {
+            ThreadKind::Kernel { entry, argument } => (entry, argument),
+            ThreadKind::User(_) => unreachable!("user thread entered kernel entry"),
+        }
     };
     let status = entry(argument);
+    exit(status)
+}
+
+/// 结束当前线程，不展开当前栈；调用前须释放需要析构的局部资源。
+pub fn exit(status: usize) -> ! {
     suspend(SuspendReason::Exit(status))
         .unwrap_or_else(|error| panic!("failed to exit thread: {error:?}"));
     panic!("exited thread resumed")
+}
+
+pub(crate) fn terminate(thread: &Thread, status: usize) {
+    with_scheduler(|scheduler| {
+        let mut data = thread.0.data.lock();
+        let previous = data.state;
+        if matches!(previous, ThreadState::Dying(_) | ThreadState::Dead(_)) {
+            return;
+        }
+        let initial = data
+            .resources
+            .as_ref()
+            .is_some_and(|resources| resources.initial.is_some());
+        data.state = ThreadState::Dying(status);
+        drop(data);
+        scheduler.cancel_wait(thread);
+        if previous == ThreadState::Created || initial {
+            if previous == ThreadState::Ready {
+                scheduler.ready.remove(thread);
+                scheduler.remove_live(thread);
+            }
+            thread.0.data.lock().reap_next = scheduler.reap.take();
+            scheduler.reap = Some(thread.clone());
+        } else if previous == ThreadState::Blocked {
+            scheduler.ready.push(thread.clone());
+        }
+    });
+}
+
+pub(crate) fn reap_terminated() {
+    loop {
+        let next = with_scheduler(|scheduler| {
+            let thread = scheduler.reap.take()?;
+            let mut data = thread.0.data.lock();
+            scheduler.reap = data.reap_next.take();
+            let ThreadState::Dying(status) = data.state else {
+                unreachable!("invalid reap state");
+            };
+            let resources = data
+                .resources
+                .take()
+                .expect("missing cancelled thread resources");
+            drop(data);
+            Some((thread, resources, status))
+        });
+        let Some((thread, resources, status)) = next else {
+            break;
+        };
+        drop(resources);
+        crate::task::thread_exited(&thread, status);
+        with_scheduler(|scheduler| scheduler.finish_exit(&thread, status));
+    }
 }
 
 pub(super) fn with_scheduler<T>(action: impl FnOnce(&mut Scheduler) -> T) -> T {
@@ -293,6 +388,29 @@ impl Scheduler {
 }
 
 impl ReadyQueue {
+    fn remove(&mut self, target: &Thread) {
+        let mut previous: Option<Thread> = None;
+        let mut cursor = self.first.clone();
+        while let Some(thread) = cursor {
+            let next = thread.0.data.lock().ready_next.clone();
+            if thread.same(target) {
+                if let Some(previous) = &previous {
+                    previous.0.data.lock().ready_next = next.clone();
+                } else {
+                    self.first = next.clone();
+                }
+                if next.is_none() {
+                    self.last = previous;
+                }
+                thread.0.data.lock().ready_next = None;
+                return;
+            }
+            previous = Some(thread);
+            cursor = next;
+        }
+        panic!("missing ready thread");
+    }
+
     pub fn push(&mut self, thread: Thread) {
         if let Some(last) = &self.last {
             last.0.data.lock().ready_next = Some(thread.clone());
