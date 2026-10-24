@@ -13,6 +13,8 @@ use crate::{
     thread::{self, ThreadError, Wait, WaitOutcome, Waker},
 };
 
+use super::wait::{Observer, Observers, WaitMode};
+
 const CAPACITY: usize = 32;
 const MESSAGE_WORDS: usize = 8;
 pub(crate) const MESSAGE_HANDLES: usize = 8;
@@ -71,6 +73,7 @@ pub struct ChannelReference {
 struct ChannelState {
     credits: [usize; 2],
     directions: [Direction; 2],
+    observers: [Observers; 2],
     cleanup_next: Option<HeapArc<Mutex<Self>>>,
     queued_for_cleanup: bool,
 }
@@ -109,13 +112,6 @@ struct WaitEntry {
 enum Condition {
     Readable,
     Writable,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum WaitMode {
-    NonBlocking,
-    Blocking,
-    Deadline(u64),
 }
 
 struct Registration {
@@ -201,6 +197,10 @@ impl Deref for Channel {
 }
 
 impl ChannelReference {
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        HeapArc::ptr_eq(&self.channel, &other.channel) && self.side == other.side
+    }
+
     pub fn try_send(&self, message: Message) -> Result<(), ChannelError> {
         self.send_with(message, WaitMode::NonBlocking, || Ok(Vec::new()))
     }
@@ -243,17 +243,23 @@ impl ChannelReference {
                 }
                 let direction = &mut state.directions[self.side];
                 if direction.messages.len() < CAPACITY {
+                    // 句柄转移依次取得 TASKS、句柄表和 Channel 的锁。
+                    drop(state);
                     let handles = match transfer() {
                         Ok(handles) => handles,
                         Err(error) => {
-                            direction.senders.wake_one();
+                            self.channel.lock().directions[self.side].senders.wake_one();
                             return Err(error);
                         }
                     };
+                    let mut state = self.channel.lock();
+                    let direction = &mut state.directions[self.side];
                     direction
                         .messages
                         .push_back(QueuedMessage { message, handles });
                     direction.receivers.wake_one();
+                    drop(state);
+                    self.notify_observers();
                     return Ok(());
                 }
                 self.register(&mut state, self.side, Condition::Writable, mode)?
@@ -285,21 +291,30 @@ impl ChannelReference {
                     return Err(ChannelError::Closed.into());
                 }
                 let direction = &mut state.directions[incoming];
-                if let Some(queued) = direction.messages.front_mut() {
+                if let Some(queued) = direction.messages.front() {
                     if queued.handles.len() > handle_capacity {
                         direction.receivers.wake_one();
                         return Err(ChannelError::BufferTooSmall.into());
                     }
+                    let mut queued = direction.messages.pop_front().unwrap();
+                    drop(state);
                     let handles = match install(&mut queued.handles) {
                         Ok(handles) => handles,
                         Err(error) => {
+                            let mut state = self.channel.lock();
+                            let direction = &mut state.directions[incoming];
+                            direction.messages.push_front(queued);
                             direction.receivers.wake_one();
                             return Err(error);
                         }
                     };
                     let message = queued.message;
-                    drop(direction.messages.drain(..1));
+                    drop(queued);
+                    let mut state = self.channel.lock();
+                    let direction = &mut state.directions[incoming];
                     direction.senders.wake_one();
+                    drop(state);
+                    self.notify_observers();
                     return Ok(ReceivedMessage { message, handles });
                 }
                 if state.credits[incoming] == 0 {
@@ -357,6 +372,50 @@ impl ChannelReference {
         Ok(())
     }
 
+    pub(crate) fn readiness(&self, conditions: u64) -> Result<u64, ChannelError> {
+        let _interrupts = InterruptGuard::new();
+        let state = self.channel.lock();
+        if state.credits[self.side] == 0 {
+            return Err(ChannelError::Closed);
+        }
+        let incoming = 1 - self.side;
+        let direction = &state.directions[incoming];
+        let mut ready = 0;
+        if conditions & super::wait::READABLE != 0 && !direction.messages.is_empty() {
+            ready |= super::wait::READABLE;
+        }
+        if conditions & super::wait::WRITABLE != 0
+            && state.credits[incoming] != 0
+            && state.directions[self.side].messages.len() < CAPACITY
+        {
+            ready |= super::wait::WRITABLE;
+        }
+        if conditions & super::wait::PEER_CLOSED != 0 && state.credits[incoming] == 0 {
+            ready |= super::wait::PEER_CLOSED;
+        }
+        Ok(ready)
+    }
+
+    pub(crate) fn register_observer(&self, observer: Observer) -> Result<(), MemoryError> {
+        self.channel.lock().observers[self.side].insert(observer)
+    }
+
+    pub(crate) fn unregister_observer(&self, observer: &Observer) {
+        self.channel.lock().observers[self.side].remove(observer);
+    }
+
+    fn notify_observers(&self) {
+        for side in 0..2 {
+            let mut index = 0;
+            loop {
+                let observer = self.channel.lock().observers[side].get(index);
+                let Some(observer) = observer else { break };
+                observer.notify();
+                index += 1;
+            }
+        }
+    }
+
     fn register(
         &self,
         state: &mut ChannelState,
@@ -384,6 +443,7 @@ impl ChannelState {
         Ok(memory::manager().allocate_arc(Mutex::new(Self {
             credits: [1; 2],
             directions: [Direction::new(), Direction::new()],
+            observers: [Observers::new(), Observers::new()],
             cleanup_next: None,
             queued_for_cleanup: false,
         }))?)
@@ -609,6 +669,7 @@ impl Drop for Channel {
             }
             !state.directions[1 - endpoint.side].messages.is_empty()
         };
+        endpoint.notify_observers();
         if discard {
             ChannelState::discard(&endpoint.channel);
         }

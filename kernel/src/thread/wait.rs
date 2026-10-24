@@ -87,6 +87,7 @@ pub(crate) fn finish_task_exit(task: &Task, status: usize) {
     scheduler::with_scheduler(|scheduler| {
         scheduler.finish_target_exit(ExitTarget::Task(task.clone()), status)
     });
+    task.wake_waiters();
 }
 
 impl ExitTarget {

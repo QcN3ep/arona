@@ -9,11 +9,12 @@ use kernel::{
         execution::{ExecutionError, UserEntry},
         mmu::{PAGE_SIZE, PagePermissions},
     },
+    ipc::{Event, WaitItem, WaitManyError},
     memory::{
         self, FrameAccess, FrameAllocation, FrameOwner, FramePurpose, MappingOptions,
         ReferenceKind, VirtRange,
     },
-    task::{Object, Rights, Task, TaskError, TaskState, TransferRequest},
+    task::{Handle, Object, Rights, Task, TaskError, TaskState, TransferRequest},
     thread::{self, Thread, ThreadError, ThreadState, Waker, scheduler},
     trap::{Trap, TrapEvent, TrapOutcome},
 };
@@ -21,6 +22,7 @@ use kernel::{
 static CODE: Once<[u64; PAGE_SIZE / 8]> = Once::new();
 static BOOT: Mutex<Option<Fixture>> = Mutex::new(None);
 static OWNER: Mutex<Option<Waker>> = Mutex::new(None);
+static WAIT_EVENT: Mutex<Option<(Task, Handle)>> = Mutex::new(None);
 static WAIT_TARGET: Mutex<Option<Task>> = Mutex::new(None);
 static TIMERS: AtomicUsize = AtomicUsize::new(0);
 static REQUEST_ON_TIMER: AtomicBool = AtomicBool::new(false);
@@ -72,6 +74,19 @@ fn handle_user(trap: Trap) -> Action {
     }
     if arguments[1] == 0 {
         return Action::Exit(arguments[0]);
+    }
+    let event = WAIT_EVENT.lock().clone();
+    if let Some((task, handle)) = event {
+        assert_eq!(
+            task.wait_many(&[WaitItem {
+                handle,
+                condition_mask: 1
+            }]),
+            Err(TaskError::Wait(WaitManyError::Thread(
+                ThreadError::Terminated
+            )))
+        );
+        return Action::Dispatch;
     }
     let target = WAIT_TARGET.lock().clone();
     if let Some(target) = target {
@@ -270,6 +285,7 @@ fn entry_rollback_and_creator_exit(set_floating_enabled: fn(bool)) {
 fn scenarios(_: usize) -> usize {
     distinct_spaces_and_start();
     cancelled_continuations();
+    cancelled_ipc_wait();
     never_entered_and_faulted();
     fault_isolation();
     0
@@ -368,6 +384,36 @@ fn cancelled_continuations() {
     *WAIT_TARGET.lock() = None;
     assert_eq!(blocked.marker(), 0);
     assert_eq!(target.state(), TaskState::Created);
+    target.terminate(0);
+}
+
+fn cancelled_ipc_wait() {
+    let target = Task::new().unwrap();
+    let event = Event::new().unwrap();
+    let handle = target
+        .insert(Object::Event(event.clone()), Rights::WAIT)
+        .unwrap();
+    let blocked = Fixture::new(2, 1);
+    *WAIT_EVENT.lock() = Some((target.clone(), handle));
+    blocked.thread.start().unwrap();
+    thread::yield_now().unwrap();
+    assert_eq!(blocked.thread.state(), ThreadState::Blocked);
+    blocked.thread.terminate(19).unwrap();
+    event.signal(1).unwrap();
+    assert_eq!(
+        target
+            .try_wait_many(&[WaitItem {
+                handle,
+                condition_mask: 1
+            }])
+            .unwrap()
+            .ready,
+        1
+    );
+    wait_dead(&blocked.thread);
+    blocked.assert_exit(19);
+    assert_eq!(blocked.marker(), 0);
+    WAIT_EVENT.lock().take();
     target.terminate(0);
 }
 

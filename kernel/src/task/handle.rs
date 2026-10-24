@@ -9,7 +9,7 @@ use spin::Mutex;
 
 use crate::{
     hardware::{self, cpu::InterruptState},
-    ipc::{Channel, ChannelReference},
+    ipc::{Channel, ChannelReference, Event, EventReference, Timer, TimerReference},
     memory::{FrameAllocation, HeapArc},
     thread::Thread,
 };
@@ -98,6 +98,8 @@ pub enum ObjectType {
     Thread,
     FrameAllocation,
     Channel,
+    Event,
+    Timer,
 }
 
 /// # Safety
@@ -109,6 +111,8 @@ pub enum Object {
     Thread(Thread),
     FrameAllocation(HeapArc<FrameAllocation>),
     Channel(Channel),
+    Event(Event),
+    Timer(Timer),
 }
 
 /// # Safety
@@ -120,6 +124,8 @@ pub enum ObjectReference {
     Thread(Thread),
     FrameAllocation(HeapArc<FrameAllocation>),
     Channel(ChannelReference),
+    Event(EventReference),
+    Timer(TimerReference),
 }
 
 impl Object {
@@ -129,6 +135,8 @@ impl Object {
             Self::Thread(_) => ObjectType::Thread,
             Self::FrameAllocation(_) => ObjectType::FrameAllocation,
             Self::Channel(_) => ObjectType::Channel,
+            Self::Event(_) => ObjectType::Event,
+            Self::Timer(_) => ObjectType::Timer,
         }
     }
 
@@ -140,6 +148,8 @@ impl Object {
                 ObjectReference::FrameAllocation(allocation.clone())
             }
             Self::Channel(channel) => ObjectReference::Channel(channel.reference()),
+            Self::Event(event) => ObjectReference::Event(event.reference()),
+            Self::Timer(timer) => ObjectReference::Timer(timer.reference()),
         }
     }
 
@@ -168,6 +178,8 @@ impl Object {
                     Rights::READ | Rights::WRITE | Rights::MAP | Rights::EXECUTE | Rights::DMA_MAP
                 }
                 Self::Channel(_) => Rights::WAIT | Rights::READ | Rights::WRITE,
+                Self::Event(_) => Rights::WAIT | Rights::SIGNAL,
+                Self::Timer(_) => Rights::WRITE,
             }
     }
 }
@@ -348,6 +360,18 @@ impl HandleTable {
     ) -> Result<(), HandleError> {
         let _interrupts = InterruptGuard::new();
         self.state.lock().validate_transfer::<N>(requests)
+    }
+
+    pub(crate) fn get_any(
+        &self,
+        handle: Handle,
+        rights: Rights,
+    ) -> Result<ObjectReference, HandleError> {
+        let _interrupts = InterruptGuard::new();
+        let state = self.state.lock();
+        let entry = state.entry(handle)?;
+        entry.require(rights)?;
+        Ok(entry.object.reference())
     }
 
     pub(crate) fn transfer_out<const N: usize, E: From<HandleError>>(

@@ -15,7 +15,11 @@ use crate::{
         execution::{ExecutionError, UserEntry},
         mmu::PagePermissions,
     },
-    ipc::{ChannelError, ChannelReference, ChannelWait, MESSAGE_HANDLES, Message, ReceivedMessage},
+    ipc::{
+        ChannelError, ChannelReference, MESSAGE_HANDLES, Message, ReceivedMessage, WaitItem,
+        WaitManyError, WaitManyResult, WaitMode,
+        wait::{Observer, Observers},
+    },
     memory::{
         self, AddressSpace, FrameAllocation, HeapArc, HeapBox, MappingInfo, MappingOptions,
         MemoryError, VirtRange,
@@ -40,11 +44,18 @@ pub enum TaskError {
     Handle(HandleError),
     Thread(ThreadError),
     Channel(ChannelError),
+    Wait(WaitManyError),
 }
 
 impl From<ChannelError> for TaskError {
     fn from(error: ChannelError) -> Self {
         Self::Channel(error)
+    }
+}
+
+impl From<WaitManyError> for TaskError {
+    fn from(error: WaitManyError) -> Self {
+        Self::Wait(error)
     }
 }
 
@@ -79,6 +90,7 @@ struct TaskRecord {
 struct TaskData {
     state: TaskState,
     exit_waiters: Option<Thread>,
+    observers: Observers,
 }
 
 struct TaskRegistry {
@@ -139,6 +151,12 @@ impl Task {
         Ok(registry.find(self)?.handles.get(handle, kind, rights)?)
     }
 
+    pub(crate) fn waitable(&self, handle: Handle) -> Result<ObjectReference, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        let registry = TASKS.lock();
+        Ok(registry.find(self)?.handles.get_any(handle, Rights::WAIT)?)
+    }
+
     pub fn close(&self, handle: Handle) -> Result<(), TaskError> {
         let _interrupts = InterruptGuard::new();
         let registry = TASKS.lock();
@@ -178,7 +196,7 @@ impl Task {
         message: Message,
         transfers: &[TransferRequest],
     ) -> Result<(), TaskError> {
-        self.send_with(channel, message, transfers, ChannelWait::NonBlocking)
+        self.send_with(channel, message, transfers, WaitMode::NonBlocking)
     }
 
     pub fn send(
@@ -187,7 +205,7 @@ impl Task {
         message: Message,
         transfers: &[TransferRequest],
     ) -> Result<(), TaskError> {
-        self.send_with(channel, message, transfers, ChannelWait::Blocking)
+        self.send_with(channel, message, transfers, WaitMode::Blocking)
     }
 
     pub fn send_until(
@@ -197,12 +215,7 @@ impl Task {
         transfers: &[TransferRequest],
         deadline_ns: u64,
     ) -> Result<(), TaskError> {
-        self.send_with(
-            channel,
-            message,
-            transfers,
-            ChannelWait::Deadline(deadline_ns),
-        )
+        self.send_with(channel, message, transfers, WaitMode::Deadline(deadline_ns))
     }
 
     pub fn try_receive(
@@ -210,7 +223,7 @@ impl Task {
         channel: Handle,
         handle_capacity: usize,
     ) -> Result<ReceivedMessage, TaskError> {
-        self.receive_with(channel, handle_capacity, ChannelWait::NonBlocking)
+        self.receive_with(channel, handle_capacity, WaitMode::NonBlocking)
     }
 
     pub fn receive(
@@ -218,7 +231,7 @@ impl Task {
         channel: Handle,
         handle_capacity: usize,
     ) -> Result<ReceivedMessage, TaskError> {
-        self.receive_with(channel, handle_capacity, ChannelWait::Blocking)
+        self.receive_with(channel, handle_capacity, WaitMode::Blocking)
     }
 
     pub fn receive_until(
@@ -227,7 +240,31 @@ impl Task {
         handle_capacity: usize,
         deadline_ns: u64,
     ) -> Result<ReceivedMessage, TaskError> {
-        self.receive_with(channel, handle_capacity, ChannelWait::Deadline(deadline_ns))
+        self.receive_with(channel, handle_capacity, WaitMode::Deadline(deadline_ns))
+    }
+
+    pub fn try_wait_many(&self, items: &[WaitItem]) -> Result<WaitManyResult, TaskError> {
+        self.wait_many_with(items, WaitMode::NonBlocking)
+    }
+
+    pub fn wait_many(&self, items: &[WaitItem]) -> Result<WaitManyResult, TaskError> {
+        self.wait_many_with(items, WaitMode::Blocking)
+    }
+
+    pub fn wait_many_until(
+        &self,
+        items: &[WaitItem],
+        deadline_ns: u64,
+    ) -> Result<WaitManyResult, TaskError> {
+        self.wait_many_with(items, WaitMode::Deadline(deadline_ns))
+    }
+
+    fn wait_many_with(
+        &self,
+        items: &[WaitItem],
+        mode: WaitMode,
+    ) -> Result<WaitManyResult, TaskError> {
+        Ok(crate::ipc::wait::wait_many(self, items, mode)?)
     }
 
     fn send_with(
@@ -235,7 +272,7 @@ impl Task {
         handle: Handle,
         message: Message,
         transfers: &[TransferRequest],
-        mode: ChannelWait,
+        mode: WaitMode,
     ) -> Result<(), TaskError> {
         let channel = self.channel(handle, Rights::WRITE)?;
         {
@@ -260,7 +297,7 @@ impl Task {
         &self,
         handle: Handle,
         capacity: usize,
-        mode: ChannelWait,
+        mode: WaitMode,
     ) -> Result<ReceivedMessage, TaskError> {
         let channel = self.channel(handle, Rights::READ)?;
         channel.receive_with(mode, capacity, |entries| {
@@ -366,6 +403,25 @@ impl Task {
         action(&mut self.0.data.lock().exit_waiters)
     }
 
+    pub(crate) fn register_observer(&self, observer: Observer) -> Result<(), MemoryError> {
+        self.0.data.lock().observers.insert(observer)
+    }
+
+    pub(crate) fn unregister_observer(&self, observer: &Observer) {
+        self.0.data.lock().observers.remove(observer);
+    }
+
+    pub(crate) fn wake_waiters(&self) {
+        let _interrupts = InterruptGuard::new();
+        let mut index = 0;
+        loop {
+            let observer = self.0.data.lock().observers.get(index);
+            let Some(observer) = observer else { break };
+            observer.notify();
+            index += 1;
+        }
+    }
+
     pub(crate) fn finish_exit(&self, status: usize) {
         self.0.data.lock().state = TaskState::Dead(status);
     }
@@ -386,6 +442,7 @@ impl TaskRegistry {
             data: Mutex::new(TaskData {
                 state: TaskState::Created,
                 exit_waiters: None,
+                observers: Observers::new(),
             }),
         })?);
         let mut resources = HeapBox::try_new(TaskResources {

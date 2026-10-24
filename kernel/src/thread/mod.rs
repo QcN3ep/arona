@@ -18,6 +18,7 @@ use crate::{
         mmu::PAGE_SIZE,
         timer::TimerError,
     },
+    ipc::wait::{Observer, Observers},
     memory::{self, HeapArc, KernelStack, MemoryError},
 };
 
@@ -96,6 +97,7 @@ struct ThreadData {
     reap_next: Option<Thread>,
     wait: Option<WaitState>,
     exit_waiters: Option<Thread>,
+    observers: Observers,
     generation: u64,
 }
 
@@ -182,6 +184,7 @@ impl Thread {
                 reap_next: None,
                 wait: None,
                 exit_waiters: None,
+                observers: Observers::new(),
                 generation: 0,
             }),
             _capacity: capacity,
@@ -238,6 +241,25 @@ impl Thread {
 
     pub(crate) fn same(&self, other: &Self) -> bool {
         HeapArc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub(crate) fn register_observer(&self, observer: Observer) -> Result<(), MemoryError> {
+        self.0.data.lock().observers.insert(observer)
+    }
+
+    pub(crate) fn unregister_observer(&self, observer: &Observer) {
+        self.0.data.lock().observers.remove(observer);
+    }
+
+    pub(crate) fn wake_waiters(&self) {
+        let _interrupts = InterruptGuard::new();
+        let mut index = 0;
+        loop {
+            let observer = self.0.data.lock().observers.get(index);
+            let Some(observer) = observer else { break };
+            observer.notify();
+            index += 1;
+        }
     }
 }
 

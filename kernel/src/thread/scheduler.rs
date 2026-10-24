@@ -201,6 +201,7 @@ pub(crate) fn timer_interrupt() -> Result<(), ThreadError> {
     dispatcher()?;
     hardware::timer().acknowledge()?;
     let now = hardware::timer().now_ns()?;
+    crate::ipc::timer_interrupt(now);
     let mut scheduler = STATE.lock();
     scheduler.timer_target = None;
     while let Some(thread) = scheduler.deadlines.pop_due(now) {
@@ -215,6 +216,10 @@ pub(crate) fn timer_interrupt() -> Result<(), ThreadError> {
         scheduler.preemption_requested = true;
     }
     scheduler.arm_timer()
+}
+
+pub(crate) fn refresh_timer() -> Result<(), ThreadError> {
+    with_scheduler(|scheduler| scheduler.arm_timer())
 }
 
 pub fn run() -> ! {
@@ -306,6 +311,7 @@ fn complete(thread: Thread, resources: ThreadResources) {
         drop(resources);
         crate::task::thread_exited(&thread, status);
         with_scheduler(|scheduler| scheduler.finish_exit(&thread, status));
+        thread.wake_waiters();
         reap_terminated();
         crate::task::reclaim_finished();
         return;
@@ -399,6 +405,7 @@ pub(crate) fn reap_terminated() {
         drop(resources);
         crate::task::thread_exited(&thread, status);
         with_scheduler(|scheduler| scheduler.finish_exit(&thread, status));
+        thread.wake_waiters();
     }
 }
 
@@ -413,6 +420,10 @@ impl Scheduler {
         let target = match (self.deadlines.next_deadline(), self.preemption_deadline) {
             (Some(wait), Some(preemption)) => Some(wait.min(preemption)),
             (wait, preemption) => wait.or(preemption),
+        };
+        let target = match (target, crate::ipc::next_timer_deadline()) {
+            (Some(thread), Some(ipc)) => Some(thread.min(ipc)),
+            (thread, ipc) => thread.or(ipc),
         };
         // 相同目标不重装，避免清除已经置位的定时中断。
         if target == self.timer_target {
