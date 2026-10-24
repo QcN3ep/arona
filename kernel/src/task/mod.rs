@@ -3,6 +3,8 @@
 mod handle;
 mod lifecycle;
 
+pub(crate) use handle::HandleEntry;
+
 pub use handle::{
     Handle, HandleError, HandleTable, Object, ObjectReference, ObjectType, PreparedTransfer,
     Rights, TransferRequest,

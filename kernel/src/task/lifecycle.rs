@@ -15,6 +15,7 @@ use crate::{
         execution::{ExecutionError, UserEntry},
         mmu::PagePermissions,
     },
+    ipc::{ChannelError, ChannelReference, ChannelWait, MESSAGE_HANDLES, Message, ReceivedMessage},
     memory::{
         self, AddressSpace, FrameAllocation, HeapArc, HeapBox, MappingInfo, MappingOptions,
         MemoryError, VirtRange,
@@ -38,6 +39,13 @@ pub enum TaskError {
     Memory(MemoryError),
     Handle(HandleError),
     Thread(ThreadError),
+    Channel(ChannelError),
+}
+
+impl From<ChannelError> for TaskError {
+    fn from(error: ChannelError) -> Self {
+        Self::Channel(error)
+    }
 }
 
 impl From<MemoryError> for TaskError {
@@ -162,6 +170,113 @@ impl Task {
         let handle = transfer.handles().next().unwrap();
         transfer.commit()?;
         Ok(handle)
+    }
+
+    pub fn try_send(
+        &self,
+        channel: Handle,
+        message: Message,
+        transfers: &[TransferRequest],
+    ) -> Result<(), TaskError> {
+        self.send_with(channel, message, transfers, ChannelWait::NonBlocking)
+    }
+
+    pub fn send(
+        &self,
+        channel: Handle,
+        message: Message,
+        transfers: &[TransferRequest],
+    ) -> Result<(), TaskError> {
+        self.send_with(channel, message, transfers, ChannelWait::Blocking)
+    }
+
+    pub fn send_until(
+        &self,
+        channel: Handle,
+        message: Message,
+        transfers: &[TransferRequest],
+        deadline_ns: u64,
+    ) -> Result<(), TaskError> {
+        self.send_with(
+            channel,
+            message,
+            transfers,
+            ChannelWait::Deadline(deadline_ns),
+        )
+    }
+
+    pub fn try_receive(
+        &self,
+        channel: Handle,
+        handle_capacity: usize,
+    ) -> Result<ReceivedMessage, TaskError> {
+        self.receive_with(channel, handle_capacity, ChannelWait::NonBlocking)
+    }
+
+    pub fn receive(
+        &self,
+        channel: Handle,
+        handle_capacity: usize,
+    ) -> Result<ReceivedMessage, TaskError> {
+        self.receive_with(channel, handle_capacity, ChannelWait::Blocking)
+    }
+
+    pub fn receive_until(
+        &self,
+        channel: Handle,
+        handle_capacity: usize,
+        deadline_ns: u64,
+    ) -> Result<ReceivedMessage, TaskError> {
+        self.receive_with(channel, handle_capacity, ChannelWait::Deadline(deadline_ns))
+    }
+
+    fn send_with(
+        &self,
+        handle: Handle,
+        message: Message,
+        transfers: &[TransferRequest],
+        mode: ChannelWait,
+    ) -> Result<(), TaskError> {
+        let channel = self.channel(handle, Rights::WRITE)?;
+        {
+            let _interrupts = InterruptGuard::new();
+            TASKS
+                .lock()
+                .find(self)?
+                .handles
+                .validate_transfer::<MESSAGE_HANDLES>(transfers)?;
+        }
+        channel.send_with(message, mode, || {
+            let registry = TASKS.lock();
+            let table = &registry.find(self)?.handles;
+            table.get(handle, ObjectType::Channel, Rights::WRITE)?;
+            table.transfer_out::<MESSAGE_HANDLES, _>(transfers, |objects| {
+                channel.check_transfer(objects).map_err(Into::into)
+            })
+        })
+    }
+
+    fn receive_with(
+        &self,
+        handle: Handle,
+        capacity: usize,
+        mode: ChannelWait,
+    ) -> Result<ReceivedMessage, TaskError> {
+        let channel = self.channel(handle, Rights::READ)?;
+        channel.receive_with(mode, capacity, |entries| {
+            let registry = TASKS.lock();
+            let table = &registry.find(self)?.handles;
+            table.get(handle, ObjectType::Channel, Rights::READ)?;
+            Ok(table.install(entries)?)
+        })
+    }
+
+    fn channel(&self, handle: Handle, rights: Rights) -> Result<ChannelReference, TaskError> {
+        let ObjectReference::Channel(channel) = self.get(handle, ObjectType::Channel, rights)?
+        else {
+            unreachable!("invalid channel handle type");
+        };
+        Ok(channel)
     }
 
     pub fn map(

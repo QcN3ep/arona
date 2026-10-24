@@ -2,18 +2,26 @@
 
 use core::ops::Deref;
 
-use alloc::collections::VecDeque;
-use allocator_api2::vec::Vec;
+use alloc::{collections::VecDeque, vec::Vec};
+use arrayvec::ArrayVec;
 use spin::Mutex;
 
 use crate::{
     hardware::{self, cpu::InterruptState},
     memory::{self, HeapArc, MemoryError},
+    task::{Handle, HandleEntry, Object},
     thread::{self, ThreadError, Wait, WaitOutcome, Waker},
 };
 
 const CAPACITY: usize = 32;
 const MESSAGE_WORDS: usize = 8;
+pub(crate) const MESSAGE_HANDLES: usize = 8;
+type MessageHandles = Vec<HandleEntry>;
+
+static CLEANUP: Mutex<ChannelCleanup> = Mutex::new(ChannelCleanup {
+    first: None,
+    active: false,
+});
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Message {
@@ -22,9 +30,17 @@ pub struct Message {
     word_count: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceivedMessage {
+    pub message: Message,
+    handles: ArrayVec<Handle, MESSAGE_HANDLES>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChannelError {
     InvalidMessage,
+    BufferTooSmall,
+    CyclicTransfer,
     Closed,
     WouldBlock,
     PeerClosed,
@@ -55,10 +71,22 @@ pub struct ChannelReference {
 struct ChannelState {
     credits: [usize; 2],
     directions: [Direction; 2],
+    cleanup_next: Option<HeapArc<Mutex<Self>>>,
+    queued_for_cleanup: bool,
+}
+
+struct ChannelCleanup {
+    first: Option<HeapArc<Mutex<ChannelState>>>,
+    active: bool,
+}
+
+struct QueuedMessage {
+    message: Message,
+    handles: MessageHandles,
 }
 
 struct Direction {
-    messages: VecDeque<Message>,
+    messages: VecDeque<QueuedMessage>,
     senders: WaitQueue,
     receivers: WaitQueue,
 }
@@ -84,7 +112,7 @@ enum Condition {
 }
 
 #[derive(Clone, Copy)]
-enum WaitMode {
+pub(crate) enum WaitMode {
     NonBlocking,
     Blocking,
     Deadline(u64),
@@ -116,6 +144,12 @@ impl Message {
 
     pub fn words(&self) -> &[u64] {
         &self.words[..self.word_count]
+    }
+}
+
+impl ReceivedMessage {
+    pub fn handles(&self) -> &[Handle] {
+        &self.handles
     }
 }
 
@@ -168,43 +202,57 @@ impl Deref for Channel {
 
 impl ChannelReference {
     pub fn try_send(&self, message: Message) -> Result<(), ChannelError> {
-        self.send_with(message, WaitMode::NonBlocking)
+        self.send_with(message, WaitMode::NonBlocking, || Ok(Vec::new()))
     }
 
     pub fn send(&self, message: Message) -> Result<(), ChannelError> {
-        self.send_with(message, WaitMode::Blocking)
+        self.send_with(message, WaitMode::Blocking, || Ok(Vec::new()))
     }
 
     pub fn send_until(&self, message: Message, deadline_ns: u64) -> Result<(), ChannelError> {
-        self.send_with(message, WaitMode::Deadline(deadline_ns))
+        self.send_with(message, WaitMode::Deadline(deadline_ns), || Ok(Vec::new()))
     }
 
     pub fn try_receive(&self) -> Result<Message, ChannelError> {
-        self.receive_with(WaitMode::NonBlocking)
+        self.receive_without_handles(WaitMode::NonBlocking)
     }
 
     pub fn receive(&self) -> Result<Message, ChannelError> {
-        self.receive_with(WaitMode::Blocking)
+        self.receive_without_handles(WaitMode::Blocking)
     }
 
     pub fn receive_until(&self, deadline_ns: u64) -> Result<Message, ChannelError> {
-        self.receive_with(WaitMode::Deadline(deadline_ns))
+        self.receive_without_handles(WaitMode::Deadline(deadline_ns))
     }
 
-    fn send_with(&self, message: Message, mode: WaitMode) -> Result<(), ChannelError> {
+    pub(crate) fn send_with<E: From<ChannelError>>(
+        &self,
+        message: Message,
+        mode: WaitMode,
+        mut transfer: impl FnMut() -> Result<MessageHandles, E>,
+    ) -> Result<(), E> {
         loop {
             let (wait, mut registration) = {
                 let _interrupts = InterruptGuard::new();
                 let mut state = self.channel.lock();
                 if state.credits[self.side] == 0 {
-                    return Err(ChannelError::Closed);
+                    return Err(ChannelError::Closed.into());
                 }
                 if state.credits[1 - self.side] == 0 {
-                    return Err(ChannelError::PeerClosed);
+                    return Err(ChannelError::PeerClosed.into());
                 }
                 let direction = &mut state.directions[self.side];
                 if direction.messages.len() < CAPACITY {
-                    direction.messages.push_back(message);
+                    let handles = match transfer() {
+                        Ok(handles) => handles,
+                        Err(error) => {
+                            direction.senders.wake_one();
+                            return Err(error);
+                        }
+                    };
+                    direction
+                        .messages
+                        .push_back(QueuedMessage { message, handles });
                     direction.receivers.wake_one();
                     return Ok(());
                 }
@@ -217,22 +265,45 @@ impl ChannelReference {
         }
     }
 
-    fn receive_with(&self, mode: WaitMode) -> Result<Message, ChannelError> {
+    fn receive_without_handles(&self, mode: WaitMode) -> Result<Message, ChannelError> {
+        self.receive_with(mode, 0, |_| Ok(ArrayVec::new()))
+            .map(|received| received.message)
+    }
+
+    pub(crate) fn receive_with<E: From<ChannelError>>(
+        &self,
+        mode: WaitMode,
+        handle_capacity: usize,
+        mut install: impl FnMut(&mut MessageHandles) -> Result<ArrayVec<Handle, MESSAGE_HANDLES>, E>,
+    ) -> Result<ReceivedMessage, E> {
         let incoming = 1 - self.side;
         loop {
             let (wait, mut registration) = {
                 let _interrupts = InterruptGuard::new();
                 let mut state = self.channel.lock();
                 if state.credits[self.side] == 0 {
-                    return Err(ChannelError::Closed);
+                    return Err(ChannelError::Closed.into());
                 }
                 let direction = &mut state.directions[incoming];
-                if let Some(message) = direction.messages.pop_front() {
+                if let Some(queued) = direction.messages.front_mut() {
+                    if queued.handles.len() > handle_capacity {
+                        direction.receivers.wake_one();
+                        return Err(ChannelError::BufferTooSmall.into());
+                    }
+                    let handles = match install(&mut queued.handles) {
+                        Ok(handles) => handles,
+                        Err(error) => {
+                            direction.receivers.wake_one();
+                            return Err(error);
+                        }
+                    };
+                    let message = queued.message;
+                    drop(direction.messages.drain(..1));
                     direction.senders.wake_one();
-                    return Ok(message);
+                    return Ok(ReceivedMessage { message, handles });
                 }
                 if state.credits[incoming] == 0 {
-                    return Err(ChannelError::EndOfStream);
+                    return Err(ChannelError::EndOfStream.into());
                 }
                 self.register(&mut state, incoming, Condition::Readable, mode)?
             };
@@ -241,6 +312,49 @@ impl ChannelReference {
             drop(registration);
             result?;
         }
+    }
+
+    pub(crate) fn check_transfer(&self, objects: &[&Object]) -> Result<(), ChannelError> {
+        let mut channels = Vec::<ChannelReference>::new();
+        for object in objects {
+            if let Object::Channel(channel) = object {
+                self.visit(&mut channels, channel)?;
+            }
+        }
+        let mut cursor = 0;
+        while cursor < channels.len() {
+            let channel = channels[cursor].channel.clone();
+            let state = channel.lock();
+            for direction in &state.directions {
+                for message in &direction.messages {
+                    for entry in &message.handles {
+                        if let Object::Channel(channel) = &entry.object {
+                            self.visit(&mut channels, channel)?;
+                        }
+                    }
+                }
+            }
+            cursor += 1;
+        }
+        Ok(())
+    }
+
+    fn visit(
+        &self,
+        channels: &mut Vec<ChannelReference>,
+        channel: &ChannelReference,
+    ) -> Result<(), ChannelError> {
+        if HeapArc::ptr_eq(&self.channel, &channel.channel) {
+            return Err(ChannelError::CyclicTransfer);
+        }
+        if !channels
+            .iter()
+            .any(|visited| HeapArc::ptr_eq(&visited.channel, &channel.channel))
+        {
+            channels.try_reserve(1).map_err(|_| MemoryError::NoMemory)?;
+            channels.push(channel.clone());
+        }
+        Ok(())
     }
 
     fn register(
@@ -270,7 +384,63 @@ impl ChannelState {
         Ok(memory::manager().allocate_arc(Mutex::new(Self {
             credits: [1; 2],
             directions: [Direction::new(), Direction::new()],
+            cleanup_next: None,
+            queued_for_cleanup: false,
         }))?)
+    }
+
+    fn discard(channel: &HeapArc<Mutex<Self>>) {
+        {
+            let mut cleanup = CLEANUP.lock();
+            let mut state = channel.lock();
+            if !state.queued_for_cleanup {
+                state.cleanup_next = cleanup.first.take();
+                state.queued_for_cleanup = true;
+                cleanup.first = Some(channel.clone());
+            }
+            if cleanup.active {
+                return;
+            }
+            cleanup.active = true;
+        }
+        // 迭代释放消息中的端点，避免析构链耗尽内核栈。
+        loop {
+            let channel = {
+                let mut cleanup = CLEANUP.lock();
+                let Some(channel) = cleanup.first.take() else {
+                    cleanup.active = false;
+                    return;
+                };
+                let mut state = channel.lock();
+                cleanup.first = state.cleanup_next.take();
+                state.queued_for_cleanup = false;
+                drop(state);
+                channel
+            };
+            loop {
+                let entry = channel.lock().discard_entry();
+                if entry.is_none() {
+                    break;
+                }
+                drop(entry);
+            }
+        }
+    }
+
+    fn discard_entry(&mut self) -> Option<HandleEntry> {
+        for side in 0..2 {
+            if self.credits[1 - side] != 0 {
+                continue;
+            }
+            let messages = &mut self.directions[side].messages;
+            while let Some(message) = messages.front_mut() {
+                if let Some(entry) = message.handles.pop() {
+                    return Some(entry);
+                }
+                drop(messages.drain(..1));
+            }
+        }
+        None
     }
 
     fn waiters(&mut self, direction: usize, condition: Condition) -> &mut WaitQueue {
@@ -427,16 +597,20 @@ impl Drop for Channel {
     fn drop(&mut self) {
         let _interrupts = InterruptGuard::new();
         let endpoint = &self.reference;
-        let mut state = endpoint.channel.lock();
-        state.credits[endpoint.side] -= 1;
-        if state.credits[endpoint.side] != 0 {
-            return;
-        }
-        let incoming = &mut state.directions[1 - endpoint.side];
-        incoming.messages.clear();
-        for direction in &mut state.directions {
-            direction.senders.wake_all();
-            direction.receivers.wake_all();
+        let discard = {
+            let mut state = endpoint.channel.lock();
+            state.credits[endpoint.side] -= 1;
+            if state.credits[endpoint.side] != 0 {
+                return;
+            }
+            for direction in &mut state.directions {
+                direction.senders.wake_all();
+                direction.receivers.wake_all();
+            }
+            !state.directions[1 - endpoint.side].messages.is_empty()
+        };
+        if discard {
+            ChannelState::discard(&endpoint.channel);
         }
     }
 }

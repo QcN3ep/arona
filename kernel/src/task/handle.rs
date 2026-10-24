@@ -3,7 +3,8 @@
 use core::{mem, ops::BitOr, ptr};
 
 use super::Task;
-use allocator_api2::vec::Vec;
+use alloc::vec::Vec;
+use arrayvec::ArrayVec;
 use spin::Mutex;
 
 use crate::{
@@ -202,12 +203,12 @@ struct Slot {
 enum SlotState {
     Vacant(Option<u32>),
     Reserved,
-    Occupied(Entry),
+    Occupied(HandleEntry),
     Retired,
 }
 
-struct Entry {
-    object: Object,
+pub(crate) struct HandleEntry {
+    pub(crate) object: Object,
     rights: Rights,
 }
 
@@ -246,7 +247,7 @@ impl HandleTable {
 
     pub fn insert(&self, object: Object, rights: Rights) -> Result<Handle, HandleError> {
         let _interrupts = InterruptGuard::new();
-        let entry = Entry { object, rights };
+        let entry = HandleEntry { object, rights };
         if !entry.object.allowed_rights().contains(rights) {
             return Err(HandleError::InvalidArgument);
         }
@@ -291,7 +292,7 @@ impl HandleTable {
         state.ensure_available(1)?;
         let object = state.entry(handle)?.object.clone();
         let duplicate = state.reserve();
-        state.publish(duplicate, Entry { object, rights });
+        state.publish(duplicate, HandleEntry { object, rights });
         Ok(duplicate)
     }
 
@@ -339,6 +340,64 @@ impl HandleTable {
             pending,
             committed: false,
         })
+    }
+
+    pub(crate) fn validate_transfer<const N: usize>(
+        &self,
+        requests: &[TransferRequest],
+    ) -> Result<(), HandleError> {
+        let _interrupts = InterruptGuard::new();
+        self.state.lock().validate_transfer::<N>(requests)
+    }
+
+    pub(crate) fn transfer_out<const N: usize, E: From<HandleError>>(
+        &self,
+        requests: &[TransferRequest],
+        validate: impl FnOnce(&[&Object]) -> Result<(), E>,
+    ) -> Result<Vec<HandleEntry>, E> {
+        let _interrupts = InterruptGuard::new();
+        let mut state = self.state.lock();
+        state.validate_transfer::<N>(requests)?;
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut objects = ArrayVec::<_, N>::new();
+        for request in requests {
+            objects.push(&state.entry(request.handle)?.object);
+        }
+        validate(&objects)?;
+        drop(objects);
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(requests.len())
+            .map_err(|_| HandleError::NoMemory)?;
+        for request in requests {
+            let mut entry = state
+                .release(request.handle)
+                .expect("missing transfer source");
+            entry.rights = request.rights;
+            entries.push(entry);
+        }
+        Ok(entries)
+    }
+
+    pub(crate) fn install<const N: usize>(
+        &self,
+        entries: &mut Vec<HandleEntry>,
+    ) -> Result<ArrayVec<Handle, N>, HandleError> {
+        let _interrupts = InterruptGuard::new();
+        if entries.len() > N {
+            return Err(HandleError::InvalidArgument);
+        }
+        let mut state = self.state.lock();
+        state.ensure_available(entries.len())?;
+        let mut handles = ArrayVec::new();
+        for entry in entries.drain(..) {
+            let handle = state.reserve();
+            state.publish(handle, entry);
+            handles.push(handle);
+        }
+        Ok(handles)
     }
 
     fn with_tables<T>(
@@ -418,7 +477,7 @@ impl Drop for PreparedTransfer<'_> {
     }
 }
 
-impl Entry {
+impl HandleEntry {
     fn require(&self, rights: Rights) -> Result<(), HandleError> {
         if self.rights.contains(rights) {
             Ok(())
@@ -434,7 +493,27 @@ impl Entry {
 }
 
 impl TableState {
-    fn entry(&self, handle: Handle) -> Result<&Entry, HandleError> {
+    fn validate_transfer<const N: usize>(
+        &self,
+        requests: &[TransferRequest],
+    ) -> Result<(), HandleError> {
+        if requests.len() > N {
+            return Err(HandleError::InvalidArgument);
+        }
+        for (index, request) in requests.iter().enumerate() {
+            self.entry(request.handle)?
+                .attenuate(Rights::TRANSFER, request.rights)?;
+            if requests[..index]
+                .iter()
+                .any(|previous| previous.handle == request.handle)
+            {
+                return Err(HandleError::InvalidArgument);
+            }
+        }
+        Ok(())
+    }
+
+    fn entry(&self, handle: Handle) -> Result<&HandleEntry, HandleError> {
         let slot = handle
             .index()
             .and_then(|index| self.slots.get(index))
@@ -478,12 +557,12 @@ impl TableState {
         Handle((u64::from(slot.generation) << 32) | u64::from(index))
     }
 
-    fn publish(&mut self, handle: Handle, entry: Entry) {
+    fn publish(&mut self, handle: Handle, entry: HandleEntry) {
         self.slots[handle.index().expect("invalid reserved handle")].state =
             SlotState::Occupied(entry);
     }
 
-    fn release(&mut self, handle: Handle) -> Option<Entry> {
+    fn release(&mut self, handle: Handle) -> Option<HandleEntry> {
         let slot = &mut self.slots[handle.index().expect("invalid released handle")];
         let previous = mem::replace(&mut slot.state, SlotState::Retired);
         if let Some(generation) = slot.generation.checked_add(1) {

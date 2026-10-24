@@ -1,20 +1,33 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use arrayvec::ArrayVec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use kernel::{
     hardware,
     ipc::{Channel, ChannelError, ChannelReference, Message},
-    memory,
-    task::{HandleTable, Object, ObjectReference, ObjectType, Rights},
-    thread::{Thread, ThreadError, ThreadState, scheduler},
+    memory::{self, FrameOwner, FramePurpose},
+    task::{
+        Handle, HandleError, HandleTable, Object, ObjectReference, ObjectType, Rights, Task,
+        TaskError, TransferRequest,
+    },
+    thread::{self, Thread, ThreadError, ThreadState, scheduler},
 };
 
 static ENDPOINTS: Mutex<[Option<Channel>; 3]> = Mutex::new([const { None }; 3]);
 static REFERENCES: Mutex<[Option<ChannelReference>; 2]> = Mutex::new([const { None }; 2]);
 static RECEIVED: AtomicUsize = AtomicUsize::new(0);
 static DEADLINE: AtomicU64 = AtomicU64::new(0);
+static TRANSFER_SENDER: Mutex<Option<TransferSender>> = Mutex::new(None);
+static TRANSFER_RECEIVER: Mutex<Option<(Task, Handle, usize)>> = Mutex::new(None);
+
+struct TransferSender {
+    task: Task,
+    sender: Handle,
+    handle: Handle,
+    expected: Result<(), TaskError>,
+}
 
 pub fn run() {
     let manager = memory::manager();
@@ -27,8 +40,11 @@ pub fn run() {
     receive_deadline();
     send_deadline();
     borrowed_waiters_close();
+    handle_transfers();
     assert!(ENDPOINTS.lock().iter().all(Option::is_none));
     assert!(REFERENCES.lock().iter().all(Option::is_none));
+    assert!(TRANSFER_SENDER.lock().is_none());
+    assert!(TRANSFER_RECEIVER.lock().is_none());
     manager.reclaim_heap();
     assert_eq!(manager.heap_stats(), before);
     assert_eq!(manager.stats().kernel.free_frames, frames);
@@ -336,6 +352,457 @@ fn borrowed_waiters_close() {
     assert_eq!(peer.try_receive(), Err(ChannelError::EndOfStream));
     assert_eq!(reference.try_receive(), Err(ChannelError::Closed));
     assert_eq!(reference.try_send(message(73)), Err(ChannelError::Closed));
+}
+
+fn handle_transfers() {
+    let worker = Thread::new(
+        |_| {
+            with_task_channels(transfer_messages);
+            transfer_endpoints();
+            with_task_channels(transfer_waits);
+            transfer_cycles();
+            transfer_cleanup();
+            with_task_channels(receive_allocation_failure);
+            73
+        },
+        0,
+    )
+    .unwrap();
+    worker.start().unwrap();
+    scheduler::run_ready().unwrap();
+    assert_eq!(worker.state(), ThreadState::Dead(73));
+}
+
+fn task_channels() -> (Task, Task, Handle, Handle) {
+    let source = Task::new().unwrap();
+    let target = Task::new().unwrap();
+    let (sender, receiver) = Channel::pair().unwrap();
+    let rights = Rights::DUPLICATE | Rights::TRANSFER | Rights::READ | Rights::WRITE;
+    let sender = source.insert(Object::Channel(sender), rights).unwrap();
+    let receiver = target.insert(Object::Channel(receiver), rights).unwrap();
+    (source, target, sender, receiver)
+}
+
+fn with_task_channels(run: fn(Task, Task, Handle, Handle)) {
+    let (source, target, sender, receiver) = task_channels();
+    run(source, target, sender, receiver);
+}
+
+fn transfer_messages(source: Task, target: Task, sender: Handle, receiver: Handle) {
+    let allocation = memory::manager()
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
+        .unwrap();
+    let allocation = memory::manager().allocate_arc(allocation).unwrap();
+    let requests: [TransferRequest; 8] = core::array::from_fn(|_| TransferRequest {
+        handle: source
+            .insert(
+                Object::FrameAllocation(allocation.clone()),
+                Rights::TRANSFER | Rights::READ | Rights::WRITE,
+            )
+            .unwrap(),
+        rights: Rights::READ,
+    });
+    let readonly = source.duplicate(sender, Rights::READ).unwrap();
+    assert_eq!(
+        source.try_send(readonly, message(73), &requests),
+        Err(TaskError::Handle(HandleError::Denied))
+    );
+    source.close(readonly).unwrap();
+    for (invalid, expected) in [
+        (
+            TransferRequest {
+                handle: Handle::from_raw(0),
+                rights: Rights::READ,
+            },
+            HandleError::BadHandle,
+        ),
+        (requests[0], HandleError::InvalidArgument),
+        (
+            TransferRequest {
+                rights: Rights::EXECUTE,
+                ..requests[1]
+            },
+            HandleError::Denied,
+        ),
+    ] {
+        assert_eq!(
+            source.try_send(sender, message(73), &[requests[0], invalid]),
+            Err(TaskError::Handle(expected))
+        );
+    }
+    assert_eq!(
+        source.try_send(sender, message(73), &[requests[0]; 9]),
+        Err(TaskError::Handle(HandleError::InvalidArgument))
+    );
+    assert_eq!(
+        target.try_receive(receiver, 8),
+        Err(TaskError::Channel(ChannelError::WouldBlock))
+    );
+    source.try_send(sender, message(73), &requests).unwrap();
+    for request in requests {
+        assert!(matches!(
+            source.get(request.handle, ObjectType::FrameAllocation, Rights::READ),
+            Err(TaskError::Handle(HandleError::BadHandle))
+        ));
+    }
+    assert_eq!(
+        target.try_receive(receiver, 7),
+        Err(TaskError::Channel(ChannelError::BufferTooSmall))
+    );
+    let ObjectReference::Channel(reference) = target
+        .get(receiver, ObjectType::Channel, Rights::READ)
+        .unwrap()
+    else {
+        panic!("expected channel");
+    };
+    assert_eq!(reference.try_receive(), Err(ChannelError::BufferTooSmall));
+    let received = target.receive(receiver, 8).unwrap();
+    assert_eq!(received.message, message(73));
+    assert_eq!(received.handles().len(), 8);
+    for handle in received.handles() {
+        let ObjectReference::FrameAllocation(frame) = target
+            .get(*handle, ObjectType::FrameAllocation, Rights::READ)
+            .unwrap()
+        else {
+            panic!("expected frame");
+        };
+        assert!(memory::HeapArc::ptr_eq(&frame, &allocation));
+        assert!(matches!(
+            target.get(*handle, ObjectType::FrameAllocation, Rights::WRITE),
+            Err(TaskError::Handle(HandleError::Denied))
+        ));
+        target.close(*handle).unwrap();
+    }
+    source.close(sender).unwrap();
+    assert_eq!(
+        target.receive(receiver, 8),
+        Err(TaskError::Channel(ChannelError::EndOfStream))
+    );
+    source.terminate(0);
+    target.terminate(0);
+}
+
+fn transfer_endpoints() {
+    for discard in [false, true] {
+        let (source, target, sender, receiver) = task_channels();
+        let (channel, peer) = Channel::pair().unwrap();
+        check_endpoint_transfer(source, target, sender, receiver, channel, peer, discard);
+    }
+}
+
+fn check_endpoint_transfer(
+    source: Task,
+    target: Task,
+    sender: Handle,
+    receiver: Handle,
+    channel: Channel,
+    peer: Channel,
+    discard: bool,
+) {
+    let reference = channel.reference();
+    let handle = source
+        .insert(
+            Object::Channel(channel),
+            Rights::TRANSFER | Rights::READ | Rights::WRITE,
+        )
+        .unwrap();
+    source
+        .try_send(
+            sender,
+            message(19),
+            &[TransferRequest {
+                handle,
+                rights: Rights::READ | Rights::WRITE,
+            }],
+        )
+        .unwrap();
+    assert_eq!(peer.try_receive(), Err(ChannelError::WouldBlock));
+    peer.try_send(message(42)).unwrap();
+    if discard {
+        target.close(receiver).unwrap();
+    } else {
+        let received = target.try_receive(receiver, 1).unwrap();
+        let handle = received.handles()[0];
+        assert_eq!(target.try_receive(handle, 0).unwrap().message, message(42));
+        target.close(handle).unwrap();
+    }
+    assert_eq!(reference.try_receive(), Err(ChannelError::Closed));
+    assert_eq!(peer.try_receive(), Err(ChannelError::EndOfStream));
+    source.terminate(0);
+    target.terminate(0);
+}
+
+fn transfer_waits(source: Task, target: Task, sender: Handle, receiver: Handle) {
+    let allocation = memory::manager()
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
+        .unwrap();
+    let object = Object::FrameAllocation(memory::manager().allocate_arc(allocation).unwrap());
+    receive_waiters(&source, &target, sender, receiver, object.clone());
+    for tag in 0..32 {
+        source.try_send(sender, message(tag), &[]).unwrap();
+    }
+    let original = source
+        .insert(object.clone(), Rights::TRANSFER | Rights::READ)
+        .unwrap();
+    let worker = blocked_transfer(
+        &source,
+        sender,
+        original,
+        Err(TaskError::Handle(HandleError::BadHandle)),
+    );
+    let valid = source
+        .insert(object.clone(), Rights::TRANSFER | Rights::READ)
+        .unwrap();
+    let next = blocked_transfer(&source, sender, valid, Ok(()));
+    source.close(original).unwrap();
+    let replacement = source
+        .insert(object, Rights::TRANSFER | Rights::READ)
+        .unwrap();
+    assert_eq!(original.raw() as u32, replacement.raw() as u32);
+    assert_ne!(original, replacement);
+    target.try_receive(receiver, 0).unwrap();
+    thread::yield_now().unwrap();
+    assert_eq!(next.wait().unwrap(), 73);
+    assert_eq!(worker.state(), ThreadState::Dead(73));
+    let request = [TransferRequest {
+        handle: replacement,
+        rights: Rights::READ,
+    }];
+    assert_eq!(
+        source.try_send(sender, message(73), &request),
+        Err(TaskError::Channel(ChannelError::WouldBlock))
+    );
+    assert_eq!(
+        source.send_until(
+            sender,
+            message(73),
+            &request,
+            hardware::timer().now_ns().unwrap()
+        ),
+        Err(TaskError::Channel(ChannelError::TimedOut))
+    );
+    assert!(
+        source
+            .get(replacement, ObjectType::FrameAllocation, Rights::READ)
+            .is_ok()
+    );
+    let worker = blocked_transfer(
+        &source,
+        sender,
+        replacement,
+        Err(TaskError::Channel(ChannelError::Closed)),
+    );
+    source.terminate(19);
+    thread::yield_now().unwrap();
+    assert_eq!(worker.state(), ThreadState::Dead(73));
+    for tag in 1..32 {
+        assert_eq!(
+            target.try_receive(receiver, 0).unwrap().message,
+            message(tag)
+        );
+    }
+    let received = target.try_receive(receiver, 1).unwrap();
+    assert_eq!(received.message, message(73));
+    assert_eq!(received.handles().len(), 1);
+    assert_eq!(
+        target.try_receive(receiver, 0),
+        Err(TaskError::Channel(ChannelError::EndOfStream))
+    );
+    target.terminate(0);
+}
+
+fn blocked_transfer(
+    source: &Task,
+    sender: Handle,
+    handle: Handle,
+    expected: Result<(), TaskError>,
+) -> Thread {
+    *TRANSFER_SENDER.lock() = Some(TransferSender {
+        task: source.clone(),
+        sender,
+        handle,
+        expected,
+    });
+    let worker = Thread::new(
+        |_| {
+            let TransferSender {
+                task,
+                sender,
+                handle,
+                expected,
+            } = TRANSFER_SENDER.lock().take().unwrap();
+            assert_eq!(
+                task.send(
+                    sender,
+                    message(73),
+                    &[TransferRequest {
+                        handle,
+                        rights: Rights::READ
+                    }]
+                ),
+                expected
+            );
+            73
+        },
+        0,
+    )
+    .unwrap();
+    worker.start().unwrap();
+    thread::yield_now().unwrap();
+    assert_eq!(worker.state(), ThreadState::Blocked);
+    worker
+}
+
+fn receive_waiters(source: &Task, target: &Task, sender: Handle, receiver: Handle, object: Object) {
+    let mut workers = ArrayVec::<_, 2>::new();
+    for capacity in 0..2 {
+        *TRANSFER_RECEIVER.lock() = Some((target.clone(), receiver, capacity));
+        let worker = Thread::new(
+            |_| {
+                let (task, receiver, capacity) = TRANSFER_RECEIVER.lock().take().unwrap();
+                let received = task.receive(receiver, capacity);
+                if capacity == 0 {
+                    assert_eq!(
+                        received,
+                        Err(TaskError::Channel(ChannelError::BufferTooSmall))
+                    );
+                } else {
+                    let received = received.unwrap();
+                    assert_eq!(received.message, message(42));
+                    assert_eq!(received.handles().len(), 1);
+                    task.close(received.handles()[0]).unwrap();
+                }
+                73
+            },
+            0,
+        )
+        .unwrap();
+        worker.start().unwrap();
+        thread::yield_now().unwrap();
+        assert_eq!(worker.state(), ThreadState::Blocked);
+        workers.push(worker);
+    }
+    let handle = source
+        .insert(object, Rights::TRANSFER | Rights::READ)
+        .unwrap();
+    source
+        .try_send(
+            sender,
+            message(42),
+            &[TransferRequest {
+                handle,
+                rights: Rights::READ,
+            }],
+        )
+        .unwrap();
+    for worker in workers {
+        assert_eq!(worker.wait().unwrap(), 73);
+    }
+}
+
+fn transfer_cycles() {
+    let task = Task::new().unwrap();
+    let (first, first_peer) = Channel::pair().unwrap();
+    let (second, second_peer) = Channel::pair().unwrap();
+    check_transfer_cycles(task, [first, first_peer, second, second_peer]);
+}
+
+fn check_transfer_cycles(task: Task, channels: [Channel; 4]) {
+    let rights = Rights::TRANSFER | Rights::READ | Rights::WRITE;
+    let handles = channels.map(|channel| task.insert(Object::Channel(channel), rights).unwrap());
+    let send =
+        |sender, handle| task.try_send(sender, message(73), &[TransferRequest { handle, rights }]);
+    assert_eq!(
+        send(handles[0], handles[0]),
+        Err(TaskError::Channel(ChannelError::CyclicTransfer))
+    );
+    send(handles[1], handles[2]).unwrap();
+    assert_eq!(
+        send(handles[3], handles[0]),
+        Err(TaskError::Channel(ChannelError::CyclicTransfer))
+    );
+    let received = task.try_receive(handles[0], 1).unwrap();
+    send(handles[3], handles[1]).unwrap();
+    task.close(received.handles()[0]).unwrap();
+    assert_eq!(
+        task.try_receive(handles[0], 0),
+        Err(TaskError::Channel(ChannelError::EndOfStream))
+    );
+    task.terminate(0);
+}
+
+fn transfer_cleanup() {
+    let task = Task::new().unwrap();
+    let (sender, receiver) = Channel::pair().unwrap();
+    let rights = Rights::TRANSFER | Rights::READ | Rights::WRITE;
+    let mut sender = task.insert(Object::Channel(sender), rights).unwrap();
+    let receiver = task.insert(Object::Channel(receiver), rights).unwrap();
+    for tag in 0..128 {
+        let (next, peer) = Channel::pair().unwrap();
+        let next = task.insert(Object::Channel(next), rights).unwrap();
+        let peer = task.insert(Object::Channel(peer), rights).unwrap();
+        task.try_send(
+            sender,
+            message(tag),
+            &[TransferRequest {
+                handle: peer,
+                rights,
+            }],
+        )
+        .unwrap();
+        sender = next;
+    }
+    task.close(receiver).unwrap();
+    assert_eq!(
+        task.try_send(sender, message(73), &[]),
+        Err(TaskError::Channel(ChannelError::PeerClosed))
+    );
+    task.terminate(0);
+}
+
+fn receive_allocation_failure(source: Task, target: Task, sender: Handle, receiver: Handle) {
+    let manager = memory::manager();
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
+        .unwrap();
+    let object = Object::FrameAllocation(manager.allocate_arc(allocation).unwrap());
+    let requests: [TransferRequest; 8] = core::array::from_fn(|_| TransferRequest {
+        handle: source
+            .insert(object.clone(), Rights::TRANSFER | Rights::READ)
+            .unwrap(),
+        rights: Rights::READ,
+    });
+    source.try_send(sender, message(73), &requests).unwrap();
+    let handle = target
+        .insert(object, Rights::DUPLICATE | Rights::READ)
+        .unwrap();
+    manager.reclaim_heap();
+    let exhausted = manager
+        .allocate(
+            FrameOwner::Kernel,
+            FramePurpose::Data,
+            manager.stats().kernel.free_frames,
+        )
+        .unwrap();
+    loop {
+        match target.duplicate(handle, Rights::DUPLICATE | Rights::READ) {
+            Ok(_) => {}
+            Err(error) => {
+                assert_eq!(error, TaskError::Handle(HandleError::NoMemory));
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        target.try_receive(receiver, 8),
+        Err(TaskError::Handle(HandleError::NoMemory))
+    );
+    drop(exhausted);
+    let received = target.try_receive(receiver, 8).unwrap();
+    assert_eq!(received.message, message(73));
+    assert_eq!(received.handles().len(), 8);
+    source.terminate(0);
+    target.terminate(0);
 }
 
 fn wait_for_deadline(worker: &Thread) {

@@ -4,4 +4,5 @@
 
 mod channel;
 
-pub use channel::{Channel, ChannelError, ChannelReference, Message};
+pub use channel::{Channel, ChannelError, ChannelReference, Message, ReceivedMessage};
+pub(crate) use channel::{MESSAGE_HANDLES, WaitMode as ChannelWait};
