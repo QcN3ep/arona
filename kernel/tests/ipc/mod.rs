@@ -2,6 +2,7 @@
 
 mod channel;
 mod event;
+mod reply;
 mod timer;
 mod wait;
 
@@ -14,6 +15,7 @@ pub fn run() {
     event::run();
     timer::run();
     wait::run();
+    reply::run();
     manager.reclaim_heap();
     assert_eq!(manager.heap_stats(), heap);
     assert_eq!(manager.stats(), frames);

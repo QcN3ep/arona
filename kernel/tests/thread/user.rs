@@ -9,7 +9,7 @@ use kernel::{
         execution::{ExecutionError, UserEntry},
         mmu::{PAGE_SIZE, PagePermissions},
     },
-    ipc::{Event, WaitItem, WaitManyError},
+    ipc::{Channel, ChannelError, Event, Message, WaitItem, WaitManyError},
     memory::{
         self, FrameAccess, FrameAllocation, FrameOwner, FramePurpose, MappingOptions,
         ReferenceKind, VirtRange,
@@ -23,6 +23,7 @@ static CODE: Once<[u64; PAGE_SIZE / 8]> = Once::new();
 static BOOT: Mutex<Option<Fixture>> = Mutex::new(None);
 static OWNER: Mutex<Option<Waker>> = Mutex::new(None);
 static WAIT_EVENT: Mutex<Option<(Task, Handle)>> = Mutex::new(None);
+static WAIT_CALL: Mutex<Option<(Task, Handle)>> = Mutex::new(None);
 static WAIT_TARGET: Mutex<Option<Task>> = Mutex::new(None);
 static TIMERS: AtomicUsize = AtomicUsize::new(0);
 static REQUEST_ON_TIMER: AtomicBool = AtomicBool::new(false);
@@ -74,6 +75,16 @@ fn handle_user(trap: Trap) -> Action {
     }
     if arguments[1] == 0 {
         return Action::Exit(arguments[0]);
+    }
+    let call = WAIT_CALL.lock().clone();
+    if let Some((task, handle)) = call {
+        assert_eq!(
+            task.call(handle, Message::new(42, &[]).unwrap(), &[]),
+            Err(TaskError::Channel(ChannelError::Thread(
+                ThreadError::Terminated
+            )))
+        );
+        return Action::Dispatch;
     }
     let event = WAIT_EVENT.lock().clone();
     if let Some((task, handle)) = event {
@@ -286,6 +297,7 @@ fn scenarios(_: usize) -> usize {
     distinct_spaces_and_start();
     cancelled_continuations();
     cancelled_ipc_wait();
+    cancelled_ipc_call();
     never_entered_and_faulted();
     fault_isolation();
     0
@@ -415,6 +427,64 @@ fn cancelled_ipc_wait() {
     assert_eq!(blocked.marker(), 0);
     WAIT_EVENT.lock().take();
     target.terminate(0);
+}
+
+fn cancelled_ipc_call() {
+    for completed in [false, true] {
+        cancel_call(completed);
+    }
+}
+
+fn cancel_call(completed: bool) {
+    let task = Task::new().unwrap();
+    let (sender, receiver) = Channel::pair().unwrap();
+    let sender = task
+        .insert(Object::Channel(sender), Rights::READ | Rights::WRITE)
+        .unwrap();
+    let receiver = task
+        .insert(Object::Channel(receiver), Rights::READ)
+        .unwrap();
+    let blocked = Fixture::new(2, 1);
+    *WAIT_CALL.lock() = Some((task.clone(), sender));
+    blocked.thread.start().unwrap();
+    thread::yield_now().unwrap();
+    assert_eq!(blocked.thread.state(), ThreadState::Blocked);
+    let request = task.receive(receiver, 8).unwrap();
+    assert!(request.has_reply());
+    let allocation = memory::manager()
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
+        .unwrap();
+    let allocation = memory::manager().allocate_arc(allocation).unwrap();
+    if completed {
+        let frame = task
+            .insert(
+                Object::FrameAllocation(allocation.clone()),
+                Rights::TRANSFER | Rights::READ,
+            )
+            .unwrap();
+        task.reply(
+            request.handles()[0],
+            Message::new(73, &[]).unwrap(),
+            &[TransferRequest {
+                handle: frame,
+                rights: Rights::READ,
+            }],
+        )
+        .unwrap();
+        assert_eq!(blocked.thread.state(), ThreadState::Ready);
+    }
+    blocked.thread.terminate(19).unwrap();
+    wait_dead(&blocked.thread);
+    blocked.assert_exit(19);
+    assert_eq!(memory::HeapArc::strong_count(&allocation), 1);
+    if !completed {
+        assert_eq!(
+            task.reply(request.handles()[0], Message::new(73, &[]).unwrap(), &[]),
+            Err(TaskError::Channel(ChannelError::InvalidState))
+        );
+    }
+    WAIT_CALL.lock().take();
+    task.terminate(0);
 }
 
 fn never_entered_and_faulted() {

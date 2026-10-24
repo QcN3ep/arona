@@ -36,6 +36,7 @@ pub struct Message {
 pub struct ReceivedMessage {
     pub message: Message,
     handles: ArrayVec<Handle, MESSAGE_HANDLES>,
+    has_reply: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -48,6 +49,8 @@ pub enum ChannelError {
     PeerClosed,
     EndOfStream,
     TimedOut,
+    InvalidState,
+    ServerGone,
     Memory(MemoryError),
     Thread(ThreadError),
 }
@@ -86,6 +89,7 @@ struct ChannelCleanup {
 struct QueuedMessage {
     message: Message,
     handles: MessageHandles,
+    has_reply: bool,
 }
 
 struct Direction {
@@ -144,8 +148,24 @@ impl Message {
 }
 
 impl ReceivedMessage {
+    pub(crate) fn new(
+        message: Message,
+        handles: ArrayVec<Handle, MESSAGE_HANDLES>,
+        has_reply: bool,
+    ) -> Self {
+        Self {
+            message,
+            handles,
+            has_reply,
+        }
+    }
+
     pub fn handles(&self) -> &[Handle] {
         &self.handles
+    }
+
+    pub fn has_reply(&self) -> bool {
+        self.has_reply
     }
 }
 
@@ -202,15 +222,17 @@ impl ChannelReference {
     }
 
     pub fn try_send(&self, message: Message) -> Result<(), ChannelError> {
-        self.send_with(message, WaitMode::NonBlocking, || Ok(Vec::new()))
+        self.send_with(message, WaitMode::NonBlocking, false, || Ok(Vec::new()))
     }
 
     pub fn send(&self, message: Message) -> Result<(), ChannelError> {
-        self.send_with(message, WaitMode::Blocking, || Ok(Vec::new()))
+        self.send_with(message, WaitMode::Blocking, false, || Ok(Vec::new()))
     }
 
     pub fn send_until(&self, message: Message, deadline_ns: u64) -> Result<(), ChannelError> {
-        self.send_with(message, WaitMode::Deadline(deadline_ns), || Ok(Vec::new()))
+        self.send_with(message, WaitMode::Deadline(deadline_ns), false, || {
+            Ok(Vec::new())
+        })
     }
 
     pub fn try_receive(&self) -> Result<Message, ChannelError> {
@@ -229,6 +251,7 @@ impl ChannelReference {
         &self,
         message: Message,
         mode: WaitMode,
+        has_reply: bool,
         mut transfer: impl FnMut() -> Result<MessageHandles, E>,
     ) -> Result<(), E> {
         loop {
@@ -254,9 +277,11 @@ impl ChannelReference {
                     };
                     let mut state = self.channel.lock();
                     let direction = &mut state.directions[self.side];
-                    direction
-                        .messages
-                        .push_back(QueuedMessage { message, handles });
+                    direction.messages.push_back(QueuedMessage {
+                        message,
+                        handles,
+                        has_reply,
+                    });
                     direction.receivers.wake_one();
                     drop(state);
                     self.notify_observers();
@@ -309,13 +334,14 @@ impl ChannelReference {
                         }
                     };
                     let message = queued.message;
+                    let has_reply = queued.has_reply;
                     drop(queued);
                     let mut state = self.channel.lock();
                     let direction = &mut state.directions[incoming];
                     direction.senders.wake_one();
                     drop(state);
                     self.notify_observers();
-                    return Ok(ReceivedMessage { message, handles });
+                    return Ok(ReceivedMessage::new(message, handles, has_reply));
                 }
                 if state.credits[incoming] == 0 {
                     return Err(ChannelError::EndOfStream.into());

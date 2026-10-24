@@ -9,7 +9,10 @@ use spin::Mutex;
 
 use crate::{
     hardware::{self, cpu::InterruptState},
-    ipc::{Channel, ChannelReference, Event, EventReference, Timer, TimerReference},
+    ipc::{
+        Channel, ChannelReference, Event, EventReference, MESSAGE_HANDLES, Message,
+        ReceivedMessage, Reply, ReplyReference, Timer, TimerReference,
+    },
     memory::{FrameAllocation, HeapArc},
     thread::Thread,
 };
@@ -100,12 +103,12 @@ pub enum ObjectType {
     Channel,
     Event,
     Timer,
+    Reply,
 }
 
 /// # Safety
 ///
 /// 析构期间须关闭本地中断并保留内存管理器所需的内核映射。
-#[derive(Clone)]
 pub enum Object {
     Task(Task),
     Thread(Thread),
@@ -113,6 +116,7 @@ pub enum Object {
     Channel(Channel),
     Event(Event),
     Timer(Timer),
+    Reply(Reply),
 }
 
 /// # Safety
@@ -126,6 +130,7 @@ pub enum ObjectReference {
     Channel(ChannelReference),
     Event(EventReference),
     Timer(TimerReference),
+    Reply(ReplyReference),
 }
 
 impl Object {
@@ -137,6 +142,7 @@ impl Object {
             Self::Channel(_) => ObjectType::Channel,
             Self::Event(_) => ObjectType::Event,
             Self::Timer(_) => ObjectType::Timer,
+            Self::Reply(_) => ObjectType::Reply,
         }
     }
 
@@ -150,6 +156,7 @@ impl Object {
             Self::Channel(channel) => ObjectReference::Channel(channel.reference()),
             Self::Event(event) => ObjectReference::Event(event.reference()),
             Self::Timer(timer) => ObjectReference::Timer(timer.reference()),
+            Self::Reply(reply) => ObjectReference::Reply(reply.reference()),
         }
     }
 
@@ -180,7 +187,20 @@ impl Object {
                 Self::Channel(_) => Rights::WAIT | Rights::READ | Rights::WRITE,
                 Self::Event(_) => Rights::WAIT | Rights::SIGNAL,
                 Self::Timer(_) => Rights::WRITE,
+                Self::Reply(_) => return Rights::TRANSFER | Rights::WRITE,
             }
+    }
+
+    pub fn try_clone(&self) -> Result<Self, HandleError> {
+        Ok(match self {
+            Self::Task(task) => Self::Task(task.clone()),
+            Self::Thread(thread) => Self::Thread(thread.clone()),
+            Self::FrameAllocation(allocation) => Self::FrameAllocation(allocation.clone()),
+            Self::Channel(channel) => Self::Channel(channel.clone()),
+            Self::Event(event) => Self::Event(event.clone()),
+            Self::Timer(timer) => Self::Timer(timer.clone()),
+            Self::Reply(_) => return Err(HandleError::Denied),
+        })
     }
 }
 
@@ -302,7 +322,7 @@ impl HandleTable {
         let mut state = self.state.lock();
         state.entry(handle)?.attenuate(Rights::DUPLICATE, rights)?;
         state.ensure_available(1)?;
-        let object = state.entry(handle)?.object.clone();
+        let object = state.entry(handle)?.object.try_clone()?;
         let duplicate = state.reserve();
         state.publish(duplicate, HandleEntry { object, rights });
         Ok(duplicate)
@@ -317,6 +337,9 @@ impl HandleTable {
         let mut pending = Vec::new();
         self.with_tables(target, |source, target| {
             for request in requests {
+                if matches!(source.entry(request.handle)?.object, Object::Reply(_)) {
+                    return Err(HandleError::Denied);
+                }
                 source
                     .entry(request.handle)?
                     .attenuate(Rights::TRANSFER, request.rights)?;
@@ -377,12 +400,13 @@ impl HandleTable {
     pub(crate) fn transfer_out<const N: usize, E: From<HandleError>>(
         &self,
         requests: &[TransferRequest],
+        prefix: Option<HandleEntry>,
         validate: impl FnOnce(&[&Object]) -> Result<(), E>,
     ) -> Result<Vec<HandleEntry>, E> {
         let _interrupts = InterruptGuard::new();
         let mut state = self.state.lock();
         state.validate_transfer::<N>(requests)?;
-        if requests.is_empty() {
+        if requests.is_empty() && prefix.is_none() {
             return Ok(Vec::new());
         }
         let mut objects = ArrayVec::<_, N>::new();
@@ -393,8 +417,9 @@ impl HandleTable {
         drop(objects);
         let mut entries = Vec::new();
         entries
-            .try_reserve_exact(requests.len())
+            .try_reserve_exact(requests.len() + usize::from(prefix.is_some()))
             .map_err(|_| HandleError::NoMemory)?;
+        entries.extend(prefix);
         for request in requests {
             let mut entry = state
                 .release(request.handle)
@@ -403,6 +428,65 @@ impl HandleTable {
             entries.push(entry);
         }
         Ok(entries)
+    }
+
+    pub(crate) fn reserve_reply_handles(
+        &self,
+    ) -> Result<ArrayVec<Handle, MESSAGE_HANDLES>, HandleError> {
+        let mut state = self.state.lock();
+        state.ensure_available(MESSAGE_HANDLES)?;
+        Ok(core::array::from_fn::<_, MESSAGE_HANDLES, _>(|_| state.reserve()).into())
+    }
+
+    pub(crate) fn release_reply_handles(
+        &self,
+        handles: &[Handle],
+    ) -> ArrayVec<HandleEntry, MESSAGE_HANDLES> {
+        let mut state = self.state.lock();
+        let mut entries = ArrayVec::new();
+        for handle in handles {
+            let slot = &state.slots[handle.index().unwrap()];
+            if slot.generation == handle.generation()
+                && matches!(slot.state, SlotState::Reserved | SlotState::Occupied(_))
+                && let Some(entry) = state.release(*handle)
+            {
+                entries.push(entry);
+            }
+        }
+        entries
+    }
+
+    pub(crate) fn reply_to(
+        &self,
+        handle: Handle,
+        reply: &ReplyReference,
+        target: &Self,
+        message: Message,
+        requests: &[TransferRequest],
+    ) -> Result<(), super::TaskError> {
+        self.with_tables(target, |source, mut target| {
+            source.entry(handle)?.require(Rights::WRITE)?;
+            source.validate_transfer::<MESSAGE_HANDLES>(requests)?;
+            for request in requests {
+                if matches!(source.entry(request.handle)?.object, Object::Reply(_)) {
+                    return Err(HandleError::Denied.into());
+                }
+            }
+            reply.complete(|slots| {
+                let mut handles = ArrayVec::new();
+                for (request, destination) in requests.iter().zip(slots) {
+                    let mut entry = source.release(request.handle).unwrap();
+                    entry.rights = request.rights;
+                    target
+                        .as_deref_mut()
+                        .unwrap_or(source)
+                        .publish(*destination, entry);
+                    handles.push(*destination);
+                }
+                ReceivedMessage::new(message, handles, false)
+            })?;
+            Ok(())
+        })
     }
 
     pub(crate) fn install<const N: usize>(
@@ -502,6 +586,13 @@ impl Drop for PreparedTransfer<'_> {
 }
 
 impl HandleEntry {
+    pub(crate) fn reply(reply: Reply) -> Self {
+        Self {
+            object: Object::Reply(reply),
+            rights: Rights::TRANSFER | Rights::WRITE,
+        }
+    }
+
     fn require(&self, rights: Rights) -> Result<(), HandleError> {
         if self.rights.contains(rights) {
             Ok(())

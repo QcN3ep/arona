@@ -537,12 +537,18 @@ fn transfer_waits(source: Task, target: Task, sender: Handle, receiver: Handle) 
         .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
         .unwrap();
     let object = Object::FrameAllocation(memory::manager().allocate_arc(allocation).unwrap());
-    receive_waiters(&source, &target, sender, receiver, object.clone());
+    receive_waiters(
+        &source,
+        &target,
+        sender,
+        receiver,
+        object.try_clone().unwrap(),
+    );
     for tag in 0..32 {
         source.try_send(sender, message(tag), &[]).unwrap();
     }
     let original = source
-        .insert(object.clone(), Rights::TRANSFER | Rights::READ)
+        .insert(object.try_clone().unwrap(), Rights::TRANSFER | Rights::READ)
         .unwrap();
     let worker = blocked_transfer(
         &source,
@@ -551,7 +557,7 @@ fn transfer_waits(source: Task, target: Task, sender: Handle, receiver: Handle) 
         Err(TaskError::Handle(HandleError::BadHandle)),
     );
     let valid = source
-        .insert(object.clone(), Rights::TRANSFER | Rights::READ)
+        .insert(object.try_clone().unwrap(), Rights::TRANSFER | Rights::READ)
         .unwrap();
     let next = blocked_transfer(&source, sender, valid, Ok(()));
     source.close(original).unwrap();
@@ -768,7 +774,7 @@ fn receive_allocation_failure(source: Task, target: Task, sender: Handle, receiv
     let object = Object::FrameAllocation(manager.allocate_arc(allocation).unwrap());
     let requests: [TransferRequest; 8] = core::array::from_fn(|_| TransferRequest {
         handle: source
-            .insert(object.clone(), Rights::TRANSFER | Rights::READ)
+            .insert(object.try_clone().unwrap(), Rights::TRANSFER | Rights::READ)
             .unwrap(),
         rights: Rights::READ,
     });

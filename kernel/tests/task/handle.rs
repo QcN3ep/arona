@@ -307,12 +307,12 @@ fn allocation_failure() {
     let object = Object::FrameAllocation(manager.allocate_arc(allocation).unwrap());
     let handle = source
         .insert(
-            object.clone(),
+            object.try_clone().unwrap(),
             Rights::DUPLICATE | Rights::TRANSFER | Rights::READ,
         )
         .unwrap();
     assert_eq!(
-        source.insert(object.clone(), Rights::START),
+        source.insert(object.try_clone().unwrap(), Rights::START),
         Err(HandleError::InvalidArgument)
     );
     let pending = source
@@ -335,7 +335,7 @@ fn allocation_failure() {
             .unwrap();
     }
     let pressure = HandleTable::new();
-    let exhausted = exhaust_memory(&pressure, object.clone());
+    let exhausted = exhaust_memory(&pressure, object.try_clone().unwrap());
     let heap = manager.heap_stats();
     assert!(matches!(
         Channel::pair(),
