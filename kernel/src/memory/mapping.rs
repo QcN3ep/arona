@@ -363,16 +363,26 @@ impl MappingIndex {
 
     fn refresh(address: u64) {
         let mut node = MappingNode::read(address);
-        let left = (node.left != NIL).then(|| MappingNode::read(node.left));
-        let right = (node.right != NIL).then(|| MappingNode::read(node.right));
-        node.height = 1 + left
-            .map_or(0, |n| n.height)
-            .max(right.map_or(0, |n| n.height));
-        node.first = left.map_or(node.record.range.start, |n| n.first);
-        node.last = right.map_or(node.record.range.end, |n| n.last);
-        node.gap = left
-            .map_or(0, |n| n.gap.max(node.record.range.start - n.last))
-            .max(right.map_or(0, |n| n.gap.max(n.first - node.record.range.end)));
+        let mut height = 0;
+        node.first = node.record.range.start;
+        node.last = node.record.range.end;
+        node.gap = 0;
+        if node.left != NIL {
+            let left = MappingNode::read(node.left);
+            height = left.height;
+            node.first = left.first;
+            node.gap = left.gap.max(node.record.range.start - left.last);
+        }
+        if node.right != NIL {
+            let right = MappingNode::read(node.right);
+            height = height.max(right.height);
+            node.last = right.last;
+            node.gap = node
+                .gap
+                .max(right.gap)
+                .max(right.first - node.record.range.end);
+        }
+        node.height = height + 1;
         node.write(address);
     }
 
