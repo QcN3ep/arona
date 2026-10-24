@@ -19,7 +19,7 @@ use crate::{
     ipc::{
         Call, ChannelError, ChannelReference, MESSAGE_HANDLES, Message, ReceivedMessage, WaitItem,
         WaitManyError, WaitManyResult, WaitMode,
-        wait::{Observer, Observers},
+        wait::{Observer, Observers, notify_observers},
     },
     memory::{
         self, AddressSpace, FrameAllocation, HeapArc, HeapBox, MappingInfo, MappingOptions,
@@ -504,14 +504,7 @@ impl Task {
     }
 
     pub(crate) fn wake_waiters(&self) {
-        let _interrupts = InterruptGuard::new();
-        let mut index = 0;
-        loop {
-            let observer = self.0.data.lock().observers.get(index);
-            let Some(observer) = observer else { break };
-            observer.notify();
-            index += 1;
-        }
+        notify_observers(|index| self.0.data.lock().observers.get(index));
     }
 
     pub(crate) fn finish_exit(&self, status: usize) {

@@ -13,7 +13,7 @@ use crate::{
     thread::{self, ThreadError, Wait, WaitOutcome, Waker},
 };
 
-use super::wait::{Observer, Observers, WaitMode};
+use super::wait::{Observer, Observers, WaitMode, notify_observers};
 
 const CAPACITY: usize = 32;
 const MESSAGE_WORDS: usize = 8;
@@ -430,13 +430,7 @@ impl ChannelReference {
 
     fn notify_observers(&self) {
         for side in 0..2 {
-            let mut index = 0;
-            loop {
-                let observer = self.channel.lock().observers[side].get(index);
-                let Some(observer) = observer else { break };
-                observer.notify();
-                index += 1;
-            }
+            notify_observers(|index| self.channel.lock().observers[side].get(index));
         }
     }
 

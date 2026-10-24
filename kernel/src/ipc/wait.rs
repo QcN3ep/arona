@@ -114,6 +114,16 @@ pub(crate) fn wait_many(
     }
 }
 
+pub(crate) fn notify_observers(mut get: impl FnMut(usize) -> Option<Observer>) {
+    let _interrupts = InterruptGuard::new();
+    let mut index = 0;
+    // 通知会重新查询对象，取值闭包返回前须释放对象锁。
+    while let Some(observer) = get(index) {
+        observer.notify();
+        index += 1;
+    }
+}
+
 impl Observers {
     pub(crate) const fn new() -> Self {
         Self(Vec::new())

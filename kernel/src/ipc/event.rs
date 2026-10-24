@@ -3,7 +3,7 @@
 use core::ops::Deref;
 use spin::Mutex;
 
-use super::wait::{Observer, Observers};
+use super::wait::{Observer, Observers, notify_observers};
 
 use crate::{
     hardware::cpu::InterruptGuard,
@@ -126,13 +126,7 @@ impl EventReference {
     }
 
     fn notify_observers(&self) {
-        let mut index = 0;
-        loop {
-            let observer = self.event.lock().observers.get(index);
-            let Some(observer) = observer else { break };
-            observer.notify();
-            index += 1;
-        }
+        notify_observers(|index| self.event.lock().observers.get(index));
     }
 
     pub(crate) fn is_closed(&self) -> bool {
