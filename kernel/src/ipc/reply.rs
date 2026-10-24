@@ -4,7 +4,7 @@ use spin::Mutex;
 
 use super::{ChannelError, ReceivedMessage};
 use crate::{
-    hardware::{self, cpu::InterruptState},
+    hardware::{self, cpu::InterruptGuard},
     memory::{self, HeapArc},
     task::{Handle, ReservedHandles, Task, TaskError},
     thread::{self, Wait, WaitOutcome, Waker},
@@ -163,19 +163,5 @@ impl Drop for Reply {
                 waker.wake();
             }
         }
-    }
-}
-
-struct InterruptGuard(InterruptState);
-
-impl InterruptGuard {
-    fn new() -> Self {
-        Self(hardware::cpu().disable_interrupts())
-    }
-}
-
-impl Drop for InterruptGuard {
-    fn drop(&mut self) {
-        hardware::cpu().restore_interrupts(self.0);
     }
 }

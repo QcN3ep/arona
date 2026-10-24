@@ -12,7 +12,7 @@ use super::{
 use crate::{
     hardware::{
         self,
-        cpu::InterruptState,
+        cpu::InterruptGuard,
         execution::{ExecutionError, UserEntry},
         mmu::PagePermissions,
     },
@@ -111,8 +111,6 @@ enum Creator {
     Thread(Thread),
     Task(Task),
 }
-
-struct InterruptGuard(InterruptState);
 
 pub(crate) struct ReservedHandles {
     pub(crate) task: Task,
@@ -711,17 +709,5 @@ fn reclaim(mut cleanup: Option<HeapBox<TaskResources>>) {
         };
         drop(resources);
         thread::finish_task_exit(&task, status);
-    }
-}
-
-impl InterruptGuard {
-    fn new() -> Self {
-        Self(hardware::cpu().disable_interrupts())
-    }
-}
-
-impl Drop for InterruptGuard {
-    fn drop(&mut self) {
-        hardware::cpu().restore_interrupts(self.0);
     }
 }

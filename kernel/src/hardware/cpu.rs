@@ -2,6 +2,8 @@
 
 //! 本地中断控制、处理器等待与停机能力。
 
+use core::marker::PhantomData;
+
 use super::{BindError, Slot};
 
 static SLOT: Slot<&'static dyn Cpu> = Slot::new();
@@ -18,6 +20,30 @@ pub fn cpu() -> &'static dyn Cpu {
 pub enum InterruptState {
     Disabled,
     Enabled,
+}
+
+/// # Safety
+///
+/// 创建及析构须在同一处理器且允许控制本地中断；恢复中断前异常入口及其栈须已就绪。
+#[must_use]
+pub(crate) struct InterruptGuard {
+    state: InterruptState,
+    local: PhantomData<*mut ()>,
+}
+
+impl InterruptGuard {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: cpu().disable_interrupts(),
+            local: PhantomData,
+        }
+    }
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        cpu().restore_interrupts(self.state);
+    }
 }
 
 /// 操作只影响当前处理器，不阻塞于锁或分配内存。

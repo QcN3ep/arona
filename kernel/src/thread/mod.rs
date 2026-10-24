@@ -12,8 +12,7 @@ use spin::Mutex;
 
 use crate::{
     hardware::{
-        self,
-        cpu::InterruptState,
+        cpu::InterruptGuard,
         execution::{Context, ContextStart, ExecutionError, UserEntry},
         mmu::PAGE_SIZE,
         timer::TimerError,
@@ -121,8 +120,6 @@ struct ExitWait {
 }
 
 struct ThreadCapacity;
-
-struct InterruptGuard(InterruptState);
 
 impl Thread {
     pub fn new(entry: ThreadEntry, argument: usize) -> Result<Self, ThreadError> {
@@ -277,17 +274,5 @@ impl ThreadCapacity {
 impl Drop for ThreadCapacity {
     fn drop(&mut self) {
         THREADS.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-impl InterruptGuard {
-    fn new() -> Self {
-        Self(hardware::cpu().disable_interrupts())
-    }
-}
-
-impl Drop for InterruptGuard {
-    fn drop(&mut self) {
-        hardware::cpu().restore_interrupts(self.0);
     }
 }

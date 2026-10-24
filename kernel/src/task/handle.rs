@@ -8,7 +8,7 @@ use arrayvec::ArrayVec;
 use spin::Mutex;
 
 use crate::{
-    hardware::{self, cpu::InterruptState},
+    hardware::cpu::InterruptGuard,
     ipc::{
         Channel, ChannelReference, Event, EventReference, MESSAGE_HANDLES, Message,
         ReceivedMessage, Reply, ReplyReference, Timer, TimerReference,
@@ -263,8 +263,6 @@ struct PendingTransfer {
     target: Handle,
     order: usize,
 }
-
-struct InterruptGuard(InterruptState);
 
 impl HandleTable {
     pub const fn new() -> Self {
@@ -690,17 +688,5 @@ impl TableState {
             SlotState::Occupied(entry) => Some(entry),
             _ => None,
         }
-    }
-}
-
-impl InterruptGuard {
-    fn new() -> Self {
-        Self(hardware::cpu().disable_interrupts())
-    }
-}
-
-impl Drop for InterruptGuard {
-    fn drop(&mut self) {
-        hardware::cpu().restore_interrupts(self.0);
     }
 }

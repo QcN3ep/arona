@@ -5,7 +5,7 @@ use spin::Mutex;
 
 use super::{EventError, EventReference};
 use crate::{
-    hardware::{self, cpu::InterruptState, timer::TimerError as HardwareTimerError},
+    hardware::{self, cpu::InterruptGuard, timer::TimerError as HardwareTimerError},
     memory::{self, HeapArc, MemoryError},
     thread::{ThreadError, scheduler},
 };
@@ -267,20 +267,6 @@ pub(crate) fn cancel_event(event: &EventReference) {
             remove(&timer);
             timer.timer.lock().phase = TimerPhase::Disarmed;
         }
-    }
-}
-
-struct InterruptGuard(InterruptState);
-
-impl InterruptGuard {
-    fn new() -> Self {
-        Self(hardware::cpu().disable_interrupts())
-    }
-}
-
-impl Drop for InterruptGuard {
-    fn drop(&mut self) {
-        hardware::cpu().restore_interrupts(self.0);
     }
 }
 

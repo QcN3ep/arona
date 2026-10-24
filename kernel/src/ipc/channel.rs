@@ -7,7 +7,7 @@ use arrayvec::ArrayVec;
 use spin::Mutex;
 
 use crate::{
-    hardware::{self, cpu::InterruptState},
+    hardware::{self, cpu::InterruptGuard},
     memory::{self, HeapArc, MemoryError},
     task::{Handle, HandleEntry, Object},
     thread::{self, ThreadError, Wait, WaitOutcome, Waker},
@@ -125,8 +125,6 @@ struct Registration {
     index: usize,
     retrying: bool,
 }
-
-struct InterruptGuard(InterruptState);
 
 impl Message {
     pub fn new(tag: u64, words: &[u64]) -> Result<Self, ChannelError> {
@@ -699,18 +697,6 @@ impl Drop for Channel {
         if discard {
             ChannelState::discard(&endpoint.channel);
         }
-    }
-}
-
-impl InterruptGuard {
-    fn new() -> Self {
-        Self(hardware::cpu().disable_interrupts())
-    }
-}
-
-impl Drop for InterruptGuard {
-    fn drop(&mut self) {
-        hardware::cpu().restore_interrupts(self.0);
     }
 }
 

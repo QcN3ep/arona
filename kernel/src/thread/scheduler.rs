@@ -7,12 +7,12 @@
 use spin::{Mutex, Once};
 
 use super::{
-    InterruptGuard, Thread, ThreadError, ThreadKind, ThreadResources, ThreadState, WaitOutcome,
+    Thread, ThreadError, ThreadKind, ThreadResources, ThreadState, WaitOutcome,
     deadline::DeadlineQueue,
 };
 use crate::hardware::{
     self,
-    cpu::InterruptState,
+    cpu::{InterruptGuard, InterruptState},
     execution::{Context, ContextStart},
     timer::TimerError,
 };

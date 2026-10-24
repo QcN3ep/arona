@@ -5,7 +5,7 @@ use spin::Mutex;
 
 use super::{ChannelError, ChannelReference, EventError, EventReference};
 use crate::{
-    hardware::{self, cpu::InterruptState},
+    hardware::{self, cpu::InterruptGuard},
     memory::{self, HeapArc, MemoryError},
     task::{Handle, HandleError, ObjectReference, Task, TaskError, TaskState},
     thread::{self, ThreadError, ThreadState, Wait, WaitOutcome, Waker},
@@ -335,17 +335,5 @@ impl From<TaskError> for WaitManyError {
 impl From<hardware::timer::TimerError> for WaitManyError {
     fn from(error: hardware::timer::TimerError) -> Self {
         Self::Thread(ThreadError::Timer(error))
-    }
-}
-
-struct InterruptGuard(InterruptState);
-impl InterruptGuard {
-    fn new() -> Self {
-        Self(hardware::cpu().disable_interrupts())
-    }
-}
-impl Drop for InterruptGuard {
-    fn drop(&mut self) {
-        hardware::cpu().restore_interrupts(self.0);
     }
 }

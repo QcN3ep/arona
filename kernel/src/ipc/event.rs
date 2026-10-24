@@ -6,7 +6,7 @@ use spin::Mutex;
 use super::wait::{Observer, Observers};
 
 use crate::{
-    hardware::{self, cpu::InterruptState},
+    hardware::cpu::InterruptGuard,
     memory::{self, HeapArc, MemoryError},
 };
 
@@ -156,20 +156,6 @@ impl Drop for Event {
             super::timer::cancel_event(&self.reference);
             self.reference.notify_observers();
         }
-    }
-}
-
-struct InterruptGuard(InterruptState);
-
-impl InterruptGuard {
-    fn new() -> Self {
-        Self(hardware::cpu().disable_interrupts())
-    }
-}
-
-impl Drop for InterruptGuard {
-    fn drop(&mut self) {
-        hardware::cpu().restore_interrupts(self.0);
     }
 }
 
