@@ -30,6 +30,7 @@ impl Rights {
     pub const READ: Self = Self(1 << 4);
     pub const WRITE: Self = Self(1 << 5);
     pub const MAP: Self = Self(1 << 6);
+    pub const READ_WRITE: Self = Self::READ.union(Self::WRITE);
     pub const EXECUTE: Self = Self(1 << 7);
     pub const CREATE_THREAD: Self = Self(1 << 8);
     pub const TERMINATE: Self = Self(1 << 9);
@@ -51,12 +52,16 @@ impl Rights {
 
     pub const CREATE_TASK: Self = Self(1 << 26);
 
+    pub const CREATE_CHANNEL: Self = Self(1 << 27);
+    pub const CREATE_EVENT: Self = Self(1 << 28);
+    pub const CREATE_TIMER: Self = Self(1 << 29);
+
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
     pub const fn from_bits(bits: u64) -> Option<Self> {
-        if bits & !0x07ff_7fff == 0 {
+        if bits & !0x3fff_7fff == 0 {
             Some(Self(bits))
         } else {
             None

@@ -8,7 +8,6 @@ use kernel::{
     },
     memory::{self, FrameAccess, FrameOwner, FramePurpose, MappingOptions, ReferenceKind},
     task::{Object, ObjectType, Task, TaskState},
-    thread::{Thread, ThreadState, scheduler},
 };
 use spin::Once;
 
@@ -26,11 +25,7 @@ pub fn run(code: &[u64]) {
     let before = manager.stats();
     let heap = manager.heap_stats();
     ACTIVE.store(true, Ordering::Relaxed);
-    let owner = Thread::new(scenario, 0).unwrap();
-    owner.start().unwrap();
-    scheduler::run_ready().unwrap();
-    assert_eq!(owner.state(), ThreadState::Dead(0));
-    drop(owner);
+    crate::run_thread(scenario);
     ACTIVE.store(false, Ordering::Relaxed);
     manager.reclaim_heap();
     assert_eq!(manager.stats(), before);

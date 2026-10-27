@@ -35,3 +35,24 @@ pub fn handle(trap: Trap) -> TrapOutcome {
         TrapOrigin::Kernel => thread::handle(trap),
     }
 }
+
+fn run_thread(entry: kernel::thread::ThreadEntry) {
+    use kernel::{
+        hardware,
+        thread::{Thread, ThreadState, scheduler},
+    };
+    let owner = Thread::new(entry, 0).unwrap();
+    owner.start().unwrap();
+    let limit = hardware::timer().now_ns().unwrap() + 10_000_000_000;
+    loop {
+        scheduler::run_ready().unwrap();
+        if owner.state() == ThreadState::Dead(0) {
+            break;
+        }
+        assert!(
+            hardware::timer().now_ns().unwrap() < limit,
+            "Test thread stalled"
+        );
+        hardware::cpu().idle_until_interrupt();
+    }
+}

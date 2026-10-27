@@ -89,3 +89,57 @@ impl<T: Object> BorrowedHandle<'_, T> {
         call::invoke(self.raw, method, arguments)
     }
 }
+
+#[derive(Debug)]
+pub struct AnyHandle {
+    raw: abi::Handle,
+    kind: ObjectType,
+}
+impl AnyHandle {
+    pub fn kind(&self) -> ObjectType {
+        self.kind
+    }
+    pub fn downcast<T: Object>(self) -> Result<Handle<T>, Self> {
+        if self.kind != T::TYPE {
+            return Err(self);
+        }
+        let raw = self.into_raw();
+        // SAFETY: 类型已匹配，所有权从动态句柄移交。
+        Ok(unsafe { Handle::from_raw(raw) })
+    }
+    pub(crate) fn raw(&self) -> abi::Handle {
+        self.raw
+    }
+    pub(crate) fn into_raw(self) -> abi::Handle {
+        let raw = self.raw;
+        core::mem::forget(self);
+        raw
+    }
+    pub(crate) fn received(descriptor: abi::ipc::HandleDescriptor) -> Self {
+        Self {
+            raw: descriptor.handle,
+            kind: descriptor.kind,
+        }
+    }
+}
+impl<T: Object> From<Handle<T>> for AnyHandle {
+    fn from(handle: Handle<T>) -> Self {
+        Self {
+            raw: handle.into_raw(),
+            kind: T::TYPE,
+        }
+    }
+}
+impl Drop for AnyHandle {
+    fn drop(&mut self) {
+        let _ = call::invoke(self.raw, abi::method::CLOSE, [0; 5]);
+    }
+}
+impl<T: Object> core::fmt::Debug for Handle<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Handle")
+            .field("raw", &self.raw)
+            .field("kind", &T::TYPE)
+            .finish()
+    }
+}

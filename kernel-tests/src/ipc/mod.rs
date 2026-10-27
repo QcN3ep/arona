@@ -21,23 +21,4 @@ pub fn run() {
     assert_eq!(manager.stats(), frames);
 }
 
-fn run_thread(entry: kernel::thread::ThreadEntry) {
-    use kernel::{
-        hardware,
-        thread::{Thread, ThreadState, scheduler},
-    };
-    let owner = Thread::new(entry, 0).unwrap();
-    owner.start().unwrap();
-    let limit = hardware::timer().now_ns().unwrap() + 2_000_000_000;
-    loop {
-        scheduler::run_ready().unwrap();
-        if owner.state() == ThreadState::Dead(0) {
-            break;
-        }
-        assert!(
-            hardware::timer().now_ns().unwrap() < limit,
-            "IPC wait stalled"
-        );
-        hardware::cpu().idle_until_interrupt();
-    }
-}
+use crate::run_thread;

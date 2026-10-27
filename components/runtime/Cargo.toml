@@ -15,4 +15,5 @@ test = false
 bench = false
 
 [dependencies]
+arrayvec = { version = "0.7.6", default-features = false }
 abi = { package = "arona-abi", path = "../../abi" }

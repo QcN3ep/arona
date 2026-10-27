@@ -6,12 +6,13 @@
 
 mod call;
 mod handle;
+pub mod ipc;
 pub mod memory;
 pub mod thread;
 
 pub use abi::{ObjectType, Rights};
 pub use call::Error;
-pub use handle::{BorrowedHandle, Handle, HandleInfo, Object};
+pub use handle::{AnyHandle, BorrowedHandle, Handle, HandleInfo, Object};
 
 mod sealed {
     pub trait Object {}

@@ -61,34 +61,41 @@ impl Call {
         Ok(self.reply.take().expect("call already submitted"))
     }
 
-    pub(crate) fn wait(mut self) -> Result<ReceivedMessage, ChannelError> {
+    pub(crate) fn wait_with<E: From<ChannelError>>(
+        mut self,
+        deliver: impl FnOnce(&ReceivedMessage) -> Result<(), E>,
+    ) -> Result<ReceivedMessage, E> {
         let wait = self.wait.take().expect("call not submitted");
         let deadline = self.reference.0.lock().deadline;
         let outcome = match deadline {
-            Some(deadline) => wait.wait_until(deadline)?,
+            Some(deadline) => wait.wait_until(deadline).map_err(ChannelError::from)?,
             None => {
-                wait.wait()?;
+                wait.wait().map_err(ChannelError::from)?;
                 WaitOutcome::Notified
             }
         };
         let _interrupts = InterruptGuard::new();
         if outcome == WaitOutcome::TimedOut {
-            return Err(ChannelError::TimedOut);
+            return Err(ChannelError::TimedOut.into());
         }
-        let mut state = self.reference.0.lock();
-        let result = state
+        let result = self
+            .reference
+            .0
+            .lock()
             .result
             .replace(Err(ChannelError::InvalidState))
             .expect("reply wait completed without a result");
-        if let Ok(response) = &result {
-            state
-                .destination
-                .as_mut()
-                .unwrap()
-                .handles
-                .drain(..response.handles().len());
-        }
-        result
+        let response = result?;
+        deliver(&response)?;
+        self.reference
+            .0
+            .lock()
+            .destination
+            .as_mut()
+            .unwrap()
+            .handles
+            .drain(..response.handles().len());
+        Ok(response)
     }
 }
 

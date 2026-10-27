@@ -3,6 +3,7 @@
 //! 对象调用的鉴权与分派。
 
 mod error;
+mod ipc;
 mod memory;
 mod object;
 mod task;
@@ -76,7 +77,7 @@ fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, Error> {
                 ObjectReference::FrameAllocation(allocation) => {
                     memory::frames(&caller, &allocation, arguments[0], args)?
                 }
-                _ => return Err(Error::Unsupported),
+                object => return ipc::invoke(&caller, handle, object, arguments[0], args),
             }
         }
     };

@@ -11,8 +11,15 @@ pub(crate) fn invoke(
     method: u64,
     arguments: [u64; 5],
 ) -> Result<[u64; 2], Error> {
-    // SAFETY: 调用方须维持寄存器所引用的缓冲区在陷入期间有效并满足相应访问权限。
-    let result = unsafe { raw(handle, method, arguments) };
+    check(invoke_return(handle, method, arguments))
+}
+
+pub(crate) fn invoke_return(handle: abi::Handle, method: u64, arguments: [u64; 5]) -> abi::Return {
+    // SAFETY: 调用方须维持陷入期间的缓冲区有效性与输出独占性。
+    unsafe { raw(handle, method, arguments) }
+}
+
+pub(crate) fn check(result: abi::Return) -> Result<[u64; 2], Error> {
     if result.status == 0 {
         Ok(result.values)
     } else {

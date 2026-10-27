@@ -51,6 +51,7 @@ name = "arona-runtime"
 version = "0.1.0"
 dependencies = [
  "arona-abi",
+ "arrayvec",
 ]
 
 [[package]]

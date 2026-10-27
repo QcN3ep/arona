@@ -42,11 +42,14 @@ pub(super) fn invoke(target: &Thread, method: u64, args: [u64; 5]) -> Result<[u6
                 .map_err(|_| Error::InvalidState)?,
             0,
         ]),
-        thread::EXIT | thread::YIELD | thread::SLEEP => {
+        thread::EXIT | thread::YIELD | thread::SLEEP | thread::WAIT_MANY => {
             if !is_current(target) {
                 return Err(Error::Denied);
             }
             match method {
+                thread::WAIT_MANY => {
+                    return super::ipc::wait_many(&target.task().ok_or(Error::InvalidState)?, args);
+                }
                 thread::EXIT => scheduler::terminate(target, args[0] as usize),
                 thread::YIELD => threads::yield_now()?,
                 thread::SLEEP => threads::sleep_until(args[0])?,

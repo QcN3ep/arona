@@ -27,6 +27,9 @@ methods!(task {
     INSTALL = 26 => INSTALL_HANDLE;
     TERMINATE = 27 => TERMINATE;
     WAIT = 28 => WAIT;
+    CHANNEL = 29 => CREATE_CHANNEL;
+    EVENT = 30 => CREATE_EVENT;
+    TIMER = 31 => CREATE_TIMER;
 });
 methods!(memory {
     SIZE = 16 => NONE;
@@ -43,7 +46,17 @@ methods!(thread {
     YIELD = 21 => NONE;
     SLEEP = 22 => NONE;
     NOW = 23 => NONE;
+    WAIT_MANY = 24 => NONE;
 });
+
+methods!(channel {
+    SEND = 16 => WRITE;
+    RECEIVE = 17 => READ;
+    CALL = 18 => READ_WRITE;
+});
+methods!(reply { SEND = 16 => WRITE; });
+methods!(event { SIGNAL = 16 => SIGNAL; });
+methods!(timer { ARM = 16 => WRITE; CANCEL = 17 => WRITE; });
 
 pub const INFO: u64 = 0;
 pub const CLOSE: u64 = 1;
@@ -57,7 +70,10 @@ pub const fn required_rights(kind: ObjectType, method: u64) -> Option<Rights> {
             ObjectType::Task => task::required(method),
             ObjectType::Thread => thread::required(method),
             ObjectType::FrameAllocation => memory::required(method),
-            _ => None,
+            ObjectType::Channel => channel::required(method),
+            ObjectType::Reply => reply::required(method),
+            ObjectType::Event => event::required(method),
+            ObjectType::Timer => timer::required(method),
         },
     }
 }

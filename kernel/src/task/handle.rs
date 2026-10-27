@@ -267,24 +267,21 @@ impl HandleTable {
         handles: &[Handle],
         entries: &mut ArrayVec<HandleEntry, N>,
     ) -> Result<(), HandleError> {
-        if handles.len() != entries.len() {
-            return Err(HandleError::InvalidArgument);
-        }
         let mut state = self.state.lock();
-        for (handle, entry) in handles.iter().zip(entries.iter()) {
-            let slot = handle
-                .raw_index()
-                .and_then(|index| state.slots.get(index))
-                .ok_or(HandleError::BadHandle)?;
-            if slot.generation != handle.raw_generation()
-                || !matches!(slot.state, SlotState::Reserved)
-            {
-                return Err(HandleError::BadHandle);
-            }
-            if !entry.object.allowed_rights().contains(entry.rights) {
-                return Err(HandleError::InvalidArgument);
-            }
+        state.validate_reserved(handles, entries.iter())?;
+        for (handle, entry) in handles.iter().zip(entries.drain(..)) {
+            state.publish(*handle, entry);
         }
+        Ok(())
+    }
+
+    pub(crate) fn publish_received(
+        &self,
+        handles: &[Handle],
+        entries: &mut Vec<HandleEntry>,
+    ) -> Result<(), HandleError> {
+        let mut state = self.state.lock();
+        state.validate_reserved(handles, entries.iter())?;
         for (handle, entry) in handles.iter().zip(entries.drain(..)) {
             state.publish(*handle, entry);
         }
@@ -490,6 +487,31 @@ impl TableState {
             SlotState::Occupied(entry) if slot.generation == handle.raw_generation() => Ok(entry),
             _ => Err(HandleError::BadHandle),
         }
+    }
+
+    fn validate_reserved<'a>(
+        &self,
+        handles: &[Handle],
+        entries: impl ExactSizeIterator<Item = &'a HandleEntry>,
+    ) -> Result<(), HandleError> {
+        if handles.len() != entries.len() {
+            return Err(HandleError::InvalidArgument);
+        }
+        for (handle, entry) in handles.iter().zip(entries) {
+            let slot = handle
+                .raw_index()
+                .and_then(|index| self.slots.get(index))
+                .ok_or(HandleError::BadHandle)?;
+            if slot.generation != handle.raw_generation()
+                || !matches!(slot.state, SlotState::Reserved)
+            {
+                return Err(HandleError::BadHandle);
+            }
+            if !entry.object.allowed_rights().contains(entry.rights) {
+                return Err(HandleError::InvalidArgument);
+            }
+        }
+        Ok(())
     }
 
     fn ensure_available(&mut self, count: usize) -> Result<(), HandleError> {

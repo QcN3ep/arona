@@ -17,7 +17,7 @@ pub const PEER_CLOSED: u64 = 1 << 2;
 pub const EXITED: u64 = 1 << 0;
 pub const DEAD: u64 = 1 << 0;
 
-const MAX_ITEMS: usize = 16;
+use abi::ipc::WAIT_ITEMS as MAX_ITEMS;
 
 #[derive(Clone, Copy)]
 pub(crate) enum WaitMode {

@@ -10,7 +10,10 @@ const CREATION_RIGHTS: Rights = Rights::CREATE_TASK
     .union(Rights::CREATE_THREAD)
     .union(Rights::FRAME_ALLOCATE)
     .union(Rights::MAP_MEMORY)
-    .union(Rights::INSTALL_HANDLE);
+    .union(Rights::INSTALL_HANDLE)
+    .union(Rights::CREATE_CHANNEL)
+    .union(Rights::CREATE_EVENT)
+    .union(Rights::CREATE_TIMER);
 
 pub(super) fn invoke(
     caller: &Task,
@@ -63,6 +66,9 @@ pub(super) fn invoke(
                 target.wait_until(args[0])?
             };
             Ok([status.ok_or(Error::TimedOut)? as u64, 0])
+        }
+        task::CHANNEL | task::EVENT | task::TIMER => {
+            super::ipc::create(caller, target, method, args)
         }
         _ => super::memory::task(caller, target, method, args),
     }

@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod handle;
+pub mod ipc;
 pub mod memory;
 pub mod method;
 mod object;

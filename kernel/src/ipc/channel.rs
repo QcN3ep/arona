@@ -16,8 +16,8 @@ use crate::{
 use super::wait::{Observer, Observers, WaitMode, notify_observers};
 
 const CAPACITY: usize = 32;
-const MESSAGE_WORDS: usize = 8;
-pub(crate) const MESSAGE_HANDLES: usize = 8;
+pub(crate) use abi::ipc::MESSAGE_HANDLES;
+use abi::ipc::MESSAGE_WORDS;
 type MessageHandles = Vec<HandleEntry>;
 
 static CLEANUP: Mutex<ChannelCleanup> = Mutex::new(ChannelCleanup {
@@ -295,7 +295,7 @@ impl ChannelReference {
     }
 
     fn receive_without_handles(&self, mode: WaitMode) -> Result<Message, ChannelError> {
-        self.receive_with(mode, 0, |_| Ok(ArrayVec::new()))
+        self.receive_with(mode, 0, |_, _, _| Ok(ArrayVec::new()))
             .map(|received| received.message)
     }
 
@@ -303,7 +303,11 @@ impl ChannelReference {
         &self,
         mode: WaitMode,
         handle_capacity: usize,
-        mut install: impl FnMut(&mut MessageHandles) -> Result<ArrayVec<Handle, MESSAGE_HANDLES>, E>,
+        mut install: impl FnMut(
+            &Message,
+            bool,
+            &mut MessageHandles,
+        ) -> Result<ArrayVec<Handle, MESSAGE_HANDLES>, E>,
     ) -> Result<ReceivedMessage, E> {
         let incoming = 1 - self.side;
         loop {
@@ -321,16 +325,17 @@ impl ChannelReference {
                     }
                     let mut queued = direction.messages.pop_front().unwrap();
                     drop(state);
-                    let handles = match install(&mut queued.handles) {
-                        Ok(handles) => handles,
-                        Err(error) => {
-                            let mut state = self.channel.lock();
-                            let direction = &mut state.directions[incoming];
-                            direction.messages.push_front(queued);
-                            direction.receivers.wake_one();
-                            return Err(error);
-                        }
-                    };
+                    let handles =
+                        match install(&queued.message, queued.has_reply, &mut queued.handles) {
+                            Ok(handles) => handles,
+                            Err(error) => {
+                                let mut state = self.channel.lock();
+                                let direction = &mut state.directions[incoming];
+                                direction.messages.push_front(queued);
+                                direction.receivers.wake_one();
+                                return Err(error);
+                            }
+                        };
                     let message = queued.message;
                     let has_reply = queued.has_reply;
                     drop(queued);

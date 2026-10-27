@@ -49,7 +49,9 @@ impl From<TaskError> for Error {
             TaskError::Memory(error) => error.into(),
             TaskError::Handle(error) => error.into(),
             TaskError::Thread(error) => error.into(),
-            _ => Self::InvalidState,
+            TaskError::Channel(error) => error.into(),
+            TaskError::Wait(error) => error.into(),
+            TaskError::InvalidState => Self::InvalidState,
         }
     }
 }
@@ -60,6 +62,63 @@ impl From<crate::memory::UserMemoryError> for Error {
             MemoryError::NoMemory | MemoryError::ReferenceOverflow => Self::NoMemory,
             MemoryError::Mmu(_) => Self::InvalidState,
             _ => Self::BadAddress,
+        }
+    }
+}
+
+impl From<crate::ipc::ChannelError> for Error {
+    fn from(error: crate::ipc::ChannelError) -> Self {
+        use crate::ipc::ChannelError as E;
+        match error {
+            E::InvalidMessage | E::CyclicTransfer => Self::InvalidArgument,
+            E::BufferTooSmall => Self::BufferTooSmall,
+            E::Closed => Self::Closed,
+            E::WouldBlock => Self::WouldBlock,
+            E::PeerClosed => Self::PeerClosed,
+            E::EndOfStream => Self::EndOfStream,
+            E::TimedOut => Self::TimedOut,
+            E::InvalidState => Self::InvalidState,
+            E::ServerGone => Self::ServerGone,
+            E::Memory(error) => error.into(),
+            E::Thread(error) => error.into(),
+        }
+    }
+}
+impl From<crate::ipc::EventError> for Error {
+    fn from(error: crate::ipc::EventError) -> Self {
+        match error {
+            crate::ipc::EventError::InvalidArgument => Self::InvalidArgument,
+            crate::ipc::EventError::Closed => Self::Closed,
+            crate::ipc::EventError::Memory(error) => error.into(),
+        }
+    }
+}
+impl From<crate::ipc::TimerError> for Error {
+    fn from(error: crate::ipc::TimerError) -> Self {
+        use crate::ipc::TimerError as E;
+        match error {
+            E::InvalidArgument => Self::InvalidArgument,
+            E::Closed => Self::Closed,
+            E::Event(error) => error.into(),
+            E::Memory(error) => error.into(),
+            E::Thread(error) => error.into(),
+            E::Hardware(_) => Self::InvalidState,
+        }
+    }
+}
+impl From<crate::ipc::WaitManyError> for Error {
+    fn from(error: crate::ipc::WaitManyError) -> Self {
+        use crate::ipc::WaitManyError as E;
+        match error {
+            E::InvalidArgument => Self::InvalidArgument,
+            E::WouldBlock => Self::WouldBlock,
+            E::TimedOut => Self::TimedOut,
+            E::Closed => Self::Closed,
+            E::Handle(error) => error.into(),
+            E::Channel(error) => error.into(),
+            E::Event(error) => error.into(),
+            E::Thread(error) => error.into(),
+            E::Memory(error) => error.into(),
         }
     }
 }

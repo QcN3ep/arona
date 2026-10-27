@@ -287,6 +287,18 @@ impl Task {
         transfers: &[TransferRequest],
         deadline: Option<u64>,
     ) -> Result<ReceivedMessage, TaskError> {
+        self.call_deliver(handle, message, transfers, deadline, &mut false, |_| Ok(()))
+    }
+
+    pub(crate) fn call_deliver(
+        &self,
+        handle: Handle,
+        message: Message,
+        transfers: &[TransferRequest],
+        deadline: Option<u64>,
+        committed: &mut bool,
+        deliver: impl FnOnce(&ReceivedMessage) -> Result<(), TaskError>,
+    ) -> Result<ReceivedMessage, TaskError> {
         let channel = self.channel(handle, Rights::READ | Rights::WRITE)?;
         {
             let _interrupts = InterruptGuard::new();
@@ -314,7 +326,8 @@ impl Task {
                 |objects| channel.check_transfer(objects).map_err(Into::into),
             )
         })?;
-        Ok(call.wait()?)
+        *committed = true;
+        call.wait_with(deliver)
     }
 
     pub fn reply(
@@ -376,7 +389,7 @@ impl Task {
         Ok(crate::ipc::wait::wait_many(self, items, mode)?)
     }
 
-    fn send_with(
+    pub(crate) fn send_with(
         &self,
         handle: Handle,
         message: Message,
@@ -409,12 +422,34 @@ impl Task {
         mode: WaitMode,
     ) -> Result<ReceivedMessage, TaskError> {
         let channel = self.channel(handle, Rights::READ)?;
-        channel.receive_with(mode, capacity, |entries| {
+        channel.receive_with(mode, capacity, |_, _, entries| {
             let registry = TASKS.lock();
             let table = &registry.find(self)?.handles;
             table.get(handle, ObjectType::Channel, Rights::READ)?;
             Ok(table.install(entries)?)
         })
+    }
+
+    pub(crate) fn receive_deliver(
+        &self,
+        handle: Handle,
+        capacity: usize,
+        mode: WaitMode,
+        mut deliver: impl FnMut(&ReceivedMessage, &[super::HandleEntry]) -> Result<(), TaskError>,
+    ) -> Result<ReceivedMessage, TaskError> {
+        self.channel(handle, Rights::READ)?.receive_with(
+            mode,
+            capacity,
+            |message, has_reply, entries| {
+                self.get(handle, ObjectType::Channel, Rights::READ)?;
+                let mut reservation = self.reserve_handles(entries.len())?;
+                let response =
+                    ReceivedMessage::new(*message, reservation.handles.clone(), has_reply);
+                deliver(&response, entries)?;
+                reservation.publish_received(entries)?;
+                Ok(response.handles().iter().copied().collect())
+            },
+        )
     }
 
     fn channel(&self, handle: Handle, rights: Rights) -> Result<ChannelReference, TaskError> {
@@ -608,6 +643,20 @@ impl Task {
 }
 
 impl ReservedHandles {
+    fn publish_received(
+        &mut self,
+        entries: &mut alloc::vec::Vec<super::HandleEntry>,
+    ) -> Result<(), TaskError> {
+        let _interrupts = InterruptGuard::new();
+        TASKS
+            .lock()
+            .find(&self.task)?
+            .handles
+            .publish_received(&self.handles, entries)?;
+        self.handles.clear();
+        Ok(())
+    }
+
     pub(crate) fn publish<const N: usize>(
         &mut self,
         entries: &mut ArrayVec<super::HandleEntry, N>,
