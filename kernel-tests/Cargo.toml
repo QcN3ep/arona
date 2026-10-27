@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "arona-kernel-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "kernel_tests"
+test = false
+bench = false
+
+[dependencies]
+arrayvec = { version = "0.7.6", default-features = false }
+kernel = { package = "arona-kernel", path = "../kernel" }
+spin = { version = "0.9.9", default-features = false, features = ["mutex", "once"] }

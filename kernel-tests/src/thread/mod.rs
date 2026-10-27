@@ -7,6 +7,7 @@ use kernel::{
     hardware::{
         self,
         cpu::InterruptState,
+        execution::ExecutionError,
         mmu::{PAGE_SIZE, PagePermissions},
     },
     memory::{self, MemoryError, VirtRange},
@@ -19,12 +20,20 @@ mod wait;
 
 pub use user::{handle as handle_user, run as run_user};
 
+static EXECUTION_ORDER: AtomicUsize = AtomicUsize::new(0);
+static EXECUTION_TARGET: Mutex<Option<Thread>> = Mutex::new(None);
 static ORDER: AtomicUsize = AtomicUsize::new(0);
 static WAKER: Mutex<Option<Waker>> = Mutex::new(None);
 static STACKS: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
 static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
 
-pub fn run() {
+pub fn run<P: crate::Platform>() {
+    scheduler::initialize().unwrap();
+    assert_eq!(
+        scheduler::initialize(),
+        Err(ThreadError::AlreadyInitialized)
+    );
+    execution_environment::<P>();
     let manager = memory::manager();
     manager.reclaim_heap();
     let before = manager.heap_stats();
@@ -263,4 +272,67 @@ fn inspect_stack(index: usize) {
         Err(MemoryError::InUse)
     );
     STACKS[index].store(guard, Ordering::Relaxed);
+}
+
+fn execution_environment<P: crate::Platform>() {
+    let thread = Thread::new(execution_worker::<P>, 0).unwrap();
+    let next = Thread::new(
+        |_: usize| {
+            assert_eq!(EXECUTION_ORDER.fetch_add(1, Ordering::Relaxed), 1);
+            42
+        },
+        0,
+    )
+    .unwrap();
+    *EXECUTION_TARGET.lock() = Some(next.clone());
+    thread.start().unwrap();
+    next.start().unwrap();
+    P::set_floating_enabled(true);
+    let result = scheduler::run_ready();
+    P::set_floating_enabled(false);
+    assert_eq!(
+        result,
+        Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
+    );
+    assert_eq!(thread.state(), ThreadState::Ready);
+    assert!(thread::current().is_none());
+    scheduler::run_ready().unwrap();
+    assert_eq!(thread.state(), ThreadState::Dead(19));
+    assert_eq!(next.state(), ThreadState::Dead(42));
+    *EXECUTION_TARGET.lock() = None;
+    drop(thread);
+    drop(next);
+}
+
+fn execution_worker<P: crate::Platform>(_: usize) -> usize {
+    assert_eq!(EXECUTION_ORDER.fetch_add(1, Ordering::Relaxed), 0);
+    P::set_floating_enabled(true);
+    let result = thread::yield_now();
+    P::set_floating_enabled(false);
+    assert_eq!(
+        result,
+        Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
+    );
+    assert_eq!(thread::current().unwrap().state(), ThreadState::Running);
+    let wait = thread::prepare_wait().unwrap();
+    let waker = wait.waker();
+    P::set_floating_enabled(true);
+    let result = wait.wait_until(u64::MAX);
+    P::set_floating_enabled(false);
+    assert_eq!(
+        result,
+        Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
+    );
+    assert!(!waker.wake());
+    let target = EXECUTION_TARGET.lock().as_ref().unwrap().clone();
+    P::set_floating_enabled(true);
+    let result = target.wait_until(u64::MAX);
+    P::set_floating_enabled(false);
+    assert_eq!(
+        result,
+        Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
+    );
+    drop(thread::prepare_wait().unwrap());
+    thread::yield_now().unwrap();
+    19
 }

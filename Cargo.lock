@@ -13,6 +13,7 @@ name = "arona-arch"
 version = "0.1.0"
 dependencies = [
  "arona-kernel",
+ "arona-kernel-tests",
  "arrayvec",
  "fdt",
  "spin",
@@ -28,6 +29,15 @@ dependencies = [
  "log",
  "spin",
  "triomphe",
+]
+
+[[package]]
+name = "arona-kernel-tests"
+version = "0.1.0"
+dependencies = [
+ "arona-kernel",
+ "arrayvec",
+ "spin",
 ]
 
 [[package]]

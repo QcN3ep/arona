@@ -75,3 +75,6 @@ spin = { version = "0.9.9", default-features = false, features = ["mutex", "spin
 
 [target.'cfg(target_arch = "loongarch64")'.dependencies]
 uefi-raw = "0.14.0"
+
+[dev-dependencies]
+kernel-tests = { package = "arona-kernel-tests", path = "../kernel-tests" }

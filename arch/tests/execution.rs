@@ -26,13 +26,6 @@ use kernel::{
     trap::{Trap, TrapEvent, TrapOrigin, TrapOutcome},
 };
 
-#[path = "../../kernel/tests/ipc/mod.rs"]
-mod ipc_tests;
-#[path = "../../kernel/tests/task/mod.rs"]
-mod task_tests;
-#[path = "../../kernel/tests/thread/mod.rs"]
-mod thread_tests;
-
 #[cfg(target_arch = "riscv64")]
 #[path = "riscv64/execution.rs"]
 mod isa;
@@ -55,8 +48,7 @@ static CONTEXTS: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 static RETIRED: AtomicUsize = AtomicUsize::new(0);
 static KERNEL_ROUNDS: AtomicUsize = AtomicUsize::new(0);
-static THREAD_ORDER: AtomicUsize = AtomicUsize::new(0);
-static THREAD_TARGET: spin::Mutex<Option<kernel::thread::Thread>> = spin::Mutex::new(None);
+static KERNEL_TESTS: AtomicBool = AtomicBool::new(false);
 static USER_ROUNDS: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
 static USER_DONE: [AtomicBool; 2] = [const { AtomicBool::new(false) }; 2];
 static STACKS: [AtomicUsize; 4] = [const { AtomicUsize::new(0) }; 4];
@@ -108,11 +100,14 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
             handle,
         )
         .unwrap();
-    if option_env!("ARONA_EXECUTION_TEST") == Some("thread") {
+    if select_kernel_suite() {
         hardware::timer()
             .initialize(isa::frequency(firmware))
             .unwrap();
-        thread_round_trips();
+        KERNEL_TESTS.store(true, Ordering::Relaxed);
+        kernel_tests::run::<Platform>();
+        uart().write(format_args!("Kernel tests passed\n")).unwrap();
+        hardware::cpu().halt()
     }
     let stacks: [HeapAllocation; 3] = core::array::from_fn(|index| {
         let stack = manager
@@ -174,89 +169,47 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
     hardware::cpu().halt()
 }
 
-fn thread_round_trips() -> ! {
-    use kernel::thread::{self, Thread, ThreadError, ThreadState, scheduler};
+struct Platform;
 
-    scheduler::initialize().unwrap();
-    assert_eq!(
-        scheduler::initialize(),
-        Err(ThreadError::AlreadyInitialized)
-    );
-    let thread = Thread::new(
-        |_| {
-            assert_eq!(THREAD_ORDER.fetch_add(1, Ordering::Relaxed), 0);
-            isa::set_floating_enabled(true);
-            let result = thread::yield_now();
-            isa::set_floating_enabled(false);
-            assert_eq!(
-                result,
-                Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
-            );
-            assert_eq!(thread::current().unwrap().state(), ThreadState::Running);
-            let wait = thread::prepare_wait().unwrap();
-            let waker = wait.waker();
-            isa::set_floating_enabled(true);
-            let result = wait.wait_until(u64::MAX);
-            isa::set_floating_enabled(false);
-            assert_eq!(
-                result,
-                Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
-            );
-            assert!(!waker.wake());
-            let target = THREAD_TARGET.lock().as_ref().unwrap().clone();
-            isa::set_floating_enabled(true);
-            let result = target.wait_until(u64::MAX);
-            isa::set_floating_enabled(false);
-            assert_eq!(
-                result,
-                Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
-            );
-            drop(thread::prepare_wait().unwrap());
-            thread::yield_now().unwrap();
-            19
-        },
-        0,
-    )
-    .unwrap();
-    let next = Thread::new(
-        |_| {
-            assert_eq!(THREAD_ORDER.fetch_add(1, Ordering::Relaxed), 1);
-            42
-        },
-        0,
-    )
-    .unwrap();
-    *THREAD_TARGET.lock() = Some(next.clone());
-    thread.start().unwrap();
-    next.start().unwrap();
-    isa::set_floating_enabled(true);
-    let result = scheduler::run_ready();
-    isa::set_floating_enabled(false);
-    assert_eq!(
-        result,
-        Err(ThreadError::Execution(ExecutionError::ExtensionsEnabled))
-    );
-    assert_eq!(thread.state(), ThreadState::Ready);
-    assert!(thread::current().is_none());
-    scheduler::run_ready().unwrap();
-    assert_eq!(thread.state(), ThreadState::Dead(19));
-    assert_eq!(next.state(), ThreadState::Dead(42));
-    *THREAD_TARGET.lock() = None;
-    drop(thread);
-    drop(next);
-    thread_tests::run();
-    task_tests::run();
-    ipc_tests::run();
-    // SAFETY: 测试代码须独占一个完整且可读的内核代码页。
-    let code = unsafe {
-        core::slice::from_raw_parts(
-            isa::task_user_code as *const () as *const u64,
-            PAGE_SIZE / 8,
-        )
-    };
-    thread_tests::run_user(code, isa::set_floating_enabled);
-    uart().write(format_args!("Thread tests passed\n")).unwrap();
-    hardware::cpu().halt()
+impl kernel_tests::Platform for Platform {
+    fn set_floating_enabled(enabled: bool) {
+        isa::set_floating_enabled(enabled);
+    }
+
+    fn user_code() -> &'static [u64] {
+        // SAFETY: 测试代码须独占一个完整且可读的内核代码页。
+        unsafe {
+            core::slice::from_raw_parts(
+                isa::task_user_code as *const () as *const u64,
+                PAGE_SIZE / 8,
+            )
+        }
+    }
+}
+
+fn select_kernel_suite() -> bool {
+    uart().write(format_args!("Test suite: ")).unwrap();
+    let mut input = [0u8; 16];
+    let mut length = 0;
+    loop {
+        // SAFETY: UART 须保持可读的启动映射且由测试独占。
+        let byte = unsafe {
+            while ((UART + 5) as *const u8).read_volatile() & 1 == 0 {
+                core::hint::spin_loop();
+            }
+            (UART as *const u8).read_volatile()
+        };
+        if byte == b'\n' || byte == b'\r' {
+            return match &input[..length] {
+                b"execution" => false,
+                b"kernel" => true,
+                _ => panic!("unknown execution test suite"),
+            };
+        }
+        assert!(length < input.len(), "test suite name is too long");
+        input[length] = byte;
+        length += 1;
+    }
 }
 
 fn kernel_round_trips() {
@@ -338,11 +291,8 @@ extern "C" fn switch_context(current: &Context, next: &Context) {
 }
 
 fn handle(trap: Trap) -> TrapOutcome {
-    if option_env!("ARONA_EXECUTION_TEST") == Some("thread") {
-        if trap.origin == TrapOrigin::User {
-            return thread_tests::handle_user(trap);
-        }
-        return thread_tests::handle(trap);
+    if KERNEL_TESTS.load(Ordering::Relaxed) {
+        return kernel_tests::handle(trap);
     }
     assert_eq!(trap.origin, TrapOrigin::User);
     assert_eq!(hardware::cpu().interrupt_state(), InterruptState::Disabled);
