@@ -192,9 +192,7 @@ impl Task {
         let _interrupts = InterruptGuard::new();
         let registry = TASKS.lock();
         let resources = registry.find(self)?;
-        if self.state() != TaskState::Created
-            || !matches!(&resources.creator, Some(Creator::Task(parent)) if parent.same(source))
-        {
+        if self.state() != TaskState::Created {
             return Err(TaskError::InvalidState);
         }
         let source = &registry.find(source)?.handles;
@@ -335,6 +333,14 @@ impl Task {
         let source = &registry.find(self)?.handles;
         let target = &registry.find(&target)?.handles;
         source.reply_to(handle, &reply, target, message, transfers)
+    }
+
+    pub(crate) fn reserve_handles(&self, count: usize) -> Result<ReservedHandles, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        Ok(ReservedHandles {
+            task: self.clone(),
+            handles: TASKS.lock().find(self)?.handles.reserve_handles(count)?,
+        })
     }
 
     pub(crate) fn reserve_reply_handles(&self) -> Result<ReservedHandles, TaskError> {
@@ -598,6 +604,22 @@ impl Task {
 
     pub(crate) fn finish_exit(&self, status: usize) {
         self.0.data.lock().state = TaskState::Dead(status);
+    }
+}
+
+impl ReservedHandles {
+    pub(crate) fn publish<const N: usize>(
+        &mut self,
+        entries: &mut ArrayVec<super::HandleEntry, N>,
+    ) -> Result<(), TaskError> {
+        let _interrupts = InterruptGuard::new();
+        TASKS
+            .lock()
+            .find(&self.task)?
+            .handles
+            .publish_reserved(&self.handles, entries)?;
+        self.handles.clear();
+        Ok(())
     }
 }
 

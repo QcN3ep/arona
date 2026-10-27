@@ -21,11 +21,28 @@ methods!(task {
     RESERVE = 20 => MAP_MEMORY;
     UNRESERVE = 21 => MAP_MEMORY;
     QUERY = 22 => MAP_MEMORY;
+    STATE = 23 => NONE;
+    CREATE = 24 => CREATE_TASK;
+    CREATE_THREAD = 25 => CREATE_THREAD;
+    INSTALL = 26 => INSTALL_HANDLE;
+    TERMINATE = 27 => TERMINATE;
+    WAIT = 28 => WAIT;
 });
 methods!(memory {
     SIZE = 16 => NONE;
     READ = 17 => READ;
     WRITE = 18 => WRITE;
+});
+
+methods!(thread {
+    STATE = 16 => NONE;
+    START = 17 => START;
+    TERMINATE = 18 => TERMINATE;
+    WAIT = 19 => WAIT;
+    EXIT = 20 => NONE;
+    YIELD = 21 => NONE;
+    SLEEP = 22 => NONE;
+    NOW = 23 => NONE;
 });
 
 pub const INFO: u64 = 0;
@@ -38,6 +55,7 @@ pub const fn required_rights(kind: ObjectType, method: u64) -> Option<Rights> {
         DUPLICATE => Some(Rights::DUPLICATE),
         _ => match kind {
             ObjectType::Task => task::required(method),
+            ObjectType::Thread => thread::required(method),
             ObjectType::FrameAllocation => memory::required(method),
             _ => None,
         },

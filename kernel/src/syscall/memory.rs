@@ -81,14 +81,13 @@ fn allocate(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Er
     {
         return Err(Error::InvalidArgument);
     }
-    let allocation = target.allocate_frames(args[0])?;
-    let allocation = mm::manager().allocate_arc(allocation)?;
-    Ok([
-        caller
-            .insert(Object::FrameAllocation(allocation), rights)?
-            .raw(),
-        0,
-    ])
+    let [handle] = super::object::create(caller, [rights], || {
+        let allocation = target.allocate_frames(args[0])?;
+        Ok([Object::FrameAllocation(
+            mm::manager().allocate_arc(allocation)?,
+        )])
+    })?;
+    Ok([handle.raw(), 0])
 }
 
 fn map(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {

@@ -61,6 +61,14 @@ impl<T: Object> Drop for Handle<T> {
         let _ = call::invoke(self.raw, abi::method::CLOSE, [0; 5]);
     }
 }
+impl BorrowedHandle<'static, crate::Thread> {
+    pub(crate) const fn current() -> Self {
+        Self {
+            raw: abi::Handle::CURRENT_THREAD,
+            _owner: PhantomData,
+        }
+    }
+}
 impl<T: Object> BorrowedHandle<'_, T> {
     pub fn raw(&self) -> abi::Handle {
         self.raw

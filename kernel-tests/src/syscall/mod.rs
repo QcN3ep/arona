@@ -83,8 +83,8 @@ fn scenario(_: usize) -> usize {
         })
         .unwrap();
     user.start().unwrap();
-    assert_eq!(user.wait().unwrap(), usize::MAX);
-    assert_eq!(task.state(), TaskState::Dead(usize::MAX));
+    assert_eq!(user.wait().unwrap(), 73);
+    assert_eq!(task.state(), TaskState::Dead(73));
     let access = stack
         .access(
             stack.frames().next().unwrap(),

@@ -7,6 +7,8 @@ use core::ops::BitOr;
 pub struct Handle(u64);
 
 impl Handle {
+    pub const CURRENT_THREAD: Self = Self(0);
+
     pub const fn from_raw(value: u64) -> Self {
         Self(value)
     }
@@ -47,12 +49,14 @@ impl Rights {
     pub const WRITE_MEMORY: Self = Self(1 << 24);
     pub const SET_STATE: Self = Self(1 << 25);
 
+    pub const CREATE_TASK: Self = Self(1 << 26);
+
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
     pub const fn from_bits(bits: u64) -> Option<Self> {
-        if bits & !0x03ff_7fff == 0 {
+        if bits & !0x07ff_7fff == 0 {
             Some(Self(bits))
         } else {
             None

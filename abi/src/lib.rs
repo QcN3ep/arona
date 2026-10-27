@@ -10,6 +10,7 @@ pub mod memory;
 pub mod method;
 mod object;
 mod status;
+pub mod thread;
 
 pub use handle::{Handle, Rights};
 pub use object::ObjectType;

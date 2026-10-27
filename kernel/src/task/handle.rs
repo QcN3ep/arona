@@ -50,7 +50,7 @@ enum SlotState {
 
 pub(crate) struct HandleEntry {
     pub(crate) object: Object,
-    rights: Rights,
+    pub(crate) rights: Rights,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -247,9 +247,48 @@ impl HandleTable {
     pub(crate) fn reserve_reply_handles(
         &self,
     ) -> Result<ArrayVec<Handle, MESSAGE_HANDLES>, HandleError> {
+        self.reserve_handles(MESSAGE_HANDLES)
+    }
+
+    pub(crate) fn reserve_handles(
+        &self,
+        count: usize,
+    ) -> Result<ArrayVec<Handle, MESSAGE_HANDLES>, HandleError> {
+        if count > MESSAGE_HANDLES {
+            return Err(HandleError::InvalidArgument);
+        }
         let mut state = self.state.lock();
-        state.ensure_available(MESSAGE_HANDLES)?;
-        Ok(core::array::from_fn::<_, MESSAGE_HANDLES, _>(|_| state.reserve()).into())
+        state.ensure_available(count)?;
+        Ok((0..count).map(|_| state.reserve()).collect())
+    }
+
+    pub(crate) fn publish_reserved<const N: usize>(
+        &self,
+        handles: &[Handle],
+        entries: &mut ArrayVec<HandleEntry, N>,
+    ) -> Result<(), HandleError> {
+        if handles.len() != entries.len() {
+            return Err(HandleError::InvalidArgument);
+        }
+        let mut state = self.state.lock();
+        for (handle, entry) in handles.iter().zip(entries.iter()) {
+            let slot = handle
+                .raw_index()
+                .and_then(|index| state.slots.get(index))
+                .ok_or(HandleError::BadHandle)?;
+            if slot.generation != handle.raw_generation()
+                || !matches!(slot.state, SlotState::Reserved)
+            {
+                return Err(HandleError::BadHandle);
+            }
+            if !entry.object.allowed_rights().contains(entry.rights) {
+                return Err(HandleError::InvalidArgument);
+            }
+        }
+        for (handle, entry) in handles.iter().zip(entries.drain(..)) {
+            state.publish(*handle, entry);
+        }
+        Ok(())
     }
 
     pub(crate) fn release_reply_handles(

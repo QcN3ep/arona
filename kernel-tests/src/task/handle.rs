@@ -40,7 +40,7 @@ fn thread_lifecycle() {
         .unwrap();
     assert_eq!(handle.raw(), (1u64 << 32) | 1);
     assert!(Rights::from_bits(1 << 15).is_none());
-    assert!(Rights::from_bits(1 << 26).is_none());
+    assert!(Rights::from_bits(1 << 63).is_none());
     assert_eq!(Rights::from_bits(rights.bits()), Some(rights));
     for invalid in [0, 1, 1u64 << 32, u64::MAX] {
         assert!(matches!(
