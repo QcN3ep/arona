@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! 原生对象调用的寄存器约定与共享类型。
+
+#![no_std]
+#![forbid(unsafe_code)]
+
+mod handle;
+pub mod method;
+mod object;
+mod status;
+
+pub use handle::{Handle, Rights};
+pub use object::ObjectType;
+pub use status::{Error, Return};

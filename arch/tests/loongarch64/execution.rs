@@ -215,3 +215,49 @@ pub extern "C" fn task_user_code() -> ! {
         "b .",
     );
 }
+
+#[unsafe(naked)]
+#[unsafe(link_section = ".text.test.syscall_user")]
+pub extern "C" fn syscall_user_code() -> ! {
+    naked_asm!(
+        ".balign 4096",
+        "move $s0, $a0",
+        "move $a7, $s0",
+        "li.d $a0, 0",
+        "syscall 0",
+        "bnez $a0, 9f",
+        "li.d $t0, 1",
+        "bne $a1, $t0, 9f",
+        "move $a7, $s0",
+        "li.d $a0, 2",
+        "li.d $a1, 0",
+        "syscall 0",
+        "bnez $a0, 9f",
+        "move $s1, $a1",
+        "move $a7, $s1",
+        "li.d $a0, 2",
+        "li.d $a1, 0",
+        "syscall 0",
+        "li.d $t0, 3",
+        "bne $a0, $t0, 9f",
+        "move $a7, $s1",
+        "li.d $a0, 999",
+        "syscall 0",
+        "li.d $t0, 15",
+        "bne $a0, $t0, 9f",
+        "move $a7, $s1",
+        "li.d $a0, 1",
+        "syscall 0",
+        "bnez $a0, 9f",
+        "move $a7, $s1",
+        "li.d $a0, 0",
+        "syscall 0",
+        "li.d $t0, 1",
+        "bne $a0, $t0, 9f",
+        "li.d $t0, 73",
+        "st.d $t0, $tp, 0",
+        "9:",
+        ".word 0",
+        ".balign 4096",
+    );
+}

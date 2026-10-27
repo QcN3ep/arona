@@ -262,7 +262,7 @@ pub fn handle_refill(trap: Trap) -> TrapOutcome {
     let mmu = hardware::mmu();
     let root = Frame::new(arch::boot::kernel_image().boot_tables.start).unwrap();
     match trap.event {
-        TrapEvent::Syscall { number: 20, .. } => {
+        TrapEvent::Syscall { handle: 20, .. } => {
             mmu.switch_root(root).unwrap();
             user_root(Frame::new(0).unwrap());
             mmu.invalidate_all();
@@ -271,7 +271,7 @@ pub fn handle_refill(trap: Trap) -> TrapOutcome {
                 values: [0; 2],
             };
         }
-        TrapEvent::Syscall { number: 18, .. } => {
+        TrapEvent::Syscall { handle: 18, .. } => {
             assert_eq!(super::PAGE_FAULTS.load(Ordering::Relaxed), 6);
             super::uart()
                 .write(format_args!("Trap tests passed: refill\n"))

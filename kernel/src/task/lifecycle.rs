@@ -144,6 +144,11 @@ impl Task {
         Ok(registry.find(self)?.handles.insert(object, rights)?)
     }
 
+    pub(crate) fn handle_info(&self, handle: Handle) -> Result<(ObjectType, Rights), TaskError> {
+        let _interrupts = InterruptGuard::new();
+        Ok(TASKS.lock().find(self)?.handles.info(handle)?)
+    }
+
     pub fn get(
         &self,
         handle: Handle,

@@ -292,7 +292,7 @@ impl TrapFrame {
     fn exception(&self, origin: TrapOrigin) -> TrapEvent {
         match self.cause {
             8 if origin == TrapOrigin::User => TrapEvent::Syscall {
-                number: self.registers[17],
+                handle: self.registers[17],
                 arguments: self.registers[10..16].try_into().unwrap(),
                 successor: self.pc + 4,
             },

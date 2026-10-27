@@ -217,3 +217,52 @@ pub extern "C" fn task_user_code() -> ! {
         ".option pop",
     );
 }
+
+#[unsafe(naked)]
+#[unsafe(link_section = ".text.test.syscall_user")]
+pub extern "C" fn syscall_user_code() -> ! {
+    naked_asm!(
+        ".balign 4096",
+        ".option push",
+        ".option norvc",
+        "mv s0, a0",
+        "mv a7, s0",
+        "li a0, 0",
+        "ecall",
+        "bnez a0, 9f",
+        "li t0, 1",
+        "bne a1, t0, 9f",
+        "mv a7, s0",
+        "li a0, 2",
+        "li a1, 0",
+        "ecall",
+        "bnez a0, 9f",
+        "mv s1, a1",
+        "mv a7, s1",
+        "li a0, 2",
+        "li a1, 0",
+        "ecall",
+        "li t0, 3",
+        "bne a0, t0, 9f",
+        "mv a7, s1",
+        "li a0, 999",
+        "ecall",
+        "li t0, 15",
+        "bne a0, t0, 9f",
+        "mv a7, s1",
+        "li a0, 1",
+        "ecall",
+        "bnez a0, 9f",
+        "mv a7, s1",
+        "li a0, 0",
+        "ecall",
+        "li t0, 1",
+        "bne a0, t0, 9f",
+        "li t0, 73",
+        "sd t0, 0(tp)",
+        "9:",
+        ".word 0",
+        ".option pop",
+        ".balign 4096",
+    );
+}

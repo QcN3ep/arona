@@ -172,6 +172,16 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
 struct Platform;
 
 impl kernel_tests::Platform for Platform {
+    fn syscall_code() -> &'static [u64] {
+        // SAFETY: 测试代码须独占一个完整且可读的内核代码页。
+        unsafe {
+            core::slice::from_raw_parts(
+                isa::syscall_user_code as *const () as *const u64,
+                PAGE_SIZE / 8,
+            )
+        }
+    }
+
     fn set_floating_enabled(enabled: bool) {
         isa::set_floating_enabled(enabled);
     }
@@ -303,14 +313,14 @@ fn handle(trap: Trap) -> TrapOutcome {
     let stack = STACKS[current].load(Ordering::Relaxed);
     assert!((stack..stack + STACK_SIZE).contains(&address));
     let TrapEvent::Syscall {
-        number, arguments, ..
+        handle, arguments, ..
     } = trap.event
     else {
         panic!("unexpected trap: {trap:?}");
     };
     let id = current - 1;
     assert_eq!(arguments[0], id);
-    match number {
+    match handle {
         1 => {
             let round = USER_ROUNDS[id - 1].fetch_add(1, Ordering::Relaxed);
             assert_eq!(arguments[1], round);

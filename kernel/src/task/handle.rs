@@ -1,208 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{mem, ops::BitOr, ptr};
+use core::{mem, ptr};
 
-use super::Task;
+use super::{Object, ObjectReference, ObjectType};
+pub use abi::{Handle, Rights};
 use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use spin::Mutex;
 
 use crate::{
     hardware::cpu::InterruptGuard,
-    ipc::{
-        Channel, ChannelReference, Event, EventReference, MESSAGE_HANDLES, Message,
-        ReceivedMessage, Reply, ReplyReference, Timer, TimerReference,
-    },
-    memory::{FrameAllocation, HeapArc},
-    thread::Thread,
+    ipc::{MESSAGE_HANDLES, Message, ReceivedMessage, Reply, ReplyReference},
 };
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[repr(transparent)]
-pub struct Handle(u64);
-
-impl Handle {
-    pub const fn from_raw(value: u64) -> Self {
-        Self(value)
-    }
-
-    pub const fn raw(self) -> u64 {
-        self.0
-    }
-
-    fn index(self) -> Option<usize> {
-        (self.0 as u32 as usize).checked_sub(1)
-    }
-
-    fn generation(self) -> u32 {
-        (self.0 >> 32) as u32
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Rights(u64);
-
-impl Rights {
-    pub const NONE: Self = Self(0);
-    pub const DUPLICATE: Self = Self(1 << 0);
-    pub const TRANSFER: Self = Self(1 << 1);
-    pub const WAIT: Self = Self(1 << 2);
-    pub const SIGNAL: Self = Self(1 << 3);
-    pub const READ: Self = Self(1 << 4);
-    pub const WRITE: Self = Self(1 << 5);
-    pub const MAP: Self = Self(1 << 6);
-    pub const EXECUTE: Self = Self(1 << 7);
-    pub const CREATE_THREAD: Self = Self(1 << 8);
-    pub const TERMINATE: Self = Self(1 << 9);
-    pub const MAP_MEMORY: Self = Self(1 << 10);
-    pub const RESOURCE_SPLIT: Self = Self(1 << 11);
-    pub const DEVICE_CONTROL: Self = Self(1 << 12);
-    pub const IRQ_ACK: Self = Self(1 << 13);
-    pub const DMA_MAP: Self = Self(1 << 14);
-    pub const REVOKE: Self = Self(1 << 16);
-    pub const START: Self = Self(1 << 17);
-    pub const FRAME_ALLOCATE: Self = Self(1 << 18);
-    pub const INSTALL_HANDLE: Self = Self(1 << 19);
-    pub const SET_TRAP: Self = Self(1 << 20);
-    pub const INTERRUPT: Self = Self(1 << 21);
-    pub const BIND_TRAP: Self = Self(1 << 22);
-    pub const READ_MEMORY: Self = Self(1 << 23);
-    pub const WRITE_MEMORY: Self = Self(1 << 24);
-    pub const SET_STATE: Self = Self(1 << 25);
-
-    pub const fn from_bits(bits: u64) -> Option<Self> {
-        if bits & !0x03ff_7fff == 0 {
-            Some(Self(bits))
-        } else {
-            None
-        }
-    }
-
-    pub const fn bits(self) -> u64 {
-        self.0
-    }
-
-    pub const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-}
-
-impl BitOr for Rights {
-    type Output = Self;
-
-    fn bitor(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ObjectType {
-    Task,
-    Thread,
-    FrameAllocation,
-    Channel,
-    Event,
-    Timer,
-    Reply,
-}
-
-/// # Safety
-///
-/// 析构期间须关闭本地中断并保留内存管理器所需的内核映射。
-pub enum Object {
-    Task(Task),
-    Thread(Thread),
-    FrameAllocation(HeapArc<FrameAllocation>),
-    Channel(Channel),
-    Event(Event),
-    Timer(Timer),
-    Reply(Reply),
-}
-
-/// # Safety
-///
-/// 析构期间须关闭本地中断并保留内存管理器所需的内核映射。
-#[derive(Clone)]
-pub enum ObjectReference {
-    Task(Task),
-    Thread(Thread),
-    FrameAllocation(HeapArc<FrameAllocation>),
-    Channel(ChannelReference),
-    Event(EventReference),
-    Timer(TimerReference),
-    Reply(ReplyReference),
-}
-
-impl Object {
-    pub fn kind(&self) -> ObjectType {
-        match self {
-            Self::Task(_) => ObjectType::Task,
-            Self::Thread(_) => ObjectType::Thread,
-            Self::FrameAllocation(_) => ObjectType::FrameAllocation,
-            Self::Channel(_) => ObjectType::Channel,
-            Self::Event(_) => ObjectType::Event,
-            Self::Timer(_) => ObjectType::Timer,
-            Self::Reply(_) => ObjectType::Reply,
-        }
-    }
-
-    fn reference(&self) -> ObjectReference {
-        match self {
-            Self::Task(task) => ObjectReference::Task(task.clone()),
-            Self::Thread(thread) => ObjectReference::Thread(thread.clone()),
-            Self::FrameAllocation(allocation) => {
-                ObjectReference::FrameAllocation(allocation.clone())
-            }
-            Self::Channel(channel) => ObjectReference::Channel(channel.reference()),
-            Self::Event(event) => ObjectReference::Event(event.reference()),
-            Self::Timer(timer) => ObjectReference::Timer(timer.reference()),
-            Self::Reply(reply) => ObjectReference::Reply(reply.reference()),
-        }
-    }
-
-    fn allowed_rights(&self) -> Rights {
-        let common = Rights::DUPLICATE | Rights::TRANSFER;
-        common
-            | match self {
-                Self::Task(_) => {
-                    Rights::WAIT
-                        | Rights::CREATE_THREAD
-                        | Rights::TERMINATE
-                        | Rights::MAP_MEMORY
-                        | Rights::INSTALL_HANDLE
-                        | Rights::SET_TRAP
-                        | Rights::READ_MEMORY
-                        | Rights::WRITE_MEMORY
-                }
-                Self::Thread(_) => {
-                    Rights::WAIT
-                        | Rights::TERMINATE
-                        | Rights::START
-                        | Rights::INTERRUPT
-                        | Rights::SET_STATE
-                }
-                Self::FrameAllocation(_) => {
-                    Rights::READ | Rights::WRITE | Rights::MAP | Rights::EXECUTE | Rights::DMA_MAP
-                }
-                Self::Channel(_) => Rights::WAIT | Rights::READ | Rights::WRITE,
-                Self::Event(_) => Rights::WAIT | Rights::SIGNAL,
-                Self::Timer(_) => Rights::WRITE,
-                Self::Reply(_) => return Rights::TRANSFER | Rights::WRITE,
-            }
-    }
-
-    pub fn try_clone(&self) -> Result<Self, HandleError> {
-        Ok(match self {
-            Self::Task(task) => Self::Task(task.clone()),
-            Self::Thread(thread) => Self::Thread(thread.clone()),
-            Self::FrameAllocation(allocation) => Self::FrameAllocation(allocation.clone()),
-            Self::Channel(channel) => Self::Channel(channel.clone()),
-            Self::Event(event) => Self::Event(event.clone()),
-            Self::Timer(timer) => Self::Timer(timer.clone()),
-            Self::Reply(_) => return Err(HandleError::Denied),
-        })
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HandleError {
@@ -383,6 +192,13 @@ impl HandleTable {
         self.state.lock().validate_transfer::<N>(requests)
     }
 
+    pub fn info(&self, handle: Handle) -> Result<(ObjectType, Rights), HandleError> {
+        let _interrupts = InterruptGuard::new();
+        let state = self.state.lock();
+        let entry = state.entry(handle)?;
+        Ok((entry.object.kind(), entry.rights))
+    }
+
     pub(crate) fn get_any(
         &self,
         handle: Handle,
@@ -443,8 +259,8 @@ impl HandleTable {
         let mut state = self.state.lock();
         let mut entries = ArrayVec::new();
         for handle in handles {
-            let slot = &state.slots[handle.index().unwrap()];
-            if slot.generation == handle.generation()
+            let slot = &state.slots[handle.raw_index().unwrap()];
+            if slot.generation == handle.raw_generation()
                 && matches!(slot.state, SlotState::Reserved | SlotState::Occupied(_))
                 && let Some(entry) = state.release(*handle)
             {
@@ -628,11 +444,11 @@ impl TableState {
 
     fn entry(&self, handle: Handle) -> Result<&HandleEntry, HandleError> {
         let slot = handle
-            .index()
+            .raw_index()
             .and_then(|index| self.slots.get(index))
             .ok_or(HandleError::BadHandle)?;
         match &slot.state {
-            SlotState::Occupied(entry) if slot.generation == handle.generation() => Ok(entry),
+            SlotState::Occupied(entry) if slot.generation == handle.raw_generation() => Ok(entry),
             _ => Err(HandleError::BadHandle),
         }
     }
@@ -667,16 +483,16 @@ impl TableState {
         };
         self.free = next;
         self.available -= 1;
-        Handle((u64::from(slot.generation) << 32) | u64::from(index))
+        Handle::from_raw((u64::from(slot.generation) << 32) | u64::from(index))
     }
 
     fn publish(&mut self, handle: Handle, entry: HandleEntry) {
-        self.slots[handle.index().expect("invalid reserved handle")].state =
+        self.slots[handle.raw_index().expect("invalid reserved handle")].state =
             SlotState::Occupied(entry);
     }
 
     fn release(&mut self, handle: Handle) -> Option<HandleEntry> {
-        let slot = &mut self.slots[handle.index().expect("invalid released handle")];
+        let slot = &mut self.slots[handle.raw_index().expect("invalid released handle")];
         let previous = mem::replace(&mut slot.state, SlotState::Retired);
         if let Some(generation) = slot.generation.checked_add(1) {
             slot.generation = generation;
@@ -688,5 +504,19 @@ impl TableState {
             SlotState::Occupied(entry) => Some(entry),
             _ => None,
         }
+    }
+}
+
+trait SlotHandle {
+    fn raw_index(self) -> Option<usize>;
+    fn raw_generation(self) -> u32;
+}
+
+impl SlotHandle for Handle {
+    fn raw_index(self) -> Option<usize> {
+        (self.raw() as u32 as usize).checked_sub(1)
+    }
+    fn raw_generation(self) -> u32 {
+        (self.raw() >> 32) as u32
     }
 }

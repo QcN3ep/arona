@@ -15,6 +15,7 @@ test = false
 bench = false
 
 [dependencies]
+abi = { package = "arona-abi", path = "../abi" }
 arrayvec = { version = "0.7.6", default-features = false }
 kernel = { package = "arona-kernel", path = "../kernel" }
 spin = { version = "0.9.9", default-features = false, features = ["mutex", "once"] }

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "arona-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "runtime"
+test = false
+bench = false
+
+[dependencies]
+abi = { package = "arona-abi", path = "../../abi" }

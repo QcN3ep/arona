@@ -27,7 +27,7 @@ pub enum ExceptionClass {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrapEvent {
     Syscall {
-        number: usize,
+        handle: usize,
         arguments: [usize; 6],
         successor: usize,
     },
@@ -79,7 +79,7 @@ pub fn dispatch(trap: Trap) -> TrapOutcome {
             }
         };
     }
-    // TODO: 接入缺页处理、系统调用和外部中断处理。
+    // TODO: 接入缺页处理和外部中断处理。
     log::error!(
         "Unhandled {:?} trap at {:#x}: {:?}",
         trap.origin,

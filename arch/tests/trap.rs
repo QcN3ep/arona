@@ -140,13 +140,13 @@ fn handle(trap: Trap) -> TrapOutcome {
             TrapOutcome::Resume
         }
         TrapEvent::Syscall {
-            number,
+            handle,
             arguments,
             successor,
         } => {
             assert_eq!(trap.origin, TrapOrigin::User);
             assert_eq!(successor, trap.pc + 4);
-            match number {
+            match handle {
                 17 => {
                     assert_eq!(successor, 0x10000 + isa::syscall_successor());
                     assert_eq!(arguments, [1, 2, 3, 4, 5, 6]);

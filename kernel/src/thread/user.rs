@@ -31,6 +31,9 @@ fn handle(trap: Trap) -> UserAction {
         return UserAction::Exit(status);
     }
     let outcome = match trap.event {
+        TrapEvent::Syscall {
+            handle, arguments, ..
+        } => crate::syscall::dispatch(handle, arguments),
         TrapEvent::TimerInterrupt => match scheduler::timer_interrupt() {
             Ok(()) => TrapOutcome::Resume,
             Err(error) => {

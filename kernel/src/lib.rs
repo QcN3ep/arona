@@ -11,6 +11,7 @@ pub mod hardware;
 pub mod ipc;
 pub mod logger;
 pub mod memory;
+mod syscall;
 pub mod task;
 pub mod thread;
 pub mod trap;
