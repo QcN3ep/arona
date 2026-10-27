@@ -254,7 +254,7 @@ fn inspect_stack(index: usize) {
     let mut guard = address & !(PAGE_SIZE - 1);
     while space.translate(guard).unwrap().is_some() {
         guard -= PAGE_SIZE;
-        assert!(address - guard <= 5 * PAGE_SIZE);
+        assert!(address - guard <= 9 * PAGE_SIZE);
     }
     let guard_range = VirtRange {
         start: guard,

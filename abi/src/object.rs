@@ -6,7 +6,7 @@ macro_rules! objects {
         $consumer! {
             Task = 1 => [DUPLICATE, TRANSFER, WAIT, CREATE_THREAD, TERMINATE,
                 MAP_MEMORY, INSTALL_HANDLE, READ_MEMORY, WRITE_MEMORY,
-                SET_TRAP];
+                SET_TRAP, FRAME_ALLOCATE];
             Thread = 2 => [DUPLICATE, TRANSFER, WAIT, TERMINATE, START, INTERRUPT, SET_STATE];
             FrameAllocation = 3 => [DUPLICATE, TRANSFER, READ, WRITE, MAP, EXECUTE, DMA_MAP];
             Channel = 4 => [DUPLICATE, TRANSFER, WAIT, READ, WRITE];

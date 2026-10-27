@@ -6,6 +6,7 @@
 
 mod call;
 mod handle;
+pub mod memory;
 
 pub use abi::{ObjectType, Rights};
 pub use call::Error;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod address_space;
+mod buffer;
 mod direct_map;
 mod frame;
 mod frame_allocator;
@@ -20,6 +21,8 @@ use crate::hardware::mmu::MmuError;
 use direct_map::DirectMap;
 use frame_allocator::FrameAllocator;
 use heap_allocator::HeapAllocator;
+
+pub(crate) use buffer::{MemoryBuffer, UserMemoryError};
 
 pub use address_space::{AddressSpace, USER_ADDRESS_RANGE};
 pub use frame::{

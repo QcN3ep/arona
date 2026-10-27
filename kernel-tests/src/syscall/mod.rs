@@ -7,7 +7,7 @@ use kernel::{
         mmu::{PAGE_SIZE, PagePermissions},
     },
     memory::{self, FrameAccess, FrameOwner, FramePurpose, MappingOptions, ReferenceKind},
-    task::{Object, Rights, Task, TaskState},
+    task::{Object, ObjectType, Task, TaskState},
     thread::{Thread, ThreadState, scheduler},
 };
 use spin::Once;
@@ -69,7 +69,10 @@ fn scenario(_: usize) -> usize {
         )
         .unwrap();
     let authority = task
-        .insert(Object::Task(task.clone()), Rights::DUPLICATE)
+        .insert(
+            Object::Task(task.clone()),
+            ObjectType::Task.supported_rights(),
+        )
         .unwrap();
     let user = task
         .create_thread(UserEntry {

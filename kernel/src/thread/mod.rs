@@ -27,7 +27,7 @@ pub use wait::{Wait, WaitOutcome, Waker, prepare_wait, sleep_until};
 pub(crate) use wait::{finish_task_exit, wait_for_task};
 
 pub const MAX_THREADS: usize = 4096;
-const STACK_SIZE: usize = 16 * 1024;
+const STACK_SIZE: usize = 32 * 1024;
 static THREADS: AtomicUsize = AtomicUsize::new(0);
 
 pub type ThreadEntry = fn(usize) -> usize;

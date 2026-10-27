@@ -612,6 +612,59 @@ impl AddressSpace {
         }))
     }
 
+    pub(crate) fn pin_user_memory(
+        &self,
+        address: usize,
+        length: usize,
+        write: bool,
+    ) -> Result<super::MemoryBuffer, super::UserMemoryError> {
+        if length == 0 {
+            return super::MemoryBuffer::new(0, 0).map_err(super::UserMemoryError);
+        }
+        let pin = || -> Result<super::MemoryBuffer, MemoryError> {
+            let end = address
+                .checked_add(length)
+                .ok_or(MemoryError::InvalidRequest)?;
+            if !self.table.is_user() || address < self.bounds.start || end > self.bounds.end {
+                return Err(MemoryError::InvalidRequest);
+            }
+            let mut buffer = super::MemoryBuffer::new(address % PAGE_SIZE, length)?;
+            let state = self.state.lock();
+            for page in (address & !(PAGE_SIZE - 1)..end).step_by(PAGE_SIZE) {
+                let record = state.mappings.get(page).ok_or(MemoryError::NotMapped)?;
+                if record.kind != MappingKind::Mapped {
+                    return Err(MemoryError::InvalidRequest);
+                }
+                let mapping = self.table.query(page)?.ok_or(MemoryError::NotMapped)?;
+                let permissions = mapping.attributes.permissions;
+                if !mapping.attributes.user_accessible
+                    || mapping.attributes.memory_type != MemoryType::Normal
+                    || (write && permissions != PagePermissions::ReadWrite)
+                    || (!write && permissions == PagePermissions::ExecuteOnly)
+                {
+                    return Err(MemoryError::AccessConflict);
+                }
+                let frame =
+                    Frame::new(mapping.physical_address).ok_or(MemoryError::InvalidFrame)?;
+                let head = manager().allocator().lock().allocation_of(frame)?;
+                buffer.push(
+                    manager()
+                        .reference(head, ReferenceKind::Temporary)?
+                        .access(
+                            frame,
+                            if write {
+                                FrameAccess::Write
+                            } else {
+                                FrameAccess::Read
+                            },
+                        )?,
+                );
+            }
+            Ok(buffer)
+        };
+        pin().map_err(super::UserMemoryError)
+    }
+
     pub fn translate(&self, address: usize) -> Result<Option<u64>, MemoryError> {
         Ok(self.query(address)?.and_then(|info| {
             info.mapping

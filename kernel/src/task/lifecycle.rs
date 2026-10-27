@@ -3,7 +3,10 @@
 //! Task 的创建归属、运行资源回收与退出等待。
 
 use arrayvec::ArrayVec;
-use core::ops::Range;
+use core::{
+    ops::Range,
+    sync::atomic::{AtomicU64, Ordering},
+};
 use spin::Mutex;
 
 use super::{
@@ -27,6 +30,8 @@ use crate::{
     },
     thread::{self, Thread, ThreadError, ThreadState, scheduler},
 };
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 static TASKS: Mutex<TaskRegistry> = Mutex::new(TaskRegistry { first: None });
 
@@ -85,6 +90,7 @@ impl From<ThreadError> for TaskError {
 pub struct Task(HeapArc<TaskRecord>);
 
 struct TaskRecord {
+    id: u64,
     data: Mutex<TaskData>,
 }
 
@@ -413,6 +419,16 @@ impl Task {
         Ok(channel)
     }
 
+    pub fn allocate_frames(&self, frames: u64) -> Result<FrameAllocation, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        TASKS.lock().find(self)?;
+        Ok(memory::manager().allocate(
+            memory::FrameOwner::User(self.0.id),
+            memory::FramePurpose::Data,
+            frames,
+        )?)
+    }
+
     pub fn map(
         &self,
         allocation: &FrameAllocation,
@@ -425,6 +441,74 @@ impl Task {
             .find(self)?
             .space
             .map(allocation, frames, options)?)
+    }
+
+    pub(crate) fn pin_user_memory(
+        &self,
+        address: usize,
+        length: usize,
+        write: bool,
+    ) -> Result<crate::memory::MemoryBuffer, crate::memory::UserMemoryError> {
+        let _interrupts = InterruptGuard::new();
+        let registry = TASKS.lock();
+        let resources = registry
+            .find(self)
+            .map_err(|_| crate::memory::UserMemoryError(MemoryError::NotMapped))?;
+        resources.space.pin_user_memory(address, length, write)
+    }
+
+    pub fn map_at(
+        &self,
+        address: usize,
+        allocation: &FrameAllocation,
+        frames: Range<u64>,
+        options: MappingOptions,
+    ) -> Result<VirtRange, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        Ok(TASKS
+            .lock()
+            .find(self)?
+            .space
+            .map_at(address, allocation, frames, options)?)
+    }
+
+    pub fn protect(&self, range: VirtRange, permissions: PagePermissions) -> Result<(), TaskError> {
+        let _interrupts = InterruptGuard::new();
+        Ok(TASKS.lock().find(self)?.space.protect(range, permissions)?)
+    }
+
+    pub fn reserve(
+        &self,
+        length: usize,
+        alignment: usize,
+        address: Option<usize>,
+    ) -> Result<VirtRange, TaskError> {
+        if alignment < crate::hardware::mmu::PAGE_SIZE
+            || !alignment.is_power_of_two()
+            || address.is_some_and(|address| !address.is_multiple_of(alignment))
+        {
+            return Err(MemoryError::InvalidRequest.into());
+        }
+        let _interrupts = InterruptGuard::new();
+        let registry = TASKS.lock();
+        let space = &registry.find(self)?.space;
+        if let Some(start) = address {
+            let range = VirtRange {
+                start,
+                end: start
+                    .checked_add(length)
+                    .ok_or(MemoryError::InvalidRequest)?,
+            };
+            space.reserve_at(range)?;
+            Ok(range)
+        } else {
+            Ok(space.reserve(length, alignment)?)
+        }
+    }
+
+    pub fn unreserve(&self, range: VirtRange) -> Result<(), TaskError> {
+        let _interrupts = InterruptGuard::new();
+        Ok(TASKS.lock().find(self)?.space.unreserve(range)?)
     }
 
     pub fn unmap(&self, range: VirtRange) -> Result<(), TaskError> {
@@ -541,7 +625,11 @@ impl TaskRegistry {
             }
         };
         let space = AddressSpace::new()?;
+        let id = NEXT_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| MemoryError::NoMemory)?;
         let task = Task(memory::manager().allocate_arc(TaskRecord {
+            id,
             data: Mutex::new(TaskData {
                 state: TaskState::Created,
                 exit_waiters: None,

@@ -53,3 +53,13 @@ impl From<TaskError> for Error {
         }
     }
 }
+
+impl From<crate::memory::UserMemoryError> for Error {
+    fn from(error: crate::memory::UserMemoryError) -> Self {
+        match error.0 {
+            MemoryError::NoMemory | MemoryError::ReferenceOverflow => Self::NoMemory,
+            MemoryError::Mmu(_) => Self::InvalidState,
+            _ => Self::BadAddress,
+        }
+    }
+}
