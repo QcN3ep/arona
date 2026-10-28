@@ -1,14 +1,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 原生 Rust 程序的内核能力与运行环境。
-
 #![no_std]
+#![cfg_attr(
+    all(feature = "program", target_os = "none"),
+    feature(lang_items, alloc_error_handler, thread_local, allow_internal_unstable)
+)]
+#![cfg_attr(all(feature = "program", target_os = "none"), allow(internal_features))]
+
+#[cfg(all(feature = "program", target_os = "none"))]
+extern crate alloc;
 
 mod call;
 mod handle;
 pub mod ipc;
 pub mod memory;
 pub mod thread;
+
+#[cfg(all(feature = "program", target_os = "none"))]
+mod heap;
+pub mod process;
+#[cfg(all(feature = "program", target_os = "none"))]
+mod start;
+#[cfg(all(feature = "program", target_os = "none"))]
+pub mod tls;
 
 pub use abi::{ObjectType, Rights};
 pub use call::Error;

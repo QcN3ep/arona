@@ -16,6 +16,9 @@ pub trait Platform {
     fn set_floating_enabled(enabled: bool);
     fn syscall_code() -> &'static [u64];
     fn user_code() -> &'static [u64];
+    fn program() -> Option<&'static [u8]> {
+        None
+    }
 }
 
 pub fn run<P: Platform>() {
@@ -23,6 +26,9 @@ pub fn run<P: Platform>() {
     task::run();
     ipc::run();
     syscall::run(P::syscall_code());
+    if let Some(image) = P::program() {
+        syscall::run_program(image);
+    }
     thread::run_user(P::user_code(), P::set_floating_enabled);
 }
 

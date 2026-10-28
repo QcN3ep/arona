@@ -9,11 +9,22 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+program = ["dep:dlmalloc", "dep:spin"]
+
 [lib]
 name = "runtime"
 test = false
 bench = false
 
+[[test]]
+name = "program"
+path = "tests/program.rs"
+harness = false
+required-features = ["program"]
+
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
 abi = { package = "arona-abi", path = "../../abi" }
+dlmalloc = { version = "0.2.12", default-features = false, optional = true }
+spin = { version = "0.9.9", default-features = false, features = ["mutex", "spin_mutex", "once"], optional = true }

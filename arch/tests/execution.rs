@@ -172,6 +172,11 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
 struct Platform;
 
 impl kernel_tests::Platform for Platform {
+    #[cfg(feature = "runtime-tests")]
+    fn program() -> Option<&'static [u8]> {
+        Some(include_bytes!(env!("ARONA_RUNTIME_TEST_IMAGE")))
+    }
+
     fn syscall_code() -> &'static [u64] {
         // SAFETY: 测试代码须独占一个完整且可读的内核代码页。
         unsafe {

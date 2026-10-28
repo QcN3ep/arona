@@ -11,6 +11,9 @@ use kernel::{
 };
 use spin::Once;
 
+mod program;
+pub use program::run as run_program;
+
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static CODE: Once<[u64; PAGE_SIZE / 8]> = Once::new();
 

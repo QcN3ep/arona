@@ -11,6 +11,7 @@ workspace = true
 
 [features]
 baremetal = []
+runtime-tests = ["baremetal"]
 
 [lib]
 name = "arch"
