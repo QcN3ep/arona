@@ -26,10 +26,12 @@ pub fn run<P: Platform>() {
     task::run();
     ipc::run();
     syscall::run(P::syscall_code());
-    if let Some(image) = P::program() {
-        syscall::run_program(image);
-    }
     thread::run_user(P::user_code(), P::set_floating_enabled);
+}
+
+pub fn run_program<P: Platform>() {
+    kernel::thread::scheduler::initialize().unwrap();
+    syscall::run_program(P::program().expect("runtime test image is unavailable"));
 }
 
 pub fn handle(trap: Trap) -> TrapOutcome {

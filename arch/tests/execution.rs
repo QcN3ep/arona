@@ -100,13 +100,25 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
             handle,
         )
         .unwrap();
-    if select_kernel_suite() {
+    let suite = select_suite();
+    if suite != Suite::Execution {
         hardware::timer()
             .initialize(isa::frequency(firmware))
             .unwrap();
         KERNEL_TESTS.store(true, Ordering::Relaxed);
-        kernel_tests::run::<Platform>();
-        uart().write(format_args!("Kernel tests passed\n")).unwrap();
+        match suite {
+            Suite::Kernel => {
+                kernel_tests::run::<Platform>();
+                uart().write(format_args!("Kernel tests passed\n")).unwrap();
+            }
+            Suite::Runtime => {
+                kernel_tests::run_program::<Platform>();
+                uart()
+                    .write(format_args!("Runtime tests passed\n"))
+                    .unwrap();
+            }
+            Suite::Execution => unreachable!(),
+        }
         hardware::cpu().halt()
     }
     let stacks: [HeapAllocation; 3] = core::array::from_fn(|index| {
@@ -202,7 +214,14 @@ impl kernel_tests::Platform for Platform {
     }
 }
 
-fn select_kernel_suite() -> bool {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Suite {
+    Execution,
+    Kernel,
+    Runtime,
+}
+
+fn select_suite() -> Suite {
     uart().write(format_args!("Test suite: ")).unwrap();
     let mut input = [0u8; 16];
     let mut length = 0;
@@ -216,8 +235,9 @@ fn select_kernel_suite() -> bool {
         };
         if byte == b'\n' || byte == b'\r' {
             return match &input[..length] {
-                b"execution" => false,
-                b"kernel" => true,
+                b"execution" => Suite::Execution,
+                b"kernel" => Suite::Kernel,
+                b"runtime" => Suite::Runtime,
                 _ => panic!("unknown execution test suite"),
             };
         }

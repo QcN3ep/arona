@@ -4,6 +4,13 @@ use crate::{BorrowedHandle, Error, Handle, Rights, Task, Thread};
 use abi::method::{task, thread};
 pub use abi::thread::{TaskState, ThreadState, UserEntry};
 
+#[cfg(all(feature = "program", target_os = "none"))]
+mod reaper;
+#[cfg(all(feature = "program", target_os = "none"))]
+mod spawn;
+#[cfg(all(feature = "program", target_os = "none"))]
+pub use spawn::{Builder, JoinError, JoinHandle, spawn};
+
 pub fn current() -> BorrowedHandle<'static, Thread> {
     BorrowedHandle::current()
 }
@@ -18,6 +25,7 @@ pub fn sleep_until(deadline_ns: u64) -> Result<(), Error> {
 pub fn now_ns() -> Result<u64, Error> {
     Ok(current().invoke(thread::NOW, [0; 5])?[0])
 }
+/// 结束当前线程，不展开栈或运行线程本地析构。
 pub fn exit(status: usize) -> ! {
     let _ = current().invoke(thread::EXIT, [status as u64, 0, 0, 0, 0]);
     loop {

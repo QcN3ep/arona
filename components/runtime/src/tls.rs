@@ -146,6 +146,9 @@ pub(crate) struct TlsBlock {
     layout: Layout,
 }
 
+// SAFETY: TLS 分配须独占移交，并在线程停止访问后释放。
+unsafe impl Send for TlsBlock {}
+
 unsafe extern "C" {
     static __tls_start: u8;
     static __tls_file_end: u8;
@@ -167,9 +170,13 @@ impl TlsBlock {
         Ok(Self { pointer, layout })
     }
 
+    pub(crate) fn thread_pointer(&self) -> usize {
+        self.pointer.as_ptr() as usize
+    }
+
     /// # Safety
     ///
-    /// 当前线程不得再访问旧 TLS，self 须存活至线程停止访问新 TLS。
+    /// 当前线程不得再访问旧 TLS，self 须未被其他线程激活，并存活至线程停止访问新 TLS。
     pub(crate) unsafe fn activate(&self) {
         // SAFETY: 当前线程须独占其 TP，且新 TLS 须已完整初始化。
         #[cfg(target_arch = "riscv64")]

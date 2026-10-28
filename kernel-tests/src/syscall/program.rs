@@ -30,7 +30,7 @@ pub fn run(image: &'static [u8]) {
 }
 
 fn scenario(_: usize) -> usize {
-    for mode in [0, 1, 2, 0] {
+    for mode in [0, 1, 2, 3, 4, 0] {
         let task = Task::new().unwrap();
         let image = IMAGE.get().unwrap();
         assert_eq!(&image[..7], b"\x7fELF\x02\x01\x01");
@@ -54,12 +54,11 @@ fn scenario(_: usize) -> usize {
             .unwrap();
         let (sender, receiver) = Channel::pair().unwrap();
         receiver.send(Message::new(mode, &[]).unwrap()).unwrap();
-        let task_handle = task
-            .insert(
-                Object::Task(task.clone()),
-                ObjectType::Task.supported_rights(),
-            )
-            .unwrap();
+        let mut rights = ObjectType::Task.supported_rights();
+        if mode == 4 {
+            rights = Rights::from_bits(rights.bits() & !Rights::CREATE_THREAD.bits()).unwrap();
+        }
+        let task_handle = task.insert(Object::Task(task.clone()), rights).unwrap();
         let bootstrap = task
             .insert(Object::Channel(sender), Rights::READ_WRITE)
             .unwrap();
@@ -81,10 +80,10 @@ fn scenario(_: usize) -> usize {
             })
             .unwrap();
         user.start().unwrap();
-        let status = usize::from(mode != 0);
+        let status = usize::from(matches!(mode, 1..=3));
         assert_eq!(user.wait().unwrap(), status, "runtime test scenario {mode}");
         assert_eq!(task.state(), TaskState::Dead(status));
-        if mode == 0 {
+        if status == 0 {
             let report = receiver.try_receive().unwrap();
             assert_eq!(report.tag, 73);
             assert_eq!(report.words(), &[37, 41]);
