@@ -3,7 +3,9 @@
 use std::{
     env,
     ffi::OsString,
-    path::Path,
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
 
@@ -51,6 +53,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
 
     match command.as_str() {
         "build" => build(arguments),
+        "package-init" => package_init(arguments),
         "help" | "--help" | "-h" => {
             println!("{}", usage());
             Ok(())
@@ -60,26 +63,68 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
 }
 
 fn build(arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
-    let mut target = None;
-    let mut release = false;
-    for argument in arguments {
-        let argument = argument
-            .into_string()
-            .map_err(|_| "arguments must be valid UTF-8".to_owned())?;
-        match argument.as_str() {
-            "--release" if !release => release = true,
-            "riscv64" | "loongarch64" if target.is_none() => {
-                target = Some(Target::parse(&argument)?);
+    let options = BuildOptions::parse(arguments)?;
+    run_cargo_build(options.target, options.release)
+}
+
+fn package_init(arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
+    let options = BuildOptions::parse(arguments)?;
+    build_init(options.target, options.release)?;
+
+    let root = workspace_root()?;
+    let profile = if options.release { "release" } else { "debug" };
+    let target_directory = target_directory(&root);
+    let executable = target_directory
+        .join(options.target.triple())
+        .join(profile)
+        .join("init");
+    let archive = target_directory
+        .join(options.target.triple())
+        .join(profile)
+        .join("initramfs.cpio");
+    let image = fs::read(&executable)
+        .map_err(|error| format!("failed to read {}: {error}", executable.display()))?;
+    let mut bytes = Vec::new();
+    append_entry(&mut bytes, "bin/init", 0o100755, &image)?;
+    append_entry(&mut bytes, "TRAILER!!!", 0, &[])?;
+    fs::write(&archive, bytes)
+        .map_err(|error| format!("failed to write {}: {error}", archive.display()))?;
+    println!("{}", archive.display());
+    Ok(())
+}
+
+struct BuildOptions {
+    target: Target,
+    release: bool,
+}
+
+impl BuildOptions {
+    fn parse(arguments: impl Iterator<Item = OsString>) -> Result<Self, String> {
+        let mut target = None;
+        let mut release = false;
+        for argument in arguments {
+            let argument = argument
+                .into_string()
+                .map_err(|_| "arguments must be valid UTF-8".to_owned())?;
+            match argument.as_str() {
+                "--release" if !release => release = true,
+                "riscv64" | "loongarch64" if target.is_none() => {
+                    target = Some(Target::parse(&argument)?);
+                }
+                _ => return Err(usage()),
             }
-            _ => return Err(usage()),
         }
+        Ok(Self {
+            target: target.ok_or_else(usage)?,
+            release,
+        })
     }
-    let target = target.ok_or_else(usage)?;
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| "xtask must be a workspace member".to_owned())?;
-    let mut command = Command::new("cargo");
-    command.current_dir(root).args([
+}
+
+fn run_cargo_build(target: Target, release: bool) -> Result<(), String> {
+    let root = workspace_root()?;
+    let mut command = cargo_command(root);
+    command.args([
         "build",
         "--locked",
         "-p",
@@ -97,6 +142,70 @@ fn build(arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
     execute(command)
 }
 
+fn build_init(target: Target, release: bool) -> Result<(), String> {
+    let root = workspace_root()?;
+    let mut command = cargo_command(root);
+    command.args([
+        "+nightly",
+        "rustc",
+        "--locked",
+        "-p",
+        "arona-init",
+        "--features",
+        "baremetal",
+        "--target",
+        target.triple(),
+        "--bin",
+        "init",
+    ]);
+    if release {
+        command.arg("--release");
+    }
+    command.args(["--", "-C", "strip=debuginfo"]);
+    execute(command)
+}
+
+fn cargo_command(root: PathBuf) -> Command {
+    let mut command = Command::new("cargo");
+    command.current_dir(root);
+    command
+}
+
+fn workspace_root() -> Result<PathBuf, String> {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "xtask must be a workspace member".to_owned())
+}
+
+fn target_directory(root: &Path) -> PathBuf {
+    match env::var_os("CARGO_TARGET_DIR").map(PathBuf::from) {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => root.join(path),
+        None => root.join("target"),
+    }
+}
+
+// REFERENCE: https://www.kernel.org/doc/html/latest/driver-api/early-userspace/buffer-format.html
+fn append_entry(archive: &mut Vec<u8>, name: &str, mode: u32, data: &[u8]) -> Result<(), String> {
+    let name_size = u32::try_from(name.len() + 1).map_err(|_| "CPIO name is too long")?;
+    let file_size = u32::try_from(data.len()).map_err(|_| "CPIO file is too large")?;
+    archive.extend_from_slice(b"070701");
+    for field in [1, mode, 0, 0, 1, 0, file_size, 0, 0, 0, 0, name_size, 0] {
+        write!(archive, "{field:08x}").map_err(|error| error.to_string())?;
+    }
+    archive.extend_from_slice(name.as_bytes());
+    archive.push(0);
+    pad_to_four(archive);
+    archive.extend_from_slice(data);
+    pad_to_four(archive);
+    Ok(())
+}
+
+fn pad_to_four(bytes: &mut Vec<u8>) {
+    bytes.resize(bytes.len().next_multiple_of(4), 0);
+}
+
 fn execute(mut command: Command) -> Result<(), String> {
     let status = command
         .status()
@@ -109,5 +218,5 @@ fn execute(mut command: Command) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask build <riscv64|loongarch64> [--release]".to_owned()
+    "usage: cargo xtask <build|package-init> <riscv64|loongarch64> [--release]".to_owned()
 }
