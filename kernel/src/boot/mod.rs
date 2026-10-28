@@ -5,18 +5,22 @@
 mod hardware;
 mod image;
 mod memory;
+mod program;
 
 pub use hardware::*;
 pub use image::*;
+pub use program::{BootData, BootProgram, ProgramSegment};
 
 use crate::thread::scheduler;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct BootInfo<'boot> {
     pub boot_cpu_id: u64,
     pub kernel_image: KernelImage,
     pub early_console: Option<BootConsoleMapping>,
     pub hardware: &'boot HardwareInfo,
+    pub init: Option<&'boot dyn BootProgram>,
+    pub initramfs: Option<BootData>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,5 +63,10 @@ pub fn boot_kernel(info: BootInfo<'_>) -> ! {
     scheduler::initialize()
         .unwrap_or_else(|error| panic!("failed to initialize scheduler: {error:?}"));
     log::info!("Scheduler initialized");
+    let init = info.init.expect("boot information is missing init");
+    let initramfs = info
+        .initramfs
+        .expect("boot information is missing initramfs");
+    program::start(init, initramfs).unwrap_or_else(|error| panic!("failed to start init: {error}"));
     scheduler::run()
 }

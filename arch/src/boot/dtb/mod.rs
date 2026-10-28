@@ -114,6 +114,20 @@ impl<'a> Dtb<'a> {
         self.bytes.len()
     }
 
+    pub fn initramfs(&self) -> Result<Option<PhysRange>> {
+        let Some(chosen) = self.root.child("chosen")? else {
+            return Ok(None);
+        };
+        match (
+            nodes::integer(chosen, "linux,initrd-start")?,
+            nodes::integer(chosen, "linux,initrd-end")?,
+        ) {
+            (None, None) => Ok(None),
+            (Some(start), Some(end)) if start < end => Ok(Some(PhysRange { start, end })),
+            _ => Err("invalid initramfs range".into()),
+        }
+    }
+
     /// 将 DTB 转换为硬件描述，失败时结果不可用。
     pub fn dump(self, hardware: &mut HardwareInfo) -> Result<()> {
         hardware.timebase_frequency_hz = cpus::parse(&self, &mut hardware.cpus)?;

@@ -130,12 +130,17 @@ impl Task {
         let owner = creator
             .task()
             .map_or(Creator::Thread(creator), Creator::Task);
-        TASKS.lock().create(owner)
+        TASKS.lock().create(Some(owner))
+    }
+
+    pub(crate) fn new_root() -> Result<Self, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        TASKS.lock().create(None)
     }
 
     pub fn create_child(&self) -> Result<Self, TaskError> {
         let _interrupts = InterruptGuard::new();
-        TASKS.lock().create(Creator::Task(self.clone()))
+        TASKS.lock().create(Some(Creator::Task(self.clone())))
     }
 
     pub fn state(&self) -> TaskState {
@@ -639,6 +644,7 @@ impl Task {
 
     pub(crate) fn finish_exit(&self, status: usize) {
         self.0.data.lock().state = TaskState::Dead(status);
+        log::debug!("Task {} exited with status {status}", self.0.id);
     }
 }
 
@@ -686,11 +692,11 @@ impl Drop for ReservedHandles {
 }
 
 impl TaskRegistry {
-    fn create(&mut self, creator: Creator) -> Result<Task, TaskError> {
+    fn create(&mut self, creator: Option<Creator>) -> Result<Task, TaskError> {
         // 子 Task 排在创建者之后，使终止可按祖先顺序单次遍历。
         let position = match &creator {
-            Creator::Thread(_) => &mut self.first,
-            Creator::Task(parent) => {
+            None | Some(Creator::Thread(_)) => &mut self.first,
+            Some(Creator::Task(parent)) => {
                 self.find(parent)?;
                 &mut self.find_mut(parent)?.next
             }
@@ -709,7 +715,7 @@ impl TaskRegistry {
         })?);
         let mut resources = HeapBox::try_new(TaskResources {
             task: task.clone(),
-            creator: Some(creator),
+            creator,
             space,
             handles: HandleTable::new(),
             threads: None,

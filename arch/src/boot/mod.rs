@@ -7,6 +7,7 @@ pub(crate) mod console;
 pub mod dtb;
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 mod image;
+pub mod initramfs;
 
 use kernel::{BootInfo, HardwareInfo, KernelImage, memory::MemoryRegionState};
 
@@ -33,5 +34,7 @@ pub fn prepare_boot_info(
         kernel_image,
         early_console: None,
         hardware,
+        init: None,
+        initramfs: None,
     })
 }

@@ -15,6 +15,12 @@ enum Target {
     LoongArch64,
 }
 
+#[derive(Clone, Copy)]
+enum Initramfs {
+    Embedded,
+    External,
+}
+
 impl Target {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
@@ -52,8 +58,9 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
         .map_err(|_| "command must be valid UTF-8".to_owned())?;
 
     match command.as_str() {
-        "build" => build(arguments),
-        "package-init" => package_init(arguments),
+        "build" => build(arguments, false),
+        "run" => build(arguments, true),
+        "package-init" => package_init(BuildOptions::parse(arguments)?).map(|_| ()),
         "help" | "--help" | "-h" => {
             println!("{}", usage());
             Ok(())
@@ -62,17 +69,55 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
     }
 }
 
-fn build(arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
+fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), String> {
     let options = BuildOptions::parse(arguments)?;
-    run_cargo_build(options.target, options.release)
+    let archive = package_init(options)?;
+    run_cargo_build(options, &archive)?;
+    if run {
+        let root = workspace_root()?;
+        let isa = match options.target {
+            Target::Riscv64 => "riscv64",
+            Target::LoongArch64 => "loongarch64",
+        };
+        let mut command = Command::new(format!("qemu-system-{isa}"));
+        command
+            .current_dir(&root)
+            .args([
+                "-M",
+                "virt",
+                "-m",
+                "256M",
+                "-smp",
+                "1",
+                "-nographic",
+                "-monitor",
+                "none",
+                "-nic",
+                "none",
+                "-kernel",
+            ])
+            .arg(
+                target_directory(&root)
+                    .join(options.target.triple())
+                    .join(options.profile())
+                    .join("arch"),
+            );
+        if matches!(options.target, Target::Riscv64) {
+            command.args(["-bios", "default"]);
+        }
+        if matches!(options.initramfs, Initramfs::External) {
+            command.arg("-initrd").arg(archive);
+        }
+        execute(command)?;
+    }
+    Ok(())
 }
 
-fn package_init(arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
-    let options = BuildOptions::parse(arguments)?;
+fn package_init(options: BuildOptions) -> Result<PathBuf, String> {
     build_init(options.target, options.release)?;
 
     let root = workspace_root()?;
-    let profile = if options.release { "release" } else { "debug" };
+    let profile = options.profile();
     let target_directory = target_directory(&root);
     let executable = target_directory
         .join(options.target.triple())
@@ -90,24 +135,34 @@ fn package_init(arguments: impl Iterator<Item = OsString>) -> Result<(), String>
     fs::write(&archive, bytes)
         .map_err(|error| format!("failed to write {}: {error}", archive.display()))?;
     println!("{}", archive.display());
-    Ok(())
+    Ok(archive)
 }
 
+#[derive(Clone, Copy)]
 struct BuildOptions {
     target: Target,
     release: bool,
+    initramfs: Initramfs,
 }
 
 impl BuildOptions {
-    fn parse(arguments: impl Iterator<Item = OsString>) -> Result<Self, String> {
+    fn parse(mut arguments: impl Iterator<Item = OsString>) -> Result<Self, String> {
         let mut target = None;
         let mut release = false;
-        for argument in arguments {
+        let mut initramfs = Initramfs::Embedded;
+        while let Some(argument) = arguments.next() {
             let argument = argument
                 .into_string()
                 .map_err(|_| "arguments must be valid UTF-8".to_owned())?;
             match argument.as_str() {
                 "--release" if !release => release = true,
+                "--initramfs" => {
+                    initramfs = match arguments.next().as_deref().and_then(|value| value.to_str()) {
+                        Some("embedded") => Initramfs::Embedded,
+                        Some("external") => Initramfs::External,
+                        _ => return Err(usage()),
+                    };
+                }
                 "riscv64" | "loongarch64" if target.is_none() => {
                     target = Some(Target::parse(&argument)?);
                 }
@@ -117,11 +172,16 @@ impl BuildOptions {
         Ok(Self {
             target: target.ok_or_else(usage)?,
             release,
+            initramfs,
         })
+    }
+
+    fn profile(self) -> &'static str {
+        if self.release { "release" } else { "debug" }
     }
 }
 
-fn run_cargo_build(target: Target, release: bool) -> Result<(), String> {
+fn run_cargo_build(options: BuildOptions, archive: &Path) -> Result<(), String> {
     let root = workspace_root()?;
     let mut command = cargo_command(root);
     command.args([
@@ -130,13 +190,18 @@ fn run_cargo_build(target: Target, release: bool) -> Result<(), String> {
         "-p",
         "arona-arch",
         "--features",
-        "baremetal",
+        if matches!(options.initramfs, Initramfs::Embedded) {
+            "baremetal,embedded-initramfs"
+        } else {
+            "baremetal"
+        },
         "--target",
-        target.triple(),
+        options.target.triple(),
         "--bin",
         "arch",
     ]);
-    if release {
+    command.env("ARONA_INITRAMFS", archive);
+    if options.release {
         command.arg("--release");
     }
     execute(command)
@@ -161,7 +226,7 @@ fn build_init(target: Target, release: bool) -> Result<(), String> {
     if release {
         command.arg("--release");
     }
-    command.args(["--", "-C", "strip=debuginfo"]);
+    command.args(["--", "-C", "strip=symbols"]);
     execute(command)
 }
 
@@ -207,16 +272,22 @@ fn pad_to_four(bytes: &mut Vec<u8>) {
 }
 
 fn execute(mut command: Command) -> Result<(), String> {
-    let status = command
-        .status()
-        .map_err(|error| format!("failed to start cargo: {error}"))?;
+    let status = command.status().map_err(|error| {
+        format!(
+            "failed to start {}: {error}",
+            command.get_program().to_string_lossy()
+        )
+    })?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("cargo exited with {status}"))
+        Err(format!(
+            "{} exited with {status}",
+            command.get_program().to_string_lossy()
+        ))
     }
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|package-init> <riscv64|loongarch64> [--release]".to_owned()
+    "usage: cargo xtask <build|run|package-init> <riscv64|loongarch64> [--release] [--initramfs embedded|external]".to_owned()
 }

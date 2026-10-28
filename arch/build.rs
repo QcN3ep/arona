@@ -5,6 +5,12 @@
 use std::env;
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=ARONA_INITRAMFS");
+    if env::var_os("CARGO_FEATURE_EMBEDDED_INITRAMFS").is_some() {
+        let path =
+            env::var("ARONA_INITRAMFS").expect("ARONA_INITRAMFS must identify a CPIO archive");
+        println!("cargo:rerun-if-changed={path}");
+    }
     println!("cargo:rerun-if-changed=src/riscv64/link.ld");
     println!("cargo:rerun-if-changed=src/loongarch64/link.ld");
 

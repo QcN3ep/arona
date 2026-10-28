@@ -10,6 +10,7 @@ pub mod ipc;
 pub mod memory;
 pub mod method;
 mod object;
+pub mod process;
 mod status;
 pub mod thread;
 

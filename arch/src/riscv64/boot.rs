@@ -94,14 +94,25 @@ pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
             .checked_add(tree.total_size() as u64)
             .expect("DTB address range overflow"),
     };
+    let external_initramfs = tree
+        .initramfs()
+        .unwrap_or_else(|error| panic!("failed to read initramfs description: {error}"));
     tree.dump(hardware)
         .unwrap_or_else(|error| panic!("failed to parse DTB: {error}"));
     hardware
         .memory
         .reserve(dtb_range, MemoryRegionState::BootReserved)
         .unwrap_or_else(|error| panic!("failed to reserve DTB: {error}"));
-    let mut info = prepare_boot_info(hartid as u64, kernel_image(), hardware)
+    crate::hardware::bind();
+    let image = kernel_image();
+    let archive = crate::boot::initramfs::source(external_initramfs, image)
+        .unwrap_or_else(|error| panic!("failed to locate initramfs: {error}"));
+    let init = crate::boot::initramfs::prepare(archive, hardware, image, 243)
+        .unwrap_or_else(|error| panic!("failed to parse init image: {error}"));
+    let mut info = prepare_boot_info(hartid as u64, image, hardware)
         .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));
+    info.init = Some(&init);
+    info.initramfs = Some(archive.data());
     info.early_console = Some(BootConsoleMapping {
         virtual_address: UART_BASE,
         physical_address: UART_PHYSICAL_BASE as u64,
@@ -109,7 +120,6 @@ pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
     });
 
     log::debug!(target: "arch::boot", "Parsed DTB at {dtb:#x}");
-    crate::hardware::bind();
     // SAFETY: 启动信息须与实际硬件一致，处理器须处于内核运行所需的执行环境。
     kernel::boot_kernel(info)
 }

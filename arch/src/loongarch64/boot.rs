@@ -9,7 +9,7 @@ use kernel::{
     memory::{MemoryRegionState, PhysRange},
 };
 use uefi_raw::{
-    guid,
+    Guid, guid,
     table::{configuration::ConfigurationTable, system::SystemTable},
 };
 
@@ -20,6 +20,12 @@ use crate::device::uart::Uart;
 mod paging;
 
 use paging::FIRMWARE_BASE;
+
+#[repr(C)]
+struct InitrdTable {
+    base: u64,
+    size: u64,
+}
 
 static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
 // SAFETY: 地址须对应 QEMU virt 的字节宽度与步长均为 1 的 16550 UART，且普通访问须由此实例独占。
@@ -107,17 +113,9 @@ pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
     // SAFETY: configuration_table 须覆盖 number_of_configuration_table_entries 个可读且不变的配置表项。
     let tables =
         unsafe { core::slice::from_raw_parts(tables_address as *const ConfigurationTable, count) };
-    let mut matches = tables
-        .iter()
-        .filter(|entry| entry.vendor_guid == guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0"));
-    let dtb = matches
-        .next()
-        .expect("QEMU configuration table is missing DTB")
-        .vendor_table as usize;
-    assert!(
-        matches.next().is_none(),
-        "duplicate DTB configuration table"
-    );
+    let dtb = configuration_table(tables, guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0"))
+        .expect("QEMU configuration table is missing DTB");
+    let external_initramfs = initramfs(tables);
 
     // SAFETY: 可变借用存续期间须独占访问 HARDWARE_INFO。
     let hardware = unsafe { &mut *core::ptr::addr_of_mut!(HARDWARE_INFO) };
@@ -144,8 +142,16 @@ pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
             .reserve(range, MemoryRegionState::BootReserved)
             .unwrap_or_else(|error| panic!("failed to reserve firmware data: {error}"));
     }
-    let mut info = prepare_boot_info(boot_cpu_id, kernel_image(), hardware)
+    crate::hardware::bind();
+    let image = kernel_image();
+    let archive = crate::boot::initramfs::source(external_initramfs, image)
+        .unwrap_or_else(|error| panic!("failed to locate initramfs: {error}"));
+    let init = crate::boot::initramfs::prepare(archive, hardware, image, 258)
+        .unwrap_or_else(|error| panic!("failed to parse init image: {error}"));
+    let mut info = prepare_boot_info(boot_cpu_id, image, hardware)
         .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));
+    info.init = Some(&init);
+    info.initramfs = Some(archive.data());
     info.early_console = Some(BootConsoleMapping {
         virtual_address: paging::UART_BASE,
         physical_address: paging::UART_PHYSICAL_BASE as u64,
@@ -153,9 +159,38 @@ pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
     });
 
     log::debug!(target: "arch::boot", "Parsed DTB at {dtb:#x}");
-    crate::hardware::bind();
     // SAFETY: 启动信息须与实际硬件一致，处理器须处于内核运行所需的执行环境。
     kernel::boot_kernel(info)
+}
+
+fn configuration_table(tables: &[ConfigurationTable], guid: Guid) -> Option<usize> {
+    let mut matches = tables.iter().filter(|entry| entry.vendor_guid == guid);
+    let address = matches.next()?.vendor_table as usize;
+    assert!(
+        matches.next().is_none(),
+        "duplicate firmware configuration table"
+    );
+    Some(address)
+}
+
+fn initramfs(tables: &[ConfigurationTable]) -> Option<PhysRange> {
+    let address = configuration_table(tables, guid!("5568e427-68fc-4f3d-ac74-ca555231cc68"))?;
+    // REFERENCE: https://gitlab.com/qemu-project/qemu/-/blob/v11.1.2/include/hw/loongarch/boot.h
+    // SAFETY: 配置表须指向可读且不变的 QEMU initrd 描述。
+    let table =
+        unsafe { &*(firmware_address(address, size_of::<InitrdTable>()) as *const InitrdTable) };
+    if table.base == 0 && table.size == 0 {
+        return None;
+    }
+    let end = table
+        .base
+        .checked_add(table.size)
+        .filter(|&end| table.base < end)
+        .expect("invalid initramfs range");
+    Some(PhysRange {
+        start: table.base,
+        end,
+    })
 }
 
 fn clear_bss() {

@@ -11,6 +11,7 @@ workspace = true
 
 [features]
 baremetal = []
+embedded-initramfs = []
 runtime-tests = ["baremetal"]
 
 [lib]
