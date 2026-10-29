@@ -5,6 +5,7 @@
 mod device;
 mod error;
 mod ipc;
+mod logger;
 mod memory;
 mod object;
 mod task;
@@ -84,6 +85,7 @@ fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, Error> {
                 ObjectReference::FrameAllocation(allocation) => {
                     memory::frames(&caller, &allocation, arguments[0], args)?
                 }
+                ObjectReference::KernelLog(target) => logger::read(&caller, &target, args)?,
                 object => return ipc::invoke(&caller, handle, object, arguments[0], args),
             }
         }

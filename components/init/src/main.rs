@@ -8,12 +8,12 @@ mod program;
 mod service;
 
 use archive::Archive;
-use runtime::{DeviceSet, Error, ipc::WaitMode, process};
+use runtime::{DeviceSet, Error, KernelLog, ipc::WaitMode, process};
 
 fn main() -> Result<usize, Error> {
     let bootstrap = process::bootstrap().ok_or(Error::Protocol)?;
     let mut startup = bootstrap.receive(WaitMode::Forever)?;
-    if startup.tag != 0 || startup.words().len() != 1 || startup.handles().len() != 2 {
+    if startup.tag != 0 || startup.words().len() != 1 || startup.handles().len() != 3 {
         return Err(Error::Protocol);
     }
     let length = usize::try_from(startup.words()[0]).map_err(|_| Error::Protocol)?;
@@ -26,6 +26,12 @@ fn main() -> Result<usize, Error> {
         .take_handle(0)
         .ok_or(Error::Protocol)?
         .downcast::<DeviceSet>()
+        .map_err(|_| Error::Protocol)?;
+    // TODO: 向日志服务交付内核日志句柄。
+    let _kernel_log = startup
+        .take_handle(0)
+        .ok_or(Error::Protocol)?
+        .downcast::<KernelLog>()
         .map_err(|_| Error::Protocol)?;
     drop(bootstrap);
     let archive = Archive::new(frames, length)?;

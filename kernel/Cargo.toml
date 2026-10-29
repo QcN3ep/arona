@@ -20,6 +20,10 @@ path = "tests/hardware/mod.rs"
 name = "memory"
 path = "tests/memory/mod.rs"
 
+[[test]]
+name = "logger"
+path = "tests/logger/mod.rs"
+
 [dependencies]
 abi = { package = "arona-abi", path = "../abi" }
 allocator-api2 = { version = "0.2.21", default-features = false, features = ["alloc"] }

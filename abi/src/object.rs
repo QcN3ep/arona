@@ -15,6 +15,7 @@ macro_rules! objects {
             Reply = 7 => [TRANSFER, WRITE];
             DeviceSet = 8 => [DUPLICATE, TRANSFER, READ, RESOURCE_SPLIT];
             Device = 9 => [DUPLICATE, TRANSFER, MAP, DEVICE_CONTROL, IRQ_ACK, REVOKE];
+            KernelLog = 10 => [DUPLICATE, TRANSFER, READ];
         }
     };
 }

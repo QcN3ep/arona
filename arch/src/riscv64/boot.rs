@@ -77,9 +77,7 @@ unsafe extern "C" fn _start_virtual(_hartid: usize, _dtb: usize) -> ! {
 pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
     clear_bss();
     EARLY_CONSOLE.init();
-    logger::LOGGER
-        .add_sink(&EARLY_CONSOLE)
-        .expect("failed to register early console");
+    kernel::boot::register_early_console(&EARLY_CONSOLE).expect("failed to register early console");
     logger::init(log::LevelFilter::Debug).expect("failed to initialize logger");
     log::info!(target: "arch::boot", "Booting kernel on CPU {hartid}");
 

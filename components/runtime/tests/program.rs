@@ -13,6 +13,7 @@ use core::{
 };
 use runtime::{Channel, Handle, ipc::Message, thread};
 
+mod logger;
 mod process;
 
 static TLS_DROPS: AtomicUsize = AtomicUsize::new(0);
@@ -82,7 +83,8 @@ fn main() {
     let startup = REPORT.with(|report| report.0.receive(runtime::ipc::WaitMode::Poll).unwrap());
     let mode = startup.tag;
     match mode {
-        0 | 4 => {}
+        0 => logger::run(startup),
+        4 => {}
         1 => panic!("intentional runtime integration test failure"),
         2 => {
             core::hint::black_box(Vec::<u8>::with_capacity(core::hint::black_box(

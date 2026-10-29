@@ -57,6 +57,7 @@ methods!(channel {
 methods!(reply { SEND = 16 => WRITE; });
 methods!(event { SIGNAL = 16 => SIGNAL; });
 methods!(timer { ARM = 16 => WRITE; CANCEL = 17 => WRITE; });
+methods!(kernel_log { READ = 16 => READ; });
 methods!(device_set {
     NEXT = 16 => READ;
     DESCRIBE = 17 => READ;
@@ -90,6 +91,7 @@ pub const fn required_rights(kind: ObjectType, method: u64) -> Option<Rights> {
             ObjectType::Timer => timer::required(method),
             ObjectType::DeviceSet => device_set::required(method),
             ObjectType::Device => device::required(method),
+            ObjectType::KernelLog => kernel_log::required(method),
         },
     }
 }

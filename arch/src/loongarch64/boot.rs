@@ -80,9 +80,7 @@ unsafe extern "C" fn _start_virtual(_system_table: usize) -> ! {
 pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
     clear_bss();
     EARLY_CONSOLE.init();
-    logger::LOGGER
-        .add_sink(&EARLY_CONSOLE)
-        .expect("failed to register early console");
+    kernel::boot::register_early_console(&EARLY_CONSOLE).expect("failed to register early console");
     logger::init(log::LevelFilter::Debug).expect("failed to initialize logger");
     // REFERENCE: https://github.com/torvalds/linux/blob/v6.18/arch/loongarch/include/asm/loongarch.h
     let cpu_id: usize;

@@ -2,11 +2,13 @@
 
 //! 启动数据定义及内核入口。
 
+mod console;
 mod hardware;
 mod image;
 mod memory;
 mod program;
 
+pub use console::{BootConsoleMapping, register_early_console};
 pub use hardware::*;
 pub use image::*;
 pub use program::{BootData, BootProgram, ProgramSegment};
@@ -21,13 +23,6 @@ pub struct BootInfo<'boot> {
     pub hardware: &'boot HardwareInfo,
     pub init: Option<&'boot dyn BootProgram>,
     pub initramfs: Option<BootData>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BootConsoleMapping {
-    pub virtual_address: usize,
-    pub physical_address: u64,
-    pub memory_type: crate::hardware::mmu::MemoryType,
 }
 
 /// # Safety
@@ -59,6 +54,10 @@ pub fn boot_kernel(info: BootInfo<'_>) -> ! {
     crate::hardware::timer()
         .initialize(info.hardware.timebase_frequency_hz)
         .unwrap_or_else(|error| panic!("failed to initialize timer: {error:?}"));
+    crate::logger::LOGGER.enable_timestamps(|| {
+        let _interrupts = crate::hardware::cpu::InterruptGuard::new();
+        crate::hardware::timer().now_ns().ok()
+    });
     log::info!("Timer initialized");
     scheduler::initialize()
         .unwrap_or_else(|error| panic!("failed to initialize scheduler: {error:?}"));
@@ -71,5 +70,7 @@ pub fn boot_kernel(info: BootInfo<'_>) -> ! {
         .unwrap_or_else(|error| panic!("failed to initialize device resources: {error:?}"));
     program::start(init, initramfs, devices)
         .unwrap_or_else(|error| panic!("failed to start init: {error}"));
+    console::detach().unwrap_or_else(|error| panic!("failed to detach early console: {error}"));
+    log::debug!("Early console detached");
     scheduler::run()
 }

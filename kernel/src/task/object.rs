@@ -7,6 +7,7 @@ use crate::{
         Channel, ChannelReference, Event, EventReference, Reply, ReplyReference, Timer,
         TimerReference,
     },
+    logger::KernelLog,
     memory::{self, HeapArc},
     thread::Thread,
 };
@@ -59,7 +60,7 @@ macro_rules! cloned_payload {
         }
     )* };
 }
-cloned_payload!(Task, Thread, FrameAllocation, DeviceSet);
+cloned_payload!(Task, Thread, FrameAllocation, DeviceSet, KernelLog);
 
 macro_rules! referenced_payload {
     ($($kind:ty => $reference:ty),*) => { $(

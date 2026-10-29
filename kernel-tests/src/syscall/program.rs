@@ -112,6 +112,10 @@ pub fn handle(trap: Trap) -> TrapOutcome {
 }
 
 pub fn run(image: &'static [u8]) {
+    kernel::logger::init(kernel::log::LevelFilter::Info).unwrap();
+    kernel::log::info!(target: "kernel::boot", "Early kernel log");
+    kernel::logger::LOGGER.enable_timestamps(|| hardware::timer().now_ns().ok());
+    kernel::log::warn!(target: "kernel::test", "Timestamped kernel log");
     run_cases(image, &[0, 1, 2, 3, 4, 0]);
 }
 
@@ -599,11 +603,22 @@ fn bootstrap(receiver: &Channel, mode: u64) {
             let handle = source
                 .insert(Object::FrameAllocation(archive), rights)
                 .unwrap();
+            let mut transfers = alloc::vec![TransferRequest { handle, rights }, device];
+            if mode >= 9 {
+                let rights = ObjectType::KernelLog.supported_rights();
+                let handle = source
+                    .insert(
+                        Object::KernelLog(kernel::logger::LOGGER.kernel_log()),
+                        rights,
+                    )
+                    .unwrap();
+                transfers.push(TransferRequest { handle, rights });
+            }
             source
                 .try_send(
                     channel,
                     Message::new(0, &[length as u64]).unwrap(),
-                    &[TransferRequest { handle, rights }, device],
+                    &transfers,
                 )
                 .unwrap();
         } else {
@@ -637,7 +652,31 @@ fn bootstrap(receiver: &Channel, mode: u64) {
             )
             .unwrap();
         source.terminate(0);
+    } else if mode == 0 {
+        log_bootstrap(receiver, mode);
     } else {
         receiver.send(Message::new(mode, &[]).unwrap()).unwrap();
     }
+}
+
+fn log_bootstrap(receiver: &Channel, mode: u64) {
+    let source = Task::new().unwrap();
+    let channel = source
+        .insert(Object::Channel(receiver.clone()), Rights::WRITE)
+        .unwrap();
+    let rights = ObjectType::KernelLog.supported_rights();
+    let handle = source
+        .insert(
+            Object::KernelLog(kernel::logger::LOGGER.kernel_log()),
+            rights,
+        )
+        .unwrap();
+    source
+        .try_send(
+            channel,
+            Message::new(mode, &[]).unwrap(),
+            &[TransferRequest { handle, rights }],
+        )
+        .unwrap();
+    source.terminate(0);
 }

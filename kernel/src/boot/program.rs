@@ -210,6 +210,10 @@ fn bootstrap(
                         object: Object::DeviceSet(devices.clone()),
                         rights: ObjectType::DeviceSet.supported_rights(),
                     },
+                    HandleEntry {
+                        object: Object::KernelLog(crate::logger::LOGGER.kernel_log()),
+                        rights: ObjectType::KernelLog.supported_rights(),
+                    },
                 ])
             },
         )

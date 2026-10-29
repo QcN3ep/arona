@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 日志门面的实现
+//! 日志门面、内核日志缓冲区与输出 Sink。
+
+mod buffer;
+
+pub use buffer::ReadError;
 
 use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use log::{LevelFilter, Log, Metadata, Record, SetLoggerError};
-use spin::{RwLock, RwLockWriteGuard};
+use spin::{Once, RwLock, RwLockWriteGuard};
+
+use buffer::Buffer;
 
 pub const MAX_SINKS: usize = 8;
 
@@ -84,6 +90,20 @@ pub struct Logger {
     max_level: AtomicUsize,
     slots: [RwLock<Slot>; MAX_SINKS],
     failures: AtomicUsize,
+    buffer: Buffer,
+    clock: Once<fn() -> Option<u64>>,
+}
+
+#[derive(Clone)]
+pub struct KernelLog {
+    logger: &'static Logger,
+}
+
+impl KernelLog {
+    /// cursor 为零时从最早的记录读取；无记录时返回零，不修改任何读取位置。
+    pub fn read(&self, cursor: u64, output: &mut [u8]) -> Result<usize, ReadError> {
+        self.logger.buffer.read(cursor, output)
+    }
 }
 
 impl Logger {
@@ -97,6 +117,8 @@ impl Logger {
                 })
             }; MAX_SINKS],
             failures: AtomicUsize::new(0),
+            buffer: Buffer::new(),
+            clock: Once::new(),
         }
     }
 
@@ -136,6 +158,14 @@ impl Logger {
         self.max_level.store(max_level as usize, Ordering::Relaxed);
     }
 
+    pub fn kernel_log(&'static self) -> KernelLog {
+        KernelLog { logger: self }
+    }
+
+    pub fn enable_timestamps(&self, clock: fn() -> Option<u64>) {
+        self.clock.call_once(|| clock);
+    }
+
     /// 写入与 flush 分发失败的次数，按 Sink 计数。
     pub fn failures(&self) -> usize {
         self.failures.load(Ordering::Relaxed)
@@ -161,6 +191,8 @@ impl Log for Logger {
 
     fn log(&self, record: &Record<'_>) {
         if self.enabled(record.metadata()) {
+            self.buffer
+                .write(record, self.clock.get().and_then(|clock| clock()));
             self.dispatch(|sink| sink.write(record));
         }
     }

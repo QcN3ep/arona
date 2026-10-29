@@ -14,6 +14,7 @@ mod call;
 pub mod device;
 mod handle;
 pub mod ipc;
+pub mod logger;
 pub mod memory;
 pub mod thread;
 

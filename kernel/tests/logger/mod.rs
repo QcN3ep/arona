@@ -245,3 +245,112 @@ fn handoff_requires_quiescence_and_draining_without_blocking_other_sinks() {
         "INFO in flight\nINFO during drain\nINFO after drain\n"
     );
 }
+
+#[test]
+fn buffered_records_survive_failed_reads_and_overwrite_as_whole_records() {
+    use abi::logger::{MAX_RECORD_SIZE, Record as BufferedRecord};
+    use kernel::logger::ReadError;
+
+    static LOGGER: Logger = Logger::new(LevelFilter::Info);
+    let reader = LOGGER.kernel_log();
+    let other = reader.clone();
+    let mut bytes = [0; MAX_RECORD_SIZE];
+    assert_eq!(reader.read(0, &mut bytes), Ok(0));
+    ALLOCATIONS.set(Some(0));
+    emit(&LOGGER, "early record");
+    assert_eq!(reader.read(0, &mut []), Err(ReadError::BufferTooSmall));
+    let length = reader.read(0, &mut bytes).unwrap();
+    let record = BufferedRecord::decode(&bytes[..length]).unwrap();
+    assert_eq!(record.sequence, 1);
+    assert_eq!(record.timestamp_ns, None);
+    assert_eq!(record.message, "early record");
+    let mut snapshot = [0; MAX_RECORD_SIZE];
+    assert_eq!(other.read(0, &mut snapshot), Ok(length));
+    assert_eq!(&snapshot[..length], &bytes[..length]);
+    assert_eq!(reader.read(2, &mut bytes), Ok(0));
+
+    let mut message = ArrayString::<4096>::new();
+    for _ in 0..1000 {
+        message.push_str("日志");
+        if message.len() > 4000 {
+            break;
+        }
+    }
+    for _ in 0..128 {
+        emit(&LOGGER, &message);
+    }
+    let mut cursor = 2;
+    let mut count = 0;
+    loop {
+        let length = reader.read(cursor, &mut bytes).unwrap();
+        if length == 0 {
+            break;
+        }
+        let record = BufferedRecord::decode(&bytes[..length]).unwrap();
+        if count == 0 {
+            assert!(record.sequence > cursor);
+        }
+        assert!(record.sequence >= cursor);
+        assert!(record.truncated);
+        assert!(message.starts_with(record.message));
+        assert!(record.message.len() > 900);
+        assert_eq!(other.read(cursor, &mut snapshot), Ok(length));
+        assert_eq!(&snapshot[..length], &bytes[..length]);
+        cursor = record.sequence + 1;
+        count += 1;
+    }
+    assert_eq!(cursor, 130);
+    assert!(count > 1 && count < 128);
+    assert_eq!(ALLOCATIONS.replace(None), Some(0));
+}
+
+#[test]
+fn concurrent_and_reentrant_logging_publishes_ordered_records() {
+    use abi::logger::{MAX_RECORD_SIZE, Record as BufferedRecord};
+
+    static LOGGER: Logger = Logger::new(LevelFilter::Info);
+    struct Nested;
+    impl fmt::Display for Nested {
+        fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+            emit(&LOGGER, "nested");
+            output.write_str("outer")
+        }
+    }
+    LOGGER.log(
+        &Record::builder()
+            .level(log::Level::Info)
+            .args(format_args!("{Nested}"))
+            .build(),
+    );
+    let reader = LOGGER.kernel_log();
+    let mut bytes = [0; MAX_RECORD_SIZE];
+    for (cursor, message) in [(1, "nested"), (2, "outer")] {
+        let length = reader.read(cursor, &mut bytes).unwrap();
+        let record = BufferedRecord::decode(&bytes[..length]).unwrap();
+        assert_eq!(record.sequence, cursor);
+        assert_eq!(record.message, message);
+    }
+    std::thread::scope(|threads| {
+        for _ in 0..4 {
+            threads.spawn(|| {
+                for _ in 0..2000 {
+                    emit(&LOGGER, "concurrent");
+                }
+            });
+        }
+    });
+    let mut cursor = 3;
+    let mut count = 0;
+    loop {
+        let length = reader.read(cursor, &mut bytes).unwrap();
+        if length == 0 {
+            break;
+        }
+        let record = BufferedRecord::decode(&bytes[..length]).unwrap();
+        assert!(record.sequence >= cursor);
+        assert_eq!(record.message, "concurrent");
+        cursor = record.sequence + 1;
+        count += 1;
+    }
+    assert!(count > 0);
+}
