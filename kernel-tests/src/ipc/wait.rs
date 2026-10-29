@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use alloc::vec::Vec;
 use spin::Mutex;
 
 use kernel::{
     hardware,
     ipc::{
-        Channel, Event, Message, PEER_CLOSED, READABLE, WRITABLE, WaitItem, WaitManyError,
+        Channel, Event, Message, PEER_CLOSED, READABLE, Timer, WRITABLE, WaitItem, WaitManyError,
         WaitManyResult,
     },
-    task::{Handle, Object, Rights, Task, TaskError},
+    task::{Handle, Object, ObjectReference, ObjectType, Rights, Task, TaskError},
     thread::{self, Thread, ThreadState},
 };
 
@@ -16,10 +17,63 @@ static TARGET: Mutex<Option<(Task, [Handle; 2])>> = Mutex::new(None);
 
 pub fn run() {
     super::run_thread(readiness);
+    super::run_thread(large_selection);
     super::run_thread(channel_readiness);
     super::run_thread(channel_writable);
     super::run_thread(exit_readiness);
     assert!(TARGET.lock().is_none());
+}
+
+fn large_selection(_: usize) -> usize {
+    let task = Task::new().unwrap();
+    let mut items = Vec::new();
+    for _ in 0..1024 {
+        let handle = task
+            .insert(
+                Object::Event(Event::new().unwrap()),
+                Rights::WAIT | Rights::DUPLICATE,
+            )
+            .unwrap();
+        items.push(item(handle, 1));
+    }
+    let duplicate = task.duplicate(items[0].handle, Rights::WAIT).unwrap();
+    items.push(item(duplicate, 1));
+    assert_eq!(
+        task.try_wait_many(&items),
+        Err(TaskError::Wait(WaitManyError::InvalidArgument))
+    );
+    items.pop();
+    let last = items.len() - 1;
+    let ObjectReference::Event(event) = task
+        .get(items[last].handle, ObjectType::Event, Rights::WAIT)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let timer = Timer::new(event, 1).unwrap();
+    let interrupts = hardware::cpu().disable_interrupts();
+    let deadline = hardware::timer().now_ns().unwrap() + 1_000_000;
+    timer.arm(deadline).unwrap();
+    while hardware::timer().now_ns().unwrap() < deadline {
+        core::hint::spin_loop();
+    }
+    assert_eq!(
+        task.try_wait_many(&items),
+        Ok(WaitManyResult {
+            index: last,
+            ready: 1
+        })
+    );
+    assert_eq!(
+        task.try_wait_many(&items),
+        Err(TaskError::Wait(WaitManyError::WouldBlock))
+    );
+    assert_eq!(
+        hardware::cpu().interrupt_state(),
+        hardware::cpu::InterruptState::Disabled
+    );
+    hardware::cpu().restore_interrupts(interrupts);
+    0
 }
 
 fn readiness(_: usize) -> usize {
@@ -38,7 +92,7 @@ fn readiness(_: usize) -> usize {
         Err(TaskError::Wait(WaitManyError::InvalidArgument))
     );
     assert_eq!(
-        task.try_wait_many(&[items[0]; 17]),
+        task.try_wait_many(&[items[0]; 2]),
         Err(TaskError::Wait(WaitManyError::InvalidArgument))
     );
     assert_eq!(
@@ -98,6 +152,14 @@ fn channel_readiness(_: usize) -> usize {
         .insert(Object::Channel(receiver), Rights::WAIT)
         .unwrap();
     let items = [item(handle, READABLE | PEER_CLOSED)];
+    let peer = task
+        .insert(Object::Channel(sender.clone()), Rights::WAIT)
+        .unwrap();
+    assert_eq!(
+        task.try_wait_many(&[item(peer, READABLE), items[0]]),
+        Err(TaskError::Wait(WaitManyError::WouldBlock))
+    );
+    task.close(peer).unwrap();
     *TARGET.lock() = Some((task.clone(), [handle; 2]));
     let waiter = Thread::new(channel_waiter, 0).unwrap();
     waiter.start().unwrap();

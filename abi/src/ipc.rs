@@ -4,7 +4,6 @@ use crate::{Error, Handle, ObjectType, Rights};
 
 pub const MESSAGE_WORDS: usize = 8;
 pub const MESSAGE_HANDLES: usize = 8;
-pub const WAIT_ITEMS: usize = 16;
 pub const READABLE: u64 = 1;
 pub const WRITABLE: u64 = 2;
 pub const PEER_CLOSED: u64 = 4;

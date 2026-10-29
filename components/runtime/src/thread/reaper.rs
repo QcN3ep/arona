@@ -7,7 +7,6 @@ use crate::{
     process,
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use arrayvec::ArrayVec;
 use spin::{Mutex, Once};
 
 static REAPER: Once<Reaper> = Once::new();
@@ -57,7 +56,6 @@ pub(super) fn retire(resources: Box<dyn Retired>) {
 impl State {
     fn run(&self) {
         let mut pending: Vec<Box<dyn Retired>> = Vec::new();
-        let mut cursor = 0;
         loop {
             pending.append(&mut self.pending.lock());
             let mut index = 0;
@@ -74,32 +72,12 @@ impl State {
                     index += 1;
                 }
             }
-            let mut items: ArrayVec<WaitItem<'_>, { abi::ipc::WAIT_ITEMS }> = ArrayVec::new();
+            let mut items = Vec::with_capacity(pending.len() + 1);
             items.push(WaitItem::new(&self.wake, 1));
-            if pending.len() < abi::ipc::WAIT_ITEMS || cursor >= pending.len() {
-                cursor = 0;
-            }
-            for thread in pending.iter().skip(cursor).take(items.capacity() - 1) {
+            for thread in &pending {
                 items.push(WaitItem::new(thread.thread(), crate::ipc::EXITED));
             }
-            let mode = if pending.len() >= abi::ipc::WAIT_ITEMS {
-                let now = super::now_ns().expect("failed to read reaper clock");
-                cursor += items.len() - 1;
-                if cursor >= pending.len() {
-                    cursor = 0;
-                }
-                WaitMode::Until(now.saturating_add(1_000_000).min(u64::MAX - 1))
-            } else {
-                cursor = 0;
-                WaitMode::Forever
-            };
-            match wait_many(&items, mode) {
-                Ok(_) => {}
-                Err(Error::Kernel(abi::Error::TimedOut)) => {
-                    super::yield_now().expect("failed to yield thread reaper");
-                }
-                Err(error) => panic!("failed to wait for retired threads: {error:?}"),
-            }
+            wait_many(&items, WaitMode::Forever).expect("failed to wait for retired threads");
         }
     }
 }

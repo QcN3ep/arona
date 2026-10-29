@@ -240,6 +240,10 @@ impl Thread {
         HeapArc::ptr_eq(&self.0, &other.0)
     }
 
+    pub(crate) fn identity(&self) -> usize {
+        self.0.as_ptr().addr()
+    }
+
     pub(crate) fn register_observer(&self, observer: Observer) -> Result<(), MemoryError> {
         self.0.data.lock().observers.insert(observer)
     }

@@ -13,6 +13,7 @@ use core::{
 };
 use runtime::{Channel, Handle, ipc::Message, thread};
 
+mod ipc;
 mod logger;
 mod process;
 
@@ -147,6 +148,7 @@ fn main() {
         ));
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
     } else {
+        ipc::run();
         run_threads();
     }
 }
@@ -272,7 +274,7 @@ fn run_thread_exits() {
 }
 
 fn run_detached() {
-    let released = Arc::new(AtomicBool::new(false));
+    let released = Arc::new(AtomicUsize::new(0));
     let dropped = Arc::new(AtomicUsize::new(0));
     let mut stacks = Vec::new();
     for id in 0..20 {
@@ -286,7 +288,7 @@ fn run_detached() {
                 .spawn(move || {
                     let local = id;
                     stack.store(core::ptr::addr_of!(local) as usize, Ordering::SeqCst);
-                    while id == 0 && !released.load(Ordering::SeqCst) {
+                    while released.load(Ordering::SeqCst) < if id == 0 { 2 } else { 1 } {
                         thread::yield_now().unwrap();
                     }
                     CountDrop(dropped)
@@ -294,6 +296,8 @@ fn run_detached() {
                 .unwrap(),
         );
     }
+    wait_for(|| stacks.iter().all(|stack| stack.load(Ordering::SeqCst) != 0));
+    released.store(1, Ordering::SeqCst);
     wait_for(|| dropped.load(Ordering::SeqCst) == 19);
     wait_for(|| {
         stacks.iter().skip(1).all(|stack| {
@@ -307,7 +311,7 @@ fn run_detached() {
             .unwrap()
             .is_some()
     );
-    released.store(true, Ordering::SeqCst);
+    released.store(2, Ordering::SeqCst);
     wait_for(|| dropped.load(Ordering::SeqCst) == 20);
     wait_for(|| {
         runtime::process::task()

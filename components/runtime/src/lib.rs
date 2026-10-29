@@ -7,7 +7,6 @@
 )]
 #![cfg_attr(all(feature = "program", target_os = "none"), allow(internal_features))]
 
-#[cfg(all(feature = "program", target_os = "none"))]
 extern crate alloc;
 
 mod call;

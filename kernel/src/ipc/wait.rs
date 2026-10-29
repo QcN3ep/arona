@@ -17,7 +17,7 @@ pub const PEER_CLOSED: u64 = 1 << 2;
 pub const EXITED: u64 = 1 << 0;
 pub const DEAD: u64 = 1 << 0;
 
-use abi::ipc::WAIT_ITEMS as MAX_ITEMS;
+const WAIT_BATCH: usize = 128;
 
 #[derive(Clone, Copy)]
 pub(crate) enum WaitMode {
@@ -64,7 +64,10 @@ struct ResolvedItem {
 }
 
 #[derive(Clone)]
-pub(crate) struct Observer(HeapArc<Selection>);
+pub(crate) struct Observer {
+    selection: HeapArc<Selection>,
+    index: usize,
+}
 
 pub(crate) struct Observers(Vec<Observer>);
 
@@ -77,41 +80,71 @@ struct Selection {
 struct Registrations {
     observer: Observer,
     count: usize,
+    wait: Option<Wait>,
 }
 
 pub(crate) fn wait_many(
     task: &Task,
-    items: &[WaitItem],
+    count: usize,
+    mut read: impl FnMut(usize) -> Result<WaitItem, WaitManyError>,
     mode: WaitMode,
 ) -> Result<WaitManyResult, WaitManyError> {
-    let interrupts = InterruptGuard::new();
-    let items = resolve(task, items)?;
-    if let Some(result) = ready(&items)? {
-        consume(&items, result)?;
-        return Ok(result);
+    let resolved = resolve(task, count, &mut read)?;
+    drop(read);
+    wait_resolved(resolved, mode)
+}
+
+fn wait_resolved(
+    items: Vec<ResolvedItem>,
+    mode: WaitMode,
+) -> Result<WaitManyResult, WaitManyError> {
+    for (index, item) in items.iter().enumerate() {
+        checkpoint(index)?;
+        let _interrupts = InterruptGuard::new();
+        match item.ready(index) {
+            Ok(Some(result)) => {
+                consume(&items, result)?;
+                return Ok(result);
+            }
+            Ok(None) => {}
+            Err(error) => return Err(error),
+        }
     }
     let wait = prepare(mode)?;
-    let observer = Observer(memory::manager().allocate_arc(Selection {
-        items,
-        waker: wait.waker(),
-        result: Mutex::new(None),
-    })?);
-    let mut registrations = Registrations { observer, count: 0 };
-    for item in &registrations.observer.0.items {
-        item.source.register(registrations.observer.clone())?;
+    let observer = Observer {
+        selection: memory::manager().allocate_arc(Selection {
+            items,
+            waker: wait.waker(),
+            result: Mutex::new(None),
+        })?,
+        index: 0,
+    };
+    let mut registrations = Registrations {
+        observer,
+        count: 0,
+        wait: Some(wait),
+    };
+    let mut observer = registrations.observer.clone();
+    let selection = &*registrations.observer.selection;
+    for index in 0..selection.items.len() {
+        checkpoint(index)?;
+        let _interrupts = InterruptGuard::new();
+        if selection.result.lock().is_some() {
+            break;
+        }
+        observer.index = index;
+        selection.items[index].source.register(observer.clone())?;
         registrations.count += 1;
+        observer.notify();
     }
-    drop(interrupts);
-    match wait_for(mode, wait)? {
-        WaitOutcome::Notified => registrations
-            .observer
-            .0
-            .result
-            .lock()
-            .take()
-            .expect("wait completed without a selection"),
+    let result = match wait_for(mode, registrations.wait.take().unwrap())? {
+        WaitOutcome::Notified => {
+            (*selection.result.lock()).expect("wait completed without a selection")
+        }
         WaitOutcome::TimedOut => Err(WaitManyError::TimedOut),
-    }
+    };
+    drop(registrations);
+    result
 }
 
 pub(crate) fn notify_observers(mut get: impl FnMut(usize) -> Option<Observer>) {
@@ -137,7 +170,7 @@ impl Observers {
 
     pub(crate) fn remove(&mut self, observer: &Observer) {
         self.0
-            .retain(|current| !HeapArc::ptr_eq(&current.0, &observer.0));
+            .retain(|current| !HeapArc::ptr_eq(&current.selection, &observer.selection));
     }
 
     pub(crate) fn get(&self, index: usize) -> Option<Observer> {
@@ -148,19 +181,19 @@ impl Observers {
 impl Observer {
     pub(crate) fn notify(&self) {
         let _interrupts = InterruptGuard::new();
-        let mut result = self.0.result.lock();
+        let mut result = self.selection.result.lock();
         if result.is_some() {
             return;
         }
-        let selected = match ready(&self.0.items) {
+        let selected = match self.selection.items[self.index].ready(self.index) {
             Ok(Some(selected)) => Ok(selected),
             Ok(None) => return,
             Err(error) => Err(error),
         };
         // 以线程唤醒作为等待结果的提交点。
-        if self.0.waker.wake() {
+        if self.selection.waker.wake() {
             *result = Some(selected.and_then(|selected| {
-                consume(&self.0.items, selected)?;
+                consume(&self.selection.items, selected)?;
                 Ok(selected)
             }));
         }
@@ -186,35 +219,50 @@ impl Source {
         }
     }
 
-    fn same(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Channel(first), Self::Channel(second)) => first.same(second),
-            (Self::Event(first), Self::Event(second)) => first.same(second),
-            (Self::Task(first), Self::Task(second)) => first.same(second),
-            (Self::Thread(first), Self::Thread(second)) => first.same(second),
-            _ => false,
+    fn identity(&self) -> usize {
+        // 引用保持存储存活，Channel 另以最低位区分端点。
+        match self {
+            Self::Channel(channel) => channel.identity(),
+            Self::Event(event) => event.identity(),
+            Self::Task(task) => task.identity(),
+            Self::Thread(thread) => thread.identity(),
         }
     }
 }
 
 impl Drop for Registrations {
     fn drop(&mut self) {
-        let _interrupts = InterruptGuard::new();
-        for item in &self.observer.0.items[..self.count] {
+        drop(self.wait.take());
+        for (index, item) in self.observer.selection.items[..self.count]
+            .iter()
+            .enumerate()
+        {
+            let _ = checkpoint(index);
+            let _interrupts = InterruptGuard::new();
             item.source.unregister(&self.observer);
         }
     }
 }
 
-fn resolve(task: &Task, items: &[WaitItem]) -> Result<Vec<ResolvedItem>, WaitManyError> {
-    if items.is_empty() || items.len() > MAX_ITEMS {
+fn resolve(
+    task: &Task,
+    count: usize,
+    read: &mut dyn FnMut(usize) -> Result<WaitItem, WaitManyError>,
+) -> Result<Vec<ResolvedItem>, WaitManyError> {
+    if count == 0 {
         return Err(WaitManyError::InvalidArgument);
     }
     let mut resolved = Vec::<ResolvedItem>::new();
     resolved
-        .try_reserve_exact(items.len())
+        .try_reserve_exact(count)
         .map_err(|_| MemoryError::NoMemory)?;
-    for item in items {
+    let mut identities = Vec::new();
+    identities
+        .try_reserve_exact(count)
+        .map_err(|_| MemoryError::NoMemory)?;
+    for index in 0..count {
+        checkpoint(index)?;
+        let item = read(index)?;
         if item.condition_mask == 0 {
             return Err(WaitManyError::InvalidArgument);
         }
@@ -232,25 +280,60 @@ fn resolve(task: &Task, items: &[WaitItem]) -> Result<Vec<ResolvedItem>, WaitMan
             }
             _ => return Err(WaitManyError::InvalidArgument),
         };
-        if resolved
-            .iter()
-            .any(|previous| previous.source.same(&source))
-        {
-            return Err(WaitManyError::InvalidArgument);
-        }
+        identities.push(source.identity());
         resolved.push(ResolvedItem {
             source,
             condition_mask: item.condition_mask,
         });
     }
+    let identities = identities.as_mut_slice();
+    for root in (0..identities.len() / 2).rev() {
+        checkpoint(root)?;
+        sift_down(identities, root);
+    }
+    for end in (1..identities.len()).rev() {
+        checkpoint(end)?;
+        let identity = identities[0];
+        identities[0] = identities[end];
+        let heap = &mut identities[..end];
+        sift_down(heap, 0);
+        if heap[0] == identity {
+            return Err(WaitManyError::InvalidArgument);
+        }
+    }
     Ok(resolved)
 }
 
-fn ready(items: &[ResolvedItem]) -> Result<Option<WaitManyResult>, WaitManyError> {
-    for (index, item) in items.iter().enumerate() {
-        let ready = match &item.source {
-            Source::Channel(channel) => channel.readiness(item.condition_mask)?,
-            Source::Event(event) => event.readiness(item.condition_mask)?,
+// REFERENCE: https://en.wikipedia.org/wiki/Heapsort
+fn sift_down(heap: &mut [usize], mut root: usize) {
+    let identity = heap[root];
+    while root < heap.len() / 2 {
+        let mut child = root * 2 + 1;
+        if child + 1 < heap.len() && heap[child] < heap[child + 1] {
+            child += 1;
+        }
+        if identity >= heap[child] {
+            break;
+        }
+        heap[root] = heap[child];
+        root = child;
+    }
+    heap[root] = identity;
+}
+
+fn checkpoint(index: usize) -> Result<(), ThreadError> {
+    // Trap 内不能直接开启中断，通过调度栈处理挂起中断。
+    if index != 0 && index.is_multiple_of(WAIT_BATCH) && thread::current().is_some() {
+        thread::yield_now()?;
+    }
+    Ok(())
+}
+
+impl ResolvedItem {
+    fn ready(&self, index: usize) -> Result<Option<WaitManyResult>, WaitManyError> {
+        let ready = match &self.source {
+            Source::Channel(channel) => channel.readiness(self.condition_mask)?,
+            Source::Event(event) => event.readiness(self.condition_mask)?,
             Source::Task(task) => {
                 if matches!(task.state(), TaskState::Dead(_)) {
                     EXITED
@@ -265,12 +348,13 @@ fn ready(items: &[ResolvedItem]) -> Result<Option<WaitManyResult>, WaitManyError
                     0
                 }
             }
-        } & item.condition_mask;
-        if ready != 0 {
-            return Ok(Some(WaitManyResult { index, ready }));
+        } & self.condition_mask;
+        if ready == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(WaitManyResult { index, ready }))
         }
     }
-    Ok(None)
 }
 
 fn consume(items: &[ResolvedItem], result: WaitManyResult) -> Result<(), WaitManyError> {

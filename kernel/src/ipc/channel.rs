@@ -215,8 +215,8 @@ impl Deref for Channel {
 }
 
 impl ChannelReference {
-    pub(crate) fn same(&self, other: &Self) -> bool {
-        HeapArc::ptr_eq(&self.channel, &other.channel) && self.side == other.side
+    pub(crate) fn identity(&self) -> usize {
+        self.channel.as_ptr().addr() | self.side
     }
 
     pub fn try_send(&self, message: Message) -> Result<(), ChannelError> {

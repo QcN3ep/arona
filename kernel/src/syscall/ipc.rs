@@ -187,29 +187,23 @@ fn mode(deadline: u64) -> WaitMode {
 }
 
 pub(super) fn wait_many(caller: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {
-    if args[1] == 0 || args[1] > abi::ipc::WAIT_ITEMS as u64 {
+    let count = usize::try_from(args[1]).map_err(|_| Error::InvalidArgument)?;
+    if count == 0 {
         return Err(Error::InvalidArgument);
     }
-    let input = caller.pin_user_memory(
-        args[0] as usize,
-        args[1] as usize * abi::ipc::WaitItem::SIZE,
-        false,
-    )?;
-    let mut items = ArrayVec::<_, { abi::ipc::WAIT_ITEMS }>::new();
-    for index in 0..args[1] as usize {
+    let length = count
+        .checked_mul(abi::ipc::WaitItem::SIZE)
+        .ok_or(Error::InvalidArgument)?;
+    let input = caller.pin_user_memory(args[0] as usize, length, false)?;
+    let read = move |index| {
         let mut bytes = [0; abi::ipc::WaitItem::SIZE];
         input.read(index * bytes.len(), &mut bytes)?;
         let wire = abi::ipc::WaitItem::decode(&bytes);
-        items.push(WaitItem {
+        Ok(WaitItem {
             handle: wire.handle,
             condition_mask: wire.conditions,
-        });
-    }
-    drop(input);
-    let result = match mode(args[2]) {
-        WaitMode::NonBlocking => caller.try_wait_many(&items)?,
-        WaitMode::Blocking => caller.wait_many(&items)?,
-        WaitMode::Deadline(deadline) => caller.wait_many_until(&items, deadline)?,
+        })
     };
+    let result = crate::ipc::wait::wait_many(caller, count, read, mode(args[2]))?;
     Ok([result.index as u64, result.ready])
 }

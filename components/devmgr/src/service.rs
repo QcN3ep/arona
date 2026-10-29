@@ -16,13 +16,11 @@ use runtime::{
 };
 
 const START_TIMEOUT_NS: u64 = 1_000_000_000;
-const WAIT_POLL_NS: u64 = 1_000_000;
 
 pub struct DeviceManager {
     catalog: Handle<DeviceSet>,
     wake: Arc<Handle<Event>>,
     instances: Vec<Instance>,
-    cursor: usize,
 }
 
 struct Instance {
@@ -49,7 +47,6 @@ impl DeviceManager {
             catalog,
             wake: Arc::new(process::task().event(Rights::SIGNAL | Rights::WAIT)?),
             instances: Vec::new(),
-            cursor: 0,
         };
         let mut cursor = 0;
         while let Some(id) = manager.catalog.next(cursor)? {
@@ -237,38 +234,19 @@ impl DeviceManager {
         }
     }
 
-    fn wait(&mut self, control: Option<&Handle<Channel>>) -> Result<(), Error> {
-        let mut items = Vec::with_capacity(ipc::WAIT_ITEMS);
+    fn wait(&self, control: Option<&Handle<Channel>>) -> Result<(), Error> {
+        let mut items = Vec::with_capacity(self.instances.len() + 2);
         items.push(WaitItem::new(&self.wake, 1));
         if let Some(control) = control {
             items.push(WaitItem::new(control, ipc::READABLE | ipc::PEER_CLOSED));
         }
-        let capacity = ipc::WAIT_ITEMS - items.len();
-        let count = self.instances.len();
-        let mut running = 0;
-        for offset in 0..count {
-            let instance = &self.instances[(self.cursor + offset) % count];
+        for instance in &self.instances {
             if let InstanceState::Running(worker) = &instance.state {
-                running += 1;
-                if items.len() < ipc::WAIT_ITEMS {
-                    items.push(WaitItem::new(worker.thread.thread(), ipc::EXITED));
-                }
+                items.push(WaitItem::new(worker.thread.thread(), ipc::EXITED));
             }
         }
-        let mode = if running > capacity {
-            self.cursor = (self.cursor + capacity) % count;
-            WaitMode::Until(
-                thread::now_ns()?
-                    .saturating_add(WAIT_POLL_NS)
-                    .min(u64::MAX - 1),
-            )
-        } else {
-            WaitMode::Forever
-        };
-        match ipc::wait_many(&items, mode) {
-            Ok(_) | Err(runtime::Error::Kernel(KernelError::TimedOut)) => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        ipc::wait_many(&items, WaitMode::Forever)?;
+        Ok(())
     }
 }
 

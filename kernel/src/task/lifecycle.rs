@@ -391,7 +391,12 @@ impl Task {
         items: &[WaitItem],
         mode: WaitMode,
     ) -> Result<WaitManyResult, TaskError> {
-        Ok(crate::ipc::wait::wait_many(self, items, mode)?)
+        Ok(crate::ipc::wait::wait_many(
+            self,
+            items.len(),
+            |index| Ok(items[index]),
+            mode,
+        )?)
     }
 
     pub(crate) fn send_with(
@@ -629,6 +634,10 @@ impl Task {
 
     pub(crate) fn same(&self, other: &Self) -> bool {
         HeapArc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub(crate) fn identity(&self) -> usize {
+        self.0.as_ptr().addr()
     }
 
     pub(crate) fn with_exit_waiters<T>(&self, action: impl FnOnce(&mut Option<Thread>) -> T) -> T {

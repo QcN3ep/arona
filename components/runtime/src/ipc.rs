@@ -3,10 +3,9 @@
 use crate::{
     AnyHandle, Channel, Error, Event, Handle, Object, Reply, Rights, Task, Timer, call, thread,
 };
-pub use abi::ipc::{
-    EXITED, MESSAGE_HANDLES, MESSAGE_WORDS, PEER_CLOSED, READABLE, WAIT_ITEMS, WRITABLE,
-};
+pub use abi::ipc::{EXITED, MESSAGE_HANDLES, MESSAGE_WORDS, PEER_CLOSED, READABLE, WRITABLE};
 use abi::method;
+use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use core::marker::PhantomData;
 
@@ -283,17 +282,19 @@ pub struct WaitResult {
     pub ready: u64,
 }
 pub fn wait_many(items: &[WaitItem<'_>], mode: WaitMode) -> Result<WaitResult, Error> {
-    if items.is_empty() || items.len() > abi::ipc::WAIT_ITEMS {
+    if items.is_empty() {
         return Err(Error::Kernel(abi::Error::InvalidArgument));
     }
-    let mut bytes = [0; abi::ipc::WAIT_ITEMS * abi::ipc::WaitItem::SIZE];
-    for (chunk, item) in bytes
-        .as_chunks_mut::<{ abi::ipc::WaitItem::SIZE }>()
-        .0
-        .iter_mut()
-        .zip(items)
-    {
-        *chunk = item.raw.encode();
+    let length = items
+        .len()
+        .checked_mul(abi::ipc::WaitItem::SIZE)
+        .ok_or(Error::Kernel(abi::Error::InvalidArgument))?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| Error::Kernel(abi::Error::NoMemory))?;
+    for item in items {
+        bytes.extend_from_slice(&item.raw.encode());
     }
     let [index, ready] = thread::current().invoke(
         method::thread::WAIT_MANY,

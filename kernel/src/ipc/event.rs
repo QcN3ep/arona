@@ -136,6 +136,10 @@ impl EventReference {
     pub(crate) fn same(&self, other: &Self) -> bool {
         HeapArc::ptr_eq(&self.event, &other.event)
     }
+
+    pub(crate) fn identity(&self) -> usize {
+        self.event.as_ptr().addr()
+    }
 }
 
 impl Drop for Event {
