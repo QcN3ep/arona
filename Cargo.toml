@@ -9,6 +9,7 @@ members = [
     "abi",
     "components/runtime",
     "components/init",
+    "components/devmgr",
     "xtask",
 ]
 

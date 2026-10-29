@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "arona-devmgr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+baremetal = ["runtime/program"]
+
+[lib]
+name = "devmgr"
+test = false
+bench = false
+
+[[bin]]
+name = "devmgr"
+path = "src/main.rs"
+required-features = ["baremetal"]
+test = false
+bench = false
+
+[[test]]
+name = "uart"
+path = "tests/uart.rs"
+harness = false
+required-features = ["baremetal"]
+
+[dependencies]
+runtime = { package = "arona-runtime", path = "../runtime" }

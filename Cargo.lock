@@ -25,6 +25,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arona-devmgr"
+version = "0.1.0"
+dependencies = [
+ "arona-runtime",
+]
+
+[[package]]
 name = "arona-init"
 version = "0.1.0"
 dependencies = [

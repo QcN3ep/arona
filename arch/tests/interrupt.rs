@@ -3,6 +3,9 @@
 #![no_std]
 #![no_main]
 
+#[cfg(feature = "runtime-tests")]
+extern crate alloc;
+
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use arch::device::uart::Uart;
@@ -15,7 +18,7 @@ use kernel::{
         mmio::{DeviceMapper, MmioMapper},
         mmu::{PAGE_SIZE, PageTableEntry},
     },
-    memory::{self, AddressSpace, Frame, MemoryError, VirtRange},
+    memory::{self, AddressSpace, Frame, MemoryError, MemoryRegionState, VirtRange},
     trap::{Trap, TrapEvent, TrapOrigin, TrapOutcome},
 };
 use spin::Once;
@@ -37,6 +40,8 @@ static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
 static DEVICE_TESTS: AtomicBool = AtomicBool::new(false);
 static MODE: AtomicUsize = AtomicUsize::new(0);
 static IRQ: Once<HardwareInterruptInfo> = Once::new();
+#[cfg(feature = "runtime-tests")]
+static PROGRAM: Once<alloc::vec::Vec<u8>> = Once::new();
 static mut HARDWARE: HardwareInfo = HardwareInfo::new();
 
 unsafe extern "C" {
@@ -59,6 +64,8 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
     uart()
         .write(format_args!("Interrupt controller tests started\n"))
         .unwrap();
+    #[cfg(feature = "runtime-tests")]
+    let resident = select_program();
     arch::hardware::bind();
     hardware::trap()
         .install(
@@ -69,12 +76,18 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
             handle,
         )
         .unwrap();
-    let (cpu_id, tree) = isa::boot(first, second);
+    let (cpu_id, tree, program) = isa::boot(first, second);
     // SAFETY: 测试须独占该硬件描述，初始化后只读。
     let hardware = unsafe { &mut *core::ptr::addr_of_mut!(HARDWARE) };
     tree.dump(hardware).unwrap();
     let image = arch::boot::kernel_image();
     arch::boot::prepare_boot_info(cpu_id, image, hardware).unwrap();
+    if let Some(range) = program {
+        hardware
+            .memory
+            .reserve(range, MemoryRegionState::BootReserved)
+            .unwrap();
+    }
     initialize_memory(hardware);
     let console = hardware.console.as_ref().unwrap();
     let device = hardware
@@ -108,11 +121,52 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
     let devices = kernel::device::DeviceSet::initialize(hardware).unwrap();
     kernel_tests::run_devices(devices.clone(), hardware);
     #[cfg(feature = "runtime-tests")]
-    kernel_tests::run_device_program(include_bytes!(env!("ARONA_RUNTIME_TEST_IMAGE")), devices);
+    {
+        let data = kernel::BootData {
+            physical: program.expect("device test image is missing"),
+        };
+        let bytes = PROGRAM.call_once(|| {
+            let mut bytes = alloc::vec![0; data.len().unwrap()];
+            data.read(0, &mut bytes).unwrap();
+            bytes
+        });
+        kernel_tests::run_device_program(bytes, devices, resident);
+        if resident {
+            uart()
+                .write(format_args!("Device service tests passed\n"))
+                .unwrap();
+        }
+    }
     uart()
         .write(format_args!("Interrupt controller tests passed\n"))
         .unwrap();
     hardware::cpu().halt()
+}
+
+#[cfg(feature = "runtime-tests")]
+fn select_program() -> bool {
+    uart().write(format_args!("Test suite: ")).unwrap();
+    let mut input = [0; 16];
+    let mut length = 0;
+    loop {
+        // SAFETY: UART 须保持可读的启动映射且由测试独占。
+        let byte = unsafe {
+            while ((UART + 5) as *const u8).read_volatile() & 1 == 0 {
+                core::hint::spin_loop();
+            }
+            (UART as *const u8).read_volatile()
+        };
+        if byte == b'\n' || byte == b'\r' {
+            return match &input[..length] {
+                b"device" => false,
+                b"service" => true,
+                _ => panic!("unknown device test suite"),
+            };
+        }
+        assert!(length < input.len(), "test suite name is too long");
+        input[length] = byte;
+        length += 1;
+    }
 }
 
 fn initialize_memory(hardware: &HardwareInfo) {

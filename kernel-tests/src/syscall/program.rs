@@ -2,23 +2,25 @@
 
 use core::sync::atomic::Ordering;
 use kernel::{
-    device::DeviceSet,
+    device::{DeviceError, DeviceSet},
     hardware::{
+        self,
         execution::UserEntry,
         mmu::{PAGE_SIZE, PagePermissions},
     },
     ipc::{Channel, Message},
     memory::{self, FrameAccess, FrameAllocation, MappingOptions, ReferenceKind},
     task::{Object, ObjectType, Rights, Task, TaskState, TransferRequest},
+    thread::{self, Thread, ThreadState},
 };
 use runtime::process::ProcessStart;
 use spin::Once;
 
 static IMAGE: Once<&'static [u8]> = Once::new();
-static DEVICES: Once<DeviceSet> = Once::new();
+static DEVICES: Once<(DeviceSet, bool)> = Once::new();
 
-pub fn run_device(image: &'static [u8], devices: DeviceSet) {
-    DEVICES.call_once(|| devices);
+pub fn run_device(image: &'static [u8], devices: DeviceSet, resident: bool) {
+    DEVICES.call_once(|| (devices, resident));
     run(image);
 }
 
@@ -37,10 +39,10 @@ pub fn run(image: &'static [u8]) {
 }
 
 fn scenario(_: usize) -> usize {
-    let modes: &[u64] = if DEVICES.get().is_some() {
-        &[5]
-    } else {
-        &[0, 1, 2, 3, 4, 0]
+    let modes: &[u64] = match DEVICES.get() {
+        Some((_, true)) => &[6],
+        Some((_, false)) => &[5],
+        None => &[0, 1, 2, 3, 4, 0],
     };
     for &mode in modes {
         let task = Task::new().unwrap();
@@ -72,7 +74,14 @@ fn scenario(_: usize) -> usize {
         }
         let task_handle = task.insert(Object::Task(task.clone()), rights).unwrap();
         let bootstrap = task
-            .insert(Object::Channel(sender), Rights::READ_WRITE)
+            .insert(
+                Object::Channel(sender),
+                if mode == 6 {
+                    Rights::READ
+                } else {
+                    Rights::READ_WRITE
+                },
+            )
             .unwrap();
         write(
             &stack,
@@ -92,6 +101,11 @@ fn scenario(_: usize) -> usize {
             })
             .unwrap();
         user.start().unwrap();
+        if mode == 6 {
+            drop(receiver);
+            resident(&task, &user);
+            continue;
+        }
         let status = usize::from(matches!(mode, 1..=3));
         assert_eq!(user.wait().unwrap(), status, "runtime test scenario {mode}");
         assert_eq!(task.state(), TaskState::Dead(status));
@@ -114,6 +128,41 @@ fn scenario(_: usize) -> usize {
         }
     }
     0
+}
+
+fn resident(task: &Task, user: &Thread) {
+    let deadline = hardware::timer().now_ns().unwrap() + 1_000_000_000;
+    while user.state() != ThreadState::Blocked {
+        assert_eq!(task.state(), TaskState::Active);
+        assert!(
+            hardware::timer().now_ns().unwrap() < deadline,
+            "service did not become idle"
+        );
+        thread::yield_now().unwrap();
+    }
+    let devices = &DEVICES.get().unwrap().0;
+    let mut cursor = 0;
+    let group = loop {
+        let id = devices.next(cursor).unwrap().unwrap();
+        let info = devices.describe(id).unwrap();
+        if info.console {
+            break info.group.unwrap();
+        }
+        cursor = id;
+    };
+    assert!(matches!(devices.claim_group(group), Err(DeviceError::Busy)));
+    assert_eq!(
+        task.wait_until(hardware::timer().now_ns().unwrap() + 20_000_000)
+            .unwrap(),
+        None
+    );
+    assert_eq!(task.state(), TaskState::Active);
+    assert_eq!(user.state(), ThreadState::Blocked);
+    assert!(matches!(devices.claim_group(group), Err(DeviceError::Busy)));
+    task.terminate(0);
+    assert_eq!(user.wait().unwrap(), 0);
+    assert_eq!(task.state(), TaskState::Dead(0));
+    drop(devices.claim_group(group).unwrap());
 }
 
 fn load_segment(task: &Task, image: &[u8], header: &[u8]) {
@@ -180,7 +229,7 @@ fn word(bytes: &[u8], offset: usize) -> u64 {
 }
 
 fn bootstrap(receiver: &Channel, mode: u64) {
-    if let Some(devices) = DEVICES.get().filter(|_| mode == 5) {
+    if let Some((devices, _)) = DEVICES.get().filter(|_| matches!(mode, 5 | 6)) {
         let source = Task::new().unwrap();
         let channel = source
             .insert(Object::Channel(receiver.clone()), Rights::WRITE)
@@ -191,16 +240,29 @@ fn bootstrap(receiver: &Channel, mode: u64) {
                 ObjectType::DeviceSet.supported_rights(),
             )
             .unwrap();
-        source
-            .try_send(
-                channel,
-                Message::new(mode, &[]).unwrap(),
-                &[TransferRequest {
-                    handle,
-                    rights: ObjectType::DeviceSet.supported_rights(),
-                }],
-            )
-            .unwrap();
+        let device = TransferRequest {
+            handle,
+            rights: ObjectType::DeviceSet.supported_rights(),
+        };
+        if mode == 6 {
+            let archive = source.allocate_frames(1).unwrap();
+            let archive = memory::manager().allocate_arc(archive).unwrap();
+            let rights = Rights::READ | Rights::MAP | Rights::TRANSFER;
+            let handle = source
+                .insert(Object::FrameAllocation(archive), rights)
+                .unwrap();
+            source
+                .try_send(
+                    channel,
+                    Message::new(0, &[PAGE_SIZE as u64]).unwrap(),
+                    &[TransferRequest { handle, rights }, device],
+                )
+                .unwrap();
+        } else {
+            source
+                .try_send(channel, Message::new(mode, &[]).unwrap(), &[device])
+                .unwrap();
+        }
         source.terminate(0);
     } else {
         receiver.send(Message::new(mode, &[]).unwrap()).unwrap();
