@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::{Mutex, Once};
 
 use kernel::{
@@ -26,6 +26,7 @@ static WAIT_EVENT: Mutex<Option<(Task, Handle)>> = Mutex::new(None);
 static WAIT_CALL: Mutex<Option<(Task, Handle)>> = Mutex::new(None);
 static WAIT_TARGET: Mutex<Option<Task>> = Mutex::new(None);
 static TIMERS: AtomicUsize = AtomicUsize::new(0);
+static SLEEP_START: AtomicU64 = AtomicU64::new(0);
 static REQUEST_ON_TIMER: AtomicBool = AtomicBool::new(false);
 static RELEASE_ON_TIMER: AtomicBool = AtomicBool::new(false);
 
@@ -213,20 +214,27 @@ fn preemption_deadlines() {
     for (wait_first, request) in [(true, false), (false, false), (true, true)] {
         let (fixture, creator) = preemption_fixture(73);
         let observer = Thread::new(preemption_observer, 0).unwrap();
-        let now = hardware::timer().now_ns().unwrap();
-        let early = now + 50_000_000;
-        let late = now + 100_000_000;
         let waiter = Thread::new(
-            |deadline| {
-                thread::sleep_until(deadline as u64).unwrap();
+            |wait_first| {
+                let now = hardware::timer().now_ns().unwrap();
+                SLEEP_START.store(now, Ordering::Relaxed);
+                let delay = if wait_first != 0 {
+                    50_000_000
+                } else {
+                    100_000_000
+                };
+                thread::sleep_until(now + delay).unwrap();
                 42
             },
-            if wait_first { early } else { late } as usize,
+            usize::from(wait_first),
         )
         .unwrap();
         waiter.start().unwrap();
         scheduler::run_ready().unwrap();
         assert_eq!(waiter.state(), ThreadState::Blocked);
+        let now = SLEEP_START.load(Ordering::Relaxed);
+        let early = now + 50_000_000;
+        let late = now + 100_000_000;
         fixture.thread.start().unwrap();
         observer.start().unwrap();
         *BOOT.lock() = Some(fixture);
