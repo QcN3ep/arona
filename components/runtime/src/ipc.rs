@@ -3,7 +3,9 @@
 use crate::{
     AnyHandle, Channel, Error, Event, Handle, Object, Reply, Rights, Task, Timer, call, thread,
 };
-pub use abi::ipc::{EXITED, MESSAGE_HANDLES, MESSAGE_WORDS, PEER_CLOSED, READABLE, WRITABLE};
+pub use abi::ipc::{
+    EXITED, MESSAGE_HANDLES, MESSAGE_WORDS, PEER_CLOSED, READABLE, WAIT_ITEMS, WRITABLE,
+};
 use abi::method;
 use arrayvec::ArrayVec;
 use core::marker::PhantomData;

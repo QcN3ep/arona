@@ -5,6 +5,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+extern crate alloc;
+
 use kernel::trap::{Trap, TrapOrigin, TrapOutcome};
 
 mod device;

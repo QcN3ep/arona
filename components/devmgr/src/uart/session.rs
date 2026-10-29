@@ -6,22 +6,20 @@ use runtime::{
 };
 
 use super::{DataBits, LineErrors, Parity, ReadResult, Settings, StopBits};
-use crate::Error;
+use crate::{
+    Error,
+    device::{
+        BUSY, CHANNEL_RIGHTS, CLOCK_UNAVAILABLE, INVALID_CONFIGURATION, INVALID_REQUEST, OPEN,
+        SUCCESS, UNAVAILABLE, UNSUPPORTED,
+    },
+};
 
-pub(super) const OPEN: u64 = 1;
 pub(super) const READ: u64 = 2;
 pub(super) const TRY_READ: u64 = 3;
 pub(super) const WRITE: u64 = 4;
 pub(super) const FLUSH: u64 = 5;
 pub(super) const CONFIGURE: u64 = 6;
-pub(super) const SUCCESS: u64 = 0;
-pub(super) const INVALID_REQUEST: u64 = 1;
-pub(super) const BUSY: u64 = 2;
-pub(super) const UNSUPPORTED: u64 = 3;
-pub(super) const INVALID_CONFIGURATION: u64 = 4;
-pub(super) const CLOCK_UNAVAILABLE: u64 = 5;
 pub(super) const MAX_BYTES: usize = (runtime::ipc::MESSAGE_WORDS - 2) * 8;
-pub(super) const CHANNEL_RIGHTS: Rights = Rights::READ_WRITE.union(Rights::WAIT);
 
 /// UART 的独占会话。
 pub struct Session {
@@ -42,7 +40,7 @@ impl Session {
         request
             .push(Transfer {
                 handle: server.into(),
-                rights: CHANNEL_RIGHTS,
+                rights: CHANNEL_RIGHTS.union(Rights::TRANSFER),
             })
             .map_err(|_| runtime::Error::Protocol)?;
         empty(response(service, &mut request)?)?;
@@ -188,6 +186,7 @@ fn response(channel: &Handle<Channel>, request: &mut Message) -> Result<Received
         UNSUPPORTED => Error::Unsupported,
         INVALID_CONFIGURATION => Error::InvalidConfiguration,
         CLOCK_UNAVAILABLE => Error::ClockUnavailable,
+        UNAVAILABLE => Error::Unavailable,
         _ => runtime::Error::Protocol.into(),
     };
     Err(error)

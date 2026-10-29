@@ -1,13 +1,118 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 查询设备身份与带来源命名空间的属性。
+//! 设备描述查询与会话交接。
 
 use runtime::{
-    DeviceSet, Handle,
+    Channel, DeviceSet, Handle, KernelError, Reply, Rights,
     device::{DeviceField, DeviceInfo},
+    ipc::{Message, ReceivedMessage, Transfer, WaitMode},
 };
 
 use crate::Error;
+
+pub(crate) const OPEN: u64 = 1;
+pub(crate) const CHANNEL_RIGHTS: Rights = Rights::READ_WRITE.union(Rights::WAIT);
+pub(crate) const SUCCESS: u64 = 0;
+pub(crate) const INVALID_REQUEST: u64 = 1;
+pub(crate) const BUSY: u64 = 2;
+pub(crate) const UNSUPPORTED: u64 = 3;
+pub(crate) const INVALID_CONFIGURATION: u64 = 4;
+pub(crate) const CLOCK_UNAVAILABLE: u64 = 5;
+pub(crate) const UNAVAILABLE: u64 = 6;
+
+pub struct OpenRequest {
+    pub device: u32,
+    pub(crate) channel: Handle<Channel>,
+    pub(crate) reply: Handle<Reply>,
+}
+
+impl OpenRequest {
+    pub fn decode(mut request: ReceivedMessage) -> Result<Option<Self>, Error> {
+        let reply = match request.take_reply() {
+            Some(reply) => reply,
+            None => match request
+                .take_handle(0)
+                .and_then(|handle| handle.downcast().ok())
+            {
+                Some(reply) => reply,
+                None => return Ok(None),
+            },
+        };
+        if !reply.info()?.rights.contains(Rights::WRITE) {
+            return Ok(None);
+        }
+        let device = match (request.tag, request.words()) {
+            (OPEN, [id]) if *id <= u64::from(u32::MAX) && request.handles().len() == 1 => {
+                *id as u32
+            }
+            _ => {
+                reject(&reply, INVALID_REQUEST)?;
+                return Ok(None);
+            }
+        };
+        let Ok(channel) = request.take_handle(0).unwrap().downcast::<Channel>() else {
+            reject(&reply, INVALID_REQUEST)?;
+            return Ok(None);
+        };
+        if !channel.info()?.rights.contains(CHANNEL_RIGHTS) {
+            reject(&reply, INVALID_REQUEST)?;
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            device,
+            channel,
+            reply,
+        }))
+    }
+
+    pub fn reject(self, error: Error) -> Result<(), Error> {
+        reject(
+            &self.reply,
+            match error {
+                Error::Busy | Error::Runtime(runtime::Error::Kernel(KernelError::Busy)) => BUSY,
+                Error::Unsupported => UNSUPPORTED,
+                Error::InvalidConfiguration => INVALID_CONFIGURATION,
+                Error::ClockUnavailable => CLOCK_UNAVAILABLE,
+                _ => UNAVAILABLE,
+            },
+        )
+    }
+
+    pub fn forward(self, target: &Handle<Channel>) -> Result<(), Error> {
+        if !self.channel.info()?.rights.contains(Rights::TRANSFER) {
+            return reject(&self.reply, INVALID_REQUEST);
+        }
+        let mut message = Message::new(OPEN, &[u64::from(self.device)])?;
+        for (handle, rights) in [
+            (self.reply.into(), Rights::WRITE),
+            (self.channel.into(), CHANNEL_RIGHTS),
+        ] {
+            message
+                .push(Transfer { handle, rights })
+                .map_err(|_| runtime::Error::Protocol)?;
+        }
+        if let Err(error) = target.send(&mut message, WaitMode::Poll) {
+            drop(message.pop());
+            let reply = message.pop().unwrap().handle.downcast::<Reply>().unwrap();
+            reject(
+                &reply,
+                if error == runtime::Error::Kernel(KernelError::WouldBlock) {
+                    BUSY
+                } else {
+                    UNAVAILABLE
+                },
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn reject(reply: &Handle<Reply>, status: u64) -> Result<(), Error> {
+    match reply.send(&mut Message::new(status, &[])?) {
+        Ok(()) | Err(runtime::Error::Kernel(KernelError::InvalidState)) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
 
 pub struct DeviceDescription<'a> {
     catalog: &'a Handle<DeviceSet>,

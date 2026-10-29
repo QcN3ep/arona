@@ -18,7 +18,10 @@ pub struct Service {
 }
 
 pub fn start_devmgr(archive: &Archive, devices: &Handle<DeviceSet>) -> Result<Service, Error> {
-    let rights = ProcessStart::REQUIRED_RIGHTS.union(Rights::CREATE_EVENT);
+    let rights = ProcessStart::REQUIRED_RIGHTS
+        .union(Rights::CREATE_EVENT)
+        .union(Rights::CREATE_CHANNEL)
+        .union(Rights::CREATE_THREAD);
     let (child, entry) = program::load(archive, b"bin/devmgr", rights)?;
     let control_rights = Rights::READ_WRITE.union(Rights::WAIT);
     let (sender, receiver) =

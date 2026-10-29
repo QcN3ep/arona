@@ -453,7 +453,8 @@ impl Registry {
         }
         for index in 0..devices.len() {
             let device = &devices[index].hardware;
-            // TODO: 配合 IOMMU 授权 DMA 设备。
+            // TODO: 实现 PCI 功能枚举及 BAR、中断资源的验证与授权。
+            // TODO: 接入 IOMMU 域及 DMA 映射、同步和撤销后授权 DMA 设备。
             if device.use_policy != DeviceUsePolicy::UserAssignable
                 || device.dma != DmaCapability::None
                 || device.location != HardwareDeviceLocation::Platform

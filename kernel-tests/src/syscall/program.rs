@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::{
     device::{DeviceError, DeviceSet},
@@ -23,10 +24,12 @@ static MODES: Once<&'static [u64]> = Once::new();
 static ARCHIVE: Once<&'static [u8]> = Once::new();
 static SERVICE: Mutex<Option<Task>> = Mutex::new(None);
 static SUPERVISING: AtomicBool = AtomicBool::new(false);
+static TRACK_BINDINGS: AtomicBool = AtomicBool::new(false);
+static BINDING: Mutex<Option<(u32, abi::Handle)>> = Mutex::new(None);
 
 pub fn run_device(image: &'static [u8], devices: DeviceSet, resident: bool) {
     DEVICES.call_once(|| devices);
-    run_cases(image, if resident { &[6] } else { &[5] });
+    run_cases(image, if resident { &[6, 8] } else { &[5] });
 }
 
 pub fn run_init(image: &'static [u8], archive: &'static [u8], devices: DeviceSet) {
@@ -36,6 +39,28 @@ pub fn run_init(image: &'static [u8], archive: &'static [u8], devices: DeviceSet
 }
 
 pub fn handle(trap: Trap) -> TrapOutcome {
+    let binding = if TRACK_BINDINGS.load(Ordering::Relaxed)
+        && let TrapEvent::Syscall {
+            handle, arguments, ..
+        } = trap.event
+        && arguments[0] == abi::method::device::BIND as usize
+        && thread::current()
+            .and_then(|thread| thread.task())
+            .is_some_and(|task| {
+                task.get(
+                    abi::Handle::from_raw(handle as u64),
+                    ObjectType::Device,
+                    Rights::IRQ_ACK,
+                )
+                .is_ok()
+            }) {
+        Some((
+            arguments[1] as u32,
+            abi::Handle::from_raw(arguments[3] as u64),
+        ))
+    } else {
+        None
+    };
     let method = if ARCHIVE.get().is_some()
         && let TrapEvent::Syscall {
             handle, arguments, ..
@@ -60,6 +85,11 @@ pub fn handle(trap: Trap) -> TrapOutcome {
         SUPERVISING.store(true, Ordering::Relaxed);
     }
     let outcome = kernel::trap::dispatch(trap);
+    if let Some(binding) = binding
+        && matches!(outcome, TrapOutcome::Return { status: 0, .. })
+    {
+        BINDING.lock().get_or_insert(binding);
+    }
     if method == Some(abi::method::task::CREATE)
         && let TrapOutcome::Return { status: 0, values } = outcome
     {
@@ -133,7 +163,9 @@ fn scenario(_: usize) -> usize {
             )
             .unwrap();
         let (sender, receiver) = Channel::pair().unwrap();
-        bootstrap(&receiver, mode);
+        if mode != 8 {
+            bootstrap(&receiver, mode);
+        }
         let mut rights = ObjectType::Task.supported_rights();
         if mode == 4 {
             rights = Rights::from_bits(rights.bits() & !Rights::CREATE_THREAD.bits()).unwrap();
@@ -144,6 +176,8 @@ fn scenario(_: usize) -> usize {
                 Object::Channel(sender),
                 if mode == 6 || mode >= 9 {
                     Rights::READ
+                } else if mode == 8 {
+                    Rights::READ_WRITE | Rights::WAIT
                 } else {
                     Rights::READ_WRITE
                 },
@@ -166,10 +200,17 @@ fn scenario(_: usize) -> usize {
                 argument: range.start,
             })
             .unwrap();
+        TRACK_BINDINGS.store(mode == 8, Ordering::Relaxed);
         user.start().unwrap();
         if mode == 6 {
             drop(receiver);
             resident(&task, &user);
+            continue;
+        }
+        if mode == 8 {
+            managed_service(&task, &user, receiver);
+            TRACK_BINDINGS.store(false, Ordering::Relaxed);
+            *BINDING.lock() = None;
             continue;
         }
         if mode >= 9 {
@@ -229,6 +270,174 @@ fn resident(task: &Task, user: &Thread) {
     assert_eq!(user.wait().unwrap(), 0);
     assert_eq!(task.state(), TaskState::Dead(0));
     drop(devices.claim_group(group).unwrap());
+}
+
+fn managed_service(task: &Task, user: &Thread, control: Channel) {
+    let client = Task::new().unwrap();
+    let control = client
+        .insert(Object::Channel(control), Rights::READ_WRITE)
+        .unwrap();
+    let devices = DEVICES.get().unwrap();
+    let rights = ObjectType::DeviceSet.supported_rights();
+    let catalog = client
+        .insert(Object::DeviceSet(devices.clone()), rights)
+        .unwrap();
+    assert_eq!(
+        service_transfer(
+            &client,
+            control,
+            0,
+            &[],
+            &[TransferRequest {
+                handle: catalog,
+                rights
+            }]
+        ),
+        Message::new(0, &[]).unwrap(),
+    );
+    assert_eq!(service_call(&client, control, u64::MAX, &[]).tag, 1);
+    let (status, unused) = open_uart(&client, control, u32::MAX);
+    assert_eq!(status, 3);
+    client.close(unused).unwrap();
+
+    let mut sessions = Vec::new();
+    let mut cursor = 0;
+    while let Some(id) = devices.next(cursor).unwrap() {
+        cursor = id;
+        let info = devices.describe(id).unwrap();
+        if !(0..info.identities).any(|index| {
+            devices
+                .read(id, abi::device::DeviceField::IdentityNamespace, index)
+                .unwrap()
+                == b"devicetree"
+                && matches!(
+                    devices
+                        .read(id, abi::device::DeviceField::Identity, index)
+                        .unwrap(),
+                    b"ns16550" | b"ns16550a"
+                )
+        }) {
+            continue;
+        }
+        let (status, channel) = open_uart(&client, control, id);
+        assert_eq!(status, 0, "UART {id} did not start");
+        let (status, unused) = open_uart(&client, control, id);
+        assert_eq!(status, 2);
+        client.close(unused).unwrap();
+        assert_eq!(
+            service_call(&client, channel, 3, &[1]),
+            Message::new(0, &[0, 0]).unwrap()
+        );
+        sessions.push((id, channel, info.group.unwrap()));
+    }
+    assert!(!sessions.is_empty());
+    let (id, channel, group) = sessions.pop().unwrap();
+    client.close(channel).unwrap();
+    let channel = reconnect_uart(&client, control, id);
+    sessions.push((id, channel, group));
+    let (id, event) = BINDING.lock().unwrap();
+    let position = sessions
+        .iter()
+        .position(|(device, _, _)| *device == id)
+        .unwrap();
+    let (_, channel, group) = sessions.remove(position);
+    task.close(event).unwrap();
+    assert!(matches!(
+        client.receive_until(channel, 0, service_deadline()),
+        Err(kernel::task::TaskError::Channel(
+            kernel::ipc::ChannelError::EndOfStream
+        ))
+    ));
+    client.close(channel).unwrap();
+    let channel = reconnect_uart(&client, control, id);
+    sessions.push((id, channel, group));
+    for (_, channel, _) in &sessions {
+        assert_eq!(service_call(&client, *channel, 6, &[0, 5, 0, 2]).tag, 4);
+        assert_eq!(
+            service_call(&client, *channel, 3, &[1]),
+            Message::new(0, &[0, 0]).unwrap()
+        );
+        assert_eq!(
+            service_call(&client, *channel, 5, &[]),
+            Message::new(0, &[]).unwrap()
+        );
+    }
+    client.close(control).unwrap();
+    assert_eq!(user.wait().unwrap(), 0);
+    assert_eq!(task.state(), TaskState::Dead(0));
+    for (_, channel, group) in sessions {
+        assert!(matches!(
+            client.try_receive(channel, 0),
+            Err(kernel::task::TaskError::Channel(
+                kernel::ipc::ChannelError::EndOfStream
+            ))
+        ));
+        client.close(channel).unwrap();
+        drop(devices.claim_group(group).unwrap());
+    }
+    client.terminate(0);
+}
+
+fn open_uart(client: &Task, control: abi::Handle, id: u32) -> (u64, abi::Handle) {
+    let (channel, server) = Channel::pair().unwrap();
+    let channel = client
+        .insert(Object::Channel(channel), Rights::READ_WRITE)
+        .unwrap();
+    let rights = Rights::READ_WRITE | Rights::WAIT | Rights::TRANSFER;
+    let server = client.insert(Object::Channel(server), rights).unwrap();
+    let response = service_transfer(
+        client,
+        control,
+        1,
+        &[u64::from(id)],
+        &[TransferRequest {
+            handle: server,
+            rights,
+        }],
+    );
+    assert!(response.words().is_empty());
+    (response.tag, channel)
+}
+
+fn reconnect_uart(client: &Task, control: abi::Handle, id: u32) -> abi::Handle {
+    let deadline = service_deadline();
+    loop {
+        let (status, channel) = open_uart(client, control, id);
+        if status == 0 {
+            return channel;
+        }
+        assert!(matches!(status, 2 | 6));
+        client.close(channel).unwrap();
+        assert!(hardware::timer().now_ns().unwrap() < deadline);
+        thread::yield_now().unwrap();
+    }
+}
+
+fn service_call(client: &Task, channel: abi::Handle, tag: u64, words: &[u64]) -> Message {
+    service_transfer(client, channel, tag, words, &[])
+}
+
+fn service_transfer(
+    client: &Task,
+    channel: abi::Handle,
+    tag: u64,
+    words: &[u64],
+    transfers: &[TransferRequest],
+) -> Message {
+    let response = client
+        .call_until(
+            channel,
+            Message::new(tag, words).unwrap(),
+            transfers,
+            service_deadline(),
+        )
+        .unwrap();
+    assert!(response.handles().is_empty());
+    response.message
+}
+
+fn service_deadline() -> u64 {
+    hardware::timer().now_ns().unwrap() + 5_000_000_000
 }
 
 fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {

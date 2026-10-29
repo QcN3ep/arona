@@ -11,12 +11,15 @@ use runtime::{
 
 use super::{
     DataBits, Parity, Settings, StopBits, Uart,
-    session::{
-        self, BUSY, CLOCK_UNAVAILABLE, INVALID_CONFIGURATION, INVALID_REQUEST, MAX_BYTES, SUCCESS,
+    session::{self, MAX_BYTES},
+};
+use crate::{
+    Error,
+    device::{
+        BUSY, CLOCK_UNAVAILABLE, INVALID_CONFIGURATION, INVALID_REQUEST, OpenRequest, SUCCESS,
         UNSUPPORTED,
     },
 };
-use crate::Error;
 
 const BUFFER_SIZE: usize = 4096;
 const TRANSMIT_POLL_NS: u64 = 1_000_000;
@@ -153,31 +156,19 @@ impl State {
         Ok(())
     }
 
-    fn open(&mut self, mut request: ReceivedMessage, device: u32) -> Result<(), Error> {
-        let Some(reply) = request.take_reply() else {
+    fn open(&mut self, request: ReceivedMessage, device: u32) -> Result<(), Error> {
+        let Some(request) = OpenRequest::decode(request)? else {
             return Ok(());
         };
-        if request.tag != session::OPEN
-            || request.words().len() != 1
-            || request.handles().len() != 1
-        {
-            return reject(&reply, INVALID_REQUEST);
-        }
-        if request.words() != [u64::from(device)] {
-            return reject(&reply, UNSUPPORTED);
+        if request.device != device {
+            return request.reject(Error::Unsupported);
         }
         if self.connection.is_some() {
-            return reject(&reply, BUSY);
+            return request.reject(Error::Busy);
         }
-        let Ok(channel) = request.take_handle(0).unwrap().downcast::<Channel>() else {
-            return reject(&reply, INVALID_REQUEST);
-        };
-        if !channel.info()?.rights.contains(session::CHANNEL_RIGHTS) {
-            return reject(&reply, INVALID_REQUEST);
-        }
-        if deliver(&reply, &mut Message::new(SUCCESS, &[])?)? {
+        if deliver(&request.reply, &mut Message::new(SUCCESS, &[])?)? {
             self.connection = Some(Connection {
-                channel,
+                channel: request.channel,
                 reads: VecDeque::new(),
                 writes: VecDeque::new(),
             });
