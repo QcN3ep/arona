@@ -122,7 +122,7 @@ fn package_init(options: BuildOptions) -> Result<PathBuf, String> {
         .join(profile)
         .join("initramfs.cpio");
     let mut bytes = Vec::new();
-    for component in ["init", "devmgr"] {
+    for component in ["init", "devmgr", "logger"] {
         build_component(options.target, options.release, component)?;
         let executable = target_directory
             .join(options.target.triple())

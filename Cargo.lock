@@ -35,6 +35,8 @@ dependencies = [
 name = "arona-init"
 version = "0.1.0"
 dependencies = [
+ "arona-devmgr",
+ "arona-logger",
  "arona-runtime",
 ]
 

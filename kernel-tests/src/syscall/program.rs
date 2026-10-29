@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use kernel::{
     device::{DeviceError, DeviceSet},
     hardware::{
@@ -20,10 +20,11 @@ use spin::{Mutex, Once};
 
 static IMAGE: Once<&'static [u8]> = Once::new();
 static DEVICES: Once<DeviceSet> = Once::new();
-static MODES: Once<&'static [u64]> = Once::new();
+static MODE: AtomicU64 = AtomicU64::new(0);
 static ARCHIVE: Once<&'static [u8]> = Once::new();
-static SERVICE: Mutex<Option<Task>> = Mutex::new(None);
+static SERVICES: Mutex<Vec<Task>> = Mutex::new(Vec::new());
 static SUPERVISING: AtomicBool = AtomicBool::new(false);
+static INIT_TASK: AtomicU64 = AtomicU64::new(0);
 static TRACK_BINDINGS: AtomicBool = AtomicBool::new(false);
 static BINDING: Mutex<Option<(u32, abi::Handle)>> = Mutex::new(None);
 
@@ -35,7 +36,7 @@ pub fn run_device(image: &'static [u8], devices: DeviceSet, resident: bool) {
 pub fn run_init(image: &'static [u8], archive: &'static [u8], devices: DeviceSet) {
     DEVICES.call_once(|| devices);
     ARCHIVE.call_once(|| archive);
-    run_cases(image, &[9, 10, 11, 12]);
+    run_cases(image, &[9, 10, 11, 12, 13]);
 }
 
 pub fn handle(trap: Trap) -> TrapOutcome {
@@ -81,8 +82,22 @@ pub fn handle(trap: Trap) -> TrapOutcome {
     } else {
         None
     };
-    if method == Some(abi::method::task::WAIT) {
-        SUPERVISING.store(true, Ordering::Relaxed);
+    if ARCHIVE.get().is_some()
+        && let TrapEvent::Syscall { arguments, .. } = trap.event
+        && arguments[0] == abi::method::thread::WAIT_MANY as usize
+        && arguments[2] == 2
+    {
+        let caller = thread::current().unwrap().task().unwrap();
+        if caller
+            .get(
+                abi::Handle::from_raw(INIT_TASK.load(Ordering::Relaxed)),
+                ObjectType::Task,
+                Rights::CREATE_TASK,
+            )
+            .is_ok()
+        {
+            SUPERVISING.store(true, Ordering::Relaxed);
+        }
     }
     let outcome = kernel::trap::dispatch(trap);
     if let Some(binding) = binding
@@ -106,7 +121,7 @@ pub fn handle(trap: Trap) -> TrapOutcome {
         else {
             panic!("created object is not a Task")
         };
-        assert!(SERVICE.lock().replace(task).is_none());
+        SERVICES.lock().push(task);
     }
     outcome
 }
@@ -123,15 +138,17 @@ pub fn run_process(image: &'static [u8]) {
     run_cases(image, &[7]);
 }
 
-fn run_cases(image: &'static [u8], modes: &'static [u64]) {
+fn run_cases(image: &'static [u8], modes: &[u64]) {
     IMAGE.call_once(|| image);
-    MODES.call_once(|| modes);
     let manager = memory::manager();
     manager.reclaim_heap();
     let before = manager.stats();
     let heap = manager.heap_stats();
     super::ACTIVE.store(true, Ordering::Relaxed);
-    crate::run_thread(scenario);
+    for &mode in modes {
+        MODE.store(mode, Ordering::Relaxed);
+        crate::run_thread(scenario);
+    }
     super::ACTIVE.store(false, Ordering::Relaxed);
     manager.reclaim_heap();
     assert_eq!(manager.stats(), before);
@@ -139,112 +156,113 @@ fn run_cases(image: &'static [u8], modes: &'static [u64]) {
 }
 
 fn scenario(_: usize) -> usize {
-    for &mode in *MODES.get().unwrap() {
-        let task = Task::new().unwrap();
-        let held =
-            (mode == 11).then(|| DEVICES.get().unwrap().claim_group(console_group()).unwrap());
-        if mode >= 9 {
-            SUPERVISING.store(false, Ordering::Relaxed);
+    let mode = MODE.load(Ordering::Relaxed);
+    let task = Task::new().unwrap();
+    let held = (mode == 11).then(|| DEVICES.get().unwrap().claim_group(console_group()).unwrap());
+    if mode >= 9 {
+        SUPERVISING.store(false, Ordering::Relaxed);
+    }
+    let image = IMAGE.get().unwrap();
+    assert_eq!(&image[..7], b"\x7fELF\x02\x01\x01");
+    let headers = word(image, 32) as usize;
+    let header_size = u16::from_le_bytes(image[54..56].try_into().unwrap()) as usize;
+    let count = u16::from_le_bytes(image[56..58].try_into().unwrap()) as usize;
+    for index in 0..count {
+        let header = &image[headers + index * header_size..];
+        if u32::from_le_bytes(header[..4].try_into().unwrap()) != 1 {
+            continue;
         }
-        let image = IMAGE.get().unwrap();
-        assert_eq!(&image[..7], b"\x7fELF\x02\x01\x01");
-        let headers = word(image, 32) as usize;
-        let header_size = u16::from_le_bytes(image[54..56].try_into().unwrap()) as usize;
-        let count = u16::from_le_bytes(image[56..58].try_into().unwrap()) as usize;
-        for index in 0..count {
-            let header = &image[headers + index * header_size..];
-            if u32::from_le_bytes(header[..4].try_into().unwrap()) != 1 {
-                continue;
-            }
-            load_segment(&task, image, header);
-        }
-        let stack = task.allocate_frames(16).unwrap();
-        let range = task
-            .map(
-                &stack,
-                0..16,
-                MappingOptions::new(PagePermissions::ReadWrite),
-            )
-            .unwrap();
-        let (sender, receiver) = Channel::pair().unwrap();
-        if mode != 8 {
-            bootstrap(&receiver, mode);
-        }
-        let mut rights = ObjectType::Task.supported_rights();
-        if mode == 4 {
-            rights = Rights::from_bits(rights.bits() & !Rights::CREATE_THREAD.bits()).unwrap();
-        }
-        let task_handle = task.insert(Object::Task(task.clone()), rights).unwrap();
-        let bootstrap = task
-            .insert(
-                Object::Channel(sender),
-                if mode == 6 || mode >= 9 {
-                    Rights::READ
-                } else if mode == 8 {
-                    Rights::READ_WRITE | Rights::WAIT
-                } else {
-                    Rights::READ_WRITE
-                },
-            )
-            .unwrap();
-        write(
+        load_segment(&task, image, header);
+    }
+    let stack = task.allocate_frames(16).unwrap();
+    let range = task
+        .map(
             &stack,
-            0,
-            &ProcessStart {
-                task: task_handle,
-                bootstrap: Some(bootstrap),
+            0..16,
+            MappingOptions::new(PagePermissions::ReadWrite),
+        )
+        .unwrap();
+    let (sender, receiver) = Channel::pair().unwrap();
+    if mode != 8 {
+        bootstrap(&receiver, mode);
+    }
+    let mut rights = ObjectType::Task.supported_rights();
+    if mode == 4 {
+        rights = Rights::from_bits(rights.bits() & !Rights::CREATE_THREAD.bits()).unwrap();
+    }
+    let task_handle = task.insert(Object::Task(task.clone()), rights).unwrap();
+    if mode >= 9 {
+        INIT_TASK.store(task_handle.raw(), Ordering::Relaxed);
+    }
+    let bootstrap = task
+        .insert(
+            Object::Channel(sender),
+            if mode == 6 || mode >= 9 {
+                Rights::READ
+            } else if mode == 8 {
+                Rights::READ_WRITE | Rights::WAIT
+            } else {
+                Rights::READ_WRITE
+            },
+        )
+        .unwrap();
+    write(
+        &stack,
+        0,
+        &ProcessStart {
+            task: task_handle,
+            bootstrap: Some(bootstrap),
+        }
+        .encode(),
+    );
+    let user = task
+        .create_thread(UserEntry {
+            pc: word(image, 24) as usize,
+            stack_pointer: range.end,
+            thread_pointer: 0,
+            argument: range.start,
+        })
+        .unwrap();
+    TRACK_BINDINGS.store(mode == 8, Ordering::Relaxed);
+    user.start().unwrap();
+    if mode == 6 {
+        drop(receiver);
+        resident(&task, &user);
+        return 0;
+    }
+    if mode == 8 {
+        managed_service(&task, &user, receiver);
+        TRACK_BINDINGS.store(false, Ordering::Relaxed);
+        *BINDING.lock() = None;
+        return 0;
+    }
+    if mode >= 9 {
+        drop(receiver);
+        init_lifecycle(&task, &user, mode);
+        *SERVICES.lock() = Vec::new();
+        drop(held);
+        drop(DEVICES.get().unwrap().claim_group(console_group()).unwrap());
+        return 0;
+    }
+    let status = usize::from(matches!(mode, 1..=3));
+    assert_eq!(user.wait().unwrap(), status, "runtime test scenario {mode}");
+    assert_eq!(task.state(), TaskState::Dead(status));
+    if status == 0 {
+        let report = receiver.try_receive().unwrap();
+        assert_eq!(report.tag, 73);
+        assert_eq!(
+            report.words(),
+            if mode == 5 {
+                [2].as_slice()
+            } else {
+                [37, 41].as_slice()
             }
-            .encode(),
         );
-        let user = task
-            .create_thread(UserEntry {
-                pc: word(image, 24) as usize,
-                stack_pointer: range.end,
-                thread_pointer: 0,
-                argument: range.start,
-            })
-            .unwrap();
-        TRACK_BINDINGS.store(mode == 8, Ordering::Relaxed);
-        user.start().unwrap();
-        if mode == 6 {
-            drop(receiver);
-            resident(&task, &user);
-            continue;
-        }
-        if mode == 8 {
-            managed_service(&task, &user, receiver);
-            TRACK_BINDINGS.store(false, Ordering::Relaxed);
-            *BINDING.lock() = None;
-            continue;
-        }
-        if mode >= 9 {
-            drop(receiver);
-            init_lifecycle(&task, &user, mode);
-            *SERVICE.lock() = None;
-            drop(held);
-            drop(DEVICES.get().unwrap().claim_group(console_group()).unwrap());
-            continue;
-        }
-        let status = usize::from(matches!(mode, 1..=3));
-        assert_eq!(user.wait().unwrap(), status, "runtime test scenario {mode}");
-        assert_eq!(task.state(), TaskState::Dead(status));
-        if status == 0 {
-            let report = receiver.try_receive().unwrap();
-            assert_eq!(report.tag, 73);
-            assert_eq!(
-                report.words(),
-                if mode == 5 {
-                    [2].as_slice()
-                } else {
-                    [37, 41].as_slice()
-                }
-            );
-        } else {
-            assert_eq!(
-                receiver.try_receive(),
-                Err(kernel::ipc::ChannelError::EndOfStream)
-            );
-        }
+    } else {
+        assert_eq!(
+            receiver.try_receive(),
+            Err(kernel::ipc::ChannelError::EndOfStream)
+        );
     }
     0
 }
@@ -445,31 +463,36 @@ fn service_deadline() -> u64 {
 }
 
 fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
-    if mode >= 11 {
+    if matches!(mode, 11 | 12) {
         assert_eq!(user.wait().unwrap(), 1);
         assert_eq!(task.state(), TaskState::Dead(1));
         assert!(!SUPERVISING.load(Ordering::Relaxed));
         if mode == 11 {
-            assert_eq!(SERVICE.lock().as_ref().unwrap().state(), TaskState::Dead(1));
+            assert_eq!(SERVICES.lock().len(), 1);
+            assert_eq!(SERVICES.lock()[0].state(), TaskState::Dead(1));
         } else {
-            assert!(SERVICE.lock().is_none());
+            assert!(SERVICES.lock().is_empty());
         }
         return;
     }
-    let deadline = hardware::timer().now_ns().unwrap() + 5_000_000_000;
+    let deadline = hardware::timer().now_ns().unwrap() + 15_000_000_000;
     while !SUPERVISING.load(Ordering::Relaxed) || user.state() != ThreadState::Blocked {
         assert_eq!(task.state(), TaskState::Active);
         assert!(
             hardware::timer().now_ns().unwrap() < deadline,
-            "init did not supervise devmgr: waiting={}, init={:?}, child={:?}",
+            "init did not supervise services: waiting={}, init={:?}",
             SUPERVISING.load(Ordering::Relaxed),
             user.state(),
-            SERVICE.lock().as_ref().map(|task| task.state()),
         );
         thread::yield_now().unwrap();
     }
-    let child = SERVICE.lock().as_ref().unwrap().clone();
-    assert_eq!(child.state(), TaskState::Active);
+    let children = SERVICES.lock().clone();
+    assert_eq!(children.len(), 2);
+    assert!(
+        children
+            .iter()
+            .all(|child| child.state() == TaskState::Active)
+    );
     let devices = DEVICES.get().unwrap();
     assert!(matches!(
         devices.claim_group(console_group()),
@@ -480,19 +503,35 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
             .unwrap(),
         None
     );
-    assert_eq!(child.state(), TaskState::Active);
+    assert!(
+        children
+            .iter()
+            .all(|child| child.state() == TaskState::Active)
+    );
     assert_eq!(user.state(), ThreadState::Blocked);
     let status = if mode == 9 {
-        child.terminate(73);
+        children[0].terminate(73);
         73
+    } else if mode == 13 {
+        children[1].terminate(74);
+        74
     } else {
         task.terminate(0);
         0
     };
     assert_eq!(user.wait().unwrap(), status);
     assert_eq!(task.state(), TaskState::Dead(status));
-    assert_eq!(child.wait().unwrap(), status);
-    assert_eq!(child.state(), TaskState::Dead(status));
+    for (index, child) in children.iter().enumerate() {
+        let expected = if mode == 10 {
+            0
+        } else if index == usize::from(mode == 13) {
+            status
+        } else {
+            1
+        };
+        assert_eq!(child.wait().unwrap(), expected);
+        assert_eq!(child.state(), TaskState::Dead(expected));
+    }
 }
 
 fn console_group() -> u32 {
@@ -572,7 +611,7 @@ fn word(bytes: &[u8], offset: usize) -> u64 {
 }
 
 fn bootstrap(receiver: &Channel, mode: u64) {
-    if let Some(devices) = DEVICES.get().filter(|_| matches!(mode, 5 | 6 | 9..=12)) {
+    if let Some(devices) = DEVICES.get().filter(|_| matches!(mode, 5 | 6 | 9..=13)) {
         let source = Task::new().unwrap();
         let channel = source
             .insert(Object::Channel(receiver.clone()), Rights::WRITE)

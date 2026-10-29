@@ -22,3 +22,5 @@ bench = false
 
 [dependencies]
 runtime = { package = "arona-runtime", path = "../runtime" }
+devmgr = { package = "arona-devmgr", path = "../devmgr" }
+logger = { package = "arona-logger", path = "../logger" }
