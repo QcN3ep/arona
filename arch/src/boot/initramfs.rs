@@ -96,7 +96,7 @@ pub fn prepare<'a>(
         return Err("initramfs is outside mappable RAM");
     }
     if archive.bytes.is_none() && range.page_envelope()?.overlaps(kernel.physical) {
-        return Err("external initramfs overlaps the kernel");
+        return Err("initramfs overlaps the kernel");
     }
     hardware
         .memory
@@ -192,24 +192,26 @@ pub(crate) fn source(
     _external: Option<PhysRange>,
     kernel: KernelImage,
 ) -> Result<Image<'static>, &'static str> {
-    static BYTES: &[u8] = include_bytes!(env!("ARONA_INITRAMFS"));
-    let address = BYTES.as_ptr() as usize;
+    const LENGTH: usize = include_bytes!(env!("ARONA_INITRAMFS")).len();
+    #[used]
+    #[unsafe(link_section = ".initramfs")]
+    static BYTES: [u8; LENGTH] = *include_bytes!(env!("ARONA_INITRAMFS"));
+    let address = core::ptr::addr_of!(BYTES) as usize;
     let segment = kernel.rodata;
     let offset = address
         .checked_sub(segment.virtual_start)
-        .ok_or("initramfs is outside kernel rodata")?;
+        .ok_or("initramfs address is below the kernel")?;
     let physical = segment
         .physical
         .start
         .checked_add(offset as u64)
         .ok_or("initramfs physical address overflow")?;
-    if physical
-        .checked_add(BYTES.len() as u64)
-        .is_none_or(|end| end > segment.physical.end)
-    {
-        return Err("initramfs exceeds kernel rodata");
-    }
-    Image::from_bytes(BYTES, physical)
+    Ok(Image::from_physical(PhysRange {
+        start: physical,
+        end: physical
+            .checked_add(LENGTH as u64)
+            .ok_or("initramfs physical range overflow")?,
+    }))
 }
 
 #[cfg(all(

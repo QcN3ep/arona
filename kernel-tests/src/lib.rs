@@ -14,7 +14,7 @@ mod task;
 mod thread;
 
 pub use device::run as run_devices;
-pub use syscall::run_device_program;
+pub use syscall::{handle_program, run_device_program, run_init_program};
 
 pub trait Platform {
     fn set_floating_enabled(enabled: bool);

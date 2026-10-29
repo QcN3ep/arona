@@ -12,7 +12,10 @@ use kernel::{
 use spin::Once;
 
 mod program;
-pub use program::{run as run_program, run_device as run_device_program, run_process};
+pub use program::{
+    handle as handle_program, run as run_program, run_device as run_device_program,
+    run_init as run_init_program, run_process,
+};
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static CODE: Once<[u64; PAGE_SIZE / 8]> = Once::new();

@@ -10,13 +10,14 @@ use devmgr::{
 };
 use runtime::{
     DeviceSet, Rights,
-    ipc::{self, WaitItem, WaitMode},
+    ipc::{self, Message, WaitItem, WaitMode},
     process, thread,
 };
 
 fn main() -> Result<(), Error> {
     let bootstrap = process::bootstrap().ok_or(runtime::Error::Protocol)?;
     let mut startup = bootstrap.receive(WaitMode::Forever)?;
+    let reply = startup.take_reply();
     let mut devices = None;
     while let Some(handle) = startup.take_handle(0) {
         if let Ok(catalog) = handle.downcast::<DeviceSet>()
@@ -27,7 +28,7 @@ fn main() -> Result<(), Error> {
     }
     let devices = devices.ok_or(runtime::Error::Protocol)?;
     drop(startup);
-    drop(bootstrap);
+    let control = reply.as_ref().map(|_| bootstrap);
     let mut cursor = 0;
     while let Some(id) = devices.next(cursor)? {
         cursor = id;
@@ -53,8 +54,24 @@ fn main() -> Result<(), Error> {
         };
         // TODO: 接入设备会话后启用接收中断。
         uart.set_receive_interrupts(false)?;
+        if let Some(reply) = reply {
+            reply.send(&mut Message::new(0, &[])?)?;
+        }
         loop {
-            ipc::wait_many(&[WaitItem::new(&event, 1)], WaitMode::Forever)?;
+            if let Some(control) = &control {
+                let ready = ipc::wait_many(
+                    &[
+                        WaitItem::new(&event, 1),
+                        WaitItem::new(control, ipc::PEER_CLOSED),
+                    ],
+                    WaitMode::Forever,
+                )?;
+                if ready.index == 1 {
+                    return Ok(());
+                }
+            } else {
+                ipc::wait_many(&[WaitItem::new(&event, 1)], WaitMode::Forever)?;
+            }
             uart.acknowledge_interrupt()?;
         }
     }

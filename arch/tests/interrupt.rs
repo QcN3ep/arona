@@ -65,7 +65,7 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
         .write(format_args!("Interrupt controller tests started\n"))
         .unwrap();
     #[cfg(feature = "runtime-tests")]
-    let resident = select_program();
+    let suite = select_program();
     arch::hardware::bind();
     hardware::trap()
         .install(
@@ -130,8 +130,25 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
             data.read(0, &mut bytes).unwrap();
             bytes
         });
-        kernel_tests::run_device_program(bytes, devices, resident);
-        if resident {
+        if suite == "init" {
+            let init = arch::boot::initramfs::find_init(
+                arch::boot::initramfs::Image::from_bytes(bytes, 0).unwrap(),
+            )
+            .unwrap()
+            .data()
+            .physical;
+            kernel_tests::run_init_program(
+                &bytes[init.start as usize..init.end as usize],
+                bytes,
+                devices,
+            );
+            uart()
+                .write(format_args!("Init service tests passed\n"))
+                .unwrap();
+        } else {
+            kernel_tests::run_device_program(bytes, devices, suite == "service");
+        }
+        if suite == "service" {
             uart()
                 .write(format_args!("Device service tests passed\n"))
                 .unwrap();
@@ -144,7 +161,7 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
 }
 
 #[cfg(feature = "runtime-tests")]
-fn select_program() -> bool {
+fn select_program() -> &'static str {
     uart().write(format_args!("Test suite: ")).unwrap();
     let mut input = [0; 16];
     let mut length = 0;
@@ -158,8 +175,9 @@ fn select_program() -> bool {
         };
         if byte == b'\n' || byte == b'\r' {
             return match &input[..length] {
-                b"device" => false,
-                b"service" => true,
+                b"device" => "device",
+                b"service" => "service",
+                b"init" => "init",
                 _ => panic!("unknown device test suite"),
             };
         }
@@ -326,7 +344,7 @@ fn wait_quiet(count: usize) {
 
 fn handle(trap: Trap) -> TrapOutcome {
     if DEVICE_TESTS.load(Ordering::Relaxed) {
-        return kernel::trap::dispatch(trap);
+        return kernel_tests::handle_program(trap);
     }
     assert_eq!(trap.origin, TrapOrigin::Kernel);
     assert_eq!(

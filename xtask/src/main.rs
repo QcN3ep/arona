@@ -114,23 +114,24 @@ fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), Str
 }
 
 fn package_init(options: BuildOptions) -> Result<PathBuf, String> {
-    build_init(options.target, options.release)?;
-
     let root = workspace_root()?;
     let profile = options.profile();
     let target_directory = target_directory(&root);
-    let executable = target_directory
-        .join(options.target.triple())
-        .join(profile)
-        .join("init");
     let archive = target_directory
         .join(options.target.triple())
         .join(profile)
         .join("initramfs.cpio");
-    let image = fs::read(&executable)
-        .map_err(|error| format!("failed to read {}: {error}", executable.display()))?;
     let mut bytes = Vec::new();
-    append_entry(&mut bytes, "bin/init", 0o100755, &image)?;
+    for component in ["init", "devmgr"] {
+        build_component(options.target, options.release, component)?;
+        let executable = target_directory
+            .join(options.target.triple())
+            .join(profile)
+            .join(component);
+        let image = fs::read(&executable)
+            .map_err(|error| format!("failed to read {}: {error}", executable.display()))?;
+        append_entry(&mut bytes, &format!("bin/{component}"), 0o100755, &image)?;
+    }
     append_entry(&mut bytes, "TRAILER!!!", 0, &[])?;
     fs::write(&archive, bytes)
         .map_err(|error| format!("failed to write {}: {error}", archive.display()))?;
@@ -207,7 +208,7 @@ fn run_cargo_build(options: BuildOptions, archive: &Path) -> Result<(), String> 
     execute(command)
 }
 
-fn build_init(target: Target, release: bool) -> Result<(), String> {
+fn build_component(target: Target, release: bool, component: &str) -> Result<(), String> {
     let root = workspace_root()?;
     let mut command = cargo_command(root);
     command.args([
@@ -215,18 +216,24 @@ fn build_init(target: Target, release: bool) -> Result<(), String> {
         "rustc",
         "--locked",
         "-p",
-        "arona-init",
+        &format!("arona-{component}"),
         "--features",
         "baremetal",
         "--target",
         target.triple(),
         "--bin",
-        "init",
+        component,
     ]);
     if release {
         command.arg("--release");
     }
-    command.args(["--", "-C", "strip=symbols"]);
+    command.args([
+        "--",
+        "-C",
+        "strip=symbols",
+        "-C",
+        "link-arg=-zmax-page-size=4096",
+    ]);
     execute(command)
 }
 
