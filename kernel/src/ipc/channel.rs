@@ -510,6 +510,12 @@ impl ChannelState {
         }
     }
 
+    fn clear_observers(&mut self) {
+        for observers in &mut self.observers {
+            observers.clear();
+        }
+    }
+
     fn discard_entry(&mut self) -> Option<HandleEntry> {
         for side in 0..2 {
             if self.credits[1 - side] != 0 {
@@ -680,7 +686,7 @@ impl Drop for Channel {
     fn drop(&mut self) {
         let _interrupts = InterruptGuard::new();
         let endpoint = &self.reference;
-        let discard = {
+        let (discard, closed) = {
             let mut state = endpoint.channel.lock();
             state.credits[endpoint.side] -= 1;
             if state.credits[endpoint.side] != 0 {
@@ -690,11 +696,17 @@ impl Drop for Channel {
                 direction.senders.wake_all();
                 direction.receivers.wake_all();
             }
-            !state.directions[1 - endpoint.side].messages.is_empty()
+            (
+                !state.directions[1 - endpoint.side].messages.is_empty(),
+                state.credits[1 - endpoint.side] == 0,
+            )
         };
         endpoint.notify_observers();
         if discard {
             ChannelState::discard(&endpoint.channel);
+        }
+        if closed {
+            endpoint.channel.lock().clear_observers();
         }
     }
 }

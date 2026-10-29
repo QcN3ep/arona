@@ -173,6 +173,10 @@ impl Observers {
             .retain(|current| !HeapArc::ptr_eq(&current.selection, &observer.selection));
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+
     pub(crate) fn get(&self, index: usize) -> Option<Observer> {
         self.0.get(index).cloned()
     }
