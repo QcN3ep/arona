@@ -622,8 +622,25 @@ fn bootstrap(receiver: &Channel, mode: u64) {
                 )
                 .unwrap();
         } else {
+            let rights = ObjectType::KernelLog.supported_rights();
+            let log = source
+                .insert(
+                    Object::KernelLog(kernel::logger::LOGGER.kernel_log()),
+                    rights,
+                )
+                .unwrap();
             source
-                .try_send(channel, Message::new(mode, &[]).unwrap(), &[device])
+                .try_send(
+                    channel,
+                    Message::new(mode, &[]).unwrap(),
+                    &[
+                        device,
+                        TransferRequest {
+                            handle: log,
+                            rights,
+                        },
+                    ],
+                )
                 .unwrap();
         }
         source.terminate(0);

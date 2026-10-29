@@ -10,6 +10,7 @@ members = [
     "components/runtime",
     "components/init",
     "components/devmgr",
+    "components/logger",
     "xtask",
 ]
 

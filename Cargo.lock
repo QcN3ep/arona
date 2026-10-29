@@ -62,6 +62,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "arona-logger"
+version = "0.1.0"
+dependencies = [
+ "arona-abi",
+ "arona-devmgr",
+ "arona-runtime",
+ "arrayvec",
+ "log",
+ "spin",
+]
+
+[[package]]
 name = "arona-runtime"
 version = "0.1.0"
 dependencies = [

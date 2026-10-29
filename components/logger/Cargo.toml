@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "arona-logger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+autotests = false
+
+[lints]
+workspace = true
+
+[features]
+baremetal = ["runtime/program"]
+
+[lib]
+name = "logger"
+test = false
+bench = false
+
+[[bin]]
+name = "logger"
+path = "src/main.rs"
+required-features = ["baremetal"]
+test = false
+bench = false
+
+[[test]]
+name = "service"
+path = "tests/service.rs"
+harness = false
+required-features = ["baremetal"]
+
+[dependencies]
+abi = { package = "arona-abi", path = "../../abi" }
+runtime = { package = "arona-runtime", path = "../runtime" }
+devmgr = { package = "arona-devmgr", path = "../devmgr" }
+arrayvec = { version = "0.7.6", default-features = false }
+log = { version = "0.4.34", default-features = false }
+spin = { version = "0.9.9", default-features = false, features = ["once"] }
