@@ -17,15 +17,25 @@ use runtime::process::ProcessStart;
 use spin::Once;
 
 static IMAGE: Once<&'static [u8]> = Once::new();
-static DEVICES: Once<(DeviceSet, bool)> = Once::new();
+static DEVICES: Once<DeviceSet> = Once::new();
+static MODES: Once<&'static [u64]> = Once::new();
 
 pub fn run_device(image: &'static [u8], devices: DeviceSet, resident: bool) {
-    DEVICES.call_once(|| (devices, resident));
-    run(image);
+    DEVICES.call_once(|| devices);
+    run_cases(image, if resident { &[6] } else { &[5] });
 }
 
 pub fn run(image: &'static [u8]) {
+    run_cases(image, &[0, 1, 2, 3, 4, 0]);
+}
+
+pub fn run_process(image: &'static [u8]) {
+    run_cases(image, &[7]);
+}
+
+fn run_cases(image: &'static [u8], modes: &'static [u64]) {
     IMAGE.call_once(|| image);
+    MODES.call_once(|| modes);
     let manager = memory::manager();
     manager.reclaim_heap();
     let before = manager.stats();
@@ -39,12 +49,7 @@ pub fn run(image: &'static [u8]) {
 }
 
 fn scenario(_: usize) -> usize {
-    let modes: &[u64] = match DEVICES.get() {
-        Some((_, true)) => &[6],
-        Some((_, false)) => &[5],
-        None => &[0, 1, 2, 3, 4, 0],
-    };
-    for &mode in modes {
+    for &mode in *MODES.get().unwrap() {
         let task = Task::new().unwrap();
         let image = IMAGE.get().unwrap();
         assert_eq!(&image[..7], b"\x7fELF\x02\x01\x01");
@@ -140,7 +145,7 @@ fn resident(task: &Task, user: &Thread) {
         );
         thread::yield_now().unwrap();
     }
-    let devices = &DEVICES.get().unwrap().0;
+    let devices = DEVICES.get().unwrap();
     let mut cursor = 0;
     let group = loop {
         let id = devices.next(cursor).unwrap().unwrap();
@@ -229,7 +234,7 @@ fn word(bytes: &[u8], offset: usize) -> u64 {
 }
 
 fn bootstrap(receiver: &Channel, mode: u64) {
-    if let Some((devices, _)) = DEVICES.get().filter(|_| matches!(mode, 5 | 6)) {
+    if let Some(devices) = DEVICES.get().filter(|_| matches!(mode, 5 | 6)) {
         let source = Task::new().unwrap();
         let channel = source
             .insert(Object::Channel(receiver.clone()), Rights::WRITE)
@@ -263,6 +268,31 @@ fn bootstrap(receiver: &Channel, mode: u64) {
                 .try_send(channel, Message::new(mode, &[]).unwrap(), &[device])
                 .unwrap();
         }
+        source.terminate(0);
+    } else if mode == 7 {
+        let source = Task::new().unwrap();
+        let channel = source
+            .insert(Object::Channel(receiver.clone()), Rights::WRITE)
+            .unwrap();
+        let image = IMAGE.get().unwrap();
+        let frames = source
+            .allocate_frames(image.len().div_ceil(PAGE_SIZE) as u64)
+            .unwrap();
+        write(&frames, 0, image);
+        let rights = Rights::READ | Rights::TRANSFER;
+        let handle = source
+            .insert(
+                Object::FrameAllocation(memory::manager().allocate_arc(frames).unwrap()),
+                rights,
+            )
+            .unwrap();
+        source
+            .try_send(
+                channel,
+                Message::new(mode, &[image.len() as u64]).unwrap(),
+                &[TransferRequest { handle, rights }],
+            )
+            .unwrap();
         source.terminate(0);
     } else {
         receiver.send(Message::new(mode, &[]).unwrap()).unwrap();

@@ -42,7 +42,8 @@ impl Handle<Task> {
     }
     /// # Safety
     ///
-    /// entry 的代码与存储须保持存活，线程须独占其栈并满足入口的调用约定。
+    /// 若目标与调用方共享地址空间，entry 的代码与存储须保持存活，
+    /// 线程须独占其栈并满足入口的调用约定。
     pub unsafe fn create_thread(
         &self,
         entry: UserEntry,

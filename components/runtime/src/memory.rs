@@ -121,6 +121,12 @@ impl Handle<FrameAllocation> {
     }
 }
 impl Mapping<'_> {
+    pub(crate) fn into_range(mut self) -> Result<Range<usize>, Error> {
+        self.range
+            .take()
+            .ok_or(Error::Kernel(abi::Error::InvalidState))
+    }
+
     pub fn range(&self) -> Option<Range<usize>> {
         self.range.clone()
     }
@@ -163,6 +169,12 @@ impl Drop for Mapping<'_> {
     }
 }
 impl Reservation<'_> {
+    pub(crate) fn into_range(mut self) -> Result<Range<usize>, Error> {
+        self.range
+            .take()
+            .ok_or(Error::Kernel(abi::Error::InvalidState))
+    }
+
     pub fn range(&self) -> Option<Range<usize>> {
         self.range.clone()
     }

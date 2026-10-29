@@ -38,6 +38,11 @@ pub fn run_program<P: Platform>() {
     syscall::run_program(P::program().expect("runtime test image is unavailable"));
 }
 
+pub fn run_process<P: Platform>() {
+    kernel::thread::scheduler::initialize().unwrap();
+    syscall::run_process(P::program().expect("runtime test image is unavailable"));
+}
+
 pub fn handle(trap: Trap) -> TrapOutcome {
     if syscall::active() {
         return kernel::trap::dispatch(trap);

@@ -11,7 +11,9 @@ use core::{
     cell::{Cell, RefCell},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
-use runtime::{Channel, Handle, ipc::Message, process, thread};
+use runtime::{Channel, Handle, ipc::Message, thread};
+
+mod process;
 
 static TLS_DROPS: AtomicUsize = AtomicUsize::new(0);
 
@@ -23,7 +25,7 @@ static ZERO: Cell<usize> = Cell::new(0);
 static ALIGNED: Aligned = Aligned([0x6b; 8192]);
 
 runtime::thread_local! {
-    static REPORT: Report = Report(process::bootstrap().unwrap());
+    static REPORT: Report = Report(runtime::process::bootstrap().unwrap());
     static VALUES: RefCell<Vec<usize>> = RefCell::new(vec![3, 5, 8]);
     static RECURSIVE: usize = {
         assert_eq!(RECURSIVE.try_with(|_| ()), Err(runtime::tls::AccessError::Initializing));
@@ -77,7 +79,8 @@ fn main() {
     INITIALIZED.set(37);
     ZERO.set(41);
     REPORT.with(|_| ());
-    let mode = REPORT.with(|report| report.0.receive(runtime::ipc::WaitMode::Poll).unwrap().tag);
+    let startup = REPORT.with(|report| report.0.receive(runtime::ipc::WaitMode::Poll).unwrap());
+    let mode = startup.tag;
     match mode {
         0 | 4 => {}
         1 => panic!("intentional runtime integration test failure"),
@@ -91,6 +94,15 @@ fn main() {
                 .unwrap()
                 .join()
                 .unwrap();
+        }
+        7 | 8 => {
+            VALUES.with(|_| ());
+            if mode == 7 {
+                process::run(startup);
+            } else {
+                process::child(startup);
+            }
+            return;
         }
         _ => panic!("unknown runtime test scenario"),
     }
@@ -120,7 +132,7 @@ fn main() {
         assert!(aligned.0.iter().all(|byte| *byte == 0x5a));
     }
     assert_eq!(
-        process::task().info().unwrap().kind,
+        runtime::process::task().info().unwrap().kind,
         runtime::ObjectType::Task
     );
     runtime::thread::yield_now().unwrap();
@@ -154,12 +166,12 @@ fn run_threads() {
                     WORKER_DROP.with(|_| ());
                     VALUES.with(|values| values.borrow_mut().push(id));
                     let local = id;
-                    let mut stack = process::task()
+                    let mut stack = runtime::process::task()
                         .query(core::ptr::addr_of!(local) as usize)
                         .unwrap()
                         .unwrap()
                         .range;
-                    while process::task()
+                    while runtime::process::task()
                         .query(stack.start - 4096)
                         .unwrap()
                         .unwrap()
@@ -194,8 +206,11 @@ fn run_threads() {
     for (index, worker) in workers.into_iter().enumerate() {
         let (values, stack) = worker.join().unwrap();
         assert_eq!(*values, vec![3, 5, 8, index + 1]);
-        assert_eq!(process::task().query(stack.start).unwrap(), None);
-        assert_eq!(process::task().query(stack.start - 4096).unwrap(), None);
+        assert_eq!(runtime::process::task().query(stack.start).unwrap(), None);
+        assert_eq!(
+            runtime::process::task().query(stack.start - 4096).unwrap(),
+            None
+        );
     }
     assert_eq!(dropped.load(Ordering::SeqCst), 4);
     assert_eq!(TLS_DROPS.load(Ordering::SeqCst), 4);
@@ -236,7 +251,7 @@ fn run_thread_exits() {
         Err(thread::JoinError::Exited(53))
     ));
     assert!(
-        process::task()
+        runtime::process::task()
             .query(address.load(Ordering::SeqCst))
             .unwrap()
             .is_none()
@@ -281,11 +296,11 @@ fn run_detached() {
     wait_for(|| {
         stacks.iter().skip(1).all(|stack| {
             let address = stack.load(Ordering::SeqCst);
-            address != 0 && process::task().query(address).unwrap().is_none()
+            address != 0 && runtime::process::task().query(address).unwrap().is_none()
         })
     });
     assert!(
-        process::task()
+        runtime::process::task()
             .query(stacks[0].load(Ordering::SeqCst))
             .unwrap()
             .is_some()
@@ -293,7 +308,7 @@ fn run_detached() {
     released.store(true, Ordering::SeqCst);
     wait_for(|| dropped.load(Ordering::SeqCst) == 20);
     wait_for(|| {
-        process::task()
+        runtime::process::task()
             .query(stacks[0].load(Ordering::SeqCst))
             .unwrap()
             .is_none()

@@ -117,6 +117,12 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
                     .write(format_args!("Runtime tests passed\n"))
                     .unwrap();
             }
+            Suite::Process => {
+                kernel_tests::run_process::<Platform>();
+                uart()
+                    .write(format_args!("Process tests passed\n"))
+                    .unwrap();
+            }
             Suite::Execution => unreachable!(),
         }
         hardware::cpu().halt()
@@ -219,6 +225,7 @@ enum Suite {
     Execution,
     Kernel,
     Runtime,
+    Process,
 }
 
 fn select_suite() -> Suite {
@@ -238,6 +245,7 @@ fn select_suite() -> Suite {
                 b"execution" => Suite::Execution,
                 b"kernel" => Suite::Kernel,
                 b"runtime" => Suite::Runtime,
+                b"process" => Suite::Process,
                 _ => panic!("unknown execution test suite"),
             };
         }

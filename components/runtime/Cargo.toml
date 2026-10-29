@@ -5,6 +5,7 @@ name = "arona-runtime"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+autotests = false
 
 [lints]
 workspace = true
