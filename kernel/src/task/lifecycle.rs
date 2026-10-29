@@ -107,7 +107,7 @@ struct TaskRegistry {
 struct TaskResources {
     task: Task,
     creator: Option<Creator>,
-    space: AddressSpace,
+    space: HeapArc<AddressSpace>,
     handles: HandleTable,
     threads: Option<Thread>,
     next: Option<HeapBox<TaskResources>>,
@@ -489,6 +489,11 @@ impl Task {
             .map(allocation, frames, options)?)
     }
 
+    pub(crate) fn address_space(&self) -> Result<HeapArc<AddressSpace>, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        Ok(TASKS.lock().find(self)?.space.clone())
+    }
+
     pub(crate) fn pin_user_memory(
         &self,
         address: usize,
@@ -701,7 +706,7 @@ impl TaskRegistry {
                 &mut self.find_mut(parent)?.next
             }
         };
-        let space = AddressSpace::new()?;
+        let space = memory::manager().allocate_arc(AddressSpace::new()?)?;
         let id = NEXT_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| MemoryError::NoMemory)?;
@@ -870,6 +875,7 @@ fn reclaim(mut cleanup: Option<HeapBox<TaskResources>>) {
         let TaskState::Dying(status) = task.state() else {
             unreachable!("invalid task cleanup state");
         };
+        crate::device::release_space(&resources.space);
         drop(resources);
         thread::finish_task_exit(&task, status);
     }

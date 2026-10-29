@@ -7,6 +7,7 @@
 extern crate alloc;
 
 pub mod boot;
+pub mod device;
 pub mod hardware;
 pub mod ipc;
 pub mod logger;

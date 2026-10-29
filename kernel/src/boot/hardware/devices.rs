@@ -28,7 +28,7 @@ pub struct HardwareDeviceInfo {
     pub interrupt_route: Option<HardwareInterruptRoute>,
     pub interrupt_lines: Option<Range<u32>>,
     pub msi_vectors: Option<Range<u32>>,
-    pub dma: Option<DmaInfo>,
+    pub dma: DmaCapability,
 }
 
 impl HardwareDeviceInfo {
@@ -38,14 +38,14 @@ impl HardwareDeviceInfo {
             name: ArrayString::new_const(),
             parent: None,
             identities: ArrayVec::new_const(),
-            use_policy: DeviceUsePolicy::KernelReserved,
+            use_policy: DeviceUsePolicy::UserAssignable,
             location: HardwareDeviceLocation::Platform,
             mmio_regions: ArrayVec::new_const(),
             interrupts: ArrayVec::new_const(),
             interrupt_route: None,
             interrupt_lines: None,
             msi_vectors: None,
-            dma: None,
+            dma: DmaCapability::Unknown,
         }
     }
 
@@ -116,11 +116,18 @@ pub struct ConsoleInfo {
     pub options: ArrayString<64>,
 }
 
-/// 设备资源是否允许委托给用户态。
+/// 设备资源的内核保留策略。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeviceUsePolicy {
     KernelReserved,
     UserAssignable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DmaCapability {
+    Unknown,
+    None,
+    Present(DmaInfo),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

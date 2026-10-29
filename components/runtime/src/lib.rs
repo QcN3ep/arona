@@ -11,6 +11,7 @@
 extern crate alloc;
 
 mod call;
+pub mod device;
 mod handle;
 pub mod ipc;
 pub mod memory;

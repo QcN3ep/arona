@@ -4,8 +4,8 @@ use core::ops::Range;
 use spin::Mutex;
 
 use super::{
-    DeviceMapping, Frame, FrameAccess, FrameAllocation, FrameAllocationReference, MemoryError,
-    PhysRange, ReferenceKind, VirtRange,
+    Frame, FrameAccess, FrameAllocation, FrameAllocationReference, MemoryError, PhysRange,
+    ReferenceKind, VirtRange,
     direct_map::{DirectMap, DirectMapLayout},
     frame_allocator::FrameAllocator,
     manager,
@@ -675,7 +675,11 @@ impl AddressSpace {
     pub(super) fn map_device(&self, physical: PhysRange) -> Result<(VirtRange, u64), MemoryError> {
         let mmu = hardware::mmu();
         let bits = mmu.physical_address_bits();
-        if self.table.is_user() || bits < 64 && physical.end > 1u64 << bits {
+        if physical.start >= physical.end
+            || !physical.start.is_multiple_of(PAGE_SIZE as u64)
+            || !physical.end.is_multiple_of(PAGE_SIZE as u64)
+            || bits < 64 && physical.end > 1u64 << bits
+        {
             return Err(MemoryError::InvalidRequest);
         }
         let length = usize::try_from(physical.end - physical.start)
@@ -683,7 +687,7 @@ impl AddressSpace {
         let attributes = PageAttributes {
             permissions: PagePermissions::ReadWrite,
             memory_type: mmu.device_memory_type(),
-            user_accessible: false,
+            user_accessible: self.table.is_user(),
         };
         let mut state = self.state.lock();
         if state.mappings.any(|record| {
@@ -705,6 +709,8 @@ impl AddressSpace {
             .gap(self.bounds, length, PAGE_SIZE)
             .ok_or(MemoryError::NoMemory)?;
         let generation = state.next_generation()?;
+        let user = self.table.is_user();
+        let mut quota = manager().reserve_mapping_records(usize::from(user))?;
         state.mappings.insert(MappingRecord {
             range,
             maximum: MappingRights::READ | MappingRights::WRITE,
@@ -714,6 +720,7 @@ impl AddressSpace {
             },
             journal: MappingJournal::default(),
         })?;
+        quota.0 = 0;
         self.table.edit(|table| {
             let mut attempted_end = range.start;
             let result: Result<(), MemoryError> = (|| {
@@ -733,36 +740,69 @@ impl AddressSpace {
             })();
             mmu.invalidate_all();
             if result.is_err() {
-                // 回滚失败时保留记录，避免残余映射被重新分配或产生别名。
-                clear_device_pages(
+                if let Err(error) = clear_device_pages(
                     table,
                     VirtRange {
                         start: range.start,
                         end: attempted_end,
                     },
-                )?;
+                ) {
+                    // 残余设备映射不得越过授权生命周期。
+                    log::error!("Failed to roll back device mapping: {error:?}");
+                    hardware::cpu().halt();
+                }
                 state.mappings.remove(range.start);
+                manager().release_mapping_records(usize::from(user));
             }
             result
         })?;
         Ok((range, generation))
     }
 
-    pub(super) fn unmap_device(&self, mapping: &DeviceMapping) -> Result<(), MemoryError> {
+    pub(super) fn unmap_device(
+        &self,
+        pages: VirtRange,
+        generation: u64,
+    ) -> Result<(), MemoryError> {
         let mut state = self.state.lock();
         let record = state
             .mappings
-            .get(mapping.pages.start)
+            .get(pages.start)
             .ok_or(MemoryError::NotMapped)?;
-        if !matches!(record.kind, MappingKind::Device { .. })
-            || record.range != mapping.pages
-            || record.generation != mapping.generation
+        if !matches!(record.kind, MappingKind::Device { .. } | MappingKind::Guard)
+            || record.range != pages
+            || record.generation != generation
         {
             return Err(MemoryError::InvalidRequest);
         }
         self.table
             .edit(|table| clear_device_pages(table, record.range))?;
         state.mappings.remove(record.range.start);
+        manager().release_mapping_records(usize::from(self.table.is_user()));
+        Ok(())
+    }
+
+    pub(super) fn revoke_device(
+        &self,
+        pages: VirtRange,
+        generation: u64,
+    ) -> Result<(), MemoryError> {
+        let mut state = self.state.lock();
+        let mut record = state
+            .mappings
+            .get(pages.start)
+            .ok_or(MemoryError::NotMapped)?;
+        if !matches!(record.kind, MappingKind::Device { .. } | MappingKind::Guard)
+            || record.range != pages
+            || record.generation != generation
+        {
+            return Err(MemoryError::InvalidRequest);
+        }
+        self.table
+            .edit(|table| clear_device_pages(table, record.range))?;
+        // 保留地址直至映射持有者释放，避免旧访问命中新映射。
+        record.kind = MappingKind::Guard;
+        state.mappings.set(record);
         Ok(())
     }
 

@@ -2,6 +2,7 @@
 
 use super::{HandleError, Rights, Task};
 use crate::{
+    device::{Device, DeviceReference, DeviceSet},
     ipc::{
         Channel, ChannelReference, Event, EventReference, Reply, ReplyReference, Timer,
         TimerReference,
@@ -58,7 +59,7 @@ macro_rules! cloned_payload {
         }
     )* };
 }
-cloned_payload!(Task, Thread, FrameAllocation);
+cloned_payload!(Task, Thread, FrameAllocation, DeviceSet);
 
 macro_rules! referenced_payload {
     ($($kind:ty => $reference:ty),*) => { $(
@@ -78,5 +79,18 @@ impl ObjectPayload for Reply {
     }
     fn try_clone(&self) -> Result<Self, HandleError> {
         Err(HandleError::Denied)
+    }
+}
+
+impl ObjectPayload for Device {
+    type Reference = DeviceReference;
+    fn reference(&self) -> DeviceReference {
+        self.reference()
+    }
+    fn try_clone(&self) -> Result<Self, HandleError> {
+        self.try_clone().map_err(|error| match error {
+            crate::device::DeviceError::Memory(_) => HandleError::NoMemory,
+            _ => HandleError::Denied,
+        })
     }
 }

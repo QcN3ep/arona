@@ -122,3 +122,17 @@ impl From<crate::ipc::WaitManyError> for Error {
         }
     }
 }
+
+impl From<crate::device::DeviceError> for Error {
+    fn from(error: crate::device::DeviceError) -> Self {
+        use crate::device::DeviceError;
+        match error {
+            DeviceError::InvalidArgument => Self::InvalidArgument,
+            DeviceError::Denied => Self::Denied,
+            DeviceError::Busy => Self::Busy,
+            DeviceError::Closed => Self::Closed,
+            DeviceError::Memory(error) => error.into(),
+            _ => Self::InvalidState,
+        }
+    }
+}

@@ -13,6 +13,8 @@ macro_rules! objects {
             Event = 5 => [DUPLICATE, TRANSFER, WAIT, SIGNAL];
             Timer = 6 => [DUPLICATE, TRANSFER, WRITE];
             Reply = 7 => [TRANSFER, WRITE];
+            DeviceSet = 8 => [DUPLICATE, TRANSFER, READ, RESOURCE_SPLIT];
+            Device = 9 => [DUPLICATE, TRANSFER, MAP, DEVICE_CONTROL, IRQ_ACK, REVOKE];
         }
     };
 }

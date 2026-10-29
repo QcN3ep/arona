@@ -6,6 +6,7 @@ use abi::process::ProcessStart;
 use alloc::vec;
 
 use crate::{
+    device::DeviceSet,
     hardware::{
         self,
         cpu::InterruptGuard,
@@ -82,17 +83,26 @@ impl BootData {
     }
 }
 
-pub(super) fn start(program: &dyn BootProgram, archive: BootData) -> Result<(), &'static str> {
+pub(super) fn start(
+    program: &dyn BootProgram,
+    archive: BootData,
+    devices: DeviceSet,
+) -> Result<(), &'static str> {
     let _interrupts = InterruptGuard::new();
     let task = Task::new_root().map_err(|_| "failed to create initial task")?;
-    if let Err(error) = prepare(&task, program, archive) {
+    if let Err(error) = prepare(&task, program, archive, devices) {
         task.terminate(1);
         return Err(error);
     }
     Ok(())
 }
 
-fn prepare(task: &Task, program: &dyn BootProgram, archive: BootData) -> Result<(), &'static str> {
+fn prepare(
+    task: &Task,
+    program: &dyn BootProgram,
+    archive: BootData,
+    devices: DeviceSet,
+) -> Result<(), &'static str> {
     let mut index = 0;
     while let Some(segment) = program.segment(index)? {
         let start = segment.memory.start & !(PAGE_SIZE - 1);
@@ -117,7 +127,7 @@ fn prepare(task: &Task, program: &dyn BootProgram, archive: BootData) -> Result<
         .map_err(|_| "failed to map program segment")?;
         index += 1;
     }
-    let bootstrap = bootstrap(task, archive)?;
+    let bootstrap = bootstrap(task, archive, devices)?;
     let task_handle = task
         .insert(
             Object::Task(task.clone()),
@@ -170,7 +180,11 @@ fn prepare(task: &Task, program: &dyn BootProgram, archive: BootData) -> Result<
     Ok(())
 }
 
-fn bootstrap(task: &Task, archive: BootData) -> Result<abi::Handle, &'static str> {
+fn bootstrap(
+    task: &Task,
+    archive: BootData,
+    devices: DeviceSet,
+) -> Result<abi::Handle, &'static str> {
     // TODO: 释放启动数据引用后回收外部归档的保留页框。
     let length = archive.len()?;
     let frames = task
@@ -187,10 +201,16 @@ fn bootstrap(task: &Task, archive: BootData) -> Result<abi::Handle, &'static str
             WaitMode::NonBlocking,
             false,
             || {
-                Ok(vec![HandleEntry {
-                    object: Object::FrameAllocation(frames.clone()),
-                    rights: Rights::READ | Rights::MAP | Rights::TRANSFER,
-                }])
+                Ok(vec![
+                    HandleEntry {
+                        object: Object::FrameAllocation(frames.clone()),
+                        rights: Rights::READ | Rights::MAP | Rights::TRANSFER,
+                    },
+                    HandleEntry {
+                        object: Object::DeviceSet(devices.clone()),
+                        rights: ObjectType::DeviceSet.supported_rights(),
+                    },
+                ])
             },
         )
         .map_err(|_| "failed to send bootstrap archive")?;

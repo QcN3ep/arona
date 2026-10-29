@@ -2,18 +2,25 @@
 
 use core::sync::atomic::Ordering;
 use kernel::{
+    device::DeviceSet,
     hardware::{
         execution::UserEntry,
         mmu::{PAGE_SIZE, PagePermissions},
     },
     ipc::{Channel, Message},
     memory::{self, FrameAccess, FrameAllocation, MappingOptions, ReferenceKind},
-    task::{Object, ObjectType, Rights, Task, TaskState},
+    task::{Object, ObjectType, Rights, Task, TaskState, TransferRequest},
 };
 use runtime::process::ProcessStart;
 use spin::Once;
 
 static IMAGE: Once<&'static [u8]> = Once::new();
+static DEVICES: Once<DeviceSet> = Once::new();
+
+pub fn run_device(image: &'static [u8], devices: DeviceSet) {
+    DEVICES.call_once(|| devices);
+    run(image);
+}
 
 pub fn run(image: &'static [u8]) {
     IMAGE.call_once(|| image);
@@ -30,7 +37,12 @@ pub fn run(image: &'static [u8]) {
 }
 
 fn scenario(_: usize) -> usize {
-    for mode in [0, 1, 2, 3, 4, 0] {
+    let modes: &[u64] = if DEVICES.get().is_some() {
+        &[5]
+    } else {
+        &[0, 1, 2, 3, 4, 0]
+    };
+    for &mode in modes {
         let task = Task::new().unwrap();
         let image = IMAGE.get().unwrap();
         assert_eq!(&image[..7], b"\x7fELF\x02\x01\x01");
@@ -53,7 +65,7 @@ fn scenario(_: usize) -> usize {
             )
             .unwrap();
         let (sender, receiver) = Channel::pair().unwrap();
-        receiver.send(Message::new(mode, &[]).unwrap()).unwrap();
+        bootstrap(&receiver, mode);
         let mut rights = ObjectType::Task.supported_rights();
         if mode == 4 {
             rights = Rights::from_bits(rights.bits() & !Rights::CREATE_THREAD.bits()).unwrap();
@@ -86,7 +98,14 @@ fn scenario(_: usize) -> usize {
         if status == 0 {
             let report = receiver.try_receive().unwrap();
             assert_eq!(report.tag, 73);
-            assert_eq!(report.words(), &[37, 41]);
+            assert_eq!(
+                report.words(),
+                if mode == 5 {
+                    [2].as_slice()
+                } else {
+                    [37, 41].as_slice()
+                }
+            );
         } else {
             assert_eq!(
                 receiver.try_receive(),
@@ -158,4 +177,32 @@ fn write(allocation: &FrameAllocation, offset: usize, bytes: &[u8]) {
 
 fn word(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+}
+
+fn bootstrap(receiver: &Channel, mode: u64) {
+    if let Some(devices) = DEVICES.get().filter(|_| mode == 5) {
+        let source = Task::new().unwrap();
+        let channel = source
+            .insert(Object::Channel(receiver.clone()), Rights::WRITE)
+            .unwrap();
+        let handle = source
+            .insert(
+                Object::DeviceSet(devices.clone()),
+                ObjectType::DeviceSet.supported_rights(),
+            )
+            .unwrap();
+        source
+            .try_send(
+                channel,
+                Message::new(mode, &[]).unwrap(),
+                &[TransferRequest {
+                    handle,
+                    rights: ObjectType::DeviceSet.supported_rights(),
+                }],
+            )
+            .unwrap();
+        source.terminate(0);
+    } else {
+        receiver.send(Message::new(mode, &[]).unwrap()).unwrap();
+    }
 }

@@ -5,6 +5,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod device;
 mod handle;
 pub mod ipc;
 pub mod memory;

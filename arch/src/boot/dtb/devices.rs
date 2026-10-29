@@ -13,7 +13,7 @@ use core::{fmt::Write, ops::Range};
 use arrayvec::ArrayVec;
 use fdt::properties::{Compatible, values::PropertyValue};
 use kernel::{
-    DeviceIdentity, DeviceProperty, DeviceUsePolicy, DmaInfo, HardwareDeviceInfo,
+    DeviceIdentity, DeviceProperty, DeviceUsePolicy, DmaCapability, DmaInfo, HardwareDeviceInfo,
     HardwareDeviceInstanceId, HardwareDeviceLocation, HardwareInfo, PciWindow,
     boot::{MAX_DEVICE_PROPERTIES, MAX_DEVICES, MAX_MMIO_REGIONS},
     memory::PhysRange,
@@ -175,8 +175,24 @@ fn parse_device(
         device.mmio_regions = mmio(walk)?;
     }
     device.dma = dma(walk)?;
-    if matches(node, "virtio,mmio")? {
-        device.use_policy = DeviceUsePolicy::UserAssignable;
+    if node.raw_property("interrupt-controller")?.is_some()
+        || node.raw_property("msi-controller")?.is_some()
+        || node.property::<Compatible>()?.is_some_and(|names| {
+            names.into_iter().any(|name| {
+                matches!(
+                    name,
+                    "riscv,clint0"
+                        | "sifive,clint0"
+                        | "syscon"
+                        | "syscon-poweroff"
+                        | "syscon-reboot"
+                        | "google,goldfish-rtc"
+                        | "loongson,ls7a-rtc"
+                )
+            })
+        })
+    {
+        device.use_policy = DeviceUsePolicy::KernelReserved;
     }
     Ok(())
 }
@@ -282,13 +298,21 @@ fn matches(node: Node<'_>, identity: &str) -> Result<bool> {
         .is_some_and(|names| names.into_iter().any(|name| name == identity)))
 }
 
-fn dma(walk: &Nodes<'_>) -> Result<Option<DmaInfo>> {
+fn dma(walk: &Nodes<'_>) -> Result<DmaCapability> {
     let node = walk.node();
     if !(matches(node, "virtio,mmio")?
         || matches(node, "pci-host-ecam-generic")?
         || matches(node, "qemu,fw-cfg-mmio")?)
     {
-        return Ok(None);
+        let capability = if matches(node, "ns16550a")?
+            || matches(node, "ns16550")?
+            || matches(node, "cfi-flash")?
+        {
+            DmaCapability::None
+        } else {
+            DmaCapability::Unknown
+        };
+        return Ok(capability);
     }
     if node.raw_property("iommus")?.is_some() || node.raw_property("iommu-map")?.is_some() {
         return Err("IOMMU device bindings are not supported".into());
@@ -310,7 +334,7 @@ fn dma(walk: &Nodes<'_>) -> Result<Option<DmaInfo>> {
             coherent = Some(yes);
         }
     }
-    Ok(Some(DmaInfo {
+    Ok(DmaCapability::Present(DmaInfo {
         address_bits: 64,
         coherent: coherent.unwrap_or(false),
         isolation: None,
@@ -394,12 +418,6 @@ fn validate_addresses(
             for other_address in addresses(other) {
                 if address.overlaps(other_address) {
                     return Err("device register ranges overlap".into());
-                }
-                if (device.use_policy == DeviceUsePolicy::UserAssignable
-                    || other.use_policy == DeviceUsePolicy::UserAssignable)
-                    && pages.overlaps(other_address.page_envelope()?)
-                {
-                    return Err("assignable device shares a resource page".into());
                 }
             }
         }

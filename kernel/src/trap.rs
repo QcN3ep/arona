@@ -79,7 +79,10 @@ pub fn dispatch(trap: Trap) -> TrapOutcome {
             }
         };
     }
-    // TODO: 接入缺页处理和外部中断处理。
+    if trap.event == TrapEvent::ExternalInterrupt {
+        return external_interrupt();
+    }
+    // TODO: 接入缺页处理。
     log::error!(
         "Unhandled {:?} trap at {:#x}: {:?}",
         trap.origin,
@@ -87,4 +90,14 @@ pub fn dispatch(trap: Trap) -> TrapOutcome {
         trap.event
     );
     TrapOutcome::Stop
+}
+
+pub(crate) fn external_interrupt() -> TrapOutcome {
+    match crate::device::dispatch_interrupt() {
+        Ok(()) => TrapOutcome::Resume,
+        Err(error) => {
+            log::error!("Failed to dispatch device interrupt: {error:?}");
+            TrapOutcome::Stop
+        }
+    }
 }

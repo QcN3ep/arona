@@ -148,6 +148,7 @@ impl Drop for Event {
             state.pending = 0;
             drop(state);
             super::timer::cancel_event(&self.reference);
+            crate::device::close_event(&self.reference);
             self.reference.notify_observers();
         }
     }

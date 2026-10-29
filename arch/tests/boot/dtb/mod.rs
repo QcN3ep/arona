@@ -23,8 +23,8 @@ use arch::boot::{
     prepare_boot_info,
 };
 use kernel::{
-    CpuInfo, CpuInterruptTarget, DeviceUsePolicy, HardwareDeviceInstanceId, HardwareDeviceLocation,
-    HardwareInfo, InterruptPolarity, InterruptTrigger, PciAddressSpace,
+    CpuInfo, CpuInterruptTarget, DeviceUsePolicy, DmaCapability, HardwareDeviceInstanceId,
+    HardwareDeviceLocation, HardwareInfo, InterruptPolarity, InterruptTrigger, PciAddressSpace,
     memory::{MemoryRegion, MemoryRegionState, PhysRange},
 };
 
@@ -151,7 +151,10 @@ fn dtb_produces_complete_boot_data() {
         (plic.instance_id, 1)
     );
     assert_eq!(virtio.use_policy, DeviceUsePolicy::UserAssignable);
-    assert_eq!(virtio.dma.unwrap().address_bits, 64);
+    let DmaCapability::Present(dma) = virtio.dma else {
+        panic!("missing DMA capability")
+    };
+    assert_eq!(dma.address_bits, 64);
     let HardwareDeviceLocation::PciHostBridge {
         segment,
         first_bus,
@@ -400,7 +403,10 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
         4
     );
     assert_eq!(flash.mmio_regions.len(), 2);
-    assert!(fw_cfg.dma.unwrap().coherent);
+    let DmaCapability::Present(dma) = fw_cfg.dma else {
+        panic!("missing DMA capability")
+    };
+    assert!(dma.coherent);
     assert_eq!(msi.msi_vectors, Some(32..256));
     assert_eq!(msi.interrupt_route.unwrap().controller, eiointc.instance_id);
     let control = SysconInfo::from_device(syscon, &hardware).unwrap().unwrap();

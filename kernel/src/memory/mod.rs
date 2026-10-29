@@ -34,6 +34,7 @@ pub use frame_allocator::{MemoryStats, PoolStats};
 pub use heap_allocator::{HeapAllocation, HeapArc, HeapBox, HeapStats};
 pub use mapping::{MappingInfo, MappingOptions, MappingRights};
 pub use mmio::DeviceMapping;
+pub(crate) use mmio::UserDeviceMapping;
 pub use region::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRange, VirtRange};
 pub use stack::KernelStack;
 

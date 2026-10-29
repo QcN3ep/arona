@@ -7,10 +7,14 @@
 
 use kernel::trap::{Trap, TrapOrigin, TrapOutcome};
 
+mod device;
 mod ipc;
 mod syscall;
 mod task;
 mod thread;
+
+pub use device::run as run_devices;
+pub use syscall::run_device_program;
 
 pub trait Platform {
     fn set_floating_enabled(enabled: bool);

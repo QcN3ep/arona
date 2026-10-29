@@ -66,8 +66,8 @@ fn discovers_unfamiliar_devices_and_preserves_owned_configuration() {
         hardware.device_property(clock.instance_id, "devicetree", "clock-frequency"),
         Some(3_686_400_u32.to_be_bytes().as_slice())
     );
-    assert_eq!(sensor.use_policy, DeviceUsePolicy::KernelReserved);
-    assert!(sensor.dma.is_none());
+    assert_eq!(sensor.use_policy, DeviceUsePolicy::UserAssignable);
+    assert_eq!(sensor.dma, DmaCapability::Unknown);
     prepare_boot_info(
         BOOT_CPU_ID,
         image(PhysRange {
@@ -259,6 +259,40 @@ fn rejects_invalid_device_properties() {
 
 #[test]
 fn rejects_conflicting_device_resources() {
+    let mut shared = DTB.to_vec();
+    let tree = fdt::Fdt::new_unaligned(&shared).unwrap();
+    let register = tree
+        .find_node("/soc@10000000/virtio@1000")
+        .unwrap()
+        .raw_property("reg")
+        .unwrap();
+    let offset = register.value.as_ptr() as usize - shared.as_ptr() as usize;
+    shared[offset + 4..offset + 8].copy_from_slice(&0x100_u32.to_be_bytes());
+    shared[offset + 12..offset + 16].copy_from_slice(&0x100_u32.to_be_bytes());
+    let mut hardware = Box::new(const { HardwareInfo::new() });
+    Dtb::from_bytes(&shared)
+        .unwrap()
+        .dump(&mut hardware)
+        .unwrap();
+    let tree = fdt::Fdt::new_unaligned(&shared).unwrap();
+    let identity = tree
+        .find_node("/soc@10000000/serial@0")
+        .unwrap()
+        .raw_property("compatible")
+        .unwrap();
+    let offset = identity.value.as_ptr() as usize - shared.as_ptr() as usize;
+    shared[offset..offset + 9].copy_from_slice(b"acme,adc\0");
+    Dtb::from_bytes(&shared)
+        .unwrap()
+        .dump(&mut hardware)
+        .unwrap();
+    let unknown = hardware
+        .devices
+        .iter()
+        .find(|device| device.has_identity("devicetree", "acme,adc"))
+        .unwrap();
+    assert_eq!(unknown.use_policy, DeviceUsePolicy::UserAssignable);
+    assert_eq!(unknown.dma, DmaCapability::Unknown);
     for (original, path, property, values, expected) in [
         (
             DTB,
@@ -266,13 +300,6 @@ fn rejects_conflicting_device_resources() {
             "reg",
             [0, 0, 0, 0x1000].as_slice(),
             "device register ranges overlap",
-        ),
-        (
-            DTB,
-            "/soc@10000000/virtio@1000",
-            "reg",
-            [0, 0x100, 0, 0x100].as_slice(),
-            "assignable device shares a resource page",
         ),
         (
             LOONGARCH_DTB,

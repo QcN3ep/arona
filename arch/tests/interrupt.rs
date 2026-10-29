@@ -3,7 +3,7 @@
 #![no_std]
 #![no_main]
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use arch::device::uart::Uart;
 use kernel::{
@@ -34,6 +34,7 @@ const UART: usize = 0xffff_8000_0040_01e0;
 
 const MILLISECOND: u64 = 1_000_000;
 static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
+static DEVICE_TESTS: AtomicBool = AtomicBool::new(false);
 static MODE: AtomicUsize = AtomicUsize::new(0);
 static IRQ: Once<HardwareInterruptInfo> = Once::new();
 static mut HARDWARE: HardwareInfo = HardwareInfo::new();
@@ -102,6 +103,12 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
     lifecycle();
     memory::manager().kernel_address_space().activate().unwrap();
     drop(user);
+    DEVICE_TESTS.store(true, Ordering::Relaxed);
+    kernel::thread::scheduler::initialize().unwrap();
+    let devices = kernel::device::DeviceSet::initialize(hardware).unwrap();
+    kernel_tests::run_devices(devices.clone(), hardware);
+    #[cfg(feature = "runtime-tests")]
+    kernel_tests::run_device_program(include_bytes!(env!("ARONA_RUNTIME_TEST_IMAGE")), devices);
     uart()
         .write(format_args!("Interrupt controller tests passed\n"))
         .unwrap();
@@ -264,6 +271,9 @@ fn wait_quiet(count: usize) {
 }
 
 fn handle(trap: Trap) -> TrapOutcome {
+    if DEVICE_TESTS.load(Ordering::Relaxed) {
+        return kernel::trap::dispatch(trap);
+    }
     assert_eq!(trap.origin, TrapOrigin::Kernel);
     assert_eq!(
         trap.event,

@@ -67,6 +67,9 @@ pub fn boot_kernel(info: BootInfo<'_>) -> ! {
     let initramfs = info
         .initramfs
         .expect("boot information is missing initramfs");
-    program::start(init, initramfs).unwrap_or_else(|error| panic!("failed to start init: {error}"));
+    let devices = crate::device::DeviceSet::initialize(info.hardware)
+        .unwrap_or_else(|error| panic!("failed to initialize device resources: {error:?}"));
+    program::start(init, initramfs, devices)
+        .unwrap_or_else(|error| panic!("failed to start init: {error}"));
     scheduler::run()
 }

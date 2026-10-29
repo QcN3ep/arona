@@ -41,7 +41,8 @@ fn handle(trap: Trap) -> UserAction {
                 TrapOutcome::Stop
             }
         },
-        TrapEvent::ExternalInterrupt | TrapEvent::SoftwareInterrupt | TrapEvent::OtherInterrupt => {
+        TrapEvent::ExternalInterrupt => crate::trap::external_interrupt(),
+        TrapEvent::SoftwareInterrupt | TrapEvent::OtherInterrupt => {
             log::error!("Unhandled interrupt at {:#x}: {:?}", trap.pc, trap.event);
             TrapOutcome::Stop
         }

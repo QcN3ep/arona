@@ -57,6 +57,20 @@ methods!(channel {
 methods!(reply { SEND = 16 => WRITE; });
 methods!(event { SIGNAL = 16 => SIGNAL; });
 methods!(timer { ARM = 16 => WRITE; CANCEL = 17 => WRITE; });
+methods!(device_set {
+    NEXT = 16 => READ;
+    DESCRIBE = 17 => READ;
+    READ = 18 => READ;
+    CLAIM_GROUP = 19 => RESOURCE_SPLIT;
+});
+methods!(device {
+    MAP = 16 => MAP;
+    UNMAP = 17 => MAP;
+    BIND = 18 => DEVICE_CONTROL;
+    UNBIND = 19 => DEVICE_CONTROL;
+    ACK = 20 => IRQ_ACK;
+    REVOKE = 21 => REVOKE;
+});
 
 pub const INFO: u64 = 0;
 pub const CLOSE: u64 = 1;
@@ -74,6 +88,8 @@ pub const fn required_rights(kind: ObjectType, method: u64) -> Option<Rights> {
             ObjectType::Reply => reply::required(method),
             ObjectType::Event => event::required(method),
             ObjectType::Timer => timer::required(method),
+            ObjectType::DeviceSet => device_set::required(method),
+            ObjectType::Device => device::required(method),
         },
     }
 }
