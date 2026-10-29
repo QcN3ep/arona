@@ -25,7 +25,7 @@ mod start;
 #[cfg(all(feature = "program", target_os = "none"))]
 pub mod tls;
 
-pub use abi::{ObjectType, Rights};
+pub use abi::{Error as KernelError, ObjectType, Rights};
 pub use call::Error;
 pub use handle::{AnyHandle, BorrowedHandle, Handle, HandleInfo, Object};
 

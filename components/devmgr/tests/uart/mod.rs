@@ -3,16 +3,20 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+extern crate alloc;
+
 use devmgr::{
     Error,
     device::DeviceDescription,
-    uart::{self, DataBits, LineErrors, Parity, Settings, StopBits, Uart},
+    uart::{DataBits, LineErrors, Parity, Settings, StopBits, Uart},
 };
 use runtime::{
-    Event, Handle, ObjectType,
+    DeviceSet, Event, Handle, ObjectType,
     ipc::{self, Message, WaitItem, WaitMode},
     process, thread,
 };
+
+mod service;
 
 const SECOND: u64 = 1_000_000_000;
 
@@ -33,12 +37,24 @@ fn main() {
         }
         cursor = id;
     };
-    let configuration = uart::probe(&console).unwrap().expect("unsupported console");
+    let configuration = devmgr::uart::probe(&console)
+        .unwrap()
+        .expect("unsupported console");
+    driver(&devices, console.info().group.unwrap(), configuration);
+    service::run(
+        &devices,
+        console.info().id,
+        console.info().group.unwrap(),
+        configuration,
+    );
+    bootstrap
+        .send(&mut Message::new(73, &[2]).unwrap(), WaitMode::Forever)
+        .unwrap();
+}
+
+fn driver(devices: &Handle<DeviceSet>, group: u32, configuration: devmgr::uart::Configuration) {
     let grant = devices
-        .claim_group(
-            console.info().group.unwrap(),
-            ObjectType::Device.supported_rights(),
-        )
+        .claim_group(group, ObjectType::Device.supported_rights())
         .unwrap();
     let event = process::task()
         .event(ObjectType::Event.supported_rights())
@@ -87,9 +103,6 @@ fn main() {
     drop(uart);
     drop(event);
     drop(grant);
-    bootstrap
-        .send(&mut Message::new(73, &[2]).unwrap(), WaitMode::Forever)
-        .unwrap();
 }
 
 fn send(uart: &mut Uart<'_>, event: &Handle<Event>, mut bytes: &[u8]) {

@@ -10,7 +10,7 @@ use devmgr::{
 };
 use runtime::{
     DeviceSet, Rights,
-    ipc::{self, Message, WaitItem, WaitMode},
+    ipc::{Message, WaitMode},
     process, thread,
 };
 
@@ -52,28 +52,10 @@ fn main() -> Result<(), Error> {
                 Err(error) => return Err(error),
             }
         };
-        // TODO: 接入设备会话后启用接收中断。
-        uart.set_receive_interrupts(false)?;
         if let Some(reply) = reply {
             reply.send(&mut Message::new(0, &[])?)?;
         }
-        loop {
-            if let Some(control) = &control {
-                let ready = ipc::wait_many(
-                    &[
-                        WaitItem::new(&event, 1),
-                        WaitItem::new(control, ipc::PEER_CLOSED),
-                    ],
-                    WaitMode::Forever,
-                )?;
-                if ready.index == 1 {
-                    return Ok(());
-                }
-            } else {
-                ipc::wait_many(&[WaitItem::new(&event, 1)], WaitMode::Forever)?;
-            }
-            uart.acknowledge_interrupt()?;
-        }
+        return uart::service::run(&mut uart, &event, control.as_ref(), id);
     }
     Err(Error::Unsupported)
 }

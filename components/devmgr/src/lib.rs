@@ -5,12 +5,15 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+extern crate alloc;
+
 pub mod device;
 pub mod uart;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     Runtime(runtime::Error),
+    Call(runtime::ipc::CallError),
     Unsupported,
     InvalidConfiguration,
     ClockUnavailable,

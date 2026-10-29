@@ -2,6 +2,11 @@
 
 //! 16550 UART 的配置、收发与中断处理。
 
+pub mod service;
+mod session;
+
+pub use session::Session;
+
 use runtime::{
     Device, Event, Handle,
     device::{InterruptBinding, Mmio},
@@ -9,7 +14,7 @@ use runtime::{
 
 use crate::{Error, device::DeviceDescription};
 
-// REFERENCE: https://www.ti.com/lit/ds/symlink/pc16550d.pdf
+// REFERENCE: https://media.digikey.com/pdf/Data%20Sheets/Texas%20Instruments%20PDFs/PC16550D.pdf#page=17
 const DATA: usize = 0;
 const IER: usize = 1;
 const IIR: usize = 2;
