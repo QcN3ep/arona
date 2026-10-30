@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use core::ops::Deref;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 use super::wait::{Observer, Observers, notify_observers};
@@ -34,6 +35,12 @@ struct EventState {
     observers: Observers,
 }
 
+static EVENTS: AtomicUsize = AtomicUsize::new(0);
+
+pub fn active_events() -> usize {
+    EVENTS.load(Ordering::Relaxed)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EventError {
     InvalidArgument,
@@ -50,6 +57,7 @@ impl Event {
             closed: false,
             observers: Observers::new(),
         }))?;
+        EVENTS.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
             reference: EventReference { event },
         })
@@ -57,6 +65,12 @@ impl Event {
 
     pub fn reference(&self) -> EventReference {
         self.reference.clone()
+    }
+}
+
+impl Drop for EventState {
+    fn drop(&mut self) {
+        EVENTS.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

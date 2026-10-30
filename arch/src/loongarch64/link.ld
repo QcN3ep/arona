@@ -105,7 +105,7 @@ SECTIONS
     _boot_stack_phys_top = _boot_stack_top - _kernel_offset;
 
     _kernel_phys_end = . - _kernel_offset;
-    ASSERT(_kernel_phys_end - _kernel_phys_start <= 0x200000, "kernel exceeds boot mapping")
+    ASSERT(_kernel_phys_end - _kernel_phys_start <= 0x400000, "kernel exceeds boot mapping")
 
     .initramfs ALIGN(4096) : AT(ADDR(.initramfs) - _kernel_offset)
     {

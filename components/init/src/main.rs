@@ -5,17 +5,17 @@
 
 extern crate alloc;
 
-mod archive;
 mod program;
 mod service;
 
-use archive::Archive;
+use fs::{FileSystem, archive::Archive};
 use runtime::{DeviceSet, Error, KernelLog, ipc::WaitMode, process};
 
 enum InitError {
     Runtime(Error),
     Device(devmgr::Error),
     Logger(logger::Error),
+    Filesystem(fs::Error),
 }
 
 impl core::fmt::Debug for InitError {
@@ -24,6 +24,7 @@ impl core::fmt::Debug for InitError {
             Self::Runtime(error) => output.debug_tuple("Runtime").field(error).finish(),
             Self::Device(error) => output.debug_tuple("Device").field(error).finish(),
             Self::Logger(error) => output.debug_tuple("Logger").field(error).finish(),
+            Self::Filesystem(error) => output.debug_tuple("Filesystem").field(error).finish(),
         }
     }
 }
@@ -35,7 +36,12 @@ macro_rules! init_errors {
         }
     )* };
 }
-init_errors!(Runtime(Error), Device(devmgr::Error), Logger(logger::Error));
+init_errors!(
+    Runtime(Error),
+    Device(devmgr::Error),
+    Logger(logger::Error),
+    Filesystem(fs::Error)
+);
 
 fn main() -> Result<usize, InitError> {
     let bootstrap = process::bootstrap().ok_or(Error::Protocol)?;
@@ -61,11 +67,13 @@ fn main() -> Result<usize, InitError> {
         .map_err(|_| Error::Protocol)?;
     drop(bootstrap);
     let archive = Archive::new(frames, length)?;
-    let (devmgr, device_control) = service::start_devmgr(&archive, &devices)?;
+    let loader = program::Loader::new(archive.open("/bin/init")?)?;
+    let (filesystem, files) = service::start_fs(&loader, archive)?;
+    let (devmgr, device_control) = service::start_devmgr(&loader, &files, &devices)?;
     let (logger, _logger_control, client) =
-        service::start_logger(&archive, &devices, &device_control, &kernel_log)?;
+        service::start_logger(&loader, &files, &devices, &device_control, &kernel_log)?;
     logger::init(client, logger::log::LevelFilter::Info).map_err(|_| Error::Protocol)?;
     logger::log::info!(target: "init", "System services ready");
     logger::log::logger().flush();
-    Ok(service::wait(&[&devmgr, &logger])?.max(1))
+    Ok(service::wait(&[&filesystem, &devmgr, &logger])?.max(1))
 }

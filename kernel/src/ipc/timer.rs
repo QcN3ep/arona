@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::ops::Deref;
+use core::{
+    ops::Deref,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use spin::Mutex;
 
 use super::{EventError, EventReference};
@@ -37,6 +40,12 @@ struct TimerState {
     next: Option<TimerReference>,
 }
 
+static TIMER_STATES: AtomicUsize = AtomicUsize::new(0);
+
+pub fn active_timers() -> usize {
+    TIMER_STATES.load(Ordering::Relaxed)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TimerPhase {
     Disarmed,
@@ -71,6 +80,7 @@ impl Timer {
             phase: TimerPhase::Disarmed,
             next: None,
         }))?;
+        TIMER_STATES.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
             reference: TimerReference { timer },
         })
@@ -78,6 +88,12 @@ impl Timer {
 
     pub fn reference(&self) -> TimerReference {
         self.reference.clone()
+    }
+}
+
+impl Drop for TimerState {
+    fn drop(&mut self) {
+        TIMER_STATES.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

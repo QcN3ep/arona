@@ -22,7 +22,7 @@ mod isa;
 #[cfg(target_arch = "riscv64")]
 const UART: usize = 0xffff_ffc0_0020_0000;
 #[cfg(target_arch = "loongarch64")]
-const UART: usize = 0xffff_8000_0040_01e0;
+const UART: usize = 0xffff_8000_0060_01e0;
 
 const MILLISECOND: u64 = 1_000_000;
 static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);

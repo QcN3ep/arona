@@ -9,12 +9,16 @@ mod timer;
 pub(crate) mod wait;
 
 pub(crate) use channel::MESSAGE_HANDLES;
-pub use channel::{Channel, ChannelError, ChannelReference, Message, ReceivedMessage};
-pub use event::{Event, EventError, EventReference};
+pub use channel::{
+    Channel, ChannelError, ChannelReference, Message, ReceivedMessage, active_channels,
+    queued_messages,
+};
+pub use event::{Event, EventError, EventReference, active_events};
 pub(crate) use reply::Call;
-pub use reply::{Reply, ReplyReference};
-pub use timer::{Timer, TimerError, TimerReference};
+pub use reply::{Reply, ReplyReference, active_replies};
+pub use timer::{Timer, TimerError, TimerReference, active_timers};
 pub(crate) use wait::WaitMode;
+pub use wait::active_selections;
 pub use wait::{
     DEAD, EXITED, PEER_CLOSED, READABLE, WRITABLE, WaitItem, WaitManyError, WaitManyResult,
 };

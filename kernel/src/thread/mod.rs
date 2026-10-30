@@ -30,6 +30,10 @@ pub const MAX_THREADS: usize = 4096;
 const STACK_SIZE: usize = 32 * 1024;
 static THREADS: AtomicUsize = AtomicUsize::new(0);
 
+pub fn allocated_threads() -> usize {
+    THREADS.load(Ordering::Relaxed)
+}
+
 pub type ThreadEntry = fn(usize) -> usize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,6 +238,15 @@ impl Thread {
     pub fn state(&self) -> ThreadState {
         let _interrupts = InterruptGuard::new();
         self.0.data.lock().state
+    }
+
+    pub fn is_waiting_for_exit(&self) -> bool {
+        self.0
+            .data
+            .lock()
+            .wait
+            .as_ref()
+            .is_some_and(|wait| wait.exit.is_some())
     }
 
     pub(crate) fn same(&self, other: &Self) -> bool {

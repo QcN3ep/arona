@@ -24,7 +24,7 @@ use heap_allocator::HeapAllocator;
 
 pub(crate) use buffer::{MemoryBuffer, UserMemoryError};
 
-pub use address_space::{AddressSpace, USER_ADDRESS_RANGE};
+pub use address_space::{AddressSpace, USER_ADDRESS_RANGE, allocated_address_spaces};
 pub use frame::{
     Frame, FrameAccess, FrameAccessReference, FrameAllocation, FrameAllocationInfo,
     FrameAllocationReference, FrameOwner, FramePool, FramePurpose, Frames, ReferenceKind,

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 use super::{ChannelError, ReceivedMessage};
@@ -30,6 +31,12 @@ struct ReplyState {
     result: Option<Result<ReceivedMessage, ChannelError>>,
 }
 
+static REPLIES: AtomicUsize = AtomicUsize::new(0);
+
+pub fn active_replies() -> usize {
+    REPLIES.load(Ordering::Relaxed)
+}
+
 pub(crate) struct Call {
     reference: ReplyReference,
     reply: Option<Reply>,
@@ -45,6 +52,7 @@ impl Call {
             deadline,
             result: None,
         }))?);
+        REPLIES.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
             reply: Some(Reply {
                 reference: reference.clone(),
@@ -96,6 +104,12 @@ impl Call {
             .handles
             .drain(..response.handles().len());
         Ok(response)
+    }
+}
+
+impl Drop for ReplyState {
+    fn drop(&mut self) {
+        REPLIES.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

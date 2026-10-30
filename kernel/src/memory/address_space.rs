@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::ops::Range;
+use core::{
+    ops::Range,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use spin::Mutex;
 
 use super::{
@@ -37,6 +40,12 @@ pub struct AddressSpace {
     bounds: VirtRange,
 }
 
+static ADDRESS_SPACES: AtomicUsize = AtomicUsize::new(0);
+
+pub fn allocated_address_spaces() -> usize {
+    ADDRESS_SPACES.load(Ordering::Relaxed)
+}
+
 struct AddressSpaceState {
     mappings: MappingIndex,
     generation: u64,
@@ -70,6 +79,7 @@ impl AddressSpace {
     }
 
     fn create(table: PageTable, bounds: VirtRange) -> Self {
+        ADDRESS_SPACES.fetch_add(1, Ordering::Relaxed);
         Self {
             table,
             state: Mutex::new(AddressSpaceState {
@@ -1055,6 +1065,7 @@ impl AddressSpaceState {
 
 impl Drop for AddressSpace {
     fn drop(&mut self) {
+        ADDRESS_SPACES.fetch_sub(1, Ordering::Relaxed);
         if self.table.is_user() {
             manager().release_mapping_records(self.state.lock().mappings.len());
         }

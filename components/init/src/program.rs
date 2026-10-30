@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use core::ops::Range;
+use fs::{Error, ReadAt};
 use runtime::{
-    Error, Rights,
+    Rights,
     memory::Permissions,
     process::{self, ChildTask},
 };
 
-use crate::archive::{Archive, File};
-
 const PAGE_SIZE: usize = 4096;
 
-struct Elf<'a> {
-    file: File<'a>,
+pub struct Loader {
+    machine: u16,
+}
+
+struct Elf<F> {
+    file: F,
     machine: u16,
     entry: usize,
     headers: usize,
@@ -25,49 +28,56 @@ struct Segment {
     permissions: Permissions,
 }
 
-pub fn load(archive: &Archive, path: &[u8], rights: Rights) -> Result<(ChildTask, usize), Error> {
-    let native = Elf::new(archive.executable(b"bin/init")?)?;
-    let elf = Elf::new(archive.executable(path)?)?;
-    if elf.machine != native.machine {
-        return Err(Error::Protocol);
+impl Loader {
+    pub fn new(native: impl ReadAt) -> Result<Self, Error> {
+        Ok(Self {
+            machine: Elf::new(native)?.machine,
+        })
     }
-    let mut child = ChildTask::new(process::task(), rights)?;
-    let mut buffer = [0; PAGE_SIZE];
-    for index in 0..elf.count {
-        let Some(segment) = elf.segment(index)? else {
-            continue;
-        };
-        let pages = segment.pages()?;
-        let count = (pages.len() / PAGE_SIZE) as u64;
-        let rights = Rights::READ_WRITE.union(Rights::MAP).union(Rights::EXECUTE);
-        let mut frames = child.allocate(count, rights)?;
-        for offset in (0..segment.data.len()).step_by(buffer.len()) {
-            let length = buffer.len().min(segment.data.len() - offset);
-            elf.file
-                .read(segment.data.start + offset, &mut buffer[..length])?;
-            frames.write(
-                segment.memory.start - pages.start + offset,
-                &buffer[..length],
-            )?;
+
+    pub fn load(&self, file: impl ReadAt, rights: Rights) -> Result<(ChildTask, usize), Error> {
+        let elf = Elf::new(file)?;
+        if elf.machine != self.machine {
+            return Err(Error::InvalidData);
         }
-        if child.map(&frames, 0, count, Some(pages.start), segment.permissions)? != pages {
-            return Err(Error::Protocol);
+        let mut child = ChildTask::new(process::task(), rights)?;
+        let mut buffer = [0; PAGE_SIZE];
+        for index in 0..elf.count {
+            let Some(segment) = elf.segment(index)? else {
+                continue;
+            };
+            let pages = segment.pages()?;
+            let count = (pages.len() / PAGE_SIZE) as u64;
+            let rights = Rights::READ_WRITE.union(Rights::MAP).union(Rights::EXECUTE);
+            let mut frames = child.allocate(count, rights)?;
+            for offset in (0..segment.data.len()).step_by(buffer.len()) {
+                let length = buffer.len().min(segment.data.len() - offset);
+                elf.file
+                    .read_exact_at(segment.data.start + offset, &mut buffer[..length])?;
+                frames.write(
+                    segment.memory.start - pages.start + offset,
+                    &buffer[..length],
+                )?;
+            }
+            if child.map(&frames, 0, count, Some(pages.start), segment.permissions)? != pages {
+                return Err(Error::InvalidData);
+            }
         }
+        Ok((child, elf.entry))
     }
-    Ok((child, elf.entry))
 }
 
-impl<'a> Elf<'a> {
-    fn new(file: File<'a>) -> Result<Self, Error> {
+impl<F: ReadAt> Elf<F> {
+    fn new(file: F) -> Result<Self, Error> {
         let mut header = [0; 64];
-        file.read(0, &mut header)?;
+        file.read_exact_at(0, &mut header)?;
         if &header[..7] != b"\x7fELF\x02\x01\x01"
             || half(&header, 16) != 2
             || word(&header, 20) != 1
             || half(&header, 52) != 64
             || half(&header, 54) != 56
         {
-            return Err(Error::Protocol);
+            return Err(Error::InvalidData);
         }
         let this = Self {
             file,
@@ -77,17 +87,17 @@ impl<'a> Elf<'a> {
             count: half(&header, 56) as usize,
         };
         if this.count == 0 || this.count == u16::MAX as usize {
-            return Err(Error::Protocol);
+            return Err(Error::InvalidData);
         }
         this.range(
             this.headers,
-            this.count.checked_mul(56).ok_or(Error::Protocol)?,
+            this.count.checked_mul(56).ok_or(Error::InvalidData)?,
         )?;
         let mut executable_entry = false;
         for index in 0..this.count {
             let header = this.header(index)?;
             if matches!(word(&header, 0), 2 | 3) {
-                return Err(Error::Protocol);
+                return Err(Error::InvalidData);
             }
             if let Some(segment) = this.segment(index)? {
                 let pages = segment.pages()?;
@@ -95,7 +105,7 @@ impl<'a> Elf<'a> {
                     if let Some(other) = this.segment(previous)? {
                         let other = other.pages()?;
                         if pages.start < other.end && other.start < pages.end {
-                            return Err(Error::Protocol);
+                            return Err(Error::InvalidData);
                         }
                     }
                 }
@@ -105,7 +115,7 @@ impl<'a> Elf<'a> {
             }
         }
         if !executable_entry {
-            return Err(Error::Protocol);
+            return Err(Error::InvalidData);
         }
         Ok(this)
     }
@@ -123,18 +133,18 @@ impl<'a> Elf<'a> {
         if filesz > memsz
             || (align > 1 && (!align.is_power_of_two() || start % align != offset % align))
         {
-            return Err(Error::Protocol);
+            return Err(Error::InvalidData);
         }
         let data = self.range(offset, filesz)?;
         if memsz == 0 {
             return Ok(None);
         }
-        let end = start.checked_add(memsz).ok_or(Error::Protocol)?;
+        let end = start.checked_add(memsz).ok_or(Error::InvalidData)?;
         let permissions = match word(&header, 4) {
             4 => Permissions::ReadOnly,
             5 => Permissions::ReadExecute,
             6 => Permissions::ReadWrite,
-            _ => return Err(Error::Protocol),
+            _ => return Err(Error::InvalidData),
         };
         Ok(Some(Segment {
             memory: start..end,
@@ -146,7 +156,7 @@ impl<'a> Elf<'a> {
     fn header(&self, index: usize) -> Result<[u8; 56], Error> {
         let mut bytes = [0; 56];
         self.file
-            .read(self.headers + index * bytes.len(), &mut bytes)?;
+            .read_exact_at(self.headers + index * bytes.len(), &mut bytes)?;
         Ok(bytes)
     }
 
@@ -154,7 +164,7 @@ impl<'a> Elf<'a> {
         let end = offset
             .checked_add(length)
             .filter(|&end| end <= self.file.len())
-            .ok_or(Error::Protocol)?;
+            .ok_or(Error::InvalidData)?;
         Ok(offset..end)
     }
 }
@@ -166,7 +176,7 @@ impl Segment {
                 .memory
                 .end
                 .checked_next_multiple_of(PAGE_SIZE)
-                .ok_or(Error::Protocol)?)
+                .ok_or(Error::InvalidData)?)
     }
 }
 
@@ -180,5 +190,5 @@ fn address(bytes: &[u8], offset: usize) -> Result<usize, Error> {
     usize::try_from(u64::from_le_bytes(
         bytes[offset..offset + 8].try_into().unwrap(),
     ))
-    .map_err(|_| Error::Protocol)
+    .map_err(|_| Error::InvalidData)
 }

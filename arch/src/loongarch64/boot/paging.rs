@@ -7,7 +7,7 @@ use crate::{loongarch64::paging::refill, paging::PAGE_TABLE_WINDOW};
 const KERNEL_BASE: usize = 0xffff_8000_0020_0000;
 pub(super) const MMIO_BASE: usize = 0x8000_0000_0000_0000;
 pub(super) const FIRMWARE_BASE: usize = 0x9000_0000_0000_0000;
-pub(super) const UART_BASE: usize = KERNEL_BASE + 0x20_0000;
+pub(super) const UART_BASE: usize = KERNEL_BASE + 0x40_0000;
 pub(super) const UART_PHYSICAL_BASE: usize = 0x1fe0_0000;
 
 // REFERENCE: https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html
@@ -45,6 +45,7 @@ unsafe extern "C" {
     static mut _boot_tables_phys: PageTables;
     static _boot_tables_window_phys: u8;
     static _kernel_phys_start: u8;
+    static _kernel_phys_end: u8;
 }
 
 /// # Safety
@@ -120,9 +121,15 @@ impl PageTables {
         unsafe { (&mut *(window_table as *mut PageTable)).clear() };
         self.window_l1
             .link_address::<1>(PAGE_TABLE_WINDOW, window_table);
-        // 启动映像暂以一个可读写执行的 2 MiB 大页映射。
-        self.kernel_l1
-            .map(KERNEL_BASE, kernel, VALID | DIRTY | CACHED | HUGE);
+        let end = core::ptr::addr_of!(_kernel_phys_end) as usize;
+        let mut physical = kernel;
+        let mut virtual_address = KERNEL_BASE;
+        while physical < end {
+            self.kernel_l1
+                .map(virtual_address, physical, VALID | DIRTY | CACHED | HUGE);
+            physical = physical.wrapping_add(0x20_0000);
+            virtual_address = virtual_address.wrapping_add(0x20_0000);
+        }
         self.kernel_l1.map(
             UART_BASE,
             UART_PHYSICAL_BASE,

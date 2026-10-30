@@ -66,11 +66,12 @@ fn run_thread(entry: kernel::thread::ThreadEntry) {
     loop {
         scheduler::run_ready().unwrap();
         if owner.state() == ThreadState::Dead(0) {
+            assert!(!owner.is_waiting_for_exit());
             break;
         }
         assert!(
             hardware::timer().now_ns().unwrap() < limit,
-            "Test thread stalled"
+            "Test thread stalled",
         );
         hardware::cpu().idle_until_interrupt();
     }

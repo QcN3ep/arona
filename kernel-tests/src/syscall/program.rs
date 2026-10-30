@@ -62,43 +62,46 @@ pub fn handle(trap: Trap) -> TrapOutcome {
     } else {
         None
     };
+    let caller = thread::current().and_then(|thread| thread.task());
+    let supervising = if ARCHIVE.get().is_some()
+        && let TrapEvent::Syscall { arguments, .. } = trap.event
+        && arguments[0] == abi::method::thread::WAIT_MANY as usize
+        && arguments[2] == 3
+    {
+        caller.as_ref().is_some_and(|caller| {
+            caller
+                .get(
+                    abi::Handle::from_raw(INIT_TASK.load(Ordering::Relaxed)),
+                    ObjectType::Task,
+                    Rights::CREATE_TASK,
+                )
+                .is_ok()
+        })
+    } else {
+        false
+    };
     let method = if ARCHIVE.get().is_some()
         && let TrapEvent::Syscall {
             handle, arguments, ..
         } = trap.event
-        && thread::current()
-            .and_then(|thread| thread.task())
-            .as_ref()
-            .is_some_and(|caller| {
-                caller
-                    .get(
-                        abi::Handle::from_raw(handle as u64),
-                        ObjectType::Task,
-                        Rights::NONE,
-                    )
-                    .is_ok()
-            }) {
+        && arguments[0] == abi::method::task::CREATE as usize
+        && caller.as_ref().is_some_and(|caller| {
+            caller
+                .get(
+                    abi::Handle::from_raw(handle as u64),
+                    ObjectType::Task,
+                    Rights::NONE,
+                )
+                .is_ok()
+        }) {
         Some(arguments[0] as u64)
     } else {
         None
     };
-    if ARCHIVE.get().is_some()
-        && let TrapEvent::Syscall { arguments, .. } = trap.event
-        && arguments[0] == abi::method::thread::WAIT_MANY as usize
-        && arguments[2] == 2
-    {
-        let caller = thread::current().unwrap().task().unwrap();
-        if caller
-            .get(
-                abi::Handle::from_raw(INIT_TASK.load(Ordering::Relaxed)),
-                ObjectType::Task,
-                Rights::CREATE_TASK,
-            )
-            .is_ok()
-        {
-            SUPERVISING.store(true, Ordering::Relaxed);
-        }
+    if supervising {
+        SUPERVISING.store(true, Ordering::Relaxed);
     }
+    drop(caller);
     let outcome = kernel::trap::dispatch(trap);
     if let Some(binding) = binding
         && matches!(outcome, TrapOutcome::Return { status: 0, .. })
@@ -109,8 +112,8 @@ pub fn handle(trap: Trap) -> TrapOutcome {
         && let TrapOutcome::Return { status: 0, values } = outcome
     {
         let ObjectReference::Task(task) = thread::current()
-            .unwrap()
-            .task()
+            .and_then(|thread| thread.task())
+            .as_ref()
             .unwrap()
             .get(
                 abi::Handle::from_raw(values[0] as u64),
@@ -142,26 +145,67 @@ fn run_cases(image: &'static [u8], modes: &[u64]) {
     IMAGE.call_once(|| image);
     let manager = memory::manager();
     manager.reclaim_heap();
-    let before = manager.stats();
-    let heap = manager.heap_stats();
+    let mut before = manager.stats();
+    let mut heap = manager.heap_stats();
+    let channels = kernel::ipc::active_channels();
+    let messages = kernel::ipc::queued_messages();
+    let selections = kernel::ipc::active_selections();
+    let tasks = kernel::task::registered_tasks();
+    let threads = kernel::thread::allocated_threads();
+    let events = kernel::ipc::active_events();
+    let timers = kernel::ipc::active_timers();
+    let replies = kernel::ipc::active_replies();
+    let grants = kernel::device::active_grant_tokens();
+    let records = kernel::task::allocated_task_records();
+    let task_resources = kernel::task::allocated_task_resources();
+    let warmup = ARCHIVE.get().is_some();
+    let repeat = warmup.then(|| modes[0]);
     super::ACTIVE.store(true, Ordering::Relaxed);
-    for &mode in modes {
+    for (index, mode) in modes.iter().copied().chain(repeat).enumerate() {
         MODE.store(mode, Ordering::Relaxed);
+        SUPERVISING.store(false, Ordering::Relaxed);
         crate::run_thread(scenario);
+        let deadline = hardware::timer().now_ns().unwrap() + 10_000_000_000;
+        loop {
+            manager.reclaim_heap();
+            let resources_reclaimed = kernel::ipc::active_selections() == selections
+                && kernel::task::registered_tasks() == tasks
+                && kernel::thread::allocated_threads() == threads
+                && kernel::ipc::active_events() == events
+                && kernel::ipc::active_timers() == timers
+                && kernel::ipc::active_replies() == replies
+                && kernel::device::active_grant_tokens() == grants
+                && kernel::task::allocated_task_records() == records
+                && kernel::task::allocated_task_resources() == task_resources
+                && kernel::ipc::active_channels() == channels
+                && kernel::ipc::queued_messages() == messages;
+            if resources_reclaimed
+                && (warmup && index == 0
+                    || manager.stats() == before && manager.heap_stats() == heap)
+            {
+                if warmup && index == 0 {
+                    before = manager.stats();
+                    heap = manager.heap_stats();
+                }
+                break;
+            }
+            assert!(
+                hardware::timer().now_ns().unwrap() < deadline,
+                "reclaim failed scenario={mode} records={}/{}",
+                kernel::task::allocated_task_records(),
+                records,
+            );
+            kernel::thread::scheduler::run_ready().unwrap();
+            core::hint::spin_loop();
+        }
     }
     super::ACTIVE.store(false, Ordering::Relaxed);
-    manager.reclaim_heap();
-    assert_eq!(manager.stats(), before);
-    assert_eq!(manager.heap_stats(), heap);
 }
 
 fn scenario(_: usize) -> usize {
     let mode = MODE.load(Ordering::Relaxed);
     let task = Task::new().unwrap();
     let held = (mode == 11).then(|| DEVICES.get().unwrap().claim_group(console_group()).unwrap());
-    if mode >= 9 {
-        SUPERVISING.store(false, Ordering::Relaxed);
-    }
     let image = IMAGE.get().unwrap();
     assert_eq!(&image[..7], b"\x7fELF\x02\x01\x01");
     let headers = word(image, 32) as usize;
@@ -466,54 +510,56 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
     if matches!(mode, 11 | 12) {
         assert_eq!(user.wait().unwrap(), 1);
         assert_eq!(task.state(), TaskState::Dead(1));
-        assert!(!SUPERVISING.load(Ordering::Relaxed));
         if mode == 11 {
-            assert_eq!(SERVICES.lock().len(), 1);
-            assert_eq!(SERVICES.lock()[0].state(), TaskState::Dead(1));
+            let children = SERVICES.lock().clone();
+            assert_eq!(children.len(), 2);
+            for child in children {
+                assert_eq!(child.wait().unwrap(), 1);
+                assert_eq!(child.state(), TaskState::Dead(1));
+            }
         } else {
             assert!(SERVICES.lock().is_empty());
         }
         return;
     }
     let deadline = hardware::timer().now_ns().unwrap() + 15_000_000_000;
-    while !SUPERVISING.load(Ordering::Relaxed) || user.state() != ThreadState::Blocked {
+    let devices = DEVICES.get().unwrap();
+    let group = console_group();
+    loop {
+        let busy = matches!(devices.claim_group(group), Err(DeviceError::Busy));
+        let children = SERVICES.lock().clone();
+        let active = children.len() == 3
+            && children
+                .iter()
+                .all(|child| child.state() == TaskState::Active);
+        if SUPERVISING.load(Ordering::Relaxed)
+            && user.state() == ThreadState::Blocked
+            && busy
+            && active
+        {
+            break;
+        }
         assert_eq!(task.state(), TaskState::Active);
         assert!(
             hardware::timer().now_ns().unwrap() < deadline,
-            "init did not supervise services: waiting={}, init={:?}",
+            "init did not reach the service wait: supervising={}, init={:?}",
             SUPERVISING.load(Ordering::Relaxed),
             user.state(),
         );
         thread::yield_now().unwrap();
     }
     let children = SERVICES.lock().clone();
-    assert_eq!(children.len(), 2);
-    assert!(
-        children
-            .iter()
-            .all(|child| child.state() == TaskState::Active)
-    );
-    let devices = DEVICES.get().unwrap();
-    assert!(matches!(
-        devices.claim_group(console_group()),
-        Err(DeviceError::Busy)
-    ));
-    assert_eq!(
-        task.wait_until(hardware::timer().now_ns().unwrap() + 20_000_000)
-            .unwrap(),
-        None
-    );
-    assert!(
-        children
-            .iter()
-            .all(|child| child.state() == TaskState::Active)
-    );
+    assert_eq!(children.len(), 3);
+    for (index, child) in children.iter().enumerate() {
+        assert_eq!(child.state(), TaskState::Active, "service {index}");
+    }
+    assert!(matches!(devices.claim_group(group), Err(DeviceError::Busy)));
     assert_eq!(user.state(), ThreadState::Blocked);
     let status = if mode == 9 {
-        children[0].terminate(73);
+        children[2].terminate(73);
         73
     } else if mode == 13 {
-        children[1].terminate(74);
+        children[0].terminate(74);
         74
     } else {
         task.terminate(0);
@@ -524,7 +570,7 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
     for (index, child) in children.iter().enumerate() {
         let expected = if mode == 10 {
             0
-        } else if index == usize::from(mode == 13) {
+        } else if (mode == 9 && index == 2) || (mode == 13 && index == 0) {
             status
         } else {
             1

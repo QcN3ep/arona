@@ -32,8 +32,29 @@ use crate::{
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static TASK_RECORDS: AtomicU64 = AtomicU64::new(0);
+static TASK_RESOURCES: AtomicU64 = AtomicU64::new(0);
 
 static TASKS: Mutex<TaskRegistry> = Mutex::new(TaskRegistry { first: None });
+
+pub fn allocated_task_records() -> u64 {
+    TASK_RECORDS.load(Ordering::Relaxed)
+}
+
+pub fn allocated_task_resources() -> u64 {
+    TASK_RESOURCES.load(Ordering::Relaxed)
+}
+
+pub fn registered_tasks() -> usize {
+    let registry = TASKS.lock();
+    let mut count = 0;
+    let mut cursor = registry.first.as_deref();
+    while let Some(resources) = cursor {
+        count += 1;
+        cursor = resources.next.as_deref();
+    }
+    count
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskState {
@@ -727,6 +748,7 @@ impl TaskRegistry {
                 observers: Observers::new(),
             }),
         })?);
+        TASK_RECORDS.fetch_add(1, Ordering::Relaxed);
         let mut resources = HeapBox::try_new(TaskResources {
             task: task.clone(),
             creator,
@@ -736,6 +758,7 @@ impl TaskRegistry {
             next: None,
         })
         .map_err(|_| MemoryError::NoMemory)?;
+        TASK_RESOURCES.fetch_add(1, Ordering::Relaxed);
         resources.next = position.take();
         *position = Some(resources);
         Ok(task)
@@ -799,6 +822,18 @@ impl TaskRegistry {
             }
         }
         cleanup
+    }
+}
+
+impl Drop for TaskRecord {
+    fn drop(&mut self) {
+        TASK_RECORDS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Drop for TaskResources {
+    fn drop(&mut self) {
+        TASK_RESOURCES.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

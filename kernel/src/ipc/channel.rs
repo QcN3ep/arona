@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::ops::Deref;
+use core::{
+    ops::Deref,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use alloc::{collections::VecDeque, vec::Vec};
 use arrayvec::ArrayVec;
@@ -24,6 +27,16 @@ static CLEANUP: Mutex<ChannelCleanup> = Mutex::new(ChannelCleanup {
     first: None,
     active: false,
 });
+static CHANNEL_STATES: AtomicUsize = AtomicUsize::new(0);
+static QUEUED_MESSAGES: AtomicUsize = AtomicUsize::new(0);
+
+pub fn active_channels() -> usize {
+    CHANNEL_STATES.load(Ordering::Relaxed)
+}
+
+pub fn queued_messages() -> usize {
+    QUEUED_MESSAGES.load(Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Message {
@@ -280,6 +293,7 @@ impl ChannelReference {
                         handles,
                         has_reply,
                     });
+                    QUEUED_MESSAGES.fetch_add(1, Ordering::Relaxed);
                     direction.receivers.wake_one();
                     drop(state);
                     self.notify_observers();
@@ -463,13 +477,15 @@ impl ChannelReference {
 
 impl ChannelState {
     fn allocate() -> Result<HeapArc<Mutex<Self>>, ChannelError> {
-        Ok(memory::manager().allocate_arc(Mutex::new(Self {
+        let channel = memory::manager().allocate_arc(Mutex::new(Self {
             credits: [1; 2],
             directions: [Direction::new(), Direction::new()],
             observers: [Observers::new(), Observers::new()],
             cleanup_next: None,
             queued_for_cleanup: false,
-        }))?)
+        }))?;
+        CHANNEL_STATES.fetch_add(1, Ordering::Relaxed);
+        Ok(channel)
     }
 
     fn discard(channel: &HeapArc<Mutex<Self>>) {
@@ -547,6 +563,18 @@ impl ChannelState {
             Condition::Readable => !self.directions[direction].messages.is_empty(),
             Condition::Writable => self.directions[direction].messages.len() < CAPACITY,
         }
+    }
+}
+
+impl Drop for ChannelState {
+    fn drop(&mut self) {
+        CHANNEL_STATES.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl Drop for QueuedMessage {
+    fn drop(&mut self) {
+        QUEUED_MESSAGES.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

@@ -21,6 +21,11 @@ use crate::{
 use abi::device::{DeviceField, DeviceInfo};
 
 static REGISTRY: Once<Registry> = Once::new();
+static GRANT_TOKENS: AtomicUsize = AtomicUsize::new(0);
+
+pub fn active_grant_tokens() -> usize {
+    GRANT_TOKENS.load(Ordering::Relaxed)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeviceError {
@@ -223,12 +228,19 @@ impl DeviceSet {
             credits: AtomicUsize::new(1),
             revoked: AtomicBool::new(false),
         })?);
+        GRANT_TOKENS.fetch_add(1, Ordering::Relaxed);
         state.grants.push(Grant {
             token: reference.clone(),
             group,
             mappings: Vec::new(),
         });
         Ok(Device { reference })
+    }
+}
+
+impl Drop for GrantToken {
+    fn drop(&mut self) {
+        GRANT_TOKENS.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

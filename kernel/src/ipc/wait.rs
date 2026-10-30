@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 use super::{ChannelError, ChannelReference, EventError, EventReference};
@@ -77,6 +78,12 @@ struct Selection {
     result: Mutex<Option<Result<WaitManyResult, WaitManyError>>>,
 }
 
+static SELECTIONS: AtomicUsize = AtomicUsize::new(0);
+
+pub fn active_selections() -> usize {
+    SELECTIONS.load(Ordering::Relaxed)
+}
+
 struct Registrations {
     observer: Observer,
     count: usize,
@@ -111,12 +118,14 @@ fn wait_resolved(
         }
     }
     let wait = prepare(mode)?;
+    let selection = memory::manager().allocate_arc(Selection {
+        items,
+        waker: wait.waker(),
+        result: Mutex::new(None),
+    })?;
+    SELECTIONS.fetch_add(1, Ordering::Relaxed);
     let observer = Observer {
-        selection: memory::manager().allocate_arc(Selection {
-            items,
-            waker: wait.waker(),
-            result: Mutex::new(None),
-        })?,
+        selection,
         index: 0,
     };
     let mut registrations = Registrations {
@@ -177,6 +186,10 @@ impl Observers {
         self.0.clear();
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
     pub(crate) fn get(&self, index: usize) -> Option<Observer> {
         self.0.get(index).cloned()
     }
@@ -201,6 +214,12 @@ impl Observer {
                 Ok(selected)
             }));
         }
+    }
+}
+
+impl Drop for Selection {
+    fn drop(&mut self) {
+        SELECTIONS.fetch_sub(1, Ordering::Relaxed);
     }
 }
 

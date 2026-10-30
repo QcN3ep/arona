@@ -32,10 +32,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "arona-fs"
+version = "0.1.0"
+dependencies = [
+ "arona-runtime",
+]
+
+[[package]]
 name = "arona-init"
 version = "0.1.0"
 dependencies = [
  "arona-devmgr",
+ "arona-fs",
  "arona-logger",
  "arona-runtime",
 ]

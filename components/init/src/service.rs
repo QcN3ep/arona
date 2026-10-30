@@ -7,7 +7,9 @@ use runtime::{
     thread,
 };
 
-use crate::{archive::Archive, program};
+use fs::{FileSystem, ReadAt, archive::Archive};
+
+use crate::{InitError, program::Loader};
 
 const START_TIMEOUT_NS: u64 = 10_000_000_000;
 const STACK_SIZE: usize = 64 * 1024;
@@ -16,15 +18,30 @@ pub struct Service {
     task: Handle<Task>,
 }
 
+pub fn start_fs(
+    loader: &Loader,
+    archive: Archive,
+) -> Result<(Service, fs::Client<'static>), InitError> {
+    let (service, channel) = launch(
+        loader,
+        archive.open("/bin/fs")?,
+        ProcessStart::REQUIRED_RIGHTS,
+    )?;
+    let (frames, length) = archive.into_parts();
+    let client = fs::Client::start(process::task(), channel, frames, length, deadline()?)?;
+    Ok((service, client))
+}
+
 pub fn start_devmgr(
-    archive: &Archive,
+    loader: &Loader,
+    files: &fs::Client<'_>,
     devices: &Handle<DeviceSet>,
-) -> Result<(Service, Handle<Channel>), Error> {
+) -> Result<(Service, Handle<Channel>), InitError> {
     let rights = ProcessStart::REQUIRED_RIGHTS
         .union(Rights::CREATE_EVENT)
         .union(Rights::CREATE_CHANNEL)
         .union(Rights::CREATE_THREAD);
-    let (service, control) = launch(archive, b"bin/devmgr", rights)?;
+    let (service, control) = launch(loader, files.open("/bin/devmgr", deadline()?)?, rights)?;
     let rights = Rights::READ.union(Rights::RESOURCE_SPLIT);
     let mut startup = Message::new(0, &[])?;
     startup
@@ -42,13 +59,14 @@ pub fn start_devmgr(
             CallError::NotSubmitted(error) | CallError::Submitted(error) => error,
         })?;
     if ready.tag != 0 || !ready.words().is_empty() || !ready.handles().is_empty() {
-        return Err(Error::Protocol);
+        return Err(Error::Protocol.into());
     }
     Ok((service, control))
 }
 
 pub fn start_logger(
-    archive: &Archive,
+    loader: &Loader,
+    files: &fs::Client<'_>,
     devices: &Handle<DeviceSet>,
     devmgr: &Handle<Channel>,
     kernel_log: &Handle<KernelLog>,
@@ -62,7 +80,11 @@ pub fn start_logger(
         cursor = id;
     };
     let output = devmgr::uart::Session::open(process::task(), devmgr, console)?;
-    let (service, control) = launch(archive, b"bin/logger", ProcessStart::REQUIRED_RIGHTS)?;
+    let (service, control) = launch(
+        loader,
+        files.open("/bin/logger", deadline()?)?,
+        ProcessStart::REQUIRED_RIGHTS,
+    )?;
     let (control, client) = logger::Control::start(
         process::task(),
         control,
@@ -82,11 +104,11 @@ pub fn wait(services: &[&Service]) -> Result<usize, Error> {
 }
 
 fn launch(
-    archive: &Archive,
-    path: &[u8],
+    loader: &Loader,
+    file: impl ReadAt,
     rights: Rights,
-) -> Result<(Service, Handle<Channel>), Error> {
-    let (child, entry) = program::load(archive, path, rights)?;
+) -> Result<(Service, Handle<Channel>), InitError> {
+    let (child, entry) = loader.load(file, rights)?;
     let control_rights = Rights::READ.union(Rights::WAIT);
     let (sender, receiver) =
         process::task().channel(Rights::READ_WRITE, control_rights.union(Rights::TRANSFER))?;
@@ -100,4 +122,10 @@ impl Drop for Service {
     fn drop(&mut self) {
         let _ = self.task.terminate(1);
     }
+}
+
+fn deadline() -> Result<u64, Error> {
+    thread::now_ns()?
+        .checked_add(START_TIMEOUT_NS)
+        .ok_or(Error::Protocol)
 }

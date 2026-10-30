@@ -11,6 +11,7 @@ members = [
     "components/init",
     "components/devmgr",
     "components/logger",
+    "components/fs",
     "xtask",
 ]
 
