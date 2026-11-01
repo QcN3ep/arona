@@ -140,6 +140,12 @@ pub enum HardwareDeviceLocation {
     Iocsr {
         registers: Range<u32>,
     },
+    Pci {
+        segment: u16,
+        bus: u8,
+        slot: u8,
+        function: u8,
+    },
     PciHostBridge {
         segment: u16,
         first_bus: u8,

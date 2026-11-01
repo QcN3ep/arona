@@ -119,7 +119,14 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
     DEVICE_TESTS.store(true, Ordering::Relaxed);
     kernel::thread::scheduler::initialize().unwrap();
     let devices = kernel::device::DeviceSet::initialize(hardware).unwrap();
-    kernel_tests::run_devices(devices.clone(), hardware);
+    let (pci_devices, behind_bridges) = kernel_tests::run_devices(devices.clone(), hardware);
+    if pci_devices != 0 {
+        uart()
+            .write(format_args!(
+                "PCI catalog tests passed: {pci_devices} devices, {behind_bridges} behind bridges\n"
+            ))
+            .unwrap();
+    }
     #[cfg(feature = "runtime-tests")]
     {
         let data = kernel::BootData {

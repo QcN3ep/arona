@@ -12,13 +12,14 @@ use spin::Once;
 
 static DEVICES: Once<DeviceSet> = Once::new();
 
-pub fn run(devices: DeviceSet, hardware: &HardwareInfo) {
-    catalog(&devices, hardware);
+pub fn run(devices: DeviceSet, hardware: &HardwareInfo) -> (usize, usize) {
+    let pci_devices = catalog(&devices, hardware);
     DEVICES.call_once(|| devices);
     crate::run_thread(scenario);
+    pci_devices
 }
 
-fn catalog(devices: &DeviceSet, hardware: &HardwareInfo) {
+fn catalog(devices: &DeviceSet, hardware: &HardwareInfo) -> (usize, usize) {
     for device in &hardware.devices {
         let id = device.instance_id.0;
         assert_eq!(
@@ -32,6 +33,127 @@ fn catalog(devices: &DeviceSet, hardware: &HardwareInfo) {
             assert!(devices.describe(id).unwrap().group.is_none());
             assert!(matches!(devices.claim_group(id), Err(DeviceError::Denied)));
         }
+    }
+    pci_catalog(devices, hardware)
+}
+
+fn pci_catalog(devices: &DeviceSet, hardware: &HardwareInfo) -> (usize, usize) {
+    let mut cursor = 0;
+    let mut pci_devices = 0;
+    let mut behind_bridges = 0;
+    while let Some(id) = devices.next(cursor).unwrap() {
+        let info = devices.describe(id).unwrap();
+        if is_pci_device(devices, id) {
+            behind_bridges += usize::from(assert_pci_device(devices, hardware, id, info));
+            pci_devices += 1;
+        }
+        cursor = id;
+    }
+    (pci_devices, behind_bridges)
+}
+
+fn is_pci_device(devices: &DeviceSet, id: u32) -> bool {
+    devices
+        .read(id, abi::device::DeviceField::IdentityNamespace, 0)
+        .is_ok_and(|namespace| namespace == b"pci")
+}
+
+fn assert_pci_device(
+    devices: &DeviceSet,
+    hardware: &HardwareInfo,
+    id: u32,
+    info: abi::device::DeviceInfo,
+) -> bool {
+    assert!(info.group.is_none());
+    assert_eq!(info.mmio_regions, 0);
+    assert_eq!(info.interrupts, 0);
+    assert_eq!(info.identities, 2);
+    assert_eq!(info.properties, 1);
+    assert!(matches!(devices.claim_group(id), Err(DeviceError::Denied)));
+    assert!(
+        devices
+            .read(id, abi::device::DeviceField::Name, 0)
+            .unwrap()
+            .starts_with(b"PCI ")
+    );
+    let vendor_device = devices
+        .read(id, abi::device::DeviceField::Identity, 0)
+        .unwrap();
+    assert_eq!(vendor_device.len(), 9);
+    assert_eq!(vendor_device[4], b':');
+    assert!(
+        vendor_device
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| { index == 4 || byte.is_ascii_hexdigit() })
+    );
+    assert_eq!(
+        devices
+            .read(id, abi::device::DeviceField::IdentityNamespace, 1)
+            .unwrap(),
+        b"pci-class"
+    );
+    let class = devices
+        .read(id, abi::device::DeviceField::Identity, 1)
+        .unwrap();
+    assert_eq!(class.len(), 8);
+    assert_eq!((class[2], class[5]), (b':', b':'));
+    assert!(
+        class
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| { index == 2 || index == 5 || byte.is_ascii_hexdigit() })
+    );
+    assert_eq!(
+        devices
+            .read(id, abi::device::DeviceField::PropertyNamespace, 0)
+            .unwrap(),
+        b"pci"
+    );
+    assert_eq!(
+        devices
+            .read(id, abi::device::DeviceField::PropertyName, 0)
+            .unwrap(),
+        b"bdf"
+    );
+    let bdf = devices
+        .read(id, abi::device::DeviceField::PropertyValue, 0)
+        .unwrap();
+    assert_eq!(bdf.len(), 12);
+    assert_eq!((bdf[4], bdf[7], bdf[10]), (b':', b':', b'.'));
+    assert!(
+        bdf.iter()
+            .enumerate()
+            .all(|(index, byte)| { [4, 7, 10].contains(&index) || byte.is_ascii_hexdigit() })
+    );
+    let bridged = assert_pci_parent(devices, hardware, info);
+    assert_eq!(
+        bdf,
+        &devices.read(id, abi::device::DeviceField::Name, 0).unwrap()[4..]
+    );
+    bridged
+}
+
+fn assert_pci_parent(
+    devices: &DeviceSet,
+    hardware: &HardwareInfo,
+    info: abi::device::DeviceInfo,
+) -> bool {
+    let parent = info.parent.unwrap();
+    let root_parent = hardware.devices.iter().any(|host| {
+        host.instance_id.0 == parent
+            && matches!(host.location, HardwareDeviceLocation::PciHostBridge { .. })
+    });
+    if root_parent {
+        false
+    } else {
+        assert_eq!(
+            devices
+                .read(parent, abi::device::DeviceField::IdentityNamespace, 0)
+                .unwrap(),
+            b"pci"
+        );
+        true
     }
 }
 

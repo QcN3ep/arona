@@ -430,7 +430,9 @@ fn addresses(device: &HardwareDeviceInfo) -> impl Iterator<Item = PhysRange> + '
         HardwareDeviceLocation::PciHostBridge { ecam, windows, .. } => {
             (Some(*ecam), windows.as_slice())
         }
-        HardwareDeviceLocation::Platform | HardwareDeviceLocation::Iocsr { .. } => (None, &[]),
+        HardwareDeviceLocation::Platform
+        | HardwareDeviceLocation::Iocsr { .. }
+        | HardwareDeviceLocation::Pci { .. } => (None, &[]),
     };
     device
         .mmio_regions

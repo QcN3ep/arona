@@ -2,6 +2,7 @@
 
 //! 跨架构设备驱动。
 
+pub(crate) mod pci;
 pub mod uart;
 
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]

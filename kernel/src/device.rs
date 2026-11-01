@@ -20,6 +20,8 @@ use crate::{
 };
 use abi::device::{DeviceField, DeviceInfo};
 
+mod pci;
+
 static REGISTRY: Once<Registry> = Once::new();
 static GRANT_TOKENS: AtomicUsize = AtomicUsize::new(0);
 
@@ -37,6 +39,7 @@ pub enum DeviceError {
     Closed,
     Memory(MemoryError),
     Interrupt(InterruptError),
+    Pci(hardware::pci::PciConfigError),
 }
 
 impl From<MemoryError> for DeviceError {
@@ -130,7 +133,8 @@ impl DeviceSet {
     }
 
     pub fn next(&self, after: u32) -> Result<Option<u32>, DeviceError> {
-        Ok(registry()?
+        let registry = registry()?;
+        Ok(registry
             .devices
             .iter()
             .map(|device| device.hardware.instance_id.0)
@@ -141,20 +145,20 @@ impl DeviceSet {
     pub fn describe(&self, id: u32) -> Result<DeviceInfo, DeviceError> {
         let registry = registry()?;
         let device = registry.device(id)?;
-        let info = &device.hardware;
+        let hardware = &device.hardware;
         Ok(DeviceInfo {
             id,
-            parent: info.parent.map(|id| id.0),
+            parent: hardware.parent.map(|id| id.0),
             group: device.group,
-            mmio_regions: info.mmio_regions.len(),
-            interrupts: info.interrupts.len(),
-            identities: info.identities.len(),
+            mmio_regions: hardware.mmio_regions.len(),
+            interrupts: hardware.interrupts.len(),
+            identities: hardware.identities.len(),
             properties: registry
                 .properties
                 .iter()
-                .filter(|property| property.device.0 == id)
+                .filter(|property| property.device == hardware.instance_id)
                 .count(),
-            console: registry.console == Some(info.instance_id),
+            console: registry.console == Some(hardware.instance_id),
         })
     }
 
@@ -165,7 +169,8 @@ impl DeviceSet {
         index: usize,
     ) -> Result<&'static [u8], DeviceError> {
         let registry = registry()?;
-        let device = &registry.device(id)?.hardware;
+        let descriptor = registry.device(id)?;
+        let device = &descriptor.hardware;
         let bytes = match field {
             DeviceField::Name if index == 0 => device.name.as_bytes(),
             DeviceField::IdentityNamespace | DeviceField::Identity => {
@@ -465,7 +470,7 @@ impl Registry {
         }
         for index in 0..devices.len() {
             let device = &devices[index].hardware;
-            // TODO: 实现 PCI 功能枚举及 BAR、中断资源的验证与授权。
+            // TODO: 验证并授权 PCI BAR 和中断资源。
             // TODO: 接入 IOMMU 域及 DMA 映射、同步和撤销后授权 DMA 设备。
             if device.use_policy != DeviceUsePolicy::UserAssignable
                 || device.dma != DmaCapability::None
@@ -481,11 +486,27 @@ impl Registry {
                 }
             }
         }
+        let first_pci_id = devices
+            .iter()
+            .map(|device| device.hardware.instance_id.0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(DeviceError::InvalidArgument)?;
         let mut properties = Vec::new();
         properties
             .try_reserve_exact(hardware.device_properties.len())
             .map_err(|_| MemoryError::NoMemory)?;
         properties.extend(hardware.device_properties.iter().cloned());
+        let pci_devices = pci::enumerate(hardware, first_pci_id, &mut properties)?;
+        log::info!("Enumerated {} PCI devices", pci_devices.len());
+        devices
+            .try_reserve(pci_devices.len())
+            .map_err(|_| MemoryError::NoMemory)?;
+        devices.extend(pci_devices.into_iter().map(|device| Descriptor {
+            hardware: device,
+            group: None,
+        }));
         Ok(Self {
             devices,
             properties,
