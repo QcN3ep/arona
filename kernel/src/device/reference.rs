@@ -159,6 +159,7 @@ impl DeviceReference {
             return Ok(());
         };
         if !self.0.revoked.load(Ordering::Acquire) {
+            super::dma::revoke_grant(registry, &mut state, index);
             registry.pci_memory(state.grants[index].group, false)?;
             for route in state.routes.iter().filter(|route| route.owner == self.0.id) {
                 hardware::interrupt_controller().mask(route.interrupt.into())?;

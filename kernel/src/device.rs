@@ -19,6 +19,7 @@ use crate::{
 };
 pub use abi::device::{DeviceField, DeviceInfo};
 
+pub mod dma;
 mod pci;
 mod reference;
 
@@ -37,6 +38,7 @@ pub enum DeviceError {
     Denied,
     Busy,
     Closed,
+    Unsupported,
     Memory(MemoryError),
     Interrupt(InterruptError),
     Pci(hardware::pci::PciConfigError),
@@ -99,6 +101,7 @@ struct Grant {
     token: DeviceReference,
     group: u32,
     mappings: Vec<MappedRegion>,
+    domains: Vec<dma::Domain>,
 }
 
 struct MappedRegion {
@@ -161,6 +164,10 @@ impl DeviceSet {
                 .filter(|property| property.device == hardware.instance_id)
                 .count(),
             console: registry.console == Some(hardware.instance_id),
+            dma: abi::dma::DmaInfo {
+                profile: hardware::dma().profile(),
+                address_bits: hardware::dma().address_bits(hardware).unwrap_or(0),
+            },
         })
     }
 
@@ -253,6 +260,7 @@ impl DeviceSet {
             token: reference.clone(),
             group,
             mappings: Vec::new(),
+            domains: Vec::new(),
         });
         Ok(Device { reference })
     }
@@ -342,6 +350,10 @@ impl Registry {
         properties.extend(hardware.device_properties.iter().cloned());
         let count = pci::enumerate(hardware, first_pci_id, properties, devices)?;
         log::info!("Enumerated {count} PCI devices");
+        log::info!("DMA profile: {:?}", hardware::dma().profile());
+        if hardware::dma().profile() == abi::dma::DmaProfile::CompetitionTrusted {
+            log::warn!("Trusted DMA does not isolate malicious device accesses");
+        }
         for device in devices.iter_mut() {
             device.group = Some(device.hardware.instance_id.0);
         }
@@ -361,11 +373,11 @@ impl Registry {
         }
         for index in 0..devices.len() {
             let device = &devices[index].hardware;
-            // TODO: 接入 IOMMU 后单独授权 DMA。
             if device.use_policy != DeviceUsePolicy::UserAssignable
                 || (devices[index].pci.is_none()
                     && (device.dma != DmaCapability::None
-                        || device.location != HardwareDeviceLocation::Platform))
+                        || device.location != HardwareDeviceLocation::Platform)
+                    && hardware::dma().address_bits(device).is_none())
             {
                 let group = devices[index].group;
                 if group.is_some() {

@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod device;
+pub mod dma;
 mod handle;
 pub mod ipc;
 pub mod logger;

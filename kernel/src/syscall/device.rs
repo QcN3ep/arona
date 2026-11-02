@@ -61,6 +61,16 @@ pub(super) fn invoke(
     let id = u32::try_from(args[0]).map_err(|_| Error::InvalidArgument)?;
     let index = args[1] as usize;
     match method {
+        device::CREATE_DMA => {
+            let rights = Rights::from_bits(args[1]).ok_or(Error::InvalidArgument)?;
+            if !ObjectType::DmaDomain.supported_rights().contains(rights) {
+                return Err(Error::Denied);
+            }
+            let [handle] = super::object::create(caller, [rights], || {
+                Ok([Object::DmaDomain(target.create_dma(id)?)])
+            })?;
+            Ok([handle.raw(), 0])
+        }
         device::MAP => {
             let range = target.map(caller, id, index)?;
             Ok([range.start as u64, (range.end - range.start) as u64])

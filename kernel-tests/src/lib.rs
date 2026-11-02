@@ -15,7 +15,7 @@ mod syscall;
 mod task;
 mod thread;
 
-pub use device::run as run_devices;
+pub use device::{run as run_devices, run_dma_failure};
 pub use syscall::{handle_program, run_device_program, run_init_program};
 
 pub trait Platform {

@@ -2,6 +2,7 @@
 
 //! 跨架构设备驱动。
 
+pub(crate) mod dma;
 pub(crate) mod pci;
 pub mod uart;
 

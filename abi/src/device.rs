@@ -10,10 +10,11 @@ pub struct DeviceInfo {
     pub identities: usize,
     pub properties: usize,
     pub console: bool,
+    pub dma: crate::dma::DmaInfo,
 }
 
 impl DeviceInfo {
-    pub const SIZE: usize = 64;
+    pub const SIZE: usize = 80;
 
     pub fn encode(self) -> [u8; Self::SIZE] {
         let words = [
@@ -25,6 +26,8 @@ impl DeviceInfo {
             self.identities as u64,
             self.properties as u64,
             u64::from(self.console),
+            self.dma.profile as u64,
+            u64::from(self.dma.address_bits),
         ];
         let mut bytes = [0; Self::SIZE];
         for (output, word) in bytes.as_chunks_mut::<8>().0.iter_mut().zip(words) {
@@ -37,7 +40,7 @@ impl DeviceInfo {
         if bytes.len() != Self::SIZE {
             return None;
         }
-        let mut words = [0u64; 8];
+        let mut words = [0u64; 10];
         for (word, input) in words.iter_mut().zip(bytes.as_chunks::<8>().0.iter()) {
             *word = u64::from_le_bytes(*input);
         }
@@ -55,6 +58,14 @@ impl DeviceInfo {
                 0 => false,
                 1 => true,
                 _ => return None,
+            },
+            dma: crate::dma::DmaInfo {
+                profile: match words[8] {
+                    0 => crate::dma::DmaProfile::Isolated,
+                    1 => crate::dma::DmaProfile::CompetitionTrusted,
+                    _ => return None,
+                },
+                address_bits: u8::try_from(words[9]).ok().filter(|bits| *bits <= 64)?,
             },
         })
     }

@@ -71,6 +71,15 @@ methods!(device {
     UNBIND = 19 => DEVICE_CONTROL;
     ACK = 20 => IRQ_ACK;
     REVOKE = 21 => REVOKE;
+    CREATE_DMA = 22 => DEVICE_CONTROL;
+});
+methods!(dma {
+    STATE = 16 => READ;
+    MAP = 17 => DMA_MAP;
+    UNMAP = 18 => DMA_MAP;
+    RESUME = 19 => DEVICE_CONTROL;
+    QUIESCE = 20 => DEVICE_CONTROL;
+    REVOKE = 21 => REVOKE;
 });
 
 pub const INFO: u64 = 0;
@@ -92,6 +101,7 @@ pub const fn required_rights(kind: ObjectType, method: u64) -> Option<Rights> {
             ObjectType::DeviceSet => device_set::required(method),
             ObjectType::Device => device::required(method),
             ObjectType::KernelLog => kernel_log::required(method),
+            ObjectType::DmaDomain => dma::required(method),
         },
     }
 }

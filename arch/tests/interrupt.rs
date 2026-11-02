@@ -93,11 +93,10 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
             .unwrap();
     }
     initialize_memory(hardware);
-    let console = hardware.console.as_ref().unwrap();
     let device = hardware
         .devices
         .iter()
-        .find(|device| device.instance_id == console.device)
+        .find(|device| device.instance_id == hardware.console.as_ref().unwrap().device)
         .unwrap();
     IRQ.call_once(|| device.interrupts[0]);
     hardware::timer()
@@ -136,53 +135,70 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
             .unwrap();
     }
     #[cfg(feature = "runtime-tests")]
-    {
-        let data = kernel::BootData {
-            physical: program.expect("device test image is missing"),
-        };
-        let bytes = PROGRAM.call_once(|| {
-            let mut bytes = alloc::vec![0; data.len().unwrap()];
-            data.read(0, &mut bytes).unwrap();
-            bytes
-        });
-        if suite == "init" {
-            let init = arch::boot::initramfs::find_init(
-                arch::boot::initramfs::Image::from_bytes(bytes, 0).unwrap(),
-            )
-            .unwrap()
-            .data()
-            .physical;
-            kernel_tests::run_init_program(
-                &bytes[init.start as usize..init.end as usize],
-                bytes,
-                devices,
-            );
-            uart()
-                .write(format_args!("Init service tests passed\n"))
-                .unwrap();
-        } else {
-            let counts = kernel_tests::run_device_program(bytes, devices, suite == "service");
-            if counts != 0 {
-                uart()
-                    .write(format_args!(
-                        "PCI resource tests passed: {} mapped, {} 64-bit, {} INTx\n",
-                        counts >> 32,
-                        (counts >> 16) & 0xffff,
-                        counts & 0xffff
-                    ))
-                    .unwrap();
-            }
-        }
-        if suite == "service" {
-            uart()
-                .write(format_args!("Device service tests passed\n"))
-                .unwrap();
-        }
-    }
+    run_program(suite, program, devices);
     uart()
         .write(format_args!("Interrupt controller tests passed\n"))
         .unwrap();
     hardware::cpu().halt()
+}
+
+#[cfg(feature = "runtime-tests")]
+fn run_program(
+    suite: &str,
+    program: Option<kernel::memory::PhysRange>,
+    devices: kernel::device::DeviceSet,
+) {
+    if matches!(suite, "dma" | "dma-drop" | "dma-revoke") {
+        kernel::logger::init(kernel::log::LevelFilter::Info).unwrap();
+        kernel::logger::LOGGER.add_sink(&TestLog).unwrap();
+    }
+    if matches!(suite, "dma-drop" | "dma-revoke") {
+        kernel_tests::run_dma_failure(&devices, suite == "dma-revoke");
+    }
+    let data = kernel::BootData {
+        physical: program.expect("device test image is missing"),
+    };
+    let bytes = PROGRAM.call_once(|| {
+        let mut bytes = alloc::vec![0; data.len().unwrap()];
+        data.read(0, &mut bytes).unwrap();
+        bytes
+    });
+    if suite == "init" {
+        let init = arch::boot::initramfs::find_init(
+            arch::boot::initramfs::Image::from_bytes(bytes, 0).unwrap(),
+        )
+        .unwrap()
+        .data()
+        .physical;
+        kernel_tests::run_init_program(
+            &bytes[init.start as usize..init.end as usize],
+            bytes,
+            devices,
+        );
+        uart()
+            .write(format_args!("Init service tests passed\n"))
+            .unwrap();
+    } else {
+        let counts = kernel_tests::run_device_program(bytes, devices, suite == "service");
+        if counts != 0 {
+            uart()
+                .write(format_args!(
+                    "PCI resource tests passed: {} mapped, {} 64-bit, {} INTx\n",
+                    counts >> 32,
+                    (counts >> 16) & 0xffff,
+                    counts & 0xffff
+                ))
+                .unwrap();
+        }
+    }
+    if suite == "dma" {
+        uart().write(format_args!("DMA tests passed\n")).unwrap();
+    }
+    if suite == "service" {
+        uart()
+            .write(format_args!("Device service tests passed\n"))
+            .unwrap();
+    }
 }
 
 #[cfg(feature = "runtime-tests")]
@@ -203,6 +219,9 @@ fn select_program() -> &'static str {
                 b"device" => "device",
                 b"service" => "service",
                 b"init" => "init",
+                b"dma" => "dma",
+                b"dma-drop" => "dma-drop",
+                b"dma-revoke" => "dma-revoke",
                 b"pci-firmware" => "pci-firmware",
                 b"pci-exhausted" => "pci-exhausted",
                 b"pci-rollback" => "pci-rollback",
@@ -212,6 +231,16 @@ fn select_program() -> &'static str {
         assert!(length < input.len(), "test suite name is too long");
         input[length] = byte;
         length += 1;
+    }
+}
+
+#[cfg(feature = "runtime-tests")]
+struct TestLog;
+
+#[cfg(feature = "runtime-tests")]
+impl kernel::logger::Sink for TestLog {
+    fn write(&self, record: &kernel::log::Record<'_>) -> core::fmt::Result {
+        uart().write(format_args!("{}\n", record.args()))
     }
 }
 

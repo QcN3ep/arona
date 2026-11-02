@@ -30,6 +30,12 @@ path = "tests/device.rs"
 harness = false
 required-features = ["program"]
 
+[[test]]
+name = "dma"
+path = "tests/dma.rs"
+harness = false
+required-features = ["program"]
+
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
 abi = { package = "arona-abi", path = "../../abi" }

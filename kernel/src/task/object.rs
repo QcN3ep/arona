@@ -2,6 +2,7 @@
 
 use super::{HandleError, Rights, Task};
 use crate::{
+    device::dma::DmaDomain,
     device::{Device, DeviceReference, DeviceSet},
     ipc::{
         Channel, ChannelReference, Event, EventReference, Reply, ReplyReference, Timer,
@@ -60,7 +61,14 @@ macro_rules! cloned_payload {
         }
     )* };
 }
-cloned_payload!(Task, Thread, FrameAllocation, DeviceSet, KernelLog);
+cloned_payload!(
+    Task,
+    Thread,
+    FrameAllocation,
+    DeviceSet,
+    KernelLog,
+    DmaDomain
+);
 
 macro_rules! referenced_payload {
     ($($kind:ty => $reference:ty),*) => { $(

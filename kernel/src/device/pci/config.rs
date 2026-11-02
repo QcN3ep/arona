@@ -80,9 +80,16 @@ impl Configuration {
         memory: bool,
         interrupts: bool,
     ) -> Result<(), DeviceError> {
+        self.set_command(memory, interrupts, false)
+    }
+
+    fn set_command(&self, memory: bool, interrupts: bool, master: bool) -> Result<(), DeviceError> {
         let mut command = self.read16(COMMAND)? & !(IO | MEMORY | MASTER | INTX_DISABLE);
         if memory {
             command |= MEMORY;
+        }
+        if master {
+            command |= MASTER;
         }
         if !interrupts {
             command |= INTX_DISABLE;
@@ -97,7 +104,13 @@ impl Configuration {
     }
 
     pub(in crate::device) fn interrupts(&self, enabled: bool) -> Result<(), DeviceError> {
-        self.command(self.read16(COMMAND)? & MEMORY != 0, enabled)
+        let command = self.read16(COMMAND)?;
+        self.set_command(command & MEMORY != 0, enabled, command & MASTER != 0)
+    }
+
+    pub(in crate::device) fn master(&self, enabled: bool) -> Result<(), DeviceError> {
+        let command = self.read16(COMMAND)?;
+        self.set_command(command & MEMORY != 0, command & INTX_DISABLE == 0, enabled)
     }
 
     pub(super) fn disable(&self) -> Result<(), DeviceError> {

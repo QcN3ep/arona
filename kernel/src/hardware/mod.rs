@@ -5,6 +5,7 @@
 use spin::Once;
 
 pub mod cpu;
+pub mod dma;
 pub mod execution;
 pub mod interrupt;
 pub mod mmio;
@@ -13,6 +14,7 @@ pub mod pci;
 pub mod timer;
 pub mod trap;
 pub use cpu::cpu;
+pub use dma::dma;
 pub use execution::execution;
 pub use interrupt::interrupt_controller;
 pub use mmu::mmu;

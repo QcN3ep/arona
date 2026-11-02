@@ -10,6 +10,9 @@ use kernel::{
 };
 use spin::Once;
 
+mod dma;
+pub use dma::run_failure as run_dma_failure;
+
 static DEVICES: Once<DeviceSet> = Once::new();
 
 pub fn run(devices: DeviceSet, hardware: &HardwareInfo) -> (usize, usize) {
@@ -17,6 +20,7 @@ pub fn run(devices: DeviceSet, hardware: &HardwareInfo) -> (usize, usize) {
     DEVICES.call_once(|| devices);
     crate::run_thread(scenario);
     pci_lifecycle(DEVICES.get().unwrap());
+    dma::run(DEVICES.get().unwrap());
     pci_devices
 }
 
@@ -47,8 +51,9 @@ fn catalog(devices: &DeviceSet, hardware: &HardwareInfo) -> (usize, usize) {
             device.name.as_bytes()
         );
         if device.use_policy == DeviceUsePolicy::KernelReserved
-            || device.dma != DmaCapability::None
-            || device.location != HardwareDeviceLocation::Platform
+            || ((device.dma != DmaCapability::None
+                || device.location != HardwareDeviceLocation::Platform)
+                && devices.describe(id).unwrap().dma.address_bits == 0)
         {
             assert!(devices.describe(id).unwrap().group.is_none());
             assert!(matches!(devices.claim_group(id), Err(DeviceError::Denied)));

@@ -131,6 +131,7 @@ impl From<crate::device::DeviceError> for Error {
             DeviceError::Denied => Self::Denied,
             DeviceError::Busy => Self::Busy,
             DeviceError::Closed => Self::Closed,
+            DeviceError::Unsupported => Self::Unsupported,
             DeviceError::Memory(error) => error.into(),
             _ => Self::InvalidState,
         }

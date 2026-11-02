@@ -16,6 +16,7 @@ macro_rules! objects {
             DeviceSet = 8 => [DUPLICATE, TRANSFER, READ, RESOURCE_SPLIT];
             Device = 9 => [DUPLICATE, TRANSFER, MAP, DEVICE_CONTROL, IRQ_ACK, REVOKE];
             KernelLog = 10 => [DUPLICATE, TRANSFER, READ];
+            DmaDomain = 11 => [DUPLICATE, TRANSFER, READ, DMA_MAP, DEVICE_CONTROL, REVOKE];
         }
     };
 }

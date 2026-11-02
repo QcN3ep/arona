@@ -3,6 +3,7 @@
 //! 对象调用的鉴权与分派。
 
 mod device;
+mod dma;
 mod error;
 mod ipc;
 mod logger;
@@ -77,6 +78,9 @@ fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, Error> {
                 }
                 ObjectReference::Device(target) => {
                     device::invoke(&caller, &target, arguments[0], args)?
+                }
+                ObjectReference::DmaDomain(target) => {
+                    dma::invoke(&caller, &target, arguments[0], args)?
                 }
                 ObjectReference::Task(target) => {
                     task::invoke(&caller, &target, rights, arguments[0], args)?
