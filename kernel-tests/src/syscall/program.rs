@@ -27,16 +27,19 @@ static SUPERVISING: AtomicBool = AtomicBool::new(false);
 static INIT_TASK: AtomicU64 = AtomicU64::new(0);
 static TRACK_BINDINGS: AtomicBool = AtomicBool::new(false);
 static BINDING: Mutex<Option<(u32, abi::Handle)>> = Mutex::new(None);
+static PCI_RESULTS: AtomicU64 = AtomicU64::new(0);
 
-pub fn run_device(image: &'static [u8], devices: DeviceSet, resident: bool) {
+pub fn run_device(image: &'static [u8], devices: DeviceSet, resident: bool) -> u64 {
     DEVICES.call_once(|| devices);
-    run_cases(image, if resident { &[6, 8] } else { &[5] });
+    PCI_RESULTS.store(0, Ordering::Relaxed);
+    run_cases(image, if resident { &[6, 8] } else { &[5] }, true, resident);
+    PCI_RESULTS.load(Ordering::Relaxed)
 }
 
 pub fn run_init(image: &'static [u8], archive: &'static [u8], devices: DeviceSet) {
     DEVICES.call_once(|| devices);
     ARCHIVE.call_once(|| archive);
-    run_cases(image, &[9, 10, 11, 12, 13]);
+    run_cases(image, &[9, 10, 11, 12, 13], true, true);
 }
 
 pub fn handle(trap: Trap) -> TrapOutcome {
@@ -134,14 +137,19 @@ pub fn run(image: &'static [u8]) {
     kernel::log::info!(target: "kernel::boot", "Early kernel log");
     kernel::logger::LOGGER.enable_timestamps(|| hardware::timer().now_ns().ok());
     kernel::log::warn!(target: "kernel::test", "Timestamped kernel log");
-    run_cases(image, &[0, 1, 2, 3, 4, 0]);
+    run_cases(image, &[0, 1, 2, 3, 4, 0], false, false);
 }
 
 pub fn run_process(image: &'static [u8]) {
-    run_cases(image, &[7]);
+    run_cases(image, &[7], false, false);
 }
 
-fn run_cases(image: &'static [u8], modes: &[u64]) {
+fn run_cases(
+    image: &'static [u8],
+    modes: &[u64],
+    reset_baseline_after_first: bool,
+    repeat_first: bool,
+) {
     IMAGE.call_once(|| image);
     let manager = memory::manager();
     manager.reclaim_heap();
@@ -158,8 +166,8 @@ fn run_cases(image: &'static [u8], modes: &[u64]) {
     let grants = kernel::device::active_grant_tokens();
     let records = kernel::task::allocated_task_records();
     let task_resources = kernel::task::allocated_task_resources();
-    let warmup = ARCHIVE.get().is_some();
-    let repeat = warmup.then(|| modes[0]);
+    // 常驻映射的索引页可能在首次服务运行后重新分布。
+    let repeat = repeat_first.then(|| modes[0]);
     super::ACTIVE.store(true, Ordering::Relaxed);
     for (index, mode) in modes.iter().copied().chain(repeat).enumerate() {
         MODE.store(mode, Ordering::Relaxed);
@@ -180,10 +188,10 @@ fn run_cases(image: &'static [u8], modes: &[u64]) {
                 && kernel::ipc::active_channels() == channels
                 && kernel::ipc::queued_messages() == messages;
             if resources_reclaimed
-                && (warmup && index == 0
+                && (reset_baseline_after_first && index == 0
                     || manager.stats() == before && manager.heap_stats() == heap)
             {
-                if warmup && index == 0 {
+                if reset_baseline_after_first && index == 0 {
                     before = manager.stats();
                     heap = manager.heap_stats();
                 }
@@ -294,14 +302,16 @@ fn scenario(_: usize) -> usize {
     if status == 0 {
         let report = receiver.try_receive().unwrap();
         assert_eq!(report.tag, 73);
-        assert_eq!(
-            report.words(),
-            if mode == 5 {
-                [2].as_slice()
-            } else {
-                [37, 41].as_slice()
-            }
-        );
+        if mode == 5 {
+            let counts = match *report.words() {
+                [2] => 0,
+                [2, mapped, wide, interrupts] => (mapped << 32) | (wide << 16) | interrupts,
+                _ => panic!("invalid device test report"),
+            };
+            PCI_RESULTS.store(counts, Ordering::Relaxed);
+        } else {
+            assert_eq!(report.words(), [37, 41]);
+        }
     } else {
         assert_eq!(
             receiver.try_receive(),
@@ -312,15 +322,7 @@ fn scenario(_: usize) -> usize {
 }
 
 fn resident(task: &Task, user: &Thread) {
-    let deadline = hardware::timer().now_ns().unwrap() + 1_000_000_000;
-    while user.state() != ThreadState::Blocked {
-        assert_eq!(task.state(), TaskState::Active);
-        assert!(
-            hardware::timer().now_ns().unwrap() < deadline,
-            "service did not become idle"
-        );
-        thread::yield_now().unwrap();
-    }
+    wait_service_idle(task, user);
     let devices = DEVICES.get().unwrap();
     let group = console_group();
     assert!(matches!(devices.claim_group(group), Err(DeviceError::Busy)));
@@ -330,12 +332,24 @@ fn resident(task: &Task, user: &Thread) {
         None
     );
     assert_eq!(task.state(), TaskState::Active);
-    assert_eq!(user.state(), ThreadState::Blocked);
+    wait_service_idle(task, user);
     assert!(matches!(devices.claim_group(group), Err(DeviceError::Busy)));
     task.terminate(0);
     assert_eq!(user.wait().unwrap(), 0);
     assert_eq!(task.state(), TaskState::Dead(0));
     drop(devices.claim_group(group).unwrap());
+}
+
+fn wait_service_idle(task: &Task, user: &Thread) {
+    let deadline = hardware::timer().now_ns().unwrap() + 1_000_000_000;
+    while user.state() != ThreadState::Blocked {
+        assert_eq!(task.state(), TaskState::Active);
+        assert!(
+            hardware::timer().now_ns().unwrap() < deadline,
+            "service did not become idle"
+        );
+        thread::yield_now().unwrap();
+    }
 }
 
 fn managed_service(task: &Task, user: &Thread, control: Channel) {

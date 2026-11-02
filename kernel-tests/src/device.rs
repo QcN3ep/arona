@@ -16,7 +16,27 @@ pub fn run(devices: DeviceSet, hardware: &HardwareInfo) -> (usize, usize) {
     let pci_devices = catalog(&devices, hardware);
     DEVICES.call_once(|| devices);
     crate::run_thread(scenario);
+    pci_lifecycle(DEVICES.get().unwrap());
     pci_devices
+}
+
+fn pci_lifecycle(devices: &DeviceSet) {
+    let mut cursor = 0;
+    while let Some(id) = devices.next(cursor).unwrap() {
+        cursor = id;
+        let info = devices.describe(id).unwrap();
+        if info.group.is_none() || info.interrupts == 0 || !is_pci_device(devices, id) {
+            continue;
+        }
+        let grant = devices.claim_group(info.group.unwrap()).unwrap();
+        let reference = grant.reference();
+        let event = Event::new().unwrap();
+        reference.bind(id, 0, event.reference(), 1).unwrap();
+        drop(event);
+        let event = Event::new().unwrap();
+        reference.bind(id, 0, event.reference(), 1).unwrap();
+        reference.unbind(id, 0).unwrap();
+    }
 }
 
 fn catalog(devices: &DeviceSet, hardware: &HardwareInfo) -> (usize, usize) {
@@ -64,12 +84,57 @@ fn assert_pci_device(
     id: u32,
     info: abi::device::DeviceInfo,
 ) -> bool {
-    assert!(info.group.is_none());
-    assert_eq!(info.mmio_regions, 0);
-    assert_eq!(info.interrupts, 0);
     assert_eq!(info.identities, 2);
     assert_eq!(info.properties, 1);
-    assert!(matches!(devices.claim_group(id), Err(DeviceError::Denied)));
+    if info.group.is_none() {
+        assert!(matches!(devices.claim_group(id), Err(DeviceError::Denied)));
+    }
+    let config = devices
+        .read(id, abi::device::DeviceField::PciConfig, 0)
+        .unwrap();
+    assert_eq!(config.len(), 4096);
+    assert_eq!(config[4] & 5, 0);
+    assert_eq!(config[5] & 4, 4);
+    assert_pci_msi_disabled(config);
+    assert_pci_bars(devices, id, info, config);
+    assert_pci_identity(devices, id);
+    let bdf = assert_pci_properties(devices, id);
+    let bridged = assert_pci_parent(devices, hardware, info);
+    assert_eq!(
+        bdf,
+        &devices.read(id, abi::device::DeviceField::Name, 0).unwrap()[4..]
+    );
+    bridged
+}
+
+fn assert_pci_bars(devices: &DeviceSet, id: u32, info: abi::device::DeviceInfo, config: &[u8]) {
+    let mut regions = 0;
+    for index in 0..6 {
+        let Ok(bytes) = devices.read(id, abi::device::DeviceField::PciBar, index) else {
+            continue;
+        };
+        let bar = abi::device::PciBar::decode(bytes).unwrap();
+        assert_eq!(usize::from(bar.index), index);
+        let offset = 0x10 + usize::from(bar.index) * 4;
+        let value = u32::from_le_bytes(config[offset..offset + 4].try_into().unwrap());
+        assert_eq!(value & 1, 0);
+        assert_eq!(value & !15, bar.bus_address as u32);
+        if bar.width == 64 {
+            assert_eq!(
+                u32::from_le_bytes(config[offset + 4..offset + 8].try_into().unwrap()),
+                (bar.bus_address >> 32) as u32
+            );
+        }
+        if let Some(region) = bar.region {
+            assert_eq!(usize::from(region), regions);
+            assert!(bar.size.is_multiple_of(4096));
+            regions += 1;
+        }
+    }
+    assert_eq!(regions, info.mmio_regions);
+}
+
+fn assert_pci_identity(devices: &DeviceSet, id: u32) {
     assert!(
         devices
             .read(id, abi::device::DeviceField::Name, 0)
@@ -104,6 +169,9 @@ fn assert_pci_device(
             .enumerate()
             .all(|(index, byte)| { index == 2 || index == 5 || byte.is_ascii_hexdigit() })
     );
+}
+
+fn assert_pci_properties(devices: &DeviceSet, id: u32) -> &'static [u8] {
     assert_eq!(
         devices
             .read(id, abi::device::DeviceField::PropertyNamespace, 0)
@@ -126,12 +194,27 @@ fn assert_pci_device(
             .enumerate()
             .all(|(index, byte)| { [4, 7, 10].contains(&index) || byte.is_ascii_hexdigit() })
     );
-    let bridged = assert_pci_parent(devices, hardware, info);
-    assert_eq!(
-        bdf,
-        &devices.read(id, abi::device::DeviceField::Name, 0).unwrap()[4..]
-    );
-    bridged
+    bdf
+}
+
+fn assert_pci_msi_disabled(config: &[u8]) {
+    if config[6] & 0x10 == 0 {
+        return;
+    }
+    let mut offset = usize::from(config[0x34]);
+    let mut seen = [false; 64];
+    while offset != 0 {
+        assert!((0x40..=0xfc).contains(&offset) && offset.is_multiple_of(4));
+        assert!(!seen[offset / 4]);
+        seen[offset / 4] = true;
+        let control = u16::from_le_bytes(config[offset + 2..offset + 4].try_into().unwrap());
+        match config[offset] {
+            5 => assert_eq!(control & 1, 0),
+            0x11 => assert_eq!(control & 0xc000, 0x4000),
+            _ => {}
+        }
+        offset = usize::from(config[offset + 1]);
+    }
 }
 
 fn assert_pci_parent(
@@ -159,21 +242,7 @@ fn assert_pci_parent(
 
 fn scenario(_: usize) -> usize {
     let devices = DEVICES.get().unwrap();
-    let mut cursor = 0;
-    let mut console = None;
-    let mut reserved = None;
-    while let Some(id) = devices.next(cursor).unwrap() {
-        let info = devices.describe(id).unwrap();
-        if info.console {
-            console = Some(info);
-        }
-        if info.group.is_none() && info.mmio_regions != 0 {
-            reserved = Some(id);
-        }
-        cursor = id;
-    }
-    let console = console.unwrap();
-    let reserved = reserved.unwrap();
+    let (console, reserved) = scenario_devices(devices);
     assert!(matches!(
         devices.claim_group(reserved),
         Err(DeviceError::Denied)
@@ -246,6 +315,23 @@ fn scenario(_: usize) -> usize {
     assert!(other.query(range.start).unwrap().is_none());
     other.terminate(0);
     0
+}
+
+fn scenario_devices(devices: &DeviceSet) -> (abi::device::DeviceInfo, u32) {
+    let mut cursor = 0;
+    let mut console = None;
+    let mut reserved = None;
+    while let Some(id) = devices.next(cursor).unwrap() {
+        let info = devices.describe(id).unwrap();
+        if info.console {
+            console = Some(info);
+        }
+        if info.group.is_none() && info.mmio_regions != 0 {
+            reserved = Some(id);
+        }
+        cursor = id;
+    }
+    (console.unwrap(), reserved.unwrap())
 }
 
 fn shared_pages(

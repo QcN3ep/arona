@@ -2,7 +2,7 @@
 
 //! 设备身份、拓扑、资源及配置属性。
 
-use super::PciWindow;
+use super::{MAX_PCI_BARS, PciBar, PciWindow};
 use crate::memory::PhysRange;
 use arrayvec::{ArrayString, ArrayVec};
 use core::ops::Range;
@@ -145,6 +145,7 @@ pub enum HardwareDeviceLocation {
         bus: u8,
         slot: u8,
         function: u8,
+        bars: ArrayVec<PciBar, MAX_PCI_BARS>,
     },
     PciHostBridge {
         segment: u16,

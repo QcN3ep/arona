@@ -6,6 +6,10 @@
 #[cfg(feature = "runtime-tests")]
 extern crate alloc;
 
+#[cfg(feature = "runtime-tests")]
+#[path = "device/pci.rs"]
+mod pci;
+
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use arch::device::uart::Uart;
@@ -118,7 +122,11 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
     drop(user);
     DEVICE_TESTS.store(true, Ordering::Relaxed);
     kernel::thread::scheduler::initialize().unwrap();
+    #[cfg(feature = "runtime-tests")]
+    let firmware = pci::prepare(suite, hardware);
     let devices = kernel::device::DeviceSet::initialize(hardware).unwrap();
+    #[cfg(feature = "runtime-tests")]
+    pci::verify(&devices, &firmware);
     let (pci_devices, behind_bridges) = kernel_tests::run_devices(devices.clone(), hardware);
     if pci_devices != 0 {
         uart()
@@ -153,7 +161,17 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
                 .write(format_args!("Init service tests passed\n"))
                 .unwrap();
         } else {
-            kernel_tests::run_device_program(bytes, devices, suite == "service");
+            let counts = kernel_tests::run_device_program(bytes, devices, suite == "service");
+            if counts != 0 {
+                uart()
+                    .write(format_args!(
+                        "PCI resource tests passed: {} mapped, {} 64-bit, {} INTx\n",
+                        counts >> 32,
+                        (counts >> 16) & 0xffff,
+                        counts & 0xffff
+                    ))
+                    .unwrap();
+            }
         }
         if suite == "service" {
             uart()
@@ -185,6 +203,9 @@ fn select_program() -> &'static str {
                 b"device" => "device",
                 b"service" => "service",
                 b"init" => "init",
+                b"pci-firmware" => "pci-firmware",
+                b"pci-exhausted" => "pci-exhausted",
+                b"pci-rollback" => "pci-rollback",
                 _ => panic!("unknown device test suite"),
             };
         }

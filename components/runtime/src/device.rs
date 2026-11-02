@@ -3,7 +3,7 @@
 //! 设备目录、MMIO 访问与 IRQ 绑定。
 
 use crate::{BorrowedHandle, Device, DeviceSet, Error, Event, Handle, Rights};
-pub use abi::device::{DeviceField, DeviceInfo};
+pub use abi::device::{DeviceField, DeviceInfo, PciBar};
 use abi::method::{device, device_set};
 use core::{cell::Cell, marker::PhantomData, ops::Range};
 
@@ -22,6 +22,20 @@ pub struct InterruptBinding<'a> {
 }
 
 impl Handle<DeviceSet> {
+    /// 读取资源配置完成时的只读快照。
+    pub fn pci_config(&self, id: u32, output: &mut [u8; 4096]) -> Result<(), Error> {
+        if self.read(id, DeviceField::PciConfig, 0, output)?.len() != output.len() {
+            return Err(Error::Protocol);
+        }
+        Ok(())
+    }
+
+    pub fn pci_bar(&self, id: u32, index: usize) -> Result<PciBar, Error> {
+        let mut bytes = [0; PciBar::SIZE];
+        PciBar::decode(self.read(id, DeviceField::PciBar, index, &mut bytes)?)
+            .ok_or(Error::Protocol)
+    }
+
     pub fn next(&self, after: u32) -> Result<Option<u32>, Error> {
         let [id, _] = self
             .borrow()

@@ -3,12 +3,22 @@
 use alloc::vec::Vec;
 
 use crate::{
-    DeviceIdentity, DeviceProperty, DeviceUsePolicy, HardwareDeviceInfo, HardwareDeviceInstanceId,
-    HardwareDeviceLocation, HardwareInfo, hardware,
-    memory::{DeviceMapping, MemoryError, PhysRange},
+    DeviceProperty, HardwareDeviceInfo, HardwareDeviceInstanceId, HardwareDeviceLocation,
+    HardwareInfo, PciWindow, hardware,
+    memory::{self, DeviceMapping, HeapArc, MemoryError, PhysRange},
 };
 
-use super::DeviceError;
+use super::{Descriptor, DeviceError};
+
+mod aperture;
+mod catalog;
+mod config;
+mod interrupt;
+mod resources;
+
+use catalog::Bdf;
+
+pub(super) use config::Configuration;
 
 const BUS_SIZE: u64 = 1 << 20;
 const DEVICE_COUNT: u8 = 32;
@@ -18,35 +28,53 @@ pub(super) fn enumerate(
     hardware: &HardwareInfo,
     first_id: u32,
     properties: &mut Vec<DeviceProperty>,
-) -> Result<Vec<HardwareDeviceInfo>, DeviceError> {
+    devices: &mut Vec<Descriptor>,
+) -> Result<usize, DeviceError> {
+    let first = devices.len();
     let mut enumerator = Enumerator {
-        devices: Vec::new(),
+        devices,
         properties,
         next_id: first_id,
     };
     for device in &hardware.devices {
         if let Some(host) = PciHost::from_device(device) {
-            enumerator.scan_host(host)?;
+            let first = enumerator.devices.len();
+            enumerator.scan_host(&host)?;
+            resources::configure(&host, hardware, &mut enumerator.devices[first..])?;
         }
     }
-    Ok(enumerator.devices)
+    for device in &mut enumerator.devices[first..] {
+        device.pci.as_mut().unwrap().freeze()?;
+    }
+    Ok(enumerator.devices.len() - first)
 }
 
-struct PciHost {
+pub(super) fn rollback(devices: &[Descriptor]) -> Result<(), DeviceError> {
+    for device in devices.iter().rev() {
+        if let Some(config) = &device.pci {
+            config.rollback((config.original(0x0c) >> 16) as u8 & 0x7f)?;
+        }
+    }
+    Ok(())
+}
+
+struct PciHost<'a> {
     id: HardwareDeviceInstanceId,
     segment: u16,
     first_bus: u8,
     last_bus: u8,
     ecam: PhysRange,
+    windows: &'a [PciWindow],
 }
 
-impl PciHost {
-    fn from_device(device: &HardwareDeviceInfo) -> Option<Self> {
+impl<'a> PciHost<'a> {
+    fn from_device(device: &'a HardwareDeviceInfo) -> Option<Self> {
         let HardwareDeviceLocation::PciHostBridge {
             segment,
             first_bus,
             last_bus,
             ecam,
+            windows,
             ..
         } = &device.location
         else {
@@ -58,6 +86,7 @@ impl PciHost {
             first_bus: *first_bus,
             last_bus: *last_bus,
             ecam: *ecam,
+            windows,
         })
     }
 
@@ -79,13 +108,13 @@ impl PciHost {
 }
 
 struct Enumerator<'a> {
-    devices: Vec<HardwareDeviceInfo>,
+    devices: &'a mut Vec<Descriptor>,
     properties: &'a mut Vec<DeviceProperty>,
     next_id: u32,
 }
 
 impl Enumerator<'_> {
-    fn scan_host(&mut self, host: PciHost) -> Result<(), DeviceError> {
+    fn scan_host(&mut self, host: &PciHost<'_>) -> Result<(), DeviceError> {
         host.validate()?;
         let mut buses = Vec::new();
         buses
@@ -93,9 +122,10 @@ impl Enumerator<'_> {
             .map_err(|_| DeviceError::Memory(MemoryError::NoMemory))?;
         let mut used_buses = [false; 256];
         used_buses[usize::from(host.first_bus)] = true;
-        let mut mapping = bus_mapping(&host, host.first_bus)?;
+        let mapping = bus_mapping(host, host.first_bus)?;
         let reserved = bridge_bus_ranges(&mapping, host.first_bus, host.last_bus)?;
         buses.push(BusFrame {
+            mapping,
             bus: host.first_bus,
             bus_limit: host.last_bus,
             max_bus: host.first_bus,
@@ -106,15 +136,13 @@ impl Enumerator<'_> {
         });
         while !buses.is_empty() {
             let bus = buses.last().unwrap().bus;
+            let mapping = buses.last().unwrap().mapping.clone();
             let Some((slot, function, info)) = buses.last_mut().unwrap().next(&mapping)? else {
-                let Some(parent_mapping) = finish_bus(&host, &mut buses, mapping)? else {
-                    break;
-                };
-                mapping = parent_mapping;
+                finish_bus(&mut buses)?;
                 continue;
             };
             let child = self.visit_function(
-                &host,
+                host,
                 &mut buses,
                 &mapping,
                 &mut used_buses,
@@ -126,7 +154,7 @@ impl Enumerator<'_> {
                 info,
             )?;
             if let Some(child) = child {
-                mapping = enter_bus(&host, &mut buses, child, mapping)?;
+                enter_bus(&mut buses, child)?;
             }
         }
         Ok(())
@@ -136,7 +164,7 @@ impl Enumerator<'_> {
         &mut self,
         host: &PciHost,
         buses: &mut [BusFrame],
-        mapping: &DeviceMapping,
+        mapping: &HeapArc<DeviceMapping>,
         used_buses: &mut [bool; 256],
         address: FunctionAddress,
         info: FunctionInfo,
@@ -148,14 +176,14 @@ impl Enumerator<'_> {
         let parent = parent_frame.upstream.map_or(host.id, |upstream| {
             HardwareDeviceInstanceId(upstream.instance_id)
         });
-        let instance_id = self.record(
-            host,
-            parent,
-            address.bus,
-            address.slot,
-            address.function,
-            info,
-        )?;
+        let instance_id = self.record(host, parent, address, info, mapping)?;
+        self.devices
+            .last()
+            .unwrap()
+            .pci
+            .as_ref()
+            .unwrap()
+            .disable()?;
         if info.header_type != 1 {
             return Ok(None);
         }
@@ -193,6 +221,7 @@ impl Enumerator<'_> {
             reserved[usize::from(secondary)..=usize::from(subordinate)].fill(false);
         }
         Ok(Some(BusFrame {
+            mapping: bus_mapping(host, secondary)?,
             bus: secondary,
             bus_limit: subordinate,
             max_bus: secondary,
@@ -213,63 +242,52 @@ impl Enumerator<'_> {
         &mut self,
         host: &PciHost,
         parent: HardwareDeviceInstanceId,
-        bus: u8,
-        slot: u8,
-        function: u8,
+        address: FunctionAddress,
         info: FunctionInfo,
+        mapping: &HeapArc<DeviceMapping>,
     ) -> Result<u32, DeviceError> {
-        record(
-            &mut self.devices,
+        catalog::record(
+            self.devices,
             self.properties,
             &mut self.next_id,
             parent,
             Bdf {
                 segment: host.segment,
-                bus,
-                slot,
-                function,
+                bus: address.bus,
+                slot: address.slot,
+                function: address.function,
             },
             info,
+            Configuration::new(
+                mapping.clone(),
+                (usize::from(address.slot) * 8 + usize::from(address.function)) * 4096,
+            )?,
         )
     }
 }
 
-fn finish_bus(
-    host: &PciHost,
-    buses: &mut Vec<BusFrame>,
-    mapping: DeviceMapping,
-) -> Result<Option<DeviceMapping>, DeviceError> {
+fn finish_bus(buses: &mut Vec<BusFrame>) -> Result<(), DeviceError> {
     let completed = buses.pop().unwrap();
     let Some(upstream) = completed.upstream else {
-        return Ok(None);
+        return Ok(());
     };
-    let parent_bus = buses.last().unwrap().bus;
-    drop(mapping);
-    let mapping = bus_mapping(host, parent_bus)?;
     let parent = buses.last_mut().unwrap();
     parent.max_bus = parent.max_bus.max(completed.max_bus);
     if upstream.dynamic {
         parent.reserved[usize::from(upstream.secondary)..=usize::from(completed.max_bus)]
             .fill(true);
         write_subordinate(
-            &mapping,
+            &parent.mapping,
             upstream.slot,
             upstream.function,
             completed.max_bus,
         )?;
     }
-    Ok(Some(mapping))
+    Ok(())
 }
 
-fn enter_bus(
-    host: &PciHost,
-    buses: &mut Vec<BusFrame>,
-    mut child: BusFrame,
-    mapping: DeviceMapping,
-) -> Result<DeviceMapping, DeviceError> {
-    drop(mapping);
-    let mapping = bus_mapping(host, child.bus)?;
-    let child_ranges = bridge_bus_ranges(&mapping, child.bus, child.bus_limit)?;
+fn enter_bus(buses: &mut Vec<BusFrame>, mut child: BusFrame) -> Result<(), DeviceError> {
+    let child_ranges = bridge_bus_ranges(&child.mapping, child.bus, child.bus_limit)?;
     if child_ranges
         .iter()
         .zip(child.reserved.iter())
@@ -281,10 +299,11 @@ fn enter_bus(
         *reserved |= child;
     }
     buses.push(child);
-    Ok(mapping)
+    Ok(())
 }
 
 struct BusFrame {
+    mapping: HeapArc<DeviceMapping>,
     bus: u8,
     bus_limit: u8,
     max_bus: u8,
@@ -493,7 +512,15 @@ fn write_config(
         .ok_or(DeviceError::InvalidArgument)?;
     hardware::pci_config()
         .write32(mapping, offset, value)
-        .map_err(DeviceError::Pci)
+        .map_err(DeviceError::Pci)?;
+    if hardware::pci_config()
+        .read32(mapping, offset)
+        .map_err(DeviceError::Pci)?
+        != value
+    {
+        return Err(DeviceError::InvalidArgument);
+    }
+    Ok(())
 }
 
 fn write_subordinate(
@@ -507,116 +534,19 @@ fn write_subordinate(
     write_config(mapping, slot, function, 0x18, buses)
 }
 
-fn bus_mapping(host: &PciHost, bus: u8) -> Result<DeviceMapping, DeviceError> {
+fn bus_mapping(host: &PciHost, bus: u8) -> Result<HeapArc<DeviceMapping>, DeviceError> {
     let offset = u64::from(bus - host.first_bus) * BUS_SIZE;
     let start = host
         .ecam
         .start
         .checked_add(offset)
         .ok_or(DeviceError::InvalidArgument)?;
-    DeviceMapping::new(PhysRange {
-        start,
-        end: start
-            .checked_add(BUS_SIZE)
-            .ok_or(DeviceError::InvalidArgument)?,
-    })
-    .map_err(DeviceError::Memory)
-}
-
-#[derive(Clone, Copy)]
-struct Bdf {
-    segment: u16,
-    bus: u8,
-    slot: u8,
-    function: u8,
-}
-
-fn record(
-    output: &mut Vec<HardwareDeviceInfo>,
-    properties: &mut Vec<DeviceProperty>,
-    next_id: &mut u32,
-    parent: HardwareDeviceInstanceId,
-    bdf: Bdf,
-    info: FunctionInfo,
-) -> Result<u32, DeviceError> {
-    let mut name = *b"PCI 0000:00:00.0";
-    let mut bdf_text = *b"0000:00:00.0";
-    let mut vendor_device = *b"0000:0000";
-    let mut class = *b"00:00:00";
-    encode_hex(u32::from(bdf.segment), &mut bdf_text[..4]);
-    encode_hex(u32::from(bdf.bus), &mut bdf_text[5..7]);
-    encode_hex(u32::from(bdf.slot), &mut bdf_text[8..10]);
-    bdf_text[11] = hex_digit(bdf.function);
-    name[4..].copy_from_slice(&bdf_text);
-    encode_hex(u32::from(info.vendor), &mut vendor_device[..4]);
-    encode_hex(u32::from(info.device), &mut vendor_device[5..]);
-    encode_hex(u32::from(info.class), &mut class[..2]);
-    encode_hex(u32::from(info.subclass), &mut class[3..5]);
-    encode_hex(u32::from(info.programming_interface), &mut class[6..]);
-    output
-        .try_reserve(1)
-        .map_err(|_| DeviceError::Memory(MemoryError::NoMemory))?;
-    properties
-        .try_reserve(1)
-        .map_err(|_| DeviceError::Memory(MemoryError::NoMemory))?;
-    let instance_id = *next_id;
-    let next_instance_id = instance_id
-        .checked_add(1)
-        .ok_or(DeviceError::Memory(MemoryError::NoMemory))?;
-    let mut device = HardwareDeviceInfo::new(HardwareDeviceInstanceId(instance_id));
-    device.name = core::str::from_utf8(&name)
-        .map_err(|_| DeviceError::InvalidArgument)?
-        .try_into()
-        .map_err(|_| DeviceError::InvalidArgument)?;
-    device.parent = Some(parent);
-    device.use_policy = DeviceUsePolicy::KernelReserved;
-    device.location = HardwareDeviceLocation::Pci {
-        segment: bdf.segment,
-        bus: bdf.bus,
-        slot: bdf.slot,
-        function: bdf.function,
-    };
-    device
-        .identities
-        .try_push(
-            DeviceIdentity::new(
-                "pci",
-                core::str::from_utf8(&vendor_device).map_err(|_| DeviceError::InvalidArgument)?,
-            )
-            .map_err(|_| DeviceError::InvalidArgument)?,
-        )
-        .map_err(|_| DeviceError::InvalidArgument)?;
-    device
-        .identities
-        .try_push(
-            DeviceIdentity::new(
-                "pci-class",
-                core::str::from_utf8(&class).map_err(|_| DeviceError::InvalidArgument)?,
-            )
-            .map_err(|_| DeviceError::InvalidArgument)?,
-        )
-        .map_err(|_| DeviceError::InvalidArgument)?;
-    properties.push(
-        DeviceProperty::new(
-            HardwareDeviceInstanceId(instance_id),
-            "pci",
-            "bdf",
-            &bdf_text,
-        )
-        .map_err(|_| DeviceError::InvalidArgument)?,
-    );
-    output.push(device);
-    *next_id = next_instance_id;
-    Ok(instance_id)
-}
-
-fn encode_hex(mut value: u32, output: &mut [u8]) {
-    for byte in output.iter_mut().rev() {
-        *byte = hex_digit(value as u8);
-        value >>= 4;
-    }
-}
-
-fn hex_digit(value: u8) -> u8 {
-    b"0123456789abcdef"[usize::from(value & 0x0f)]
+    Ok(
+        memory::manager().allocate_arc(DeviceMapping::new(PhysRange {
+            start,
+            end: start
+                .checked_add(BUS_SIZE)
+                .ok_or(DeviceError::InvalidArgument)?,
+        })?)?,
+    )
 }

@@ -22,6 +22,15 @@ pub enum PciConfigError {
 }
 
 pub trait PciConfigAccess: Sync {
+    fn read16(&self, mapping: &DeviceMapping, offset: usize) -> Result<u16, PciConfigError>;
+
+    fn write16(
+        &self,
+        mapping: &DeviceMapping,
+        offset: usize,
+        value: u16,
+    ) -> Result<(), PciConfigError>;
+
     /// 读取映射范围内对齐的 32 位配置寄存器。
     fn read32(&self, mapping: &DeviceMapping, offset: usize) -> Result<u32, PciConfigError>;
 

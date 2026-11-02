@@ -16,11 +16,11 @@ use crate::{
     },
     ipc::EventReference,
     memory::{self, AddressSpace, HeapArc, MemoryError, PhysRange, UserDeviceMapping, VirtRange},
-    task::Task,
 };
-use abi::device::{DeviceField, DeviceInfo};
+pub use abi::device::{DeviceField, DeviceInfo};
 
 mod pci;
+mod reference;
 
 static REGISTRY: Once<Registry> = Once::new();
 static GRANT_TOKENS: AtomicUsize = AtomicUsize::new(0);
@@ -79,6 +79,7 @@ struct GrantToken {
 struct Descriptor {
     hardware: HardwareDeviceInfo,
     group: Option<u32>,
+    pci: Option<pci::Configuration>,
 }
 
 struct Registry {
@@ -107,6 +108,7 @@ struct MappedRegion {
 
 struct IrqRoute {
     owner: u64,
+    group: u32,
     interrupt: HardwareInterruptInfo,
     event: EventReference,
     mask: u64,
@@ -199,6 +201,18 @@ impl DeviceSet {
                     _ => property.value.as_slice(),
                 }
             }
+            DeviceField::PciConfig if index == 0 => descriptor
+                .pci
+                .as_ref()
+                .ok_or(DeviceError::InvalidArgument)?
+                .snapshot(),
+            DeviceField::PciBar => descriptor
+                .pci
+                .as_ref()
+                .and_then(|config| config.bars.get(index))
+                .and_then(Option::as_ref)
+                .ok_or(DeviceError::InvalidArgument)?
+                .as_slice(),
             _ => return Err(DeviceError::InvalidArgument),
         };
         Ok(bytes)
@@ -234,6 +248,7 @@ impl DeviceSet {
             revoked: AtomicBool::new(false),
         })?);
         GRANT_TOKENS.fetch_add(1, Ordering::Relaxed);
+        registry.pci_memory(group, true)?;
         state.grants.push(Grant {
             token: reference.clone(),
             group,
@@ -282,169 +297,27 @@ impl Drop for Device {
     }
 }
 
-impl DeviceReference {
-    pub fn map(&self, task: &Task, id: u32, region: usize) -> Result<VirtRange, DeviceError> {
-        let _interrupts = InterruptGuard::new();
-        let space = task.address_space().map_err(|_| DeviceError::Closed)?;
-        let registry = registry()?;
-        let mut state = registry.state.lock();
-        let grant = state.grant(self)?;
-        let device = registry.member(grant.group, id)?;
-        let physical = *device
-            .mmio_regions
-            .get(region)
-            .ok_or(DeviceError::InvalidArgument)?;
-        let envelope = registry.envelope(grant.group, physical)?;
-        let grant = state
-            .grants
-            .iter_mut()
-            .find(|grant| grant.token.0.id == self.0.id)
-            .unwrap();
-        grant
-            .mappings
-            .try_reserve(1)
-            .map_err(|_| MemoryError::NoMemory)?;
-        let shared = grant
-            .mappings
-            .iter()
-            .find(|mapped| mapped.mapping.belongs_to(&space) && mapped.mapping.contains(envelope));
-        let mapping = if let Some(shared) = shared {
-            shared.mapping.clone()
-        } else {
-            memory::manager().allocate_arc(UserDeviceMapping::new(space, envelope)?)?
-        };
-        let range = mapping.range(physical);
-        grant.mappings.push(MappedRegion { mapping, range });
-        Ok(range)
-    }
-
-    pub fn unmap(&self, task: &Task, start: usize) -> Result<(), DeviceError> {
-        let _interrupts = InterruptGuard::new();
-        let space = task.address_space().map_err(|_| DeviceError::Closed)?;
-        let mut state = registry()?.state.lock();
-        let grant = state
-            .grants
-            .iter_mut()
-            .find(|grant| grant.token.0.id == self.0.id)
-            .ok_or(DeviceError::Closed)?;
-        let index = grant
-            .mappings
-            .iter()
-            .position(|mapped| mapped.mapping.belongs_to(&space) && mapped.range.start == start)
-            .ok_or(DeviceError::InvalidArgument)?;
-        grant.mappings.swap_remove(index);
-        state.remove_released();
-        Ok(())
-    }
-
-    pub fn bind(
-        &self,
-        id: u32,
-        index: usize,
-        event: EventReference,
-        mask: u64,
-    ) -> Result<(), DeviceError> {
-        if mask == 0 {
-            return Err(DeviceError::InvalidArgument);
-        }
-        let _interrupts = InterruptGuard::new();
-        let registry = registry()?;
-        let mut state = registry.state.lock();
-        let interrupt = registry.interrupt(state.grant(self)?.group, id, index)?;
-        if event.is_closed() {
-            return Err(DeviceError::Closed);
-        }
-        if state
-            .routes
-            .iter()
-            .any(|route| same_source(route.interrupt, interrupt))
-        {
-            return Err(DeviceError::Busy);
-        }
-        state
-            .routes
-            .try_reserve(1)
-            .map_err(|_| MemoryError::NoMemory)?;
-        hardware::interrupt_controller().unmask(interrupt)?;
-        state.routes.push(IrqRoute {
-            owner: self.0.id,
-            interrupt,
-            event,
-            mask,
-            pending: false,
-        });
-        Ok(())
-    }
-
-    pub fn unbind(&self, id: u32, index: usize) -> Result<(), DeviceError> {
-        let _interrupts = InterruptGuard::new();
-        let registry = registry()?;
-        let mut state = registry.state.lock();
-        let interrupt = registry.interrupt(state.grant(self)?.group, id, index)?;
-        let position = state
-            .routes
-            .iter()
-            .position(|route| route.owner == self.0.id && same_source(route.interrupt, interrupt))
-            .ok_or(DeviceError::InvalidArgument)?;
-        hardware::interrupt_controller().mask(interrupt.into())?;
-        state.routes.swap_remove(position);
-        Ok(())
-    }
-
-    pub fn acknowledge(&self, id: u32, index: usize) -> Result<(), DeviceError> {
-        let _interrupts = InterruptGuard::new();
-        let registry = registry()?;
-        let mut state = registry.state.lock();
-        let interrupt = registry.interrupt(state.grant(self)?.group, id, index)?;
-        let route = state
-            .routes
-            .iter_mut()
-            .find(|route| route.owner == self.0.id && same_source(route.interrupt, interrupt))
-            .ok_or(DeviceError::InvalidArgument)?;
-        if !route.pending {
-            return Err(DeviceError::Busy);
-        }
-        if route.event.is_closed() {
-            return Err(DeviceError::Closed);
-        }
-        hardware::interrupt_controller().unmask(interrupt)?;
-        route.pending = false;
-        Ok(())
-    }
-
-    pub fn revoke(&self) -> Result<(), DeviceError> {
-        let _interrupts = InterruptGuard::new();
-        let mut state = registry()?.state.lock();
-        let Some(index) = state
-            .grants
-            .iter()
-            .position(|grant| grant.token.0.id == self.0.id)
-        else {
-            return Ok(());
-        };
-        for route in state.routes.iter().filter(|route| route.owner == self.0.id) {
-            hardware::interrupt_controller().mask(route.interrupt.into())?;
-        }
-        state.routes.retain(|route| route.owner != self.0.id);
-        let grant = &mut state.grants[index];
-        for mapped in &grant.mappings {
-            if let Err(error) = mapped.mapping.revoke() {
-                log::error!("Failed to revoke user device mapping: {error:?}");
-                hardware::cpu().halt();
-            }
-        }
-        self.0.revoked.store(true, Ordering::Release);
-        if self.0.credits.load(Ordering::Acquire) == 0 {
-            grant.mappings.clear();
-        }
-        state.remove_released();
-        Ok(())
-    }
-}
-
 impl Registry {
     fn new(hardware: &HardwareInfo) -> Result<Self, DeviceError> {
-        let mut devices = Vec::new();
+        let mut registry = Self {
+            devices: Vec::new(),
+            properties: Vec::new(),
+            console: hardware.console.as_ref().map(|console| console.device),
+            state: Mutex::new(DeviceState {
+                grants: Vec::new(),
+                routes: Vec::new(),
+                next_id: 1,
+            }),
+        };
+        if let Err(error) = registry.populate(hardware) {
+            pci::rollback(&registry.devices)?;
+            return Err(error);
+        }
+        Ok(registry)
+    }
+
+    fn populate(&mut self, hardware: &HardwareInfo) -> Result<(), DeviceError> {
+        let devices = &mut self.devices;
         devices
             .try_reserve_exact(hardware.devices.len())
             .map_err(|_| MemoryError::NoMemory)?;
@@ -452,15 +325,33 @@ impl Registry {
             devices.push(Descriptor {
                 hardware: device.clone(),
                 group: Some(device.instance_id.0),
+                pci: None,
             });
+        }
+        let first_pci_id = devices
+            .iter()
+            .map(|device| device.hardware.instance_id.0)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .ok_or(DeviceError::InvalidArgument)?;
+        let properties = &mut self.properties;
+        properties
+            .try_reserve_exact(hardware.device_properties.len())
+            .map_err(|_| MemoryError::NoMemory)?;
+        properties.extend(hardware.device_properties.iter().cloned());
+        let count = pci::enumerate(hardware, first_pci_id, properties, devices)?;
+        log::info!("Enumerated {count} PCI devices");
+        for device in devices.iter_mut() {
+            device.group = Some(device.hardware.instance_id.0);
         }
         // 共享 MMIO 页或 IRQ 的设备属于同一授权组。
         for left in 0..devices.len() {
             for right in 0..left {
-                if shares_resources(&devices[left].hardware, &devices[right].hardware)? {
+                if shares_resources(&devices[left], &devices[right])? {
                     let from = devices[left].group;
                     let to = devices[right].group;
-                    for device in &mut devices {
+                    for device in devices.iter_mut() {
                         if device.group == from {
                             device.group = to;
                         }
@@ -470,15 +361,15 @@ impl Registry {
         }
         for index in 0..devices.len() {
             let device = &devices[index].hardware;
-            // TODO: 验证并授权 PCI BAR 和中断资源。
-            // TODO: 接入 IOMMU 域及 DMA 映射、同步和撤销后授权 DMA 设备。
+            // TODO: 接入 IOMMU 后单独授权 DMA。
             if device.use_policy != DeviceUsePolicy::UserAssignable
-                || device.dma != DmaCapability::None
-                || device.location != HardwareDeviceLocation::Platform
+                || (devices[index].pci.is_none()
+                    && (device.dma != DmaCapability::None
+                        || device.location != HardwareDeviceLocation::Platform))
             {
                 let group = devices[index].group;
                 if group.is_some() {
-                    for device in &mut devices {
+                    for device in devices.iter_mut() {
                         if device.group == group {
                             device.group = None;
                         }
@@ -486,37 +377,7 @@ impl Registry {
                 }
             }
         }
-        let first_pci_id = devices
-            .iter()
-            .map(|device| device.hardware.instance_id.0)
-            .max()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or(DeviceError::InvalidArgument)?;
-        let mut properties = Vec::new();
-        properties
-            .try_reserve_exact(hardware.device_properties.len())
-            .map_err(|_| MemoryError::NoMemory)?;
-        properties.extend(hardware.device_properties.iter().cloned());
-        let pci_devices = pci::enumerate(hardware, first_pci_id, &mut properties)?;
-        log::info!("Enumerated {} PCI devices", pci_devices.len());
-        devices
-            .try_reserve(pci_devices.len())
-            .map_err(|_| MemoryError::NoMemory)?;
-        devices.extend(pci_devices.into_iter().map(|device| Descriptor {
-            hardware: device,
-            group: None,
-        }));
-        Ok(Self {
-            devices,
-            properties,
-            console: hardware.console.as_ref().map(|console| console.device),
-            state: Mutex::new(DeviceState {
-                grants: Vec::new(),
-                routes: Vec::new(),
-                next_id: 1,
-            }),
-        })
+        Ok(())
     }
 
     fn device(&self, id: u32) -> Result<&Descriptor, DeviceError> {
@@ -524,6 +385,55 @@ impl Registry {
             .iter()
             .find(|device| device.hardware.instance_id.0 == id)
             .ok_or(DeviceError::InvalidArgument)
+    }
+
+    fn pci_memory(&self, group: u32, enabled: bool) -> Result<(), DeviceError> {
+        let result = self
+            .devices
+            .iter()
+            .filter(|device| device.group == Some(group))
+            .filter_map(|device| device.pci.as_ref())
+            .try_for_each(|config| config.command(enabled, false));
+        if result.is_err() {
+            for device in self
+                .devices
+                .iter()
+                .filter(|device| device.group == Some(group))
+            {
+                if let Some(config) = &device.pci {
+                    config.command(false, false)?;
+                }
+            }
+        }
+        result
+    }
+
+    fn pci_interrupts(
+        &self,
+        group: u32,
+        interrupt: HardwareInterruptInfo,
+        enabled: bool,
+    ) -> Result<(), DeviceError> {
+        let configs = || {
+            self.devices
+                .iter()
+                .filter(|device| {
+                    device.group == Some(group)
+                        && device
+                            .hardware
+                            .interrupts
+                            .iter()
+                            .any(|source| same_source(*source, interrupt))
+                })
+                .filter_map(|device| device.pci.as_ref())
+        };
+        let result = configs().try_for_each(|config| config.interrupts(enabled));
+        if result.is_err() {
+            for config in configs() {
+                config.interrupts(false)?;
+            }
+        }
+        result
     }
 
     fn member(&self, group: u32, id: u32) -> Result<&HardwareDeviceInfo, DeviceError> {
@@ -639,6 +549,10 @@ pub(crate) fn close_event(event: &EventReference) {
     if let Some(registry) = REGISTRY.get() {
         let mut state = registry.state.lock();
         for route in state.routes.iter().filter(|route| route.event.same(event)) {
+            if let Err(error) = registry.pci_interrupts(route.group, route.interrupt, false) {
+                log::error!("Failed to disable PCI interrupt: {error:?}");
+                hardware::cpu().halt();
+            }
             if let Err(error) = hardware::interrupt_controller().mask(route.interrupt.into()) {
                 log::error!("Failed to detach device interrupt: {error:?}");
                 hardware::cpu().halt();
@@ -656,10 +570,7 @@ fn same_source(left: HardwareInterruptInfo, right: HardwareInterruptInfo) -> boo
     InterruptSource::from(left) == InterruptSource::from(right)
 }
 
-fn shares_resources(
-    left: &HardwareDeviceInfo,
-    right: &HardwareDeviceInfo,
-) -> Result<bool, DeviceError> {
+fn shares_resources(left: &Descriptor, right: &Descriptor) -> Result<bool, DeviceError> {
     for a in resource_ranges(left) {
         for b in resource_ranges(right) {
             if a.page_envelope()
@@ -673,23 +584,30 @@ fn shares_resources(
             }
         }
     }
-    Ok(left
-        .interrupts
-        .iter()
-        .any(|a| right.interrupts.iter().any(|b| same_source(*a, *b))))
+    Ok(left.hardware.interrupts.iter().any(|a| {
+        right
+            .hardware
+            .interrupts
+            .iter()
+            .any(|b| same_source(*a, *b))
+    }))
 }
 
-fn resource_ranges(device: &HardwareDeviceInfo) -> impl Iterator<Item = PhysRange> + '_ {
-    let (ecam, windows): (_, &[_]) = match &device.location {
-        HardwareDeviceLocation::PciHostBridge { ecam, windows, .. } => {
-            (Some(*ecam), windows.as_slice())
-        }
-        _ => (None, &[]),
+fn resource_ranges(device: &Descriptor) -> impl Iterator<Item = PhysRange> + '_ {
+    let ecam = match &device.hardware.location {
+        HardwareDeviceLocation::PciHostBridge { ecam, .. } => Some(*ecam),
+        _ => None,
     };
     device
+        .hardware
         .mmio_regions
         .iter()
         .copied()
         .chain(ecam)
-        .chain(windows.iter().map(|window| window.cpu_range))
+        .chain(
+            device
+                .pci
+                .iter()
+                .flat_map(|config| config.unmapped_bars.iter().copied()),
+        )
 }

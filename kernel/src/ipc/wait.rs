@@ -186,10 +186,6 @@ impl Observers {
         self.0.clear();
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
-    }
-
     pub(crate) fn get(&self, index: usize) -> Option<Observer> {
         self.0.get(index).cloned()
     }

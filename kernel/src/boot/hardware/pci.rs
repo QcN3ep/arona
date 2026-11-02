@@ -2,11 +2,13 @@
 
 //! PCI 地址窗口及 INTx、MSI 请求源路由。
 
+pub use abi::device::PciBar;
 use arrayvec::ArrayVec;
 
 use super::{HardwareDeviceInstanceId, HardwareInterruptInfo};
 use crate::memory::PhysRange;
 
+pub const MAX_PCI_BARS: usize = 6;
 pub const MAX_PCI_INTERRUPT_ROUTES: usize = 64;
 pub const MAX_PCI_MSI_MAPS: usize = 32;
 
