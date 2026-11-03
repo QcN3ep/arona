@@ -8,7 +8,9 @@
 extern crate alloc;
 
 pub mod archive;
+pub mod block;
 mod client;
+pub mod ext4;
 mod protocol;
 pub mod service;
 
@@ -20,10 +22,20 @@ pub enum Error {
     InvalidData,
     NotFound,
     IsDirectory,
+    NotDirectory,
+    Unsupported,
+    Io,
+    Device(devmgr::Error),
     UnexpectedEof,
     Unavailable,
     Runtime(runtime::Error),
     Call(runtime::ipc::CallError),
+}
+
+impl From<devmgr::Error> for Error {
+    fn from(error: devmgr::Error) -> Self {
+        Self::Device(error)
+    }
 }
 
 impl From<runtime::Error> for Error {

@@ -27,3 +27,10 @@ bench = false
 
 [dependencies]
 runtime = { package = "arona-runtime", path = "../runtime" }
+devmgr = { package = "arona-devmgr", path = "../devmgr" }
+
+[[test]]
+name = "ext4"
+path = "tests/ext4/mod.rs"
+harness = false
+required-features = ["baremetal"]

@@ -8,5 +8,6 @@ fn main() {
     println!("cargo:rerun-if-changed={}", script.display());
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none") {
         println!("cargo:rustc-link-arg-bin=fs=-T{}", script.display());
+        println!("cargo:rustc-link-arg-tests=-T{}", script.display());
     }
 }
