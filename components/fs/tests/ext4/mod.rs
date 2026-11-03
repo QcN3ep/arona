@@ -74,6 +74,7 @@ fn main() {
             );
         }
         drop(disk);
+        mount_service(&control, id);
         drop(control);
         worker.join().unwrap();
         tested = true;
@@ -113,4 +114,65 @@ fn read_volume(disk: &Rc<Disk>) {
     let file = filesystem.open_bytes(b"/data/\xff").unwrap();
     file.read_exact_at(0, &mut tail[..3]).unwrap();
     assert_eq!(&tail[..3], b"raw");
+}
+
+fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
+    let (channel, server) = process::task()
+        .channel(
+            Rights::READ_WRITE | Rights::WAIT,
+            Rights::READ | Rights::WAIT,
+        )
+        .unwrap();
+    let worker = thread::spawn(move || fs::service::run(process::task(), server).unwrap()).unwrap();
+    let mut archive = [b'0'; 124];
+    archive[..6].copy_from_slice(b"070701");
+    archive[94..102].copy_from_slice(b"0000000b");
+    archive[110..121].copy_from_slice(b"TRAILER!!!\0");
+    archive[121..].fill(0);
+    let mut frames = process::task()
+        .allocate(1, Rights::READ_WRITE | Rights::TRANSFER)
+        .unwrap();
+    frames.write(0, &archive).unwrap();
+    let control =
+        fs::Control::start(process::task(), channel, frames, archive.len(), deadline()).unwrap();
+    let client = control.connect(deadline()).unwrap();
+    control
+        .mount(
+            b"/var",
+            Session::open(process::task(), device, id).unwrap(),
+            0,
+            SLICE,
+            deadline(),
+        )
+        .unwrap();
+    let file = client.open("/var/data/message", deadline()).unwrap();
+    let mut bytes = [0; 32];
+    assert_eq!(
+        file.read_at(4091, &mut bytes, deadline()).unwrap(),
+        bytes.len()
+    );
+    for (index, byte) in bytes.iter().enumerate() {
+        assert_eq!(*byte, ((4091 + index) % 251) as u8);
+    }
+    assert!(matches!(
+        control.unmount(b"/var", deadline()),
+        Err(Error::Busy)
+    ));
+    let raw = client.open_bytes(b"/var/data/\xff", deadline()).unwrap();
+    assert_eq!(raw.read_at(0, &mut bytes, deadline()).unwrap(), 3);
+    assert_eq!(&bytes[..3], b"raw");
+    drop(raw);
+    drop(file);
+    control.unmount(b"/var", deadline()).unwrap();
+    assert!(matches!(
+        client.open("/var/data/message", deadline()),
+        Err(Error::NotFound)
+    ));
+    drop(client);
+    drop(control);
+    worker.join().unwrap();
+}
+
+fn deadline() -> u64 {
+    thread::now_ns().unwrap() + 10_000_000_000
 }

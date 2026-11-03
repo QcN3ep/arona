@@ -28,6 +28,16 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn from_channel(channel: Handle<Channel>) -> Result<Self, Error> {
+        let session = Self { channel };
+        session.info()?;
+        Ok(session)
+    }
+
+    pub fn into_channel(self) -> Handle<Channel> {
+        self.channel
+    }
+
     pub fn open(
         task: &Handle<Task>,
         service: &Handle<Channel>,

@@ -55,6 +55,16 @@ fn serve(
             Ok(request) => {
                 again = true;
                 if let Some(request) = OpenRequest::decode(request)? {
+                    if connection.as_ref().is_some_and(|client| {
+                        ipc::wait_many(
+                            &[WaitItem::new(&client.channel, ipc::PEER_CLOSED)],
+                            WaitMode::Poll,
+                        )
+                        .is_ok()
+                    }) {
+                        connection = None;
+                        block.discard();
+                    }
                     if request.device != device {
                         request.reject(Error::Unsupported)?;
                     } else if connection.is_some() || !block.idle() {

@@ -10,6 +10,10 @@ use crate::Error;
 pub const START: u64 = 0;
 pub const OPEN: u64 = 1;
 pub const READ: u64 = 2;
+pub const CONNECT: u64 = 3;
+pub const MOUNT: u64 = 4;
+pub const UNMOUNT: u64 = 5;
+pub const BUSY: u64 = 5;
 pub const SUCCESS: u64 = 0;
 pub const INVALID_REQUEST: u64 = 1;
 pub const NOT_FOUND: u64 = 2;
@@ -53,6 +57,7 @@ pub fn call(
         NOT_FOUND => Error::NotFound,
         IS_DIRECTORY => Error::IsDirectory,
         UNAVAILABLE => Error::Unavailable,
+        BUSY => Error::Busy,
         _ => Error::InvalidData,
     })
 }
@@ -65,6 +70,7 @@ pub fn respond(reply: Handle<Reply>, result: Result<Message, Error>) -> Result<(
                 Error::InvalidRequest => INVALID_REQUEST,
                 Error::NotFound => NOT_FOUND,
                 Error::IsDirectory => IS_DIRECTORY,
+                Error::Busy => BUSY,
                 _ => UNAVAILABLE,
             },
             &[],

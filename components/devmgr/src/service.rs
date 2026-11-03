@@ -7,7 +7,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use devmgr::{
     Error,
     block::{self, Block},
-    device::{DeviceDescription, OpenRequest},
+    device::{DeviceDescription, DiscoveryRequest, DriverKind, OpenRequest},
     uart::{self, Settings, Uart},
 };
 use runtime::{
@@ -121,7 +121,11 @@ impl DeviceManager {
             }
             if let Some(control) = control {
                 match control.receive(WaitMode::Poll) {
-                    Ok(message) => {
+                    Ok(mut message) => {
+                        if let Some(request) = DiscoveryRequest::decode(&mut message)? {
+                            self.next(request)?;
+                            continue;
+                        }
                         if let Some(request) = OpenRequest::decode(message)? {
                             self.open(request)?;
                         }
@@ -134,6 +138,15 @@ impl DeviceManager {
             }
             self.wait(control)?;
         }
+    }
+
+    fn next(&self, request: DiscoveryRequest) -> Result<(), Error> {
+        let id = self.instances.iter()
+            .filter(|instance| instance.id > request.after)
+            .filter(|instance| matches!(&instance.state, InstanceState::Running(worker) if worker.ready.load(Ordering::Acquire)))
+            .filter(|instance| matches!((instance.configuration, request.kind), (Ok((_, Configuration::Uart(_))), DriverKind::Uart) | (Ok((_, Configuration::Block(_))), DriverKind::Block)))
+            .map(|instance| instance.id).min();
+        request.respond(id)
     }
 
     fn start(&mut self, index: usize) {

@@ -1,61 +1,68 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 文件会话的建立、读取与回收。
+//! 挂载管理、文件会话与请求分发。
 
-use alloc::{vec, vec::Vec};
+use crate::{
+    Error, ReadAt,
+    archive::Archive,
+    block::Disk,
+    namespace::{File, Namespace},
+    protocol,
+};
+use alloc::{rc::Rc, vec, vec::Vec};
 use runtime::{
     Channel, FrameAllocation, Handle, KernelError, Rights,
     ipc::{self, Message, ReceivedMessage, WaitItem, WaitMode},
 };
 
-use crate::{Error, FileSystem, ReadAt, archive::Archive, protocol};
-
 const PAGE_SIZE: usize = 4096;
 
-struct FileSession<F> {
+struct FileSession {
     channel: Handle<Channel>,
-    file: F,
+    file: File,
 }
 
-pub fn run(control: Handle<Channel>) -> Result<(), Error> {
+pub fn run(task: &Handle<runtime::Task>, control: Handle<Channel>) -> Result<(), Error> {
     let mut startup = control.receive(WaitMode::Forever)?;
     let reply = startup.take_reply().ok_or(Error::InvalidRequest)?;
-    match load_archive(startup) {
-        Ok(archive) => {
-            protocol::respond(reply, Ok(Message::new(protocol::SUCCESS, &[])?))?;
-            serve(control, &archive)
-        }
+    let archive = match load_archive(startup) {
+        Ok(archive) => archive,
         Err(error) => {
             protocol::respond(reply, Err(error))?;
-            Err(error)
+            return Err(error);
         }
-    }
+    };
+    protocol::respond(reply, Ok(Message::new(protocol::SUCCESS, &[])?))?;
+    serve(task, control, &Namespace::new(archive))
 }
 
 fn load_archive(mut startup: ReceivedMessage) -> Result<Archive, Error> {
     if startup.tag != protocol::START || startup.handles().len() != 1 {
         return Err(Error::InvalidRequest);
     }
-    let [length] = startup.words() else {
+    let [length] = *startup.words() else {
         return Err(Error::InvalidRequest);
     };
-    let length = usize::try_from(*length).map_err(|_| Error::InvalidRequest)?;
     let frames = take_frames(&mut startup, Rights::READ)?;
-    Archive::new(frames, length)
+    Archive::new(
+        frames,
+        usize::try_from(length).map_err(|_| Error::InvalidRequest)?,
+    )
 }
 
-pub fn serve(control: Handle<Channel>, filesystem: &impl FileSystem) -> Result<(), Error> {
+pub fn serve(
+    task: &Handle<runtime::Task>,
+    control: Handle<Channel>,
+    namespace: &Namespace,
+) -> Result<(), Error> {
+    let mut clients = Vec::new();
     let mut files = Vec::new();
     loop {
+        poll_files(&mut files)?;
         match control.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
-                    let response = open(filesystem, request).and_then(|session| {
-                        let length = session.file.len();
-                        files.push(session);
-                        Ok(Message::new(protocol::SUCCESS, &[length as u64])?)
-                    });
-                    protocol::respond(reply, response)?;
+                    protocol::respond(reply, admin(task, namespace, &mut clients, request))?;
                 }
             }
             Err(runtime::Error::Kernel(KernelError::WouldBlock)) => {}
@@ -63,23 +70,33 @@ pub fn serve(control: Handle<Channel>, filesystem: &impl FileSystem) -> Result<(
             Err(error) => return Err(error.into()),
         }
         let mut index = 0;
-        while index < files.len() {
-            match files[index].channel.receive(WaitMode::Poll) {
+        while index < clients.len() {
+            match clients[index].receive(WaitMode::Poll) {
                 Ok(mut request) => {
                     if let Some(reply) = request.take_reply() {
-                        protocol::respond(reply, read(&files[index].file, request))?;
+                        let response = open(namespace, request).and_then(|session| {
+                            let length = session.file.len();
+                            files.push(session);
+                            Ok(Message::new(protocol::SUCCESS, &[length as u64])?)
+                        });
+                        protocol::respond(reply, response)?;
                     }
                     index += 1;
                 }
                 Err(runtime::Error::Kernel(KernelError::WouldBlock)) => index += 1,
                 Err(runtime::Error::Kernel(KernelError::EndOfStream)) => {
-                    files.swap_remove(index);
+                    clients.swap_remove(index);
                 }
                 Err(error) => return Err(error.into()),
             }
         }
-        let mut items = Vec::with_capacity(files.len() + 1);
+        let mut items = Vec::with_capacity(files.len() + clients.len() + 1);
         items.push(WaitItem::new(&control, ipc::READABLE | ipc::PEER_CLOSED));
+        items.extend(
+            clients
+                .iter()
+                .map(|channel| WaitItem::new(channel, ipc::READABLE | ipc::PEER_CLOSED)),
+        );
         items.extend(
             files
                 .iter()
@@ -89,47 +106,91 @@ pub fn serve(control: Handle<Channel>, filesystem: &impl FileSystem) -> Result<(
     }
 }
 
-fn open<'a, F: FileSystem>(
-    filesystem: &'a F,
+fn poll_files(files: &mut Vec<FileSession>) -> Result<(), Error> {
+    let mut index = 0;
+    while index < files.len() {
+        match files[index].channel.receive(WaitMode::Poll) {
+            Ok(mut request) => {
+                if let Some(reply) = request.take_reply() {
+                    protocol::respond(reply, read(&files[index].file, request))?;
+                }
+                index += 1;
+            }
+            Err(runtime::Error::Kernel(KernelError::WouldBlock)) => index += 1,
+            Err(runtime::Error::Kernel(KernelError::EndOfStream)) => {
+                files.swap_remove(index);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn admin(
+    task: &Handle<runtime::Task>,
+    namespace: &Namespace,
+    clients: &mut Vec<Handle<Channel>>,
     mut request: ReceivedMessage,
-) -> Result<FileSession<F::File<'a>>, Error> {
+) -> Result<Message, Error> {
+    match (request.tag, request.words()) {
+        (protocol::CONNECT, []) if request.handles().len() == 1 => {
+            clients.push(take_channel(&mut request, Rights::READ | Rights::WAIT)?);
+        }
+        (protocol::MOUNT, [length, start, size]) if request.handles().len() == 2 => {
+            let (length, start, size) = (*length, *start, *size);
+            let path = path(&mut request, length)?;
+            let channel = take_channel(&mut request, protocol::CHANNEL_RIGHTS)?;
+            let session = devmgr::block::Session::from_channel(channel)?;
+            let disk = Rc::new(Disk::new(task, session)?);
+            namespace.mount(&path, disk, start, size)?;
+        }
+        (protocol::UNMOUNT, [length]) if request.handles().len() == 1 => {
+            let length = *length;
+            namespace.unmount(&path(&mut request, length)?)?;
+        }
+        _ => return Err(Error::InvalidRequest),
+    }
+    Ok(Message::new(protocol::SUCCESS, &[])?)
+}
+
+fn open(namespace: &Namespace, mut request: ReceivedMessage) -> Result<FileSession, Error> {
     if request.tag != protocol::OPEN || request.handles().len() != 2 {
         return Err(Error::InvalidRequest);
     }
-    let [length] = request.words() else {
+    let [length] = *request.words() else {
         return Err(Error::InvalidRequest);
     };
-    let length = usize::try_from(*length).map_err(|_| Error::InvalidRequest)?;
-    let frames = take_frames(&mut request, Rights::READ)?;
-    if length == 0 || length as u64 > frames.frames()?.saturating_mul(PAGE_SIZE as u64) {
+    let path = path(&mut request, length)?;
+    let channel = take_channel(&mut request, Rights::READ | Rights::WAIT)?;
+    Ok(FileSession {
+        channel,
+        file: namespace.open_bytes(&path)?,
+    })
+}
+
+fn path(request: &mut ReceivedMessage, length: u64) -> Result<Vec<u8>, Error> {
+    let length = usize::try_from(length).map_err(|_| Error::InvalidRequest)?;
+    if length == 0 || length > 4096 {
         return Err(Error::InvalidRequest);
     }
-    let channel = request
-        .take_handle(0)
-        .unwrap()
-        .downcast::<Channel>()
-        .map_err(|_| Error::InvalidRequest)?;
-    if !channel.info()?.rights.contains(Rights::READ | Rights::WAIT) {
+    let frames = take_frames(request, Rights::READ)?;
+    if length as u64 > frames.frames()?.saturating_mul(PAGE_SIZE as u64) {
         return Err(Error::InvalidRequest);
     }
     let mut path = vec![0; length];
     frames.read(0, &mut path)?;
-    let path = core::str::from_utf8(&path).map_err(|_| Error::InvalidRequest)?;
-    Ok(FileSession {
-        channel,
-        file: filesystem.open(path)?,
-    })
+    Ok(path)
 }
 
 fn read(file: &impl ReadAt, mut request: ReceivedMessage) -> Result<Message, Error> {
     if request.tag != protocol::READ || request.handles().len() != 1 {
         return Err(Error::InvalidRequest);
     }
-    let [offset, length] = request.words() else {
+    let [offset, length] = *request.words() else {
         return Err(Error::InvalidRequest);
     };
-    let mut offset = usize::try_from(*offset).map_err(|_| Error::InvalidRequest)?;
-    let length = usize::try_from(*length)
+    let mut offset = usize::try_from(offset).map_err(|_| Error::InvalidRequest)?;
+    let length = usize::try_from(length)
         .map_err(|_| Error::InvalidRequest)?
         .min(file.len().saturating_sub(offset));
     let mut output = take_frames(&mut request, Rights::WRITE)?;
@@ -142,6 +203,9 @@ fn read(file: &impl ReadAt, mut request: ReceivedMessage) -> Result<Message, Err
         let count = file.read_at(offset, &mut buffer[..(length - done).min(PAGE_SIZE)])?;
         if count == 0 {
             break;
+        }
+        if count > (length - done).min(PAGE_SIZE) {
+            return Err(Error::InvalidData);
         }
         output.write(done, &buffer[..count])?;
         done += count;
@@ -163,4 +227,16 @@ fn take_frames(
         return Err(Error::InvalidRequest);
     }
     Ok(frames)
+}
+
+fn take_channel(request: &mut ReceivedMessage, rights: Rights) -> Result<Handle<Channel>, Error> {
+    let channel = request
+        .take_handle(0)
+        .ok_or(Error::InvalidRequest)?
+        .downcast::<Channel>()
+        .map_err(|_| Error::InvalidRequest)?;
+    if !channel.info()?.rights.contains(rights) {
+        return Err(Error::InvalidRequest);
+    }
+    Ok(channel)
 }

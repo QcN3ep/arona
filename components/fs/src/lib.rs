@@ -10,11 +10,15 @@ extern crate alloc;
 pub mod archive;
 pub mod block;
 mod client;
+mod control;
 pub mod ext4;
+pub mod namespace;
+mod path;
 mod protocol;
 pub mod service;
 
 pub use client::{Client, File};
+pub use control::Control;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -25,6 +29,7 @@ pub enum Error {
     NotDirectory,
     Unsupported,
     Io,
+    Busy,
     Device(devmgr::Error),
     UnexpectedEof,
     Unavailable,

@@ -5,5 +5,5 @@
 
 fn main() -> Result<(), fs::Error> {
     let bootstrap = runtime::process::bootstrap().ok_or(runtime::Error::Protocol)?;
-    fs::service::run(bootstrap)
+    fs::service::run(runtime::process::task(), bootstrap)
 }

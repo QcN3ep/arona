@@ -21,15 +21,16 @@ pub struct Service {
 pub fn start_fs(
     loader: &Loader,
     archive: Archive,
-) -> Result<(Service, fs::Client<'static>), InitError> {
+) -> Result<(Service, fs::Control<'static>, fs::Client<'static>), InitError> {
     let (service, channel) = launch(
         loader,
         archive.open("/bin/fs")?,
         ProcessStart::REQUIRED_RIGHTS,
     )?;
-    let (frames, length) = archive.into_parts();
-    let client = fs::Client::start(process::task(), channel, frames, length, deadline()?)?;
-    Ok((service, client))
+    let (frames, length) = archive.into_parts()?;
+    let control = fs::Control::start(process::task(), channel, frames, length, deadline()?)?;
+    let client = control.connect(deadline()?)?;
+    Ok((service, control, client))
 }
 
 pub fn start_devmgr(
@@ -110,8 +111,10 @@ fn launch(
 ) -> Result<(Service, Handle<Channel>), InitError> {
     let (child, entry) = loader.load(file, rights)?;
     let control_rights = Rights::READ.union(Rights::WAIT);
-    let (sender, receiver) =
-        process::task().channel(Rights::READ_WRITE, control_rights.union(Rights::TRANSFER))?;
+    let (sender, receiver) = process::task().channel(
+        Rights::READ_WRITE | Rights::WAIT,
+        control_rights.union(Rights::TRANSFER),
+    )?;
     let service = Service {
         task: child.start(entry, STACK_SIZE, Some((receiver, control_rights)))?,
     };
@@ -124,7 +127,7 @@ impl Drop for Service {
     }
 }
 
-fn deadline() -> Result<u64, Error> {
+pub fn deadline() -> Result<u64, Error> {
     thread::now_ns()?
         .checked_add(START_TIMEOUT_NS)
         .ok_or(Error::Protocol)

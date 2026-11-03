@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use runtime::{Channel, FrameAllocation, Handle, Rights, Task, ipc::Message};
+use runtime::{Channel, Handle, Rights, Task, ipc::Message};
 
 use crate::{
     Error,
@@ -22,31 +22,24 @@ pub struct File<'a> {
 }
 
 impl<'a> Client<'a> {
-    pub fn start(
-        task: &'a Handle<Task>,
-        channel: Handle<Channel>,
-        frames: Handle<FrameAllocation>,
-        length: usize,
-        deadline: u64,
-    ) -> Result<Self, Error> {
-        let mut request = Message::new(protocol::START, &[length as u64])?;
-        transfer(&mut request, frames, Rights::READ)?;
-        let response = call(&channel, &mut request, deadline)?;
-        if !response.words().is_empty() {
-            return Err(Error::InvalidData);
-        }
-        Ok(Self { task, channel })
+    pub fn from_channel(task: &'a Handle<Task>, channel: Handle<Channel>) -> Self {
+        Self { task, channel }
     }
 
     pub fn open(&self, path: &str, deadline: u64) -> Result<File<'a>, Error> {
-        if path.is_empty() || path.as_bytes().contains(&0) {
+        self.open_bytes(path.as_bytes(), deadline)
+    }
+
+    pub fn open_bytes(&self, path: &[u8], deadline: u64) -> Result<File<'a>, Error> {
+        crate::path::components(path)?;
+        if path.is_empty() {
             return Err(Error::InvalidRequest);
         }
         let mut path_frames = self.task.allocate(
             path.len().div_ceil(PAGE_SIZE) as u64,
             Rights::READ_WRITE | Rights::TRANSFER,
         )?;
-        path_frames.write(0, path.as_bytes())?;
+        path_frames.write(0, path)?;
         let (file, server) = self.task.channel(
             CHANNEL_RIGHTS,
             Rights::READ | Rights::WAIT | Rights::TRANSFER,

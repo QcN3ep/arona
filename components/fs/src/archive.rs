@@ -2,19 +2,19 @@
 
 //! CPIO newc 归档的只读索引。
 
-use alloc::{collections::BTreeMap, string::String, vec};
+use alloc::{collections::BTreeMap, rc::Rc, vec, vec::Vec};
 use core::ops::Range;
 use runtime::{FrameAllocation, Handle};
 
-use crate::{Error, FileSystem, ReadAt};
+use crate::{Error, FileSystem, ReadAt, path::normalize};
 
 const PAGE_SIZE: usize = 4096;
 const HEADER_SIZE: usize = 110;
 
 pub struct Archive {
-    frames: Handle<FrameAllocation>,
+    frames: Rc<Handle<FrameAllocation>>,
     length: usize,
-    entries: BTreeMap<String, Entry>,
+    entries: BTreeMap<Vec<u8>, Entry>,
 }
 
 struct Entry {
@@ -22,8 +22,8 @@ struct Entry {
     directory: bool,
 }
 
-pub struct File<'a> {
-    archive: &'a Archive,
+pub struct File {
+    frames: Rc<Handle<FrameAllocation>>,
     range: Range<usize>,
 }
 
@@ -37,7 +37,7 @@ impl Archive {
             return Err(Error::InvalidData);
         }
         let mut archive = Self {
-            frames,
+            frames: Rc::new(frames),
             length,
             entries: BTreeMap::new(),
         };
@@ -45,8 +45,11 @@ impl Archive {
         Ok(archive)
     }
 
-    pub fn into_parts(self) -> (Handle<FrameAllocation>, usize) {
-        (self.frames, self.length)
+    pub fn into_parts(self) -> Result<(Handle<FrameAllocation>, usize), Error> {
+        Ok((
+            Rc::try_unwrap(self.frames).map_err(|_| Error::Busy)?,
+            self.length,
+        ))
     }
 
     // REFERENCE: https://www.kernel.org/doc/html/latest/driver-api/early-userspace/buffer-format.html
@@ -86,11 +89,10 @@ impl Archive {
                     Err(Error::InvalidData)
                 };
             }
-            let name = core::str::from_utf8(&name).map_err(|_| Error::InvalidData)?;
-            if name.starts_with('/') {
+            if name.starts_with(b"/") {
                 return Err(Error::InvalidData);
             }
-            let path = normalize(name).map_err(|_| Error::InvalidData)?;
+            let path = normalize(&name).map_err(|_| Error::InvalidData)?;
             let directory = match mode & 0o170000 {
                 0o040000 if size == 0 => true,
                 0o100000 if links == 1 => false,
@@ -131,22 +133,28 @@ impl Archive {
 }
 
 impl FileSystem for Archive {
-    type File<'a> = File<'a>;
+    type File<'a> = File;
 
-    fn open(&self, path: &str) -> Result<File<'_>, Error> {
+    fn open(&self, path: &str) -> Result<File, Error> {
+        self.open_bytes(path.as_bytes())
+    }
+}
+
+impl Archive {
+    pub fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
         let path = normalize(path)?;
         let entry = self.entries.get(&path).ok_or(Error::NotFound)?;
         if entry.directory {
             return Err(Error::IsDirectory);
         }
         Ok(File {
-            archive: self,
+            frames: Rc::clone(&self.frames),
             range: entry.range.clone(),
         })
     }
 }
 
-impl ReadAt for File<'_> {
+impl ReadAt for File {
     fn len(&self) -> usize {
         self.range.len()
     }
@@ -154,30 +162,11 @@ impl ReadAt for File<'_> {
     fn read_at(&self, offset: usize, output: &mut [u8]) -> Result<usize, Error> {
         let length = output.len().min(self.len().saturating_sub(offset));
         if length != 0 {
-            self.archive
+            self.frames
                 .read(self.range.start + offset, &mut output[..length])?;
         }
         Ok(length)
     }
-}
-
-fn normalize(path: &str) -> Result<String, Error> {
-    if path.is_empty() || path.as_bytes().contains(&0) {
-        return Err(Error::InvalidRequest);
-    }
-    let mut normalized = String::new();
-    for part in path.split('/') {
-        match part {
-            "" | "." => continue,
-            ".." => return Err(Error::InvalidRequest),
-            _ => {}
-        }
-        if !normalized.is_empty() {
-            normalized.push('/');
-        }
-        normalized.push_str(part);
-    }
-    Ok(normalized)
 }
 
 fn field(header: &[u8; HEADER_SIZE], offset: usize) -> Result<usize, Error> {

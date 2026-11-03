@@ -10,6 +10,82 @@ use runtime::{
 
 use crate::Error;
 
+const NEXT: u64 = 2;
+
+#[derive(Clone, Copy)]
+#[repr(u64)]
+pub enum DriverKind {
+    Uart = 1,
+    Block = 2,
+}
+
+pub fn next(
+    service: &Handle<Channel>,
+    kind: DriverKind,
+    after: u32,
+    deadline: u64,
+) -> Result<Option<u32>, Error> {
+    let response = service
+        .call(
+            &mut Message::new(NEXT, &[kind as u64, after.into()])?,
+            Some(deadline),
+        )
+        .map_err(Error::Call)?;
+    if response.tag != SUCCESS || !response.handles().is_empty() {
+        return Err(runtime::Error::Protocol.into());
+    }
+    let [id] = *response.words() else {
+        return Err(runtime::Error::Protocol.into());
+    };
+    let id = u32::try_from(id).map_err(|_| runtime::Error::Protocol)?;
+    if id != 0 && id <= after {
+        return Err(runtime::Error::Protocol.into());
+    }
+    Ok((id != 0).then_some(id))
+}
+
+pub struct DiscoveryRequest {
+    pub kind: DriverKind,
+    pub after: u32,
+    reply: Handle<Reply>,
+}
+
+impl DiscoveryRequest {
+    pub fn decode(message: &mut ReceivedMessage) -> Result<Option<Self>, Error> {
+        if message.tag != NEXT {
+            return Ok(None);
+        }
+        let Some(reply) = message.take_reply() else {
+            return Ok(None);
+        };
+        let (kind, after) = match message.words() {
+            [kind @ 1..=2, after] if *after <= u32::MAX as u64 && message.handles().is_empty() => (
+                if *kind == 1 {
+                    DriverKind::Uart
+                } else {
+                    DriverKind::Block
+                },
+                *after as u32,
+            ),
+            _ => {
+                reject(&reply, INVALID_REQUEST)?;
+                return Ok(None);
+            }
+        };
+        Ok(Some(Self { kind, after, reply }))
+    }
+
+    pub fn respond(self, id: Option<u32>) -> Result<(), Error> {
+        match self
+            .reply
+            .send(&mut Message::new(SUCCESS, &[id.unwrap_or(0).into()])?)
+        {
+            Ok(()) | Err(runtime::Error::Kernel(KernelError::InvalidState)) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
 pub(crate) const OPEN: u64 = 1;
 pub(crate) const CHANNEL_RIGHTS: Rights = Rights::READ_WRITE.union(Rights::WAIT);
 pub(crate) const SUCCESS: u64 = 0;
