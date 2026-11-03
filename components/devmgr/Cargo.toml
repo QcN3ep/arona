@@ -30,5 +30,11 @@ path = "tests/uart/mod.rs"
 harness = false
 required-features = ["baremetal"]
 
+[[test]]
+name = "block"
+path = "tests/block/mod.rs"
+harness = false
+required-features = ["baremetal"]
+
 [dependencies]
 runtime = { package = "arona-runtime", path = "../runtime" }

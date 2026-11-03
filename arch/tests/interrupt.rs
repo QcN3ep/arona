@@ -148,7 +148,7 @@ fn run_program(
     program: Option<kernel::memory::PhysRange>,
     devices: kernel::device::DeviceSet,
 ) {
-    if matches!(suite, "dma" | "dma-drop" | "dma-revoke") {
+    if matches!(suite, "dma" | "dma-drop" | "dma-revoke" | "block") {
         kernel::logger::init(kernel::log::LevelFilter::Info).unwrap();
         kernel::logger::LOGGER.add_sink(&TestLog).unwrap();
     }
@@ -194,6 +194,11 @@ fn run_program(
     if suite == "dma" {
         uart().write(format_args!("DMA tests passed\n")).unwrap();
     }
+    if suite == "block" {
+        uart()
+            .write(format_args!("Block driver tests passed\n"))
+            .unwrap();
+    }
     if suite == "service" {
         uart()
             .write(format_args!("Device service tests passed\n"))
@@ -220,6 +225,7 @@ fn select_program() -> &'static str {
                 b"service" => "service",
                 b"init" => "init",
                 b"dma" => "dma",
+                b"block" => "block",
                 b"dma-drop" => "dma-drop",
                 b"dma-revoke" => "dma-revoke",
                 b"pci-firmware" => "pci-firmware",

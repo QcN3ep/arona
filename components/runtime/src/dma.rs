@@ -2,13 +2,22 @@
 
 //! DMA 域、总线地址映射与缓冲区访问。
 
-use crate::{BorrowedHandle, Device, DmaDomain, Error, FrameAllocation, Handle, Rights};
+use crate::{BorrowedHandle, Device, DmaDomain, Error, FrameAllocation, Handle, Rights, Task};
 pub use abi::dma::{DmaDirection, DmaInfo, DmaProfile, DmaState};
 use abi::method::{device, dma, memory};
 
 pub struct DmaMapping<'a> {
-    domain: BorrowedHandle<'a, DmaDomain>,
+    range: DmaRange<'a>,
     frames: BorrowedHandle<'a, FrameAllocation>,
+}
+
+pub struct DmaBuffer<'a> {
+    range: DmaRange<'a>,
+    frames: Handle<FrameAllocation>,
+}
+
+struct DmaRange<'a> {
+    domain: BorrowedHandle<'a, DmaDomain>,
     address: Option<u64>,
     offset: u64,
     length: u64,
@@ -37,6 +46,32 @@ impl Handle<DmaDomain> {
         count: u64,
         direction: DmaDirection,
     ) -> Result<DmaMapping<'a>, Error> {
+        Ok(DmaMapping {
+            range: self.map_range(frames, first, count, direction)?,
+            frames: frames.borrow(),
+        })
+    }
+
+    pub fn allocate<'a>(
+        &'a self,
+        task: &Handle<Task>,
+        count: u64,
+        direction: DmaDirection,
+    ) -> Result<DmaBuffer<'a>, Error> {
+        let frames = task.allocate(count, Rights::READ_WRITE.union(Rights::DMA_MAP))?;
+        Ok(DmaBuffer {
+            range: self.map_range(&frames, 0, count, direction)?,
+            frames,
+        })
+    }
+
+    fn map_range(
+        &self,
+        frames: &Handle<FrameAllocation>,
+        first: u64,
+        count: u64,
+        direction: DmaDirection,
+    ) -> Result<DmaRange<'_>, Error> {
         let [address, length] = self.borrow().invoke(
             dma::MAP,
             [
@@ -47,9 +82,8 @@ impl Handle<DmaDomain> {
                 0,
             ],
         )?;
-        Ok(DmaMapping {
+        Ok(DmaRange {
             domain: self.borrow(),
-            frames: frames.borrow(),
             address: Some(address),
             offset: first.checked_mul(4096).ok_or(Error::Protocol)?,
             length,
@@ -75,21 +109,26 @@ impl Handle<DmaDomain> {
     }
 }
 
-impl DmaMapping<'_> {
-    pub fn bus_address(&self) -> Option<u64> {
+impl DmaRange<'_> {
+    fn bus_address(&self) -> Option<u64> {
         self.address
     }
-    pub fn len(&self) -> u64 {
+    fn len(&self) -> u64 {
         self.length
     }
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.length == 0
     }
 
-    pub fn read(&self, offset: u64, output: &mut [u8]) -> Result<(), Error> {
+    fn read(
+        &self,
+        frames: BorrowedHandle<'_, FrameAllocation>,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<(), Error> {
         let offset = self.check(offset, output.len())?;
         synchronize();
-        self.frames.invoke(
+        frames.invoke(
             memory::READ,
             [
                 offset,
@@ -103,10 +142,15 @@ impl DmaMapping<'_> {
         Ok(())
     }
 
-    pub fn write(&mut self, offset: u64, input: &[u8]) -> Result<(), Error> {
+    fn write(
+        &mut self,
+        frames: BorrowedHandle<'_, FrameAllocation>,
+        offset: u64,
+        input: &[u8],
+    ) -> Result<(), Error> {
         let offset = self.check(offset, input.len())?;
         synchronize();
-        self.frames.invoke(
+        frames.invoke(
             memory::WRITE,
             [offset, input.as_ptr() as u64, input.len() as u64, 0, 0],
         )?;
@@ -114,7 +158,7 @@ impl DmaMapping<'_> {
         Ok(())
     }
 
-    pub fn unmap(&mut self) -> Result<(), Error> {
+    fn unmap(&mut self) -> Result<(), Error> {
         if let Some(address) = self.address {
             self.domain.invoke(dma::UNMAP, [address, 0, 0, 0, 0])?;
             self.address = None;
@@ -134,6 +178,25 @@ impl DmaMapping<'_> {
     }
 }
 
+macro_rules! buffer_access {
+    ($ty:ident, $($access:tt)*) => {
+        impl $ty<'_> {
+            pub fn bus_address(&self) -> Option<u64> { self.range.bus_address() }
+            pub fn len(&self) -> u64 { self.range.len() }
+            pub fn is_empty(&self) -> bool { self.range.is_empty() }
+            pub fn read(&self, offset: u64, output: &mut [u8]) -> Result<(), Error> {
+                self.range.read(self.frames $($access)*, offset, output)
+            }
+            pub fn write(&mut self, offset: u64, input: &[u8]) -> Result<(), Error> {
+                self.range.write(self.frames $($access)*, offset, input)
+            }
+            pub fn unmap(&mut self) -> Result<(), Error> { self.range.unmap() }
+        }
+    };
+}
+buffer_access!(DmaMapping,);
+buffer_access!(DmaBuffer, .borrow());
+
 pub fn synchronize() {
     #[cfg(target_arch = "riscv64")]
     // SAFETY: 屏障不得修改栈或通用寄存器。
@@ -147,7 +210,7 @@ pub fn synchronize() {
     }
 }
 
-impl Drop for DmaMapping<'_> {
+impl Drop for DmaRange<'_> {
     fn drop(&mut self) {
         // 活动域拒绝解除映射，页框由域继续保留。
         let _ = self.unmap();

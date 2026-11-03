@@ -6,8 +6,9 @@ use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 use devmgr::{
     Error,
+    block::{self, Block},
     device::{DeviceDescription, OpenRequest},
-    uart::{self, Configuration, Settings, Uart},
+    uart::{self, Settings, Uart},
 };
 use runtime::{
     Channel, Device, DeviceSet, Event, Handle, KernelError, Rights,
@@ -16,6 +17,12 @@ use runtime::{
 };
 
 const START_TIMEOUT_NS: u64 = 1_000_000_000;
+
+#[derive(Clone, Copy, Debug)]
+enum Configuration {
+    Uart(uart::Configuration),
+    Block(block::Configuration),
+}
 
 pub struct DeviceManager {
     catalog: Handle<DeviceSet>,
@@ -52,7 +59,7 @@ impl DeviceManager {
         while let Some(id) = manager.catalog.next(cursor)? {
             cursor = id;
             let device = DeviceDescription::new(&manager.catalog, id)?;
-            let configuration = match uart::probe(&device) {
+            let configuration = match probe(&device) {
                 Ok(Some(configuration)) => device
                     .info()
                     .group
@@ -274,6 +281,20 @@ fn serve(
     ready: &AtomicBool,
     wake: &Handle<Event>,
 ) -> Result<(), Error> {
+    if let Configuration::Block(configuration) = configuration {
+        let domain = grant.create_dma(
+            id,
+            Rights::READ | Rights::DMA_MAP | Rights::DEVICE_CONTROL | Rights::REVOKE,
+        )?;
+        let mut block = Block::new(configuration, grant, &domain, event, process::task())?;
+        ready.store(true, Ordering::Release);
+        wake.signal(1)?;
+        block::service::run(&mut block, event, server, id)?;
+        return Ok(domain.revoke()?);
+    }
+    let Configuration::Uart(configuration) = configuration else {
+        unreachable!()
+    };
     let deadline = thread::now_ns()?.saturating_add(START_TIMEOUT_NS);
     let mut uart = loop {
         match Uart::new(configuration, grant, event, 1, Settings::default()) {
@@ -285,4 +306,11 @@ fn serve(
     ready.store(true, Ordering::Release);
     wake.signal(1)?;
     uart::service::run(&mut uart, event, Some(server), id)
+}
+
+fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Error> {
+    if let Some(configuration) = uart::probe(device)? {
+        return Ok(Some(Configuration::Uart(configuration)));
+    }
+    Ok(block::probe(device)?.map(Configuration::Block))
 }

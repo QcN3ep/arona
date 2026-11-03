@@ -131,6 +131,14 @@ impl<'a> DeviceDescription<'a> {
         self.info
     }
 
+    pub(crate) fn pci_config(&self, output: &mut [u8; 4096]) -> Result<(), Error> {
+        Ok(self.catalog.pci_config(self.info.id, output)?)
+    }
+
+    pub(crate) fn pci_bar(&self, index: usize) -> Result<runtime::device::PciBar, Error> {
+        Ok(self.catalog.pci_bar(self.info.id, index)?)
+    }
+
     pub fn matches(&self, namespace: &str, identity: &str) -> Result<bool, Error> {
         let mut buffer = [0; 128];
         for index in 0..self.info.identities {

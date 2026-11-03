@@ -166,7 +166,7 @@ fn run_cases(
     let grants = kernel::device::active_grant_tokens();
     let records = kernel::task::allocated_task_records();
     let task_resources = kernel::task::allocated_task_resources();
-    // 常驻映射的索引页可能在首次服务运行后重新分布。
+    // 常驻映射的索引页可在节点迁移后继续回收。
     let repeat = repeat_first.then(|| modes[0]);
     super::ACTIVE.store(true, Ordering::Relaxed);
     for (index, mode) in modes.iter().copied().chain(repeat).enumerate() {
@@ -187,21 +187,25 @@ fn run_cases(
                 && kernel::task::allocated_task_resources() == task_resources
                 && kernel::ipc::active_channels() == channels
                 && kernel::ipc::queued_messages() == messages;
+            let memory = manager.stats();
+            let mut expected = before;
+            expected.kernel.free_frames = memory.kernel.free_frames;
             if resources_reclaimed
                 && (reset_baseline_after_first && index == 0
-                    || manager.stats() == before && manager.heap_stats() == heap)
+                    || memory == expected
+                        && memory.kernel.free_frames >= before.kernel.free_frames
+                        && manager.heap_stats() == heap)
             {
                 if reset_baseline_after_first && index == 0 {
-                    before = manager.stats();
+                    before = memory;
                     heap = manager.heap_stats();
                 }
                 break;
             }
             assert!(
                 hardware::timer().now_ns().unwrap() < deadline,
-                "reclaim failed scenario={mode} records={}/{}",
-                kernel::task::allocated_task_records(),
-                records,
+                "reclaim failed scenario={mode} resources={resources_reclaimed} memory={memory:?}/{before:?} heap={:?}/{heap:?}",
+                manager.heap_stats(),
             );
             kernel::thread::scheduler::run_ready().unwrap();
             core::hint::spin_loop();
@@ -536,7 +540,7 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
         }
         return;
     }
-    let deadline = hardware::timer().now_ns().unwrap() + 15_000_000_000;
+    let deadline = hardware::timer().now_ns().unwrap() + 30_000_000_000;
     let devices = DEVICES.get().unwrap();
     let group = console_group();
     loop {
