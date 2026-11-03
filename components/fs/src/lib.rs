@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 文件访问接口与只读启动文件服务。
+//! 文件访问接口与文件服务。
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -30,6 +30,11 @@ pub enum Error {
     Unsupported,
     Io,
     Busy,
+    ReadOnly,
+    NoSpace,
+    AlreadyExists,
+    NotEmpty,
+    CrossDevice,
     Device(devmgr::Error),
     UnexpectedEof,
     Unavailable,
@@ -80,4 +85,10 @@ pub trait FileSystem {
         Self: 'a;
 
     fn open(&self, path: &str) -> Result<Self::File<'_>, Error>;
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct DirEntry {
+    pub name: alloc::vec::Vec<u8>,
+    pub directory: bool,
 }

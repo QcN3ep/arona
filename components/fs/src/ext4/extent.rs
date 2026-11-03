@@ -40,6 +40,27 @@ impl Volume {
         Ok(result)
     }
 
+    pub fn extent_blocks(&mut self, root: &[u8]) -> Result<Vec<u32>, Error> {
+        let mut result = Vec::new();
+        let mut pending = alloc::vec![(root.to_vec(), half(root, 6))];
+        let mut visited = BTreeSet::new();
+        while let Some((bytes, depth)) = pending.pop() {
+            if depth == 0 {
+                continue;
+            }
+            for index in 0..usize::from(half(&bytes, 2)) {
+                let number = word(&bytes, 16 + 12 * index);
+                if !visited.insert(number) {
+                    return Err(Error::InvalidData);
+                }
+                let child = self.block(number)?;
+                pending.push((child.to_vec(), depth - 1));
+                result.push(number);
+            }
+        }
+        Ok(result)
+    }
+
     fn extent_node(
         &mut self,
         bytes: &[u8],

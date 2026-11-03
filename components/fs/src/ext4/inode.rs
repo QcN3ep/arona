@@ -8,12 +8,16 @@ pub(super) struct Inode {
     pub number: u32,
     pub size: u64,
     pub mode: u16,
+    pub links: u16,
+    pub sectors: u64,
     pub root: [u8; 60],
 }
 
+#[derive(Clone)]
 pub(super) struct Entry {
     pub inode: u32,
     pub name: Vec<u8>,
+    pub file_type: u8,
 }
 
 impl Inode {
@@ -25,8 +29,8 @@ impl Inode {
         }
         if word(bytes, 32) != 0x80000
             || word(bytes, 20) != 0
+            || word(bytes, 104) != 0
             || size > 2 * 1024 * 1024 * 1024
-            || half(bytes, 26) == 0
             || bytes.len() == 256 && half(bytes, 128) > 128
         {
             return Err(Error::InvalidData);
@@ -35,6 +39,8 @@ impl Inode {
             number,
             size,
             mode,
+            links: half(bytes, 26),
+            sectors: u64::from(word(bytes, 28)),
             root: bytes[40..100].try_into().unwrap(),
         })
     }
@@ -117,6 +123,7 @@ impl Volume {
                     result.push(Entry {
                         inode: number,
                         name: name.to_vec(),
+                        file_type: bytes[inside + 7],
                     });
                 }
                 inside += length;

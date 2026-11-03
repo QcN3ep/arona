@@ -74,11 +74,7 @@ pub fn serve(
             match clients[index].receive(WaitMode::Poll) {
                 Ok(mut request) => {
                     if let Some(reply) = request.take_reply() {
-                        let response = open(namespace, request).and_then(|session| {
-                            let length = session.file.len();
-                            files.push(session);
-                            Ok(Message::new(protocol::SUCCESS, &[length as u64])?)
-                        });
+                        let response = client(namespace, &mut files, request);
                         protocol::respond(reply, response)?;
                     }
                     index += 1;
@@ -112,7 +108,7 @@ fn poll_files(files: &mut Vec<FileSession>) -> Result<(), Error> {
         match files[index].channel.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
-                    protocol::respond(reply, read(&files[index].file, request))?;
+                    protocol::respond(reply, file_request(&files[index].file, request))?;
                 }
                 index += 1;
             }
@@ -153,8 +149,103 @@ fn admin(
     Ok(Message::new(protocol::SUCCESS, &[])?)
 }
 
+fn client(
+    namespace: &Namespace,
+    files: &mut Vec<FileSession>,
+    request: ReceivedMessage,
+) -> Result<Message, Error> {
+    if matches!(request.tag, protocol::OPEN | protocol::CREATE) {
+        let session = open(namespace, request)?;
+        let length = session.file.len();
+        files.push(session);
+        return Ok(Message::new(protocol::SUCCESS, &[length as u64])?);
+    }
+    directory(namespace, request)
+}
+
+fn directory(namespace: &Namespace, mut request: ReceivedMessage) -> Result<Message, Error> {
+    match (request.tag, request.words()) {
+        (protocol::MKDIR | protocol::UNLINK, [length]) if request.handles().len() == 1 => {
+            let length = *length;
+            let name = path(&mut request, length)?;
+            if request.tag == protocol::MKDIR {
+                namespace.mkdir(&name)?;
+            } else {
+                namespace.unlink(&name)?;
+            }
+        }
+        (protocol::RENAME, [first, second]) if request.handles().len() == 2 => {
+            let (first, second) = (*first, *second);
+            let source = path(&mut request, first)?;
+            let target = path(&mut request, second)?;
+            namespace.rename(&source, &target)?;
+        }
+        (protocol::LIST, [length, start]) if request.handles().len() == 2 => {
+            let (length, start) = (*length, *start);
+            let name = path(&mut request, length)?;
+            let mut output = take_frames(&mut request, Rights::WRITE)?;
+            if output.frames()? == 0 {
+                return Err(Error::InvalidRequest);
+            }
+            let entries = namespace.read_dir(&name)?;
+            let start = usize::try_from(start).map_err(|_| Error::InvalidRequest)?;
+            let mut bytes = [0; PAGE_SIZE];
+            let (mut done, mut count) = (0, 0);
+            for entry in entries.iter().skip(start) {
+                let size = entry.name.len();
+                if done + 3 + size > bytes.len() {
+                    break;
+                }
+                bytes[done] = u8::from(entry.directory);
+                bytes[done + 1..done + 3].copy_from_slice(&(size as u16).to_le_bytes());
+                bytes[done + 3..done + 3 + size].copy_from_slice(&entry.name);
+                done += 3 + size;
+                count += 1;
+            }
+            output.write(0, &bytes[..done])?;
+            return Ok(Message::new(protocol::SUCCESS, &[count, done as u64])?);
+        }
+        _ => return Err(Error::InvalidRequest),
+    }
+    Ok(Message::new(protocol::SUCCESS, &[])?)
+}
+
+fn file_request(file: &File, mut request: ReceivedMessage) -> Result<Message, Error> {
+    match (request.tag, request.words()) {
+        (protocol::READ, _) => read(file, request),
+        (protocol::WRITE, [offset, length]) if request.handles().len() == 1 => {
+            let offset = usize::try_from(*offset).map_err(|_| Error::InvalidRequest)?;
+            let length = usize::try_from(*length).map_err(|_| Error::InvalidRequest)?;
+            offset
+                .checked_add(length)
+                .filter(|end| *end <= 2 * 1024 * 1024 * 1024)
+                .ok_or(Error::InvalidRequest)?;
+            let input = take_frames(&mut request, Rights::READ)?;
+            if length as u64 > input.frames()?.saturating_mul(PAGE_SIZE as u64) {
+                return Err(Error::InvalidRequest);
+            }
+            let mut bytes = vec![0; length];
+            input.read(0, &mut bytes)?;
+            let count = file.write_at(offset, &bytes)?;
+            Ok(Message::new(
+                protocol::SUCCESS,
+                &[count as u64, file.len() as u64],
+            )?)
+        }
+        (protocol::TRUNCATE, [size]) if request.handles().is_empty() => {
+            let size = usize::try_from(*size).map_err(|_| Error::InvalidRequest)?;
+            file.truncate(size)?;
+            Ok(Message::new(protocol::SUCCESS, &[size as u64])?)
+        }
+        (protocol::FILE_INFO, []) if request.handles().is_empty() => {
+            Ok(Message::new(protocol::SUCCESS, &[file.len() as u64])?)
+        }
+        _ => Err(Error::InvalidRequest),
+    }
+}
+
 fn open(namespace: &Namespace, mut request: ReceivedMessage) -> Result<FileSession, Error> {
-    if request.tag != protocol::OPEN || request.handles().len() != 2 {
+    if !matches!(request.tag, protocol::OPEN | protocol::CREATE) || request.handles().len() != 2 {
         return Err(Error::InvalidRequest);
     }
     let [length] = *request.words() else {
@@ -164,7 +255,11 @@ fn open(namespace: &Namespace, mut request: ReceivedMessage) -> Result<FileSessi
     let channel = take_channel(&mut request, Rights::READ | Rights::WAIT)?;
     Ok(FileSession {
         channel,
-        file: namespace.open_bytes(&path)?,
+        file: if request.tag == protocol::CREATE {
+            namespace.create(&path)?
+        } else {
+            namespace.open_bytes(&path)?
+        },
     })
 }
 

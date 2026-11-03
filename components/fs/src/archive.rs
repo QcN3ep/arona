@@ -45,6 +45,40 @@ impl Archive {
         Ok(archive)
     }
 
+    pub fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
+        let path = normalize(path)?;
+        if let Some(entry) = self.entries.get(&path)
+            && !entry.directory
+        {
+            return Err(Error::NotDirectory);
+        }
+        let mut children = BTreeMap::new();
+        for (name, entry) in &self.entries {
+            let rest = if path.is_empty() {
+                &name[..]
+            } else if name.starts_with(&path) && name.get(path.len()) == Some(&b'/') {
+                &name[path.len() + 1..]
+            } else {
+                continue;
+            };
+            if rest.is_empty() {
+                continue;
+            }
+            let end = rest
+                .iter()
+                .position(|byte| *byte == b'/')
+                .unwrap_or(rest.len());
+            children.insert(rest[..end].to_vec(), end != rest.len() || entry.directory);
+        }
+        if children.is_empty() && !path.is_empty() && !self.entries.contains_key(&path) {
+            return Err(Error::NotFound);
+        }
+        Ok(children
+            .into_iter()
+            .map(|(name, directory)| crate::DirEntry { name, directory })
+            .collect())
+    }
+
     pub fn into_parts(self) -> Result<(Handle<FrameAllocation>, usize), Error> {
         Ok((
             Rc::try_unwrap(self.frames).map_err(|_| Error::Busy)?,

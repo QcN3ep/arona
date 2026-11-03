@@ -1,23 +1,32 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use super::FileIdentity;
 use super::{half, inode::Inode, word};
 use crate::{
     Error,
     block::{BLOCK_SIZE, Disk},
 };
-use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
+use alloc::{
+    collections::BTreeMap,
+    rc::{Rc, Weak},
+    vec::Vec,
+};
 
 pub(super) struct Volume {
     pub disk: Rc<Disk>,
     pub start: u64,
     pub blocks: u32,
+    pub(super) allocation_hint: u32,
     pub inodes: u32,
     pub blocks_per_group: u32,
     pub inodes_per_group: u32,
     pub inode_size: usize,
     pub groups: Vec<Group>,
     sparse: bool,
-    cache: BTreeMap<u32, Rc<[u8; BLOCK_SIZE]>>,
+    pub(super) cache: BTreeMap<u32, Rc<[u8; BLOCK_SIZE]>>,
+    pub(super) pending: BTreeMap<u32, Rc<[u8; BLOCK_SIZE]>>,
+    pub(super) failure: Option<Error>,
+    pub(super) open: BTreeMap<u32, Weak<FileIdentity>>,
 }
 
 pub(super) struct Group {
@@ -78,6 +87,7 @@ impl Volume {
             disk,
             start,
             blocks,
+            allocation_hint: 0,
             inodes,
             blocks_per_group,
             inodes_per_group,
@@ -85,6 +95,9 @@ impl Volume {
             groups: Vec::new(),
             sparse: word(sb, 100) & 1 != 0,
             cache: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            failure: None,
+            open: BTreeMap::new(),
         };
         volume.load_groups()?;
         Ok(volume)
@@ -131,8 +144,14 @@ impl Volume {
     }
 
     pub fn block(&mut self, number: u32) -> Result<Rc<[u8; BLOCK_SIZE]>, Error> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
         if number >= self.blocks {
             return Err(Error::InvalidData);
+        }
+        if let Some(bytes) = self.pending.get(&number) {
+            return Ok(Rc::clone(bytes));
         }
         if let Some(bytes) = self.cache.get(&number) {
             return Ok(Rc::clone(bytes));

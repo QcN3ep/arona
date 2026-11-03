@@ -51,6 +51,31 @@ impl Disk {
         self.flush
     }
 
+    pub fn write(&self, offset: u64, input: &[u8; BLOCK_SIZE]) -> Result<(), Error> {
+        if self.read_only {
+            return Err(Error::ReadOnly);
+        }
+        if !offset.is_multiple_of(BLOCK_SIZE as u64)
+            || offset
+                .checked_add(BLOCK_SIZE as u64)
+                .is_none_or(|end| end > self.capacity)
+        {
+            return Err(Error::InvalidRequest);
+        }
+        let mut state = self.state.borrow_mut();
+        if state.failed {
+            return Err(Error::Unavailable);
+        }
+        state.buffer.write(0, input)?;
+        let id = state.next;
+        state.next = id.checked_add(1).ok_or(Error::Unavailable)?;
+        state.failed = true;
+        state
+            .session
+            .write(id, offset, &state.buffer, 0, BLOCK_SIZE)?;
+        state.complete(id, BLOCK_SIZE)
+    }
+
     pub fn read(&self, offset: u64, output: &mut [u8; BLOCK_SIZE]) -> Result<(), Error> {
         if !offset.is_multiple_of(BLOCK_SIZE as u64)
             || offset
@@ -69,15 +94,22 @@ impl Disk {
         state
             .session
             .read(id, offset, &state.buffer, 0, BLOCK_SIZE)?;
+        state.complete(id, BLOCK_SIZE)?;
+        state.buffer.read(0, output)?;
+        Ok(())
+    }
+}
+
+impl State {
+    fn complete(&mut self, id: u64, length: usize) -> Result<(), Error> {
         let deadline = thread::now_ns()?
             .checked_add(10_000_000_000)
             .ok_or(Error::Unavailable)?;
-        let completion = state.session.acknowledge(id, Some(deadline))?;
-        state.failed = false;
-        if completion.status != Status::Success || completion.bytes != BLOCK_SIZE {
+        let completion = self.session.acknowledge(id, Some(deadline))?;
+        self.failed = false;
+        if completion.status != Status::Success || completion.bytes != length {
             return Err(Error::Io);
         }
-        state.buffer.read(0, output)?;
         Ok(())
     }
 }

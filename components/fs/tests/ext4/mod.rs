@@ -67,6 +67,7 @@ fn main() {
         let session = Session::open(process::task(), &control, id).unwrap();
         let disk = Rc::new(Disk::new(process::task(), session).unwrap());
         read_volume(&disk);
+        write_volume(&disk);
         for index in 1..7 {
             assert!(
                 Ext4::mount(Rc::clone(&disk), index * SLICE, SLICE).is_err(),
@@ -161,6 +162,29 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
     let raw = client.open_bytes(b"/var/data/\xff", deadline()).unwrap();
     assert_eq!(raw.read_at(0, &mut bytes, deadline()).unwrap(), 3);
     assert_eq!(&bytes[..3], b"raw");
+    client.mkdir("/var/session", deadline()).unwrap();
+    let writable = client.create("/var/session/file", deadline()).unwrap();
+    assert_eq!(writable.write_at(5, b"hello", deadline()).unwrap(), 5);
+    assert_eq!(writable.size(deadline()).unwrap(), 10);
+    let mut output = [1; 10];
+    assert_eq!(writable.read_at(0, &mut output, deadline()).unwrap(), 10);
+    assert_eq!(&output, b"\0\0\0\0\0hello");
+    writable.truncate(7, deadline()).unwrap();
+    assert_eq!(writable.size(deadline()).unwrap(), 7);
+    assert_eq!(
+        client.read_dir("/var/session", deadline()).unwrap().len(),
+        1
+    );
+    client
+        .rename("/var/session/file", "/var/session/renamed", deadline())
+        .unwrap();
+    client.unlink("/var/session/renamed", deadline()).unwrap();
+    drop(writable);
+    client.unlink("/var/session", deadline()).unwrap();
+    assert!(matches!(
+        client.create("/archive-file", deadline()),
+        Err(Error::ReadOnly)
+    ));
     drop(raw);
     drop(file);
     control.unmount(b"/var", deadline()).unwrap();
@@ -175,4 +199,113 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
 
 fn deadline() -> u64 {
     thread::now_ns().unwrap() + 10_000_000_000
+}
+
+fn write_volume(disk: &Rc<Disk>) {
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    directory_operations(&filesystem);
+    filesystem.mkdir(b"/work").unwrap();
+    filesystem.mkdir(b"/work/child").unwrap();
+    let file = filesystem.create(b"/work/file").unwrap();
+    let other = filesystem.open("/work/file").unwrap();
+    let data: alloc::vec::Vec<u8> = (0..9000).map(|index| (index % 239) as u8).collect();
+    assert_eq!(file.write_at(4090, &data).unwrap(), data.len());
+    assert_eq!(other.len(), 13090);
+    let mut bytes = alloc::vec![1; other.len()];
+    other.read_exact_at(0, &mut bytes).unwrap();
+    assert!(bytes[..4090].iter().all(|byte| *byte == 0));
+    assert_eq!(&bytes[4090..], &data);
+    file.truncate(5000).unwrap();
+    assert_eq!(other.len(), 5000);
+    file.truncate(9000).unwrap();
+    bytes.resize(9000, 1);
+    other.read_exact_at(0, &mut bytes).unwrap();
+    assert!(bytes[5000..].iter().all(|byte| *byte == 0));
+    for index in 0..9 {
+        file.write_at(index * 8192, &[index as u8 + 1]).unwrap();
+    }
+    for index in 0..9 {
+        let mut byte = [0];
+        other.read_exact_at(index * 8192, &mut byte).unwrap();
+        assert_eq!(byte, [index as u8 + 1]);
+    }
+    assert_eq!(
+        file.write_at(0, &alloc::vec![0; SLICE as usize]),
+        Err(Error::NoSpace)
+    );
+    filesystem
+        .rename(b"/work/file", b"/work/child/moved")
+        .unwrap();
+    assert!(matches!(
+        filesystem.open("/work/file"),
+        Err(Error::NotFound)
+    ));
+    assert_eq!(filesystem.unlink(b"/work/child"), Err(Error::NotEmpty));
+    assert_eq!(
+        filesystem.rename(b"/work", b"/work/child/cycle"),
+        Err(Error::InvalidRequest)
+    );
+    filesystem.unlink(b"/work/child/moved").unwrap();
+    assert!(matches!(
+        filesystem.open("/work/child/moved"),
+        Err(Error::NotFound)
+    ));
+    file.write_at(0, b"open after unlink").unwrap();
+    let mut head = [0; 17];
+    other.read_exact_at(0, &mut head).unwrap();
+    assert_eq!(&head, b"open after unlink");
+    drop(file);
+    drop(other);
+    filesystem.unlink(b"/work/child").unwrap();
+    filesystem.unlink(b"/work").unwrap();
+    let tree = filesystem.open("/data/tree").unwrap();
+    tree.write_at(4096 * 4 + 3, b"tree").unwrap();
+    let mut text = [0; 4];
+    tree.read_exact_at(4096 * 4 + 3, &mut text).unwrap();
+    assert_eq!(&text, b"tree");
+}
+
+fn directory_operations(filesystem: &Ext4) {
+    filesystem.mkdir(b"/many").unwrap();
+    for index in 0..20 {
+        let mut path = alloc::vec![b'x'; 240];
+        path[..6].copy_from_slice(b"/many/");
+        path[6] = b'a' + index;
+        drop(filesystem.create(&path).unwrap());
+    }
+    assert_eq!(filesystem.read_dir(b"/many").unwrap().len(), 20);
+    for index in 0..20 {
+        let mut path = alloc::vec![b'x'; 240];
+        path[..6].copy_from_slice(b"/many/");
+        path[6] = b'a' + index;
+        filesystem.unlink(&path).unwrap();
+    }
+    filesystem.mkdir(b"/many/left").unwrap();
+    filesystem.mkdir(b"/many/right").unwrap();
+    filesystem.mkdir(b"/many/left/child").unwrap();
+    filesystem.mkdir(b"/many/right/empty").unwrap();
+    filesystem
+        .rename(b"/many/left/child", b"/many/right/moved")
+        .unwrap();
+    filesystem
+        .rename(b"/many/right/moved", b"/many/right/empty")
+        .unwrap();
+    assert!(filesystem.read_dir(b"/many/left").unwrap().is_empty());
+    assert_eq!(filesystem.read_dir(b"/many/right").unwrap().len(), 1);
+    filesystem.unlink(b"/many/right/empty").unwrap();
+    filesystem.unlink(b"/many/left").unwrap();
+    filesystem.unlink(b"/many/right").unwrap();
+    let first = filesystem.create(b"/many/first").unwrap();
+    first.write_at(0, b"first").unwrap();
+    let second = filesystem.create(b"/many/second").unwrap();
+    second.write_at(0, b"second").unwrap();
+    filesystem.rename(b"/many/first", b"/many/second").unwrap();
+    let mut text = [0; 6];
+    second.read_exact_at(0, &mut text).unwrap();
+    assert_eq!(&text, b"second");
+    assert_eq!(filesystem.open("/many/second").unwrap().len(), 5);
+    drop(first);
+    drop(second);
+    filesystem.unlink(b"/many/second").unwrap();
+    filesystem.unlink(b"/many").unwrap();
 }
