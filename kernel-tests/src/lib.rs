@@ -56,23 +56,17 @@ pub fn handle(trap: Trap) -> TrapOutcome {
 }
 
 fn run_thread(entry: kernel::thread::ThreadEntry) {
-    use kernel::{
-        hardware,
-        thread::{Thread, ThreadState, scheduler},
-    };
+    use kernel::thread::{Thread, ThreadState, scheduler};
     let owner = Thread::new(entry, 0).unwrap();
     owner.start().unwrap();
-    let limit = hardware::timer().now_ns().unwrap() + 10_000_000_000;
+    // 测试超时由外层 QEMU runner 控制。
     loop {
         scheduler::run_ready().unwrap();
-        if owner.state() == ThreadState::Dead(0) {
+        if let ThreadState::Dead(status) = owner.state() {
+            assert_eq!(status, 0);
             assert!(!owner.is_waiting_for_exit());
             break;
         }
-        assert!(
-            hardware::timer().now_ns().unwrap() < limit,
-            "Test thread stalled",
-        );
-        hardware::cpu().idle_until_interrupt();
+        kernel::hardware::cpu().idle_until_interrupt();
     }
 }

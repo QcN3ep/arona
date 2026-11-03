@@ -155,6 +155,18 @@ impl<'a> Client<'a> {
 }
 
 impl File<'_> {
+    pub fn fsync(&self, deadline: u64) -> Result<(), Error> {
+        let response = call(
+            &self.channel,
+            &mut Message::new(protocol::FSYNC, &[])?,
+            deadline,
+        )?;
+        if !response.words().is_empty() {
+            return Err(Error::InvalidData);
+        }
+        Ok(())
+    }
+
     pub fn write_at(&self, offset: usize, input: &[u8], deadline: u64) -> Result<usize, Error> {
         let length = input.len();
         if length == 0 {

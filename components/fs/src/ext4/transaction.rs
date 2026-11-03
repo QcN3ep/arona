@@ -11,6 +11,9 @@ impl Volume {
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<T, Error>,
     ) -> Result<T, Error> {
+        if self.closed {
+            return Err(Error::Unavailable);
+        }
         if let Some(error) = self.failure {
             return Err(error);
         }
@@ -24,6 +27,10 @@ impl Volume {
                 return Err(error);
             }
         };
+        if let Err(error) = self.begin_update() {
+            self.pending.clear();
+            return Err(error);
+        }
         let pending = core::mem::take(&mut self.pending);
         for (number, bytes) in &pending {
             if let Err(error) = self
@@ -42,6 +49,71 @@ impl Volume {
             self.cache.insert(number, bytes);
         }
         Ok(value)
+    }
+
+    fn begin_update(&mut self) -> Result<(), Error> {
+        if !self.disk.supports_flush() {
+            return Err(Error::Unsupported);
+        }
+        if !self.dirty {
+            let staged = self.pending.remove(&0);
+            let original = self.block(0);
+            if let Some(bytes) = staged {
+                self.pending.insert(0, bytes);
+            }
+            let mut bytes = original?;
+            Rc::make_mut(&mut bytes)[1082..1084].copy_from_slice(&0u16.to_le_bytes());
+            let result = self
+                .disk
+                .write(self.start, &bytes)
+                .and_then(|_| self.disk.flush());
+            if let Err(error) = result {
+                self.failure = Some(error);
+                return Err(error);
+            }
+            self.cache.insert(0, bytes);
+            self.dirty = true;
+        }
+        if let Some(bytes) = self.pending.get_mut(&0) {
+            Rc::make_mut(bytes)[1082..1084].copy_from_slice(&0u16.to_le_bytes());
+        }
+        Ok(())
+    }
+
+    pub fn sync(&mut self) -> Result<(), Error> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        if self.closed {
+            return Err(Error::Unavailable);
+        }
+        if self.dirty
+            && let Err(error) = self.disk.flush()
+        {
+            self.failure = Some(error);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn unmount(&mut self) -> Result<(), Error> {
+        self.sync()?;
+        if self.dirty {
+            let mut bytes = self.block(0)?;
+            Rc::make_mut(&mut bytes)[1082..1084].copy_from_slice(&1u16.to_le_bytes());
+            if let Err(error) = self
+                .disk
+                .write(self.start, &bytes)
+                .and_then(|_| self.disk.flush())
+            {
+                self.failure = Some(error);
+                return Err(error);
+            }
+            self.dirty = false;
+        }
+        self.disk.release(self.start);
+        self.closed = true;
+        Ok(())
     }
 
     pub fn stage(&mut self, number: u32, bytes: Rc<[u8; BLOCK_SIZE]>) {

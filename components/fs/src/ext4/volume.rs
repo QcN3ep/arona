@@ -15,6 +15,8 @@ use alloc::{
 pub(super) struct Volume {
     pub disk: Rc<Disk>,
     pub start: u64,
+    pub(super) dirty: bool,
+    pub(super) closed: bool,
     pub blocks: u32,
     pub(super) allocation_hint: u32,
     pub inodes: u32,
@@ -83,9 +85,12 @@ impl Volume {
         if inodes.div_ceil(inodes_per_group) != count {
             return Err(Error::InvalidData);
         }
+        disk.claim(start, length)?;
         let mut volume = Self {
             disk,
             start,
+            dirty: false,
+            closed: false,
             blocks,
             allocation_hint: 0,
             inodes,
@@ -144,6 +149,9 @@ impl Volume {
     }
 
     pub fn block(&mut self, number: u32) -> Result<Rc<[u8; BLOCK_SIZE]>, Error> {
+        if self.closed {
+            return Err(Error::Unavailable);
+        }
         if let Some(error) = self.failure {
             return Err(error);
         }
@@ -233,5 +241,13 @@ impl Volume {
             number,
             &bytes[offset % BLOCK_SIZE..offset % BLOCK_SIZE + self.inode_size],
         )
+    }
+}
+
+impl Drop for Volume {
+    fn drop(&mut self) {
+        if !self.closed {
+            self.disk.release(self.start);
+        }
     }
 }

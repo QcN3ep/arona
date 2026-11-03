@@ -49,9 +49,7 @@ impl Namespace {
         let path = normalize(path)?;
         let mut mounts = self.mounts.borrow_mut();
         let filesystem = mounts.get(&path).ok_or(Error::NotFound)?;
-        if filesystem.busy() {
-            return Err(Error::Busy);
-        }
+        filesystem.unmount()?;
         mounts.remove(&path);
         Ok(())
     }
@@ -130,6 +128,15 @@ impl Namespace {
         Err(Error::ReadOnly)
     }
 
+    pub fn shutdown(&self) -> Result<(), Error> {
+        let mut mounts = self.mounts.borrow_mut();
+        while let Some(entry) = mounts.first_entry() {
+            entry.get().unmount()?;
+            entry.remove();
+        }
+        Ok(())
+    }
+
     pub fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
         let path = normalize(path)?;
         for (prefix, filesystem) in self.mounts.borrow().iter() {
@@ -169,6 +176,12 @@ impl ReadAt for File {
 }
 
 impl File {
+    pub fn fsync(&self) -> Result<(), Error> {
+        match self {
+            Self::Archive(_) => Ok(()),
+            Self::Ext4(file) => file.fsync(),
+        }
+    }
     pub fn write_at(&self, offset: usize, bytes: &[u8]) -> Result<usize, Error> {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),

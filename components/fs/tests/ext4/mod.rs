@@ -66,16 +66,31 @@ fn main() {
         .unwrap();
         let session = Session::open(process::task(), &control, id).unwrap();
         let disk = Rc::new(Disk::new(process::task(), session).unwrap());
-        read_volume(&disk);
-        write_volume(&disk);
-        for index in 1..7 {
-            assert!(
-                Ext4::mount(Rc::clone(&disk), index * SLICE, SLICE).is_err(),
-                "corrupt volume {index}"
-            );
+        if disk.read_only() {
+            read_only(&disk);
+        } else if disk.capacity() == 2 * SLICE {
+            failure(&disk, false);
+        } else if disk.capacity() == 3 * SLICE {
+            failure(&disk, true);
+        } else {
+            if !persisted(&disk) {
+                read_volume(&disk);
+                write_volume(&disk);
+                persistence(&disk);
+                dirty_volume(&disk);
+            }
+            for index in 1..8 {
+                assert!(
+                    Ext4::mount(Rc::clone(&disk), index * SLICE, SLICE).is_err(),
+                    "corrupt volume {index}"
+                );
+            }
         }
+        let writable = !disk.read_only() && disk.capacity() > 3 * SLICE;
         drop(disk);
-        mount_service(&control, id);
+        if writable {
+            mount_service(&control, id);
+        }
         drop(control);
         worker.join().unwrap();
         tested = true;
@@ -179,6 +194,7 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
         .rename("/var/session/file", "/var/session/renamed", deadline())
         .unwrap();
     client.unlink("/var/session/renamed", deadline()).unwrap();
+    writable.fsync(deadline()).unwrap();
     drop(writable);
     client.unlink("/var/session", deadline()).unwrap();
     assert!(matches!(
@@ -263,6 +279,82 @@ fn write_volume(disk: &Rc<Disk>) {
     let mut text = [0; 4];
     tree.read_exact_at(4096 * 4 + 3, &mut text).unwrap();
     assert_eq!(&text, b"tree");
+    drop(tree);
+    filesystem.unmount().unwrap();
+}
+
+fn persistence(disk: &Rc<Disk>) {
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    assert!(matches!(
+        Ext4::mount(Rc::clone(disk), 0, SLICE),
+        Err(Error::Busy)
+    ));
+    let file = filesystem.create(b"/persistent").unwrap();
+    file.write_at(4093, b"survives reboot").unwrap();
+    file.fsync().unwrap();
+    assert_eq!(filesystem.unmount(), Err(Error::Busy));
+    drop(file);
+    filesystem.unmount().unwrap();
+    assert_eq!(filesystem.mkdir(b"/closed"), Err(Error::Unavailable));
+    assert!(persisted(disk));
+}
+
+fn persisted(disk: &Rc<Disk>) -> bool {
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let file = match filesystem.open("/persistent") {
+        Ok(file) => file,
+        Err(Error::NotFound) => return false,
+        Err(error) => panic!("persistent file failed: {error:?}"),
+    };
+    let mut bytes = [1; 4108];
+    file.read_exact_at(0, &mut bytes).unwrap();
+    assert!(bytes[..4093].iter().all(|byte| *byte == 0));
+    assert_eq!(&bytes[4093..], b"survives reboot");
+    drop(file);
+    filesystem.unmount().unwrap();
+    true
+}
+
+fn dirty_volume(disk: &Rc<Disk>) {
+    let filesystem = Ext4::mount(Rc::clone(disk), 7 * SLICE, SLICE).unwrap();
+    let file = filesystem.create(b"/unmounted").unwrap();
+    file.write_at(0, b"dirty").unwrap();
+    file.fsync().unwrap();
+    drop(file);
+    drop(filesystem);
+    assert!(matches!(
+        Ext4::mount(Rc::clone(disk), 7 * SLICE, SLICE),
+        Err(Error::Unsupported)
+    ));
+}
+
+fn read_only(disk: &Rc<Disk>) {
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let file = filesystem.open("/data/message").unwrap();
+    assert_eq!(file.write_at(0, b"denied"), Err(Error::ReadOnly));
+    assert_eq!(filesystem.mkdir(b"/denied"), Err(Error::ReadOnly));
+    file.fsync().unwrap();
+    drop(file);
+    filesystem.unmount().unwrap();
+}
+
+fn failure(disk: &Rc<Disk>, flush: bool) {
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let file = filesystem.open("/data/message").unwrap();
+    if flush {
+        file.write_at(0, b"pending").unwrap();
+        assert_eq!(file.fsync(), Err(Error::Io));
+    } else {
+        assert_eq!(file.write_at(0, b"pending"), Err(Error::Io));
+    }
+    assert_eq!(file.fsync(), Err(Error::Io));
+    drop(file);
+    assert_eq!(filesystem.unmount(), Err(Error::Io));
+    drop(filesystem);
+    assert!(matches!(
+        Ext4::mount(Rc::clone(disk), 0, SLICE),
+        Err(Error::Unsupported)
+    ));
 }
 
 fn directory_operations(filesystem: &Ext4) {

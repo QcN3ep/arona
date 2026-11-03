@@ -2,6 +2,7 @@
 
 //! 块设备会话上的定长磁盘访问。
 
+use alloc::vec::Vec;
 use core::cell::RefCell;
 use devmgr::block::{Session, Status};
 use runtime::{FrameAllocation, Handle, Rights, Task, thread};
@@ -15,6 +16,7 @@ pub struct Disk {
     capacity: u64,
     read_only: bool,
     flush: bool,
+    volumes: RefCell<Vec<(u64, u64)>>,
 }
 
 struct State {
@@ -38,6 +40,7 @@ impl Disk {
             capacity: info.capacity,
             read_only: info.read_only,
             flush: info.flush,
+            volumes: RefCell::new(Vec::new()),
         })
     }
 
@@ -49,6 +52,39 @@ impl Disk {
     }
     pub fn supports_flush(&self) -> bool {
         self.flush
+    }
+
+    pub(crate) fn claim(&self, start: u64, length: u64) -> Result<(), Error> {
+        let end = start.checked_add(length).ok_or(Error::InvalidRequest)?;
+        let mut volumes = self.volumes.borrow_mut();
+        if volumes
+            .iter()
+            .any(|&(first, last)| start < last && first < end)
+        {
+            return Err(Error::Busy);
+        }
+        volumes.push((start, end));
+        Ok(())
+    }
+    pub(crate) fn release(&self, start: u64) {
+        self.volumes
+            .borrow_mut()
+            .retain(|&(first, _)| first != start);
+    }
+
+    pub fn flush(&self) -> Result<(), Error> {
+        if !self.flush {
+            return Err(Error::Unsupported);
+        }
+        let mut state = self.state.borrow_mut();
+        if state.failed {
+            return Err(Error::Unavailable);
+        }
+        let id = state.next;
+        state.next = id.checked_add(1).ok_or(Error::Unavailable)?;
+        state.failed = true;
+        state.session.flush(id)?;
+        state.complete(id, 0)
     }
 
     pub fn write(&self, offset: u64, input: &[u8; BLOCK_SIZE]) -> Result<(), Error> {

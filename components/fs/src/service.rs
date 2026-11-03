@@ -66,7 +66,10 @@ pub fn serve(
                 }
             }
             Err(runtime::Error::Kernel(KernelError::WouldBlock)) => {}
-            Err(runtime::Error::Kernel(KernelError::EndOfStream)) => return Ok(()),
+            Err(runtime::Error::Kernel(KernelError::EndOfStream)) => {
+                drop(files);
+                return namespace.shutdown();
+            }
             Err(error) => return Err(error.into()),
         }
         let mut index = 0;
@@ -236,6 +239,10 @@ fn file_request(file: &File, mut request: ReceivedMessage) -> Result<Message, Er
             let size = usize::try_from(*size).map_err(|_| Error::InvalidRequest)?;
             file.truncate(size)?;
             Ok(Message::new(protocol::SUCCESS, &[size as u64])?)
+        }
+        (protocol::FSYNC, []) if request.handles().is_empty() => {
+            file.fsync()?;
+            Ok(Message::new(protocol::SUCCESS, &[])?)
         }
         (protocol::FILE_INFO, []) if request.handles().is_empty() => {
             Ok(Message::new(protocol::SUCCESS, &[file.len() as u64])?)

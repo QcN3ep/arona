@@ -43,6 +43,13 @@ impl Ext4 {
         })
     }
 
+    pub fn unmount(&self) -> Result<(), Error> {
+        if self.busy() {
+            return Err(Error::Busy);
+        }
+        self.volume.borrow_mut().unmount()
+    }
+
     pub fn busy(&self) -> bool {
         Rc::strong_count(&self.volume) != 1
     }
@@ -124,6 +131,10 @@ impl ReadAt for File {
 }
 
 impl File {
+    pub fn fsync(&self) -> Result<(), Error> {
+        self.volume.borrow_mut().sync()
+    }
+
     pub fn write_at(&self, offset: usize, input: &[u8]) -> Result<usize, Error> {
         let count = self
             .volume
