@@ -66,27 +66,8 @@ fn main() {
         .unwrap();
         let session = Session::open(process::task(), &control, id).unwrap();
         let disk = Rc::new(Disk::new(process::task(), session).unwrap());
-        if disk.read_only() {
-            read_only(&disk);
-        } else if disk.capacity() == 2 * SLICE {
-            failure(&disk, false);
-        } else if disk.capacity() == 3 * SLICE {
-            failure(&disk, true);
-        } else {
-            if !persisted(&disk) {
-                read_volume(&disk);
-                write_volume(&disk);
-                persistence(&disk);
-                dirty_volume(&disk);
-            }
-            for index in 1..8 {
-                assert!(
-                    Ext4::mount(Rc::clone(&disk), index * SLICE, SLICE).is_err(),
-                    "corrupt volume {index}"
-                );
-            }
-        }
-        let writable = !disk.read_only() && disk.capacity() > 3 * SLICE;
+1        exercise(&disk);
+        let writable = !disk.read_only() && disk.capacity() >= 8 * SLICE;
         drop(disk);
         if writable {
             mount_service(&control, id);
@@ -99,6 +80,44 @@ fn main() {
     bootstrap
         .send(&mut Message::new(73, &[2]).unwrap(), WaitMode::Forever)
         .unwrap();
+}
+
+fn exercise(disk: &Rc<Disk>) {
+    if disk.read_only() {
+        read_only(disk);
+    } else if matches!(disk.capacity() / SLICE, 2 | 3 | 5) {
+        failure(disk);
+    } else if disk.capacity() == 4 * SLICE {
+        assert!(matches!(
+            Ext4::mount(Rc::clone(disk), 0, SLICE),
+            Err(Error::InvalidData)
+        ));
+        let mut bytes = [0; 4096];
+        disk.read(0, &mut bytes).unwrap();
+        assert_eq!(&bytes[1082..1084], &[0, 0]);
+    } else if disk.capacity() == 6 * SLICE {
+        assert!(matches!(
+            Ext4::mount(Rc::clone(disk), 0, SLICE),
+            Err(Error::Io)
+        ));
+        failure(disk);
+    } else {
+        if !persisted(disk) {
+            read_volume(disk);
+            write_volume(disk);
+            persistence(disk);
+            dirty_volume(disk);
+            recover_orphan(disk);
+            no_journal(disk);
+            large_write(disk);
+        }
+        for index in 1..7 {
+            assert!(
+                Ext4::mount(Rc::clone(disk), index * SLICE, SLICE).is_err(),
+                "corrupt volume {index}"
+            );
+        }
+    }
 }
 
 fn read_volume(disk: &Rc<Disk>) {
@@ -132,14 +151,17 @@ fn read_volume(disk: &Rc<Disk>) {
     assert_eq!(&tail[..3], b"raw");
 }
 
-fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
+fn start_service() -> (fs::Control<'static>, thread::JoinHandle<()>) {
     let (channel, server) = process::task()
         .channel(
             Rights::READ_WRITE | Rights::WAIT,
             Rights::READ | Rights::WAIT,
         )
         .unwrap();
-    let worker = thread::spawn(move || fs::service::run(process::task(), server).unwrap()).unwrap();
+    let worker = thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || fs::service::run(process::task(), server).unwrap())
+        .unwrap();
     let mut archive = [b'0'; 124];
     archive[..6].copy_from_slice(b"070701");
     archive[94..102].copy_from_slice(b"0000000b");
@@ -151,6 +173,11 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
     frames.write(0, &archive).unwrap();
     let control =
         fs::Control::start(process::task(), channel, frames, archive.len(), deadline()).unwrap();
+    (control, worker)
+}
+
+fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
+    let (control, worker) = start_service();
     let client = control.connect(deadline()).unwrap();
     control
         .mount(
@@ -322,10 +349,13 @@ fn dirty_volume(disk: &Rc<Disk>) {
     file.fsync().unwrap();
     drop(file);
     drop(filesystem);
-    assert!(matches!(
-        Ext4::mount(Rc::clone(disk), 7 * SLICE, SLICE),
-        Err(Error::Unsupported)
-    ));
+    let recovered = Ext4::mount(Rc::clone(disk), 7 * SLICE, SLICE).unwrap();
+    let file = recovered.open("/unmounted").unwrap();
+    let mut bytes = [0; 5];
+    file.read_exact_at(0, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"dirty");
+    drop(file);
+    recovered.unmount().unwrap();
 }
 
 fn read_only(disk: &Rc<Disk>) {
@@ -338,23 +368,90 @@ fn read_only(disk: &Rc<Disk>) {
     filesystem.unmount().unwrap();
 }
 
-fn failure(disk: &Rc<Disk>, flush: bool) {
+fn failure(disk: &Rc<Disk>) {
+    let mut superblock = [0; 4096];
+    disk.read(0, &mut superblock).unwrap();
+    let recovering = superblock[1082..1084] == [0, 0];
     let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
     let file = filesystem.open("/data/message").unwrap();
-    if flush {
-        file.write_at(0, b"pending").unwrap();
-        assert_eq!(file.fsync(), Err(Error::Io));
+    if recovering {
+        let mut bytes = [0; 7];
+        file.read_exact_at(0, &mut bytes).unwrap();
+        if disk.capacity() == 5 * SLICE {
+            assert_eq!(bytes, [0, 1, 2, 3, 4, 5, 6]);
+        } else {
+            assert_eq!(&bytes, b"\xc0\x3b\x39\x98log");
+            if matches!(disk.capacity() / SLICE, 2 | 6) {
+                let mut output = alloc::vec![0; 1024 * 1024 + 4096];
+                file.read_exact_at(0, &mut output).unwrap();
+                assert!(output[7..].iter().all(|byte| *byte == 0x45));
+            }
+        }
+        file.fsync().unwrap();
+        drop(file);
+        filesystem.unmount().unwrap();
     } else {
-        assert_eq!(file.write_at(0, b"pending"), Err(Error::Io));
+        let mut input =
+            alloc::vec![0x45; if disk.capacity() == 2 * SLICE { 1024 * 1024 + 4096 } else { 7 }];
+        input[..7].copy_from_slice(b"\xc0\x3b\x39\x98log");
+        assert_eq!(file.write_at(0, &input), Err(Error::Io));
+        assert_eq!(file.fsync(), Err(Error::Io));
+        drop(file);
+        assert_eq!(filesystem.unmount(), Err(Error::Io));
     }
-    assert_eq!(file.fsync(), Err(Error::Io));
+}
+
+fn recover_orphan(disk: &Rc<Disk>) {
+    let start = 8 * SLICE;
+    let mut before = [0; 4096];
+    disk.read(start, &mut before).unwrap();
+    assert_ne!(&before[1256..1260], &[0; 4]);
+    let filesystem = Ext4::mount(Rc::clone(disk), start, SLICE).unwrap();
+    assert!(matches!(filesystem.open("/orphan"), Err(Error::NotFound)));
+    filesystem.unmount().unwrap();
+    let mut after = [0; 4096];
+    disk.read(start, &mut after).unwrap();
+    assert_eq!(&after[1256..1260], &[0; 4]);
+    for offset in [1036, 1040] {
+        let previous = u32::from_le_bytes(before[offset..offset + 4].try_into().unwrap());
+        let current = u32::from_le_bytes(after[offset..offset + 4].try_into().unwrap());
+        assert_eq!(current - previous, if offset == 1036 { 3 } else { 1 });
+    }
+}
+
+fn no_journal(disk: &Rc<Disk>) {
+    let filesystem = Ext4::mount(Rc::clone(disk), 9 * SLICE, SLICE).unwrap();
+    let file = filesystem.open("/data/message").unwrap();
+    assert_eq!(file.len(), 12000);
+    assert_eq!(file.write_at(0, b"denied"), Err(Error::ReadOnly));
+    assert_eq!(filesystem.mkdir(b"/denied"), Err(Error::ReadOnly));
     drop(file);
-    assert_eq!(filesystem.unmount(), Err(Error::Io));
-    drop(filesystem);
-    assert!(matches!(
-        Ext4::mount(Rc::clone(disk), 0, SLICE),
-        Err(Error::Unsupported)
-    ));
+    filesystem.unmount().unwrap();
+}
+
+fn large_write(disk: &Rc<Disk>) {
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let file = filesystem.create(b"/large").unwrap();
+    let size = 4 * 1024 * 1024 + 4096;
+    let bytes: alloc::vec::Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
+    let first = file.write_at(0, &bytes).unwrap();
+    assert!(first > 0);
+    assert!(first < bytes.len());
+    let mut done = first;
+    while done < bytes.len() {
+        let count = file.write_at(done, &bytes[done..]).unwrap();
+        assert!(count > 0);
+        done += count;
+    }
+    file.fsync().unwrap();
+    for offset in [0, bytes.len() / 2, bytes.len() - 4096] {
+        let mut output = [0; 4096];
+        file.read_exact_at(offset, &mut output).unwrap();
+        assert_eq!(output, bytes[offset..offset + output.len()]);
+    }
+    drop(file);
+    filesystem.unlink(b"/large").unwrap();
+    filesystem.unmount().unwrap();
 }
 
 fn directory_operations(filesystem: &Ext4) {

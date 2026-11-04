@@ -183,7 +183,7 @@ impl File<'_> {
         let [count, size] = *response.words() else {
             return Err(Error::InvalidData);
         };
-        if count != length as u64 {
+        if count > length as u64 {
             return Err(Error::InvalidData);
         }
         self.length

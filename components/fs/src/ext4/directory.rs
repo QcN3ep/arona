@@ -68,6 +68,7 @@ impl Volume {
                 mode: if directory { 0x41ed } else { 0x81a4 },
                 size: 0,
                 sectors: 0,
+                orphan_next: 0,
                 links: if directory { 2 } else { 1 },
                 root: [0; 60],
             };
@@ -232,8 +233,12 @@ impl Volume {
             inode.links.checked_sub(1).ok_or(Error::InvalidData)?
         };
         self.store_inode(inode)?;
-        if inode.links == 0 && !self.is_open(inode.number) {
-            self.destroy_inode(inode)?;
+        if inode.links == 0 {
+            if self.is_open(inode.number) {
+                self.add_orphan(inode)?;
+            } else {
+                self.destroy_inode(inode)?;
+            }
         }
         Ok(())
     }

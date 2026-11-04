@@ -230,11 +230,11 @@ fn scenario(_: usize) -> usize {
         }
         load_segment(&task, image, header);
     }
-    let stack = task.allocate_frames(16).unwrap();
+    let stack = task.allocate_frames(64).unwrap();
     let range = task
         .map(
             &stack,
-            0..16,
+            0..64,
             MappingOptions::new(PagePermissions::ReadWrite),
         )
         .unwrap();

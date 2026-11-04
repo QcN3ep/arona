@@ -12,7 +12,7 @@ impl Volume {
             .checked_add(input.len())
             .filter(|end| *end <= 2 * 1024 * 1024 * 1024)
             .ok_or(Error::InvalidRequest)?;
-        let mut inode = self.inode(number)?;
+        let inode = self.inode(number)?;
         if inode.directory() {
             return Err(Error::IsDirectory);
         }
@@ -21,8 +21,25 @@ impl Volume {
         }
         let extents = self.extents(&inode.root)?;
         self.check_space(&extents, offset, end)?;
+        let mut length = input.len();
+        loop {
+            match self.write_blocks(&inode, offset, &input[..length], &extents) {
+                Err(Error::NoSpace) if length > BLOCK_SIZE => length /= 2,
+                result => return result,
+            }
+        }
+    }
+
+    fn write_blocks(
+        &mut self,
+        inode: &Inode,
+        offset: usize,
+        input: &[u8],
+        extents: &[Extent],
+    ) -> Result<usize, Error> {
         self.transaction(|volume| {
-            let mut extents = extents;
+            let mut inode = inode.clone();
+            let mut extents = extents.to_vec();
             if offset as u64 > inode.size {
                 volume.zero_tail(&inode, offset)?;
             }
@@ -80,7 +97,7 @@ impl Volume {
                 })?;
                 done += length;
             }
-            inode.size = inode.size.max(end as u64);
+            inode.size = inode.size.max((offset + input.len()) as u64);
             volume.replace_extents(&mut inode, extents)?;
             volume.store_inode(&inode)?;
             Ok(input.len())

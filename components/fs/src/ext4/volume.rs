@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use super::FileIdentity;
-use super::{half, inode::Inode, word};
+use super::{half, inode::Inode, journal::Journal, word};
 use crate::{
     Error,
     block::{BLOCK_SIZE, Disk},
@@ -17,6 +17,7 @@ pub(super) struct Volume {
     pub start: u64,
     pub(super) dirty: bool,
     pub(super) closed: bool,
+    pub(super) journal: Option<Journal>,
     pub blocks: u32,
     pub(super) allocation_hint: u32,
     pub inodes: u32,
@@ -56,12 +57,11 @@ impl Volume {
             || word(sb, 28) != 2
             || word(sb, 20) != 0
             || word(sb, 76) != 1
-            || word(sb, 92) != 0
-            || word(sb, 96) & !0x42 != 0
+            || word(sb, 92) & !4 != 0
+            || word(sb, 96) & !0x46 != 0
             || word(sb, 96) & 0x42 != 0x42
             || word(sb, 100) & !3 != 0
-            || half(sb, 58) != 1
-            || word(sb, 232) != 0
+            || half(sb, 58) & !1 != 0
             || word(sb, 336) != 0
             || !matches!(half(sb, 88), 128 | 256)
         {
@@ -91,6 +91,7 @@ impl Volume {
             start,
             dirty: false,
             closed: false,
+            journal: None,
             blocks,
             allocation_hint: 0,
             inodes,
@@ -105,6 +106,13 @@ impl Volume {
             open: BTreeMap::new(),
         };
         volume.load_groups()?;
+        volume.load_journal(sb)?;
+        let root = volume.inode(2)?;
+        if !root.directory() {
+            return Err(Error::InvalidData);
+        }
+        volume.entries(&root)?;
+        volume.mark_clean()?;
         Ok(volume)
     }
 
@@ -178,7 +186,12 @@ impl Volume {
     }
 
     pub fn data_block(&self, number: u32) -> bool {
-        if number >= self.blocks {
+        if number >= self.blocks
+            || self
+                .journal
+                .as_ref()
+                .is_some_and(|journal| journal.contains(number))
+        {
             return false;
         }
         let index = number / self.blocks_per_group;

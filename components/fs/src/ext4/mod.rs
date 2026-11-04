@@ -6,6 +6,8 @@ mod allocator;
 mod directory;
 mod extent;
 mod inode;
+mod journal;
+mod recovery;
 mod transaction;
 mod volume;
 mod write;
@@ -32,12 +34,7 @@ pub(super) struct FileIdentity {
 
 impl Ext4 {
     pub fn mount(disk: Rc<Disk>, start: u64, length: u64) -> Result<Self, Error> {
-        let mut volume = Volume::mount(disk, start, length)?;
-        let root = volume.inode(2)?;
-        if !root.directory() {
-            return Err(Error::InvalidData);
-        }
-        volume.entries(&root)?;
+        let volume = Volume::mount(disk, start, length)?;
         Ok(Self {
             volume: Rc::new(RefCell::new(volume)),
         })

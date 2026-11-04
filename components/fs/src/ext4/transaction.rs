@@ -17,7 +17,7 @@ impl Volume {
         if let Some(error) = self.failure {
             return Err(error);
         }
-        if self.disk.read_only() {
+        if self.disk.read_only() || self.journal.is_none() {
             return Err(Error::ReadOnly);
         }
         let value = match operation(self) {
@@ -27,20 +27,29 @@ impl Volume {
                 return Err(error);
             }
         };
+        if let Err(error) = self
+            .journal
+            .as_ref()
+            .unwrap()
+            .check_capacity(self.pending.len())
+        {
+            self.pending.clear();
+            return Err(error);
+        }
         if let Err(error) = self.begin_update() {
             self.pending.clear();
             return Err(error);
         }
         let pending = core::mem::take(&mut self.pending);
-        for (number, bytes) in &pending {
-            if let Err(error) = self
-                .disk
-                .write(self.start + u64::from(*number) * BLOCK_SIZE as u64, bytes)
-            {
-                self.failure = Some(error);
-                self.cache.clear();
-                return Err(error);
-            }
+        if let Err(error) = self
+            .journal
+            .as_mut()
+            .unwrap()
+            .commit(&self.disk, self.start, &pending)
+        {
+            self.failure = Some(error);
+            self.cache.clear();
+            return Err(error);
         }
         for (number, bytes) in pending {
             if self.cache.len() >= 64 {
@@ -63,6 +72,8 @@ impl Volume {
             }
             let mut bytes = original?;
             Rc::make_mut(&mut bytes)[1082..1084].copy_from_slice(&0u16.to_le_bytes());
+            let features = super::word(&bytes[..], 1120) | 4;
+            Rc::make_mut(&mut bytes)[1120..1124].copy_from_slice(&features.to_le_bytes());
             let result = self
                 .disk
                 .write(self.start, &bytes)
@@ -76,6 +87,8 @@ impl Volume {
         }
         if let Some(bytes) = self.pending.get_mut(&0) {
             Rc::make_mut(bytes)[1082..1084].copy_from_slice(&0u16.to_le_bytes());
+            let features = super::word(&bytes[..], 1120) | 4;
+            Rc::make_mut(bytes)[1120..1124].copy_from_slice(&features.to_le_bytes());
         }
         Ok(())
     }
@@ -98,9 +111,18 @@ impl Volume {
 
     pub fn unmount(&mut self) -> Result<(), Error> {
         self.sync()?;
+        self.mark_clean()?;
+        self.disk.release(self.start);
+        self.closed = true;
+        Ok(())
+    }
+
+    pub fn mark_clean(&mut self) -> Result<(), Error> {
         if self.dirty {
             let mut bytes = self.block(0)?;
             Rc::make_mut(&mut bytes)[1082..1084].copy_from_slice(&1u16.to_le_bytes());
+            let features = super::word(&bytes[..], 1120) & !4;
+            Rc::make_mut(&mut bytes)[1120..1124].copy_from_slice(&features.to_le_bytes());
             if let Err(error) = self
                 .disk
                 .write(self.start, &bytes)
@@ -110,9 +132,8 @@ impl Volume {
                 return Err(error);
             }
             self.dirty = false;
+            self.cache.insert(0, bytes);
         }
-        self.disk.release(self.start);
-        self.closed = true;
         Ok(())
     }
 
@@ -159,7 +180,10 @@ impl Volume {
         }
         let result = self.inode(number).and_then(|mut inode: Inode| {
             if inode.links == 0 {
-                self.transaction(|volume| volume.destroy_inode(&mut inode))
+                self.transaction(|volume| {
+                    volume.remove_orphan(&inode)?;
+                    volume.destroy_inode(&mut inode)
+                })
             } else {
                 Ok(())
             }

@@ -4,12 +4,14 @@ use super::{half, volume::Volume, word};
 use crate::{Error, block::BLOCK_SIZE};
 use alloc::{collections::BTreeSet, vec::Vec};
 
+#[derive(Clone)]
 pub(super) struct Inode {
     pub number: u32,
     pub size: u64,
     pub mode: u16,
     pub links: u16,
     pub sectors: u64,
+    pub orphan_next: u32,
     pub root: [u8; 60],
 }
 
@@ -28,7 +30,7 @@ impl Inode {
             return Err(Error::Unsupported);
         }
         if word(bytes, 32) != 0x80000
-            || word(bytes, 20) != 0
+            || word(bytes, 20) != 0 && half(bytes, 26) != 0
             || word(bytes, 104) != 0
             || size > 2 * 1024 * 1024 * 1024
             || bytes.len() == 256 && half(bytes, 128) > 128
@@ -41,6 +43,7 @@ impl Inode {
             mode,
             links: half(bytes, 26),
             sectors: u64::from(word(bytes, 28)),
+            orphan_next: word(bytes, 20),
             root: bytes[40..100].try_into().unwrap(),
         })
     }
