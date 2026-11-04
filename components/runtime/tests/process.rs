@@ -20,6 +20,7 @@ pub fn run(mut startup: ReceivedMessage) {
     let mut header = [0; 64];
     image.read(0, &mut header).unwrap();
     let entry = word(&header, 24) as usize;
+    frame_io();
     rollback();
     let mut child = ChildTask::new(process::task(), ProcessStart::REQUIRED_RIGHTS).unwrap();
     let count = u16::from_le_bytes(header[56..58].try_into().unwrap());
@@ -53,6 +54,26 @@ pub fn run(mut startup: ReceivedMessage) {
     assert_eq!(task.wait(deadline).unwrap(), 0);
     assert_eq!(super::INITIALIZED.get(), 37);
     assert_eq!(super::ZERO.get(), 41);
+}
+
+fn frame_io() {
+    let mut frames = process::task().allocate(3, Rights::READ_WRITE).unwrap();
+    let mut expected = alloc::vec![0xa5; 3 * PAGE_SIZE];
+    frames.write(0, &expected).unwrap();
+    let input: alloc::vec::Vec<u8> = (0..PAGE_SIZE + 17)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let mut output = alloc::vec![0; expected.len() + 2];
+    for offset in [0, 1, 7, 8, PAGE_SIZE - 1, PAGE_SIZE, PAGE_SIZE + 1] {
+        frames.write(offset, &input[1..]).unwrap();
+        expected[offset..offset + input.len() - 1].copy_from_slice(&input[1..]);
+        frames.read(0, &mut output[1..expected.len() + 1]).unwrap();
+        assert_eq!(&output[1..expected.len() + 1], expected);
+        assert_eq!(output[0], 0);
+        assert_eq!(output[expected.len() + 1], 0);
+    }
+    frames.read(expected.len(), &mut []).unwrap();
+    frames.write(expected.len(), &[]).unwrap();
 }
 
 pub fn child(startup: ReceivedMessage) {

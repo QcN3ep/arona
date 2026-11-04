@@ -74,37 +74,57 @@ impl MemoryBuffer {
 
     pub(crate) fn read(&self, offset: usize, bytes: &mut [u8]) -> Result<(), MemoryError> {
         self.check(offset, bytes.len())?;
+        let mut words = [0; PAGE_SIZE / 8];
         let mut done = 0;
         while done < bytes.len() {
             let position = self.offset + offset + done;
             let frame = &self.frames[position / PAGE_SIZE];
             let inside = position % PAGE_SIZE;
-            let count = (bytes.len() - done).min(8 - inside % 8);
-            let mut word = [0];
-            frame.read(inside / 8, &mut word)?;
-            bytes[done..done + count]
-                .copy_from_slice(&word[0].to_le_bytes()[inside % 8..inside % 8 + count]);
-            done += count;
+            let count = (bytes.len() - done).min(PAGE_SIZE - inside);
+            let leading = inside % 8;
+            let word_count = (leading + count).div_ceil(8);
+            frame.read(inside / 8, &mut words[..word_count])?;
+            for (index, word) in words[..word_count].iter().enumerate() {
+                let start = if index == 0 { leading } else { 0 };
+                let end = (leading + count - index * 8).min(8);
+                let length = end - start;
+                bytes[done..done + length].copy_from_slice(&word.to_le_bytes()[start..end]);
+                done += length;
+            }
         }
         Ok(())
     }
 
     pub(crate) fn write(&self, offset: usize, bytes: &[u8]) -> Result<(), MemoryError> {
         self.check(offset, bytes.len())?;
+        let mut words = [0; PAGE_SIZE / 8];
         let mut done = 0;
         while done < bytes.len() {
             let position = self.offset + offset + done;
             let frame = &self.frames[position / PAGE_SIZE];
             let inside = position % PAGE_SIZE;
-            let count = (bytes.len() - done).min(8 - inside % 8);
-            let mut word = [0];
-            if count != 8 {
-                frame.read(inside / 8, &mut word)?;
+            let count = (bytes.len() - done).min(PAGE_SIZE - inside);
+            let leading = inside % 8;
+            let word_count = (leading + count).div_ceil(8);
+            if leading != 0 {
+                frame.read(inside / 8, &mut words[..1])?;
             }
-            let mut value = word[0].to_le_bytes();
-            value[inside % 8..inside % 8 + count].copy_from_slice(&bytes[done..done + count]);
-            frame.write(inside / 8, &[u64::from_le_bytes(value)])?;
-            done += count;
+            if !(leading + count).is_multiple_of(8) && (word_count > 1 || leading == 0) {
+                frame.read(
+                    inside / 8 + word_count - 1,
+                    &mut words[word_count - 1..word_count],
+                )?;
+            }
+            for (index, word) in words[..word_count].iter_mut().enumerate() {
+                let start = if index == 0 { leading } else { 0 };
+                let end = (leading + count - index * 8).min(8);
+                let length = end - start;
+                let mut value = word.to_le_bytes();
+                value[start..end].copy_from_slice(&bytes[done..done + length]);
+                *word = u64::from_le_bytes(value);
+                done += length;
+            }
+            frame.write(inside / 8, &words[..word_count])?;
         }
         Ok(())
     }
