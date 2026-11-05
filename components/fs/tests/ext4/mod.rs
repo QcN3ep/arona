@@ -29,6 +29,7 @@ fn main() {
         .unwrap()
         .downcast::<DeviceSet>()
         .unwrap();
+    archive_metadata();
     let mut cursor = 0;
     let mut tested = false;
     while let Some(id) = devices.next(cursor).unwrap() {
@@ -105,6 +106,7 @@ fn exercise(disk: &Rc<Disk>) {
         if !persisted(disk) {
             read_volume(disk);
             write_volume(disk);
+            metadata_volume(disk);
             persistence(disk);
             dirty_volume(disk);
             recover_orphan(disk);
@@ -204,6 +206,7 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
     let raw = client.open_bytes(b"/var/data/\xff", deadline()).unwrap();
     assert_eq!(raw.read_at(0, &mut bytes, deadline()).unwrap(), 3);
     assert_eq!(&bytes[..3], b"raw");
+    service_metadata(&client);
     client.mkdir("/var/session", deadline()).unwrap();
     let writable = client.create("/var/session/file", deadline()).unwrap();
     assert_eq!(writable.write_at(5, b"hello", deadline()).unwrap(), 5);
@@ -238,6 +241,70 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
     drop(client);
     drop(control);
     worker.join().unwrap();
+}
+
+fn service_metadata(client: &fs::Client<'_>) {
+    client.mkdir_bytes(b"/var/\xfe", deadline()).unwrap();
+    let directory = client.open_directory(b"/var/\xfe", deadline()).unwrap();
+    let file = client.create_bytes(b"/var/\xfe/\xff", deadline()).unwrap();
+    let mut attributes = file.metadata(deadline()).unwrap().attributes();
+    attributes.permissions = 0o640;
+    attributes.uid = 100_000;
+    attributes.modified = fs::Timestamp {
+        seconds: 4_000_000_000,
+        nanoseconds: 987_654_321,
+    };
+    file.set_attributes(attributes, deadline()).unwrap();
+    assert_eq!(
+        client
+            .metadata(b"/var/\xfe/\xff", deadline())
+            .unwrap()
+            .attributes(),
+        attributes
+    );
+    client
+        .hard_link(b"/var/\xfe/\xff", b"/var/\xfe/link", deadline())
+        .unwrap();
+    assert_eq!(file.metadata(deadline()).unwrap().links, 2);
+    assert_eq!(file.append(b"first", deadline()).unwrap(), (0, 5));
+    let other = client.open_bytes(b"/var/\xfe/link", deadline()).unwrap();
+    assert_eq!(other.append(b"second", deadline()).unwrap(), (5, 6));
+    client
+        .symlink(b"../\xfe/link", b"/var/\xfe/symlink", deadline())
+        .unwrap();
+    assert_eq!(
+        client.read_link(b"/var/\xfe/symlink", deadline()).unwrap(),
+        b"../\xfe/link"
+    );
+    client
+        .rename_bytes(b"/var/\xfe", b"/var/renamed", deadline())
+        .unwrap();
+    assert_eq!(directory.read_dir(deadline()).unwrap().len(), 3);
+    assert_eq!(
+        client
+            .read_dir_bytes(b"/var/renamed", deadline())
+            .unwrap()
+            .len(),
+        3
+    );
+    client
+        .unlink_bytes(b"/var/renamed/\xff", deadline())
+        .unwrap();
+    client
+        .unlink_bytes(b"/var/renamed/link", deadline())
+        .unwrap();
+    client
+        .unlink_bytes(b"/var/renamed/symlink", deadline())
+        .unwrap();
+    assert_eq!(file.metadata(deadline()).unwrap().links, 0);
+    let mut bytes = [0; 11];
+    file.read_at(0, &mut bytes, deadline()).unwrap();
+    assert_eq!(&bytes, b"firstsecond");
+    drop(other);
+    drop(file);
+    client.unlink_bytes(b"/var/renamed", deadline()).unwrap();
+    assert!(directory.read_dir(deadline()).unwrap().is_empty());
+    drop(directory);
 }
 
 fn deadline() -> u64 {
@@ -308,6 +375,95 @@ fn write_volume(disk: &Rc<Disk>) {
     assert_eq!(&text, b"tree");
     drop(tree);
     filesystem.unmount().unwrap();
+}
+
+fn metadata_volume(disk: &Rc<Disk>) {
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    filesystem.mkdir(b"/links").unwrap();
+    let file = filesystem.create(b"/links/\xff").unwrap();
+    let attributes = fs::Attributes {
+        permissions: 0o6751,
+        uid: 0x1234_5678,
+        gid: 0xabcd_0123,
+        accessed: fs::Timestamp {
+            seconds: -1,
+            nanoseconds: 123_456_789,
+        },
+        modified: fs::Timestamp {
+            seconds: 4_000_000_000,
+            nanoseconds: 999_999_999,
+        },
+        changed: fs::Timestamp {
+            seconds: 1_000_000,
+            nanoseconds: 42,
+        },
+    };
+    file.set_attributes(attributes).unwrap();
+    let before = file.metadata().unwrap();
+    assert_eq!(before.attributes(), attributes);
+    let mut invalid = attributes;
+    invalid.modified.seconds = i64::MAX;
+    assert_eq!(file.set_attributes(invalid), Err(Error::Unsupported));
+    assert_eq!(file.metadata().unwrap(), before);
+    filesystem
+        .hard_link(b"/links/\xff", b"/links/alias")
+        .unwrap();
+    let alias = filesystem.open_bytes(b"/links/alias").unwrap();
+    assert_eq!(alias.metadata().unwrap().inode, before.inode);
+    assert_eq!(alias.metadata().unwrap().links, 2);
+    assert_eq!(file.append(b"first").unwrap(), (0, 5));
+    assert_eq!(alias.append(b"second").unwrap(), (5, 6));
+    filesystem.unlink(b"/links/\xff").unwrap();
+    assert_eq!(file.metadata().unwrap().links, 1);
+    let mut bytes = [0; 11];
+    file.read_exact_at(0, &mut bytes).unwrap();
+    assert_eq!(&bytes, b"firstsecond");
+    filesystem
+        .symlink(b"../links/alias", b"/links/short")
+        .unwrap();
+    let long = alloc::vec![b'x'; 200];
+    filesystem.symlink(&long, b"/links/long").unwrap();
+    filesystem
+        .hard_link(b"/links/short", b"/links/short-alias")
+        .unwrap();
+    assert_eq!(filesystem.metadata(b"/links/short").unwrap().links, 2);
+    assert_eq!(
+        filesystem.read_link(b"/links/short").unwrap(),
+        b"../links/alias"
+    );
+    assert_eq!(filesystem.read_link(b"/links/long").unwrap(), long);
+    file.fsync().unwrap();
+    drop(file);
+    drop(alias);
+    filesystem.unmount().unwrap();
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    assert_eq!(
+        filesystem.metadata(b"/links/alias").unwrap().attributes(),
+        attributes
+    );
+    assert_eq!(
+        filesystem.read_link(b"/links/short-alias").unwrap(),
+        b"../links/alias"
+    );
+    assert_eq!(filesystem.read_link(b"/links/long").unwrap(), long);
+    directory_session(&filesystem);
+    filesystem.unmount().unwrap();
+}
+
+fn directory_session(filesystem: &Ext4) {
+    filesystem.mkdir(b"/session").unwrap();
+    filesystem.create(b"/session/entry").unwrap();
+    let directory = filesystem.open_directory(b"/session").unwrap();
+    let number = directory.metadata().unwrap().inode;
+    filesystem.rename(b"/session", b"/renamed-session").unwrap();
+    assert_eq!(directory.metadata().unwrap().inode, number);
+    assert_eq!(directory.read_dir().unwrap().len(), 1);
+    assert_eq!(filesystem.unmount(), Err(Error::Busy));
+    filesystem.unlink(b"/renamed-session/entry").unwrap();
+    filesystem.unlink(b"/renamed-session").unwrap();
+    assert_eq!(directory.metadata().unwrap().links, 0);
+    assert!(directory.read_dir().unwrap().is_empty());
+    drop(directory);
 }
 
 fn persistence(disk: &Rc<Disk>) {
@@ -497,4 +653,59 @@ fn directory_operations(filesystem: &Ext4) {
     drop(second);
     filesystem.unlink(b"/many/second").unwrap();
     filesystem.unlink(b"/many").unwrap();
+}
+
+fn archive_metadata() {
+    let mut bytes = alloc::vec::Vec::new();
+    for (name, data, inode, mode, links) in [
+        (b"data/first".as_slice(), b"".as_slice(), 7, 0o100640, 2),
+        (b"data/second", b"linked", 7, 0o100640, 2),
+        (b"data/symlink", b"../data/first", 8, 0o120777, 1),
+        (b"TRAILER!!!", b"", 0, 0, 0),
+    ] {
+        bytes.extend_from_slice(b"070701");
+        for field in [
+            inode,
+            mode,
+            123,
+            456,
+            links,
+            12345,
+            data.len() as u32,
+            0,
+            0,
+            0,
+            0,
+            name.len() as u32 + 1,
+            0,
+        ] {
+            bytes.extend_from_slice(alloc::format!("{field:08x}").as_bytes());
+        }
+        bytes.extend_from_slice(name);
+        bytes.push(0);
+        bytes.resize(bytes.len().next_multiple_of(4), 0);
+        bytes.extend_from_slice(data);
+        bytes.resize(bytes.len().next_multiple_of(4), 0);
+    }
+    let mut frames = process::task()
+        .allocate(bytes.len().div_ceil(4096) as u64, Rights::READ_WRITE)
+        .unwrap();
+    frames.write(0, &bytes).unwrap();
+    let archive = fs::archive::Archive::new(frames, bytes.len()).unwrap();
+    let first = archive.open_bytes(b"data/first").unwrap();
+    let second = archive.open_bytes(b"data/second").unwrap();
+    assert_eq!(first.metadata(), second.metadata());
+    assert_eq!(first.metadata().uid, 123);
+    assert_eq!(first.metadata().gid, 456);
+    assert_eq!(first.metadata().mode, 0o100640);
+    assert_eq!(first.metadata().modified.seconds, 12345);
+    let mut output = [0; 6];
+    first.read_exact_at(0, &mut output).unwrap();
+    assert_eq!(&output, b"linked");
+    assert_eq!(
+        archive.read_link(b"data/symlink").unwrap(),
+        b"../data/first"
+    );
+    assert_eq!(archive.open_directory(b"data").unwrap().read_dir().len(), 3);
+    assert_eq!(archive.open_directory(b"/").unwrap().read_dir().len(), 1);
 }

@@ -29,7 +29,7 @@ impl Volume {
         Ok(inode)
     }
 
-    fn parent(&mut self, path: &[u8]) -> Result<(Inode, Vec<u8>), Error> {
+    pub(super) fn parent(&mut self, path: &[u8]) -> Result<(Inode, Vec<u8>), Error> {
         let parts = components(path)?;
         let (name, parents) = parts.split_last().ok_or(Error::InvalidRequest)?;
         let mut inode = self.inode(2)?;
@@ -61,6 +61,9 @@ impl Volume {
             let number = volume.allocate_inode(directory)?;
             volume.edit_inode(number, |bytes| {
                 bytes.fill(0);
+                if bytes.len() >= 160 {
+                    bytes[128..130].copy_from_slice(&32u16.to_le_bytes());
+                }
                 Ok(())
             })?;
             let mut inode = Inode {
@@ -71,6 +74,12 @@ impl Volume {
                 orphan_next: 0,
                 links: if directory { 2 } else { 1 },
                 root: [0; 60],
+                uid: 0,
+                gid: 0,
+                accessed: crate::Timestamp::default(),
+                modified: crate::Timestamp::default(),
+                changed: crate::Timestamp::default(),
+                flags: 0x80000,
             };
             inode.root[..2].copy_from_slice(&0xf30au16.to_le_bytes());
             inode.root[4..6].copy_from_slice(&4u16.to_le_bytes());
@@ -184,7 +193,7 @@ impl Volume {
             new_entries.push(Entry {
                 inode: inode.number,
                 name: new_name,
-                file_type: if inode.directory() { 2 } else { 1 },
+                file_type: inode.file_type(),
             });
             if inode.directory() && !same {
                 let mut children = volume.entries(&inode)?;
@@ -244,7 +253,12 @@ impl Volume {
     }
 
     pub fn destroy_inode(&mut self, inode: &mut Inode) -> Result<(), Error> {
-        self.resize(inode, 0)?;
+        if inode.symlink() && inode.flags == 0 {
+            inode.size = 0;
+            inode.root.fill(0);
+        } else {
+            self.resize(inode, 0)?;
+        }
         self.free_inode(inode.number, inode.directory())
     }
 

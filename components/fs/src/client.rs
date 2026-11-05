@@ -22,6 +22,10 @@ pub struct File<'a> {
     length: Cell<usize>,
 }
 
+pub struct Directory<'a> {
+    file: File<'a>,
+}
+
 impl<'a> Client<'a> {
     pub fn from_channel(task: &'a Handle<Task>, channel: Handle<Channel>) -> Self {
         Self { task, channel }
@@ -36,7 +40,83 @@ impl<'a> Client<'a> {
     }
 
     pub fn create(&self, path: &str, deadline: u64) -> Result<File<'a>, Error> {
-        self.open_request(protocol::CREATE, path.as_bytes(), deadline)
+        self.create_bytes(path.as_bytes(), deadline)
+    }
+
+    pub fn create_bytes(&self, path: &[u8], deadline: u64) -> Result<File<'a>, Error> {
+        self.open_request(protocol::CREATE, path, deadline)
+    }
+
+    pub fn open_directory(&self, path: &[u8], deadline: u64) -> Result<Directory<'a>, Error> {
+        Ok(Directory {
+            file: self.open_request(protocol::OPEN_DIRECTORY, path, deadline)?,
+        })
+    }
+
+    pub fn metadata(&self, path: &[u8], deadline: u64) -> Result<crate::Metadata, Error> {
+        let output = self
+            .task
+            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER | Rights::DUPLICATE)?;
+        let mut request = Message::new(protocol::METADATA, &[path.len() as u64])?;
+        transfer(&mut request, self.path(path)?, Rights::READ)?;
+        transfer(
+            &mut request,
+            output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
+            Rights::WRITE,
+        )?;
+        let response = call(&self.channel, &mut request, deadline)?;
+        if !response.words().is_empty() {
+            return Err(Error::InvalidData);
+        }
+        let mut bytes = [0; crate::Metadata::SIZE];
+        output.read(0, &mut bytes)?;
+        crate::Metadata::decode(&bytes).map_err(|_| Error::InvalidData)
+    }
+
+    pub fn hard_link(&self, source: &[u8], target: &[u8], deadline: u64) -> Result<(), Error> {
+        self.pair_request(protocol::HARD_LINK, source, target, deadline)
+    }
+
+    pub fn symlink(&self, target: &[u8], path: &[u8], deadline: u64) -> Result<(), Error> {
+        if target.is_empty() || target.len() >= PAGE_SIZE || target.contains(&0) {
+            return Err(Error::InvalidRequest);
+        }
+        let mut frames = self
+            .task
+            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER)?;
+        frames.write(0, target)?;
+        let mut request =
+            Message::new(protocol::SYMLINK, &[target.len() as u64, path.len() as u64])?;
+        transfer(&mut request, frames, Rights::READ)?;
+        transfer(&mut request, self.path(path)?, Rights::READ)?;
+        let response = call(&self.channel, &mut request, deadline)?;
+        if !response.words().is_empty() {
+            return Err(Error::InvalidData);
+        }
+        Ok(())
+    }
+
+    pub fn read_link(&self, path: &[u8], deadline: u64) -> Result<alloc::vec::Vec<u8>, Error> {
+        let output = self
+            .task
+            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER | Rights::DUPLICATE)?;
+        let mut request = Message::new(protocol::READ_LINK, &[path.len() as u64])?;
+        transfer(&mut request, self.path(path)?, Rights::READ)?;
+        transfer(
+            &mut request,
+            output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
+            Rights::WRITE,
+        )?;
+        let response = call(&self.channel, &mut request, deadline)?;
+        let [length] = *response.words() else {
+            return Err(Error::InvalidData);
+        };
+        if length >= PAGE_SIZE as u64 {
+            return Err(Error::InvalidData);
+        }
+        let mut bytes = alloc::vec![0; length as usize];
+        output.read(0, &mut bytes)?;
+        Ok(bytes)
     }
 
     fn open_request(&self, method: u64, path: &[u8], deadline: u64) -> Result<File<'a>, Error> {
@@ -84,18 +164,33 @@ impl<'a> Client<'a> {
         Ok(frames)
     }
     pub fn mkdir(&self, path: &str, deadline: u64) -> Result<(), Error> {
-        self.path_request(protocol::MKDIR, path.as_bytes(), deadline)
+        self.mkdir_bytes(path.as_bytes(), deadline)
     }
     pub fn unlink(&self, path: &str, deadline: u64) -> Result<(), Error> {
-        self.path_request(protocol::UNLINK, path.as_bytes(), deadline)
+        self.unlink_bytes(path.as_bytes(), deadline)
+    }
+    pub fn mkdir_bytes(&self, path: &[u8], deadline: u64) -> Result<(), Error> {
+        self.path_request(protocol::MKDIR, path, deadline)
+    }
+    pub fn unlink_bytes(&self, path: &[u8], deadline: u64) -> Result<(), Error> {
+        self.path_request(protocol::UNLINK, path, deadline)
     }
     pub fn rename(&self, source: &str, target: &str, deadline: u64) -> Result<(), Error> {
-        let mut request = Message::new(
-            protocol::RENAME,
-            &[source.len() as u64, target.len() as u64],
-        )?;
-        transfer(&mut request, self.path(source.as_bytes())?, Rights::READ)?;
-        transfer(&mut request, self.path(target.as_bytes())?, Rights::READ)?;
+        self.rename_bytes(source.as_bytes(), target.as_bytes(), deadline)
+    }
+    pub fn rename_bytes(&self, source: &[u8], target: &[u8], deadline: u64) -> Result<(), Error> {
+        self.pair_request(protocol::RENAME, source, target, deadline)
+    }
+    fn pair_request(
+        &self,
+        method: u64,
+        source: &[u8],
+        target: &[u8],
+        deadline: u64,
+    ) -> Result<(), Error> {
+        let mut request = Message::new(method, &[source.len() as u64, target.len() as u64])?;
+        transfer(&mut request, self.path(source)?, Rights::READ)?;
+        transfer(&mut request, self.path(target)?, Rights::READ)?;
         let response = call(&self.channel, &mut request, deadline)?;
         if !response.words().is_empty() {
             return Err(Error::InvalidData);
@@ -107,54 +202,78 @@ impl<'a> Client<'a> {
         path: &str,
         deadline: u64,
     ) -> Result<alloc::vec::Vec<crate::DirEntry>, Error> {
-        let output = self
-            .task
-            .allocate(1, Rights::READ_WRITE | Rights::DUPLICATE | Rights::TRANSFER)?;
-        let mut result = alloc::vec::Vec::new();
-        loop {
-            let mut request =
-                Message::new(protocol::LIST, &[path.len() as u64, result.len() as u64])?;
-            transfer(&mut request, self.path(path.as_bytes())?, Rights::READ)?;
-            transfer(
-                &mut request,
-                output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
-                Rights::WRITE,
-            )?;
-            let response = call(&self.channel, &mut request, deadline)?;
-            let [count, length] = *response.words() else {
-                return Err(Error::InvalidData);
-            };
-            if length > PAGE_SIZE as u64 || count > length / 3 {
-                return Err(Error::InvalidData);
-            }
-            let mut bytes = [0; PAGE_SIZE];
-            output.read(0, &mut bytes[..length as usize])?;
-            let mut inside = 0;
-            for _ in 0..count {
-                if inside + 3 > length as usize || bytes[inside] > 1 {
-                    return Err(Error::InvalidData);
-                }
-                let size = usize::from(u16::from_le_bytes([bytes[inside + 1], bytes[inside + 2]]));
-                if size == 0 || size > 255 || inside + 3 + size > length as usize {
-                    return Err(Error::InvalidData);
-                }
-                result.push(crate::DirEntry {
-                    name: bytes[inside + 3..inside + 3 + size].to_vec(),
-                    directory: bytes[inside] != 0,
-                });
-                inside += 3 + size;
-            }
-            if inside != length as usize {
-                return Err(Error::InvalidData);
-            }
-            if count == 0 {
-                return Ok(result);
-            }
-        }
+        self.read_dir_bytes(path.as_bytes(), deadline)
+    }
+    pub fn read_dir_bytes(
+        &self,
+        path: &[u8],
+        deadline: u64,
+    ) -> Result<alloc::vec::Vec<crate::DirEntry>, Error> {
+        self.open_directory(path, deadline)?.read_dir(deadline)
     }
 }
 
 impl File<'_> {
+    pub fn metadata(&self, deadline: u64) -> Result<crate::Metadata, Error> {
+        let output = self
+            .task
+            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER | Rights::DUPLICATE)?;
+        let mut request = Message::new(protocol::METADATA, &[])?;
+        transfer(
+            &mut request,
+            output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
+            Rights::WRITE,
+        )?;
+        let response = call(&self.channel, &mut request, deadline)?;
+        if !response.words().is_empty() {
+            return Err(Error::InvalidData);
+        }
+        let mut bytes = [0; crate::Metadata::SIZE];
+        output.read(0, &mut bytes)?;
+        crate::Metadata::decode(&bytes).map_err(|_| Error::InvalidData)
+    }
+
+    pub fn set_attributes(
+        &self,
+        attributes: crate::Attributes,
+        deadline: u64,
+    ) -> Result<(), Error> {
+        let mut input = self
+            .task
+            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER)?;
+        input.write(0, &attributes.encode())?;
+        let mut request = Message::new(protocol::SET_ATTRIBUTES, &[])?;
+        transfer(&mut request, input, Rights::READ)?;
+        let response = call(&self.channel, &mut request, deadline)?;
+        if !response.words().is_empty() {
+            return Err(Error::InvalidData);
+        }
+        Ok(())
+    }
+
+    pub fn append(&self, input: &[u8], deadline: u64) -> Result<(usize, usize), Error> {
+        if input.is_empty() {
+            return Ok((self.size(deadline)?, 0));
+        }
+        let mut frames = self.task.allocate(
+            input.len().div_ceil(PAGE_SIZE) as u64,
+            Rights::READ_WRITE | Rights::TRANSFER,
+        )?;
+        frames.write(0, input)?;
+        let mut request = Message::new(protocol::APPEND, &[0, input.len() as u64])?;
+        transfer(&mut request, frames, Rights::READ)?;
+        let response = call(&self.channel, &mut request, deadline)?;
+        let [count, size, offset] = *response.words() else {
+            return Err(Error::InvalidData);
+        };
+        if count > input.len() as u64 || offset.checked_add(count) != Some(size) {
+            return Err(Error::InvalidData);
+        }
+        self.length
+            .set(usize::try_from(size).map_err(|_| Error::InvalidData)?);
+        Ok((offset as usize, count as usize))
+    }
+
     pub fn from_channel(
         task: &Handle<Task>,
         channel: Handle<Channel>,
@@ -275,5 +394,63 @@ impl crate::ReadAt for File<'_> {
             .checked_add(READ_TIMEOUT_NS)
             .ok_or(Error::InvalidRequest)?;
         self.read_at(offset, output, deadline)
+    }
+}
+
+impl Directory<'_> {
+    pub fn metadata(&self, deadline: u64) -> Result<crate::Metadata, Error> {
+        self.file.metadata(deadline)
+    }
+    pub fn set_attributes(
+        &self,
+        attributes: crate::Attributes,
+        deadline: u64,
+    ) -> Result<(), Error> {
+        self.file.set_attributes(attributes, deadline)
+    }
+    pub fn read_dir(&self, deadline: u64) -> Result<alloc::vec::Vec<crate::DirEntry>, Error> {
+        let output = self
+            .file
+            .task
+            .allocate(1, Rights::READ_WRITE | Rights::DUPLICATE | Rights::TRANSFER)?;
+        let mut result = alloc::vec::Vec::new();
+        loop {
+            let mut request = Message::new(protocol::LIST, &[result.len() as u64])?;
+            transfer(
+                &mut request,
+                output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
+                Rights::WRITE,
+            )?;
+            let response = call(&self.file.channel, &mut request, deadline)?;
+            let [count, length] = *response.words() else {
+                return Err(Error::InvalidData);
+            };
+            if length > PAGE_SIZE as u64 || count > length / 3 {
+                return Err(Error::InvalidData);
+            }
+            let mut bytes = [0; PAGE_SIZE];
+            output.read(0, &mut bytes[..length as usize])?;
+            let mut inside = 0;
+            for _ in 0..count {
+                if inside + 3 > length as usize || bytes[inside] > 1 {
+                    return Err(Error::InvalidData);
+                }
+                let size = usize::from(u16::from_le_bytes([bytes[inside + 1], bytes[inside + 2]]));
+                if size == 0 || size > 255 || inside + 3 + size > length as usize {
+                    return Err(Error::InvalidData);
+                }
+                result.push(crate::DirEntry {
+                    name: bytes[inside + 3..inside + 3 + size].to_vec(),
+                    directory: bytes[inside] != 0,
+                });
+                inside += 3 + size;
+            }
+            if inside != length as usize {
+                return Err(Error::InvalidData);
+            }
+            if count == 0 {
+                return Ok(result);
+            }
+        }
     }
 }

@@ -6,7 +6,7 @@ use crate::{
     Error, ReadAt,
     archive::Archive,
     block::Disk,
-    namespace::{File, Namespace},
+    namespace::{Directory, File, Namespace},
     protocol,
 };
 use alloc::{rc::Rc, vec, vec::Vec};
@@ -19,7 +19,12 @@ const PAGE_SIZE: usize = 4096;
 
 struct FileSession {
     channel: Handle<Channel>,
-    file: File,
+    node: Node,
+}
+
+enum Node {
+    File(File),
+    Directory(Directory),
 }
 
 pub fn run(task: &Handle<runtime::Task>, control: Handle<Channel>) -> Result<(), Error> {
@@ -111,7 +116,7 @@ fn poll_files(files: &mut Vec<FileSession>) -> Result<(), Error> {
         match files[index].channel.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
-                    protocol::respond(reply, file_request(&files[index].file, request))?;
+                    protocol::respond(reply, node_request(&files[index].node, request))?;
                 }
                 index += 1;
             }
@@ -157,9 +162,15 @@ fn client(
     files: &mut Vec<FileSession>,
     request: ReceivedMessage,
 ) -> Result<Message, Error> {
-    if matches!(request.tag, protocol::OPEN | protocol::CREATE) {
+    if matches!(
+        request.tag,
+        protocol::OPEN | protocol::CREATE | protocol::OPEN_DIRECTORY
+    ) {
         let session = open(namespace, request)?;
-        let length = session.file.len();
+        let length = match &session.node {
+            Node::File(file) => file.len(),
+            Node::Directory(_) => 0,
+        };
         files.push(session);
         return Ok(Message::new(protocol::SUCCESS, &[length as u64])?);
     }
@@ -177,48 +188,113 @@ fn directory(namespace: &Namespace, mut request: ReceivedMessage) -> Result<Mess
                 namespace.unlink(&name)?;
             }
         }
-        (protocol::RENAME, [first, second]) if request.handles().len() == 2 => {
+        (protocol::RENAME | protocol::HARD_LINK | protocol::SYMLINK, [first, second])
+            if request.handles().len() == 2 =>
+        {
             let (first, second) = (*first, *second);
             let source = path(&mut request, first)?;
             let target = path(&mut request, second)?;
-            namespace.rename(&source, &target)?;
+            match request.tag {
+                protocol::HARD_LINK => namespace.hard_link(&source, &target)?,
+                protocol::SYMLINK => namespace.symlink(&source, &target)?,
+                _ => namespace.rename(&source, &target)?,
+            }
+        }
+        (protocol::METADATA | protocol::READ_LINK, [length]) if request.handles().len() == 2 => {
+            let length = *length;
+            let name = path(&mut request, length)?;
+            let mut output = take_frames(&mut request, Rights::WRITE)?;
+            if request.tag == protocol::METADATA {
+                output.write(0, &namespace.metadata(&name)?.encode())?;
+                return Ok(Message::new(protocol::SUCCESS, &[])?);
+            }
+            let bytes = namespace.read_link(&name)?;
+            output.write(0, &bytes)?;
+            return Ok(Message::new(protocol::SUCCESS, &[bytes.len() as u64])?);
         }
         (protocol::LIST, [length, start]) if request.handles().len() == 2 => {
             let (length, start) = (*length, *start);
             let name = path(&mut request, length)?;
             let mut output = take_frames(&mut request, Rights::WRITE)?;
-            if output.frames()? == 0 {
-                return Err(Error::InvalidRequest);
-            }
-            let entries = namespace.read_dir(&name)?;
-            let start = usize::try_from(start).map_err(|_| Error::InvalidRequest)?;
-            let mut bytes = [0; PAGE_SIZE];
-            let (mut done, mut count) = (0, 0);
-            for entry in entries.iter().skip(start) {
-                let size = entry.name.len();
-                if done + 3 + size > bytes.len() {
-                    break;
-                }
-                bytes[done] = u8::from(entry.directory);
-                bytes[done + 1..done + 3].copy_from_slice(&(size as u16).to_le_bytes());
-                bytes[done + 3..done + 3 + size].copy_from_slice(&entry.name);
-                done += 3 + size;
-                count += 1;
-            }
-            output.write(0, &bytes[..done])?;
-            return Ok(Message::new(protocol::SUCCESS, &[count, done as u64])?);
+            return list(namespace.read_dir(&name)?, start, &mut output);
         }
         _ => return Err(Error::InvalidRequest),
     }
     Ok(Message::new(protocol::SUCCESS, &[])?)
 }
 
+fn list(
+    entries: Vec<crate::DirEntry>,
+    start: u64,
+    output: &mut Handle<FrameAllocation>,
+) -> Result<Message, Error> {
+    if output.frames()? == 0 {
+        return Err(Error::InvalidRequest);
+    }
+    let start = usize::try_from(start).map_err(|_| Error::InvalidRequest)?;
+    let mut bytes = [0; PAGE_SIZE];
+    let (mut done, mut count) = (0, 0);
+    for entry in entries.iter().skip(start) {
+        let size = entry.name.len();
+        if done + 3 + size > bytes.len() {
+            break;
+        }
+        bytes[done] = u8::from(entry.directory);
+        bytes[done + 1..done + 3].copy_from_slice(&(size as u16).to_le_bytes());
+        bytes[done + 3..done + 3 + size].copy_from_slice(&entry.name);
+        done += 3 + size;
+        count += 1;
+    }
+    output.write(0, &bytes[..done])?;
+    Ok(Message::new(protocol::SUCCESS, &[count, done as u64])?)
+}
+
+fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Error> {
+    match (request.tag, request.words()) {
+        (protocol::METADATA, []) if request.handles().len() == 1 => {
+            let mut output = take_frames(&mut request, Rights::WRITE)?;
+            let metadata = match node {
+                Node::File(file) => file.metadata()?,
+                Node::Directory(directory) => directory.metadata()?,
+            };
+            output.write(0, &metadata.encode())?;
+            Ok(Message::new(protocol::SUCCESS, &[])?)
+        }
+        (protocol::SET_ATTRIBUTES, []) if request.handles().len() == 1 => {
+            let input = take_frames(&mut request, Rights::READ)?;
+            let mut bytes = [0; crate::Attributes::SIZE];
+            input.read(0, &mut bytes)?;
+            let attributes = crate::Attributes::decode(&bytes)?;
+            match node {
+                Node::File(file) => file.set_attributes(attributes)?,
+                Node::Directory(directory) => directory.set_attributes(attributes)?,
+            }
+            Ok(Message::new(protocol::SUCCESS, &[])?)
+        }
+        (protocol::LIST, [start]) if request.handles().len() == 1 => {
+            let start = *start;
+            let Node::Directory(directory) = node else {
+                return Err(Error::NotDirectory);
+            };
+            let mut output = take_frames(&mut request, Rights::WRITE)?;
+            list(directory.read_dir()?, start, &mut output)
+        }
+        _ => match node {
+            Node::File(file) => file_request(file, request),
+            Node::Directory(_) => Err(Error::IsDirectory),
+        },
+    }
+}
+
 fn file_request(file: &File, mut request: ReceivedMessage) -> Result<Message, Error> {
     match (request.tag, request.words()) {
         (protocol::READ, _) => read(file, request),
-        (protocol::WRITE, [offset, length]) if request.handles().len() == 1 => {
+        (protocol::WRITE | protocol::APPEND, [offset, length]) if request.handles().len() == 1 => {
             let offset = usize::try_from(*offset).map_err(|_| Error::InvalidRequest)?;
             let length = usize::try_from(*length).map_err(|_| Error::InvalidRequest)?;
+            if request.tag == protocol::APPEND && offset != 0 {
+                return Err(Error::InvalidRequest);
+            }
             offset
                 .checked_add(length)
                 .filter(|end| *end <= 2 * 1024 * 1024 * 1024)
@@ -229,6 +305,13 @@ fn file_request(file: &File, mut request: ReceivedMessage) -> Result<Message, Er
             }
             let mut bytes = vec![0; length];
             input.read(0, &mut bytes)?;
+            if request.tag == protocol::APPEND {
+                let (offset, count) = file.append(&bytes)?;
+                return Ok(Message::new(
+                    protocol::SUCCESS,
+                    &[count as u64, file.len() as u64, offset as u64],
+                )?);
+            }
             let count = file.write_at(offset, &bytes)?;
             Ok(Message::new(
                 protocol::SUCCESS,
@@ -252,7 +335,11 @@ fn file_request(file: &File, mut request: ReceivedMessage) -> Result<Message, Er
 }
 
 fn open(namespace: &Namespace, mut request: ReceivedMessage) -> Result<FileSession, Error> {
-    if !matches!(request.tag, protocol::OPEN | protocol::CREATE) || request.handles().len() != 2 {
+    if !matches!(
+        request.tag,
+        protocol::OPEN | protocol::CREATE | protocol::OPEN_DIRECTORY
+    ) || request.handles().len() != 2
+    {
         return Err(Error::InvalidRequest);
     }
     let [length] = *request.words() else {
@@ -262,10 +349,10 @@ fn open(namespace: &Namespace, mut request: ReceivedMessage) -> Result<FileSessi
     let channel = take_channel(&mut request, Rights::READ | Rights::WAIT)?;
     Ok(FileSession {
         channel,
-        file: if request.tag == protocol::CREATE {
-            namespace.create(&path)?
-        } else {
-            namespace.open_bytes(&path)?
+        node: match request.tag {
+            protocol::CREATE => Node::File(namespace.create(&path)?),
+            protocol::OPEN_DIRECTORY => Node::Directory(namespace.open_directory(&path)?),
+            _ => Node::File(namespace.open_bytes(&path)?),
         },
     })
 }

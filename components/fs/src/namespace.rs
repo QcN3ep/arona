@@ -22,6 +22,32 @@ pub enum File {
     Ext4(crate::ext4::File),
 }
 
+pub enum Directory {
+    Archive(archive::Directory),
+    Ext4(crate::ext4::File),
+}
+
+impl Directory {
+    pub fn metadata(&self) -> Result<crate::Metadata, Error> {
+        match self {
+            Self::Archive(directory) => Ok(directory.metadata()),
+            Self::Ext4(directory) => directory.metadata(),
+        }
+    }
+    pub fn read_dir(&self) -> Result<Vec<crate::DirEntry>, Error> {
+        match self {
+            Self::Archive(directory) => Ok(directory.read_dir()),
+            Self::Ext4(directory) => directory.read_dir(),
+        }
+    }
+    pub fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
+        match self {
+            Self::Archive(_) => Err(Error::ReadOnly),
+            Self::Ext4(directory) => directory.set_attributes(attributes),
+        }
+    }
+}
+
 impl Namespace {
     pub fn new(archive: Archive) -> Self {
         Self {
@@ -85,7 +111,9 @@ impl Namespace {
                 return fs.read_dir(path.get(prefix.len() + 1..).unwrap_or(b"/"));
             }
         }
-        let mut entries = self.archive.read_dir(&path)?;
+        let mut entries = self
+            .archive
+            .read_dir(if path.is_empty() { b"/" } else { &path })?;
         for prefix in mounts.keys() {
             let parent = prefix
                 .iter()
@@ -126,6 +154,60 @@ impl Namespace {
             }
         }
         Err(Error::ReadOnly)
+    }
+
+    pub fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
+        let path = normalize(path)?;
+        for (prefix, fs) in self.mounts.borrow().iter() {
+            if beneath(&path, prefix) {
+                return fs.metadata(path.get(prefix.len() + 1..).unwrap_or(b"/"));
+            }
+        }
+        self.archive
+            .metadata(if path.is_empty() { b"/" } else { &path })
+    }
+    pub fn open_directory(&self, path: &[u8]) -> Result<Directory, Error> {
+        let path = normalize(path)?;
+        for (prefix, fs) in self.mounts.borrow().iter() {
+            if beneath(&path, prefix) {
+                return fs
+                    .open_directory(path.get(prefix.len() + 1..).unwrap_or(b"/"))
+                    .map(Directory::Ext4);
+            }
+        }
+        let mut directory =
+            self.archive
+                .open_directory(if path.is_empty() { b"/" } else { &path })?;
+        directory.set_entries(self.read_dir(if path.is_empty() { b"/" } else { &path })?);
+        Ok(Directory::Archive(directory))
+    }
+    pub fn hard_link(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
+        let source = normalize(source)?;
+        let target = normalize(target)?;
+        for (prefix, fs) in self.mounts.borrow().iter() {
+            if beneath(&source, prefix) {
+                if !beneath(&target, prefix) {
+                    return Err(Error::CrossDevice);
+                }
+                return fs.hard_link(
+                    source.get(prefix.len() + 1..).unwrap_or(b"/"),
+                    target.get(prefix.len() + 1..).unwrap_or(b"/"),
+                );
+            }
+        }
+        Err(Error::ReadOnly)
+    }
+    pub fn symlink(&self, target: &[u8], path: &[u8]) -> Result<(), Error> {
+        self.mounted(path, |fs, path| fs.symlink(target, path))
+    }
+    pub fn read_link(&self, path: &[u8]) -> Result<Vec<u8>, Error> {
+        let path = normalize(path)?;
+        for (prefix, fs) in self.mounts.borrow().iter() {
+            if beneath(&path, prefix) {
+                return fs.read_link(path.get(prefix.len() + 1..).unwrap_or(b"/"));
+            }
+        }
+        self.archive.read_link(&path)
     }
 
     pub fn shutdown(&self) -> Result<(), Error> {
@@ -176,6 +258,25 @@ impl ReadAt for File {
 }
 
 impl File {
+    pub fn metadata(&self) -> Result<crate::Metadata, Error> {
+        match self {
+            Self::Archive(file) => Ok(file.metadata()),
+            Self::Ext4(file) => file.metadata(),
+        }
+    }
+    pub fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
+        match self {
+            Self::Archive(_) => Err(Error::ReadOnly),
+            Self::Ext4(file) => file.set_attributes(attributes),
+        }
+    }
+    pub fn append(&self, bytes: &[u8]) -> Result<(usize, usize), Error> {
+        match self {
+            Self::Archive(_) => Err(Error::ReadOnly),
+            Self::Ext4(file) => file.append(bytes),
+        }
+    }
+
     pub fn fsync(&self) -> Result<(), Error> {
         match self {
             Self::Archive(_) => Ok(()),

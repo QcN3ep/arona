@@ -19,12 +19,33 @@ pub struct Archive {
 
 struct Entry {
     range: Range<usize>,
-    directory: bool,
+    metadata: crate::Metadata,
+    identity: (usize, usize, usize),
 }
 
 pub struct File {
     frames: Rc<Handle<FrameAllocation>>,
     range: Range<usize>,
+    metadata: crate::Metadata,
+}
+
+pub struct Directory {
+    _frames: Rc<Handle<FrameAllocation>>,
+    entries: Vec<crate::DirEntry>,
+    metadata: crate::Metadata,
+}
+
+impl Directory {
+    pub fn metadata(&self) -> crate::Metadata {
+        self.metadata
+    }
+    pub(crate) fn set_entries(&mut self, entries: Vec<crate::DirEntry>) {
+        self.entries = entries;
+    }
+
+    pub fn read_dir(&self) -> Vec<crate::DirEntry> {
+        self.entries.clone()
+    }
 }
 
 impl Archive {
@@ -48,7 +69,7 @@ impl Archive {
     pub fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
         let path = normalize(path)?;
         if let Some(entry) = self.entries.get(&path)
-            && !entry.directory
+            && entry.metadata.mode & 0o170000 != 0o040000
         {
             return Err(Error::NotDirectory);
         }
@@ -68,7 +89,10 @@ impl Archive {
                 .iter()
                 .position(|byte| *byte == b'/')
                 .unwrap_or(rest.len());
-            children.insert(rest[..end].to_vec(), end != rest.len() || entry.directory);
+            children.insert(
+                rest[..end].to_vec(),
+                end != rest.len() || entry.metadata.mode & 0o170000 == 0o040000,
+            );
         }
         if children.is_empty() && !path.is_empty() && !self.entries.contains_key(&path) {
             return Err(Error::NotFound);
@@ -117,11 +141,10 @@ impl Archive {
                 return Err(Error::InvalidData);
             }
             if name == b"TRAILER!!!" {
-                return if size == 0 {
-                    Ok(())
-                } else {
-                    Err(Error::InvalidData)
-                };
+                if size != 0 {
+                    return Err(Error::InvalidData);
+                }
+                return self.finish_index();
             }
             if name.starts_with(b"/") {
                 return Err(Error::InvalidData);
@@ -129,7 +152,8 @@ impl Archive {
             let path = normalize(&name).map_err(|_| Error::InvalidData)?;
             let directory = match mode & 0o170000 {
                 0o040000 if size == 0 => true,
-                0o100000 if links == 1 => false,
+                0o100000 if links != 0 => false,
+                0o120000 if links != 0 && size > 0 && size < 4096 => false,
                 _ => return Err(Error::InvalidData),
             };
             if path.is_empty() && !directory {
@@ -141,7 +165,21 @@ impl Archive {
                     path,
                     Entry {
                         range: data_start..data_end,
-                        directory,
+                        metadata: crate::Metadata {
+                            inode: field(&header, 6)? as u64,
+                            size: size as u64,
+                            blocks: (size as u64).div_ceil(512),
+                            links: links as u32,
+                            mode: mode as u32,
+                            uid: field(&header, 22)? as u32,
+                            gid: field(&header, 30)? as u32,
+                            modified: crate::Timestamp {
+                                seconds: field(&header, 46)? as i64,
+                                nanoseconds: 0,
+                            },
+                            ..crate::Metadata::default()
+                        },
+                        identity: (field(&header, 62)?, field(&header, 70)?, field(&header, 6)?),
                     },
                 )
                 .is_some()
@@ -152,6 +190,93 @@ impl Archive {
                 .checked_next_multiple_of(4)
                 .ok_or(Error::InvalidData)?;
         }
+    }
+
+    fn finish_index(&mut self) -> Result<(), Error> {
+        let mut data = BTreeMap::new();
+        for entry in self
+            .entries
+            .values()
+            .filter(|entry| entry.metadata.links > 1 && entry.metadata.mode & 0o170000 == 0o100000)
+        {
+            if !entry.range.is_empty() && data.insert(entry.identity, entry.range.clone()).is_some()
+            {
+                return Err(Error::InvalidData);
+            }
+        }
+        for entry in self.entries.values_mut() {
+            if entry.metadata.links > 1 && entry.metadata.mode & 0o170000 == 0o100000 {
+                if let Some(range) = data.get(&entry.identity) {
+                    entry.range = range.clone();
+                }
+                entry.metadata.size = entry.range.len() as u64;
+                entry.metadata.blocks = entry.metadata.size.div_ceil(512);
+            }
+        }
+        let names: Vec<_> = self.entries.keys().cloned().collect();
+        let mut synthetic = 1u64 << 32;
+        for name in names.into_iter().chain(core::iter::once(Vec::new())) {
+            let mut parent = name.as_slice();
+            loop {
+                parent = parent
+                    .iter()
+                    .rposition(|byte| *byte == b'/')
+                    .map_or(b"".as_slice(), |end| &parent[..end]);
+                if let Some(entry) = self.entries.get(parent) {
+                    if entry.metadata.mode & 0o170000 != 0o040000 {
+                        return Err(Error::InvalidData);
+                    }
+                } else {
+                    self.entries.insert(
+                        parent.to_vec(),
+                        Entry {
+                            range: 0..0,
+                            metadata: crate::Metadata {
+                                inode: synthetic,
+                                mode: 0o040755,
+                                links: 2,
+                                ..crate::Metadata::default()
+                            },
+                            identity: (0, 0, 0),
+                        },
+                    );
+                    synthetic += 1;
+                }
+                if parent.is_empty() {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
+        self.entries
+            .get(&normalize(path)?)
+            .map(|entry| entry.metadata)
+            .ok_or(Error::NotFound)
+    }
+
+    pub fn read_link(&self, path: &[u8]) -> Result<Vec<u8>, Error> {
+        let entry = self.entries.get(&normalize(path)?).ok_or(Error::NotFound)?;
+        if entry.metadata.mode & 0o170000 != 0o120000 {
+            return Err(Error::InvalidRequest);
+        }
+        let mut bytes = vec![0; entry.range.len()];
+        self.read(entry.range.start, &mut bytes)?;
+        Ok(bytes)
+    }
+
+    pub fn open_directory(&self, path: &[u8]) -> Result<Directory, Error> {
+        let metadata = self.metadata(path)?;
+        if metadata.mode & 0o170000 != 0o040000 {
+            return Err(Error::NotDirectory);
+        }
+        Ok(Directory {
+            _frames: Rc::clone(&self.frames),
+            entries: self.read_dir(path)?,
+            metadata,
+        })
     }
 
     fn read(&self, offset: usize, output: &mut [u8]) -> Result<(), Error> {
@@ -178,10 +303,14 @@ impl Archive {
     pub fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
         let path = normalize(path)?;
         let entry = self.entries.get(&path).ok_or(Error::NotFound)?;
-        if entry.directory {
+        if entry.metadata.mode & 0o170000 == 0o040000 {
             return Err(Error::IsDirectory);
         }
+        if entry.metadata.mode & 0o170000 == 0o120000 {
+            return Err(Error::InvalidRequest);
+        }
         Ok(File {
+            metadata: entry.metadata,
             frames: Rc::clone(&self.frames),
             range: entry.range.clone(),
         })
@@ -218,4 +347,10 @@ fn field(header: &[u8; HEADER_SIZE], offset: usize) -> Result<usize, Error> {
                 .and_then(|value| value.checked_add(digit as usize))
                 .ok_or(Error::InvalidData)
         })
+}
+
+impl File {
+    pub fn metadata(&self) -> crate::Metadata {
+        self.metadata
+    }
 }

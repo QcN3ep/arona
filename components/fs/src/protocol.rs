@@ -22,6 +22,13 @@ pub const WRITE: u64 = 11;
 pub const TRUNCATE: u64 = 12;
 pub const FILE_INFO: u64 = 13;
 pub const FSYNC: u64 = 14;
+pub const METADATA: u64 = 15;
+pub const SET_ATTRIBUTES: u64 = 16;
+pub const HARD_LINK: u64 = 17;
+pub const SYMLINK: u64 = 18;
+pub const READ_LINK: u64 = 19;
+pub const APPEND: u64 = 20;
+pub const OPEN_DIRECTORY: u64 = 21;
 
 pub const SUCCESS: u64 = 0;
 pub const INVALID_REQUEST: u64 = 1;

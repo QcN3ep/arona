@@ -16,6 +16,9 @@ impl Volume {
         if inode.directory() {
             return Err(Error::IsDirectory);
         }
+        if inode.symlink() {
+            return Err(Error::InvalidRequest);
+        }
         if input.is_empty() {
             return Ok(0);
         }
@@ -148,6 +151,9 @@ impl Volume {
         if inode.directory() {
             return Err(Error::IsDirectory);
         }
+        if inode.symlink() {
+            return Err(Error::InvalidRequest);
+        }
         self.transaction(|volume| volume.resize(&mut inode, size))
     }
 
@@ -264,15 +270,50 @@ impl Volume {
     pub fn store_inode(&mut self, inode: &Inode) -> Result<(), Error> {
         self.edit_inode(inode.number, |bytes| {
             bytes[0..2].copy_from_slice(&inode.mode.to_le_bytes());
+            bytes[2..4].copy_from_slice(&(inode.uid as u16).to_le_bytes());
+            bytes[24..26].copy_from_slice(&(inode.gid as u16).to_le_bytes());
+            bytes[120..122].copy_from_slice(&((inode.uid >> 16) as u16).to_le_bytes());
+            bytes[122..124].copy_from_slice(&((inode.gid >> 16) as u16).to_le_bytes());
+            store_timestamp(bytes, 8, 140, inode.accessed)?;
+            store_timestamp(bytes, 16, 136, inode.modified)?;
+            store_timestamp(bytes, 12, 132, inode.changed)?;
             bytes[4..8].copy_from_slice(&(inode.size as u32).to_le_bytes());
             bytes[26..28].copy_from_slice(&inode.links.to_le_bytes());
             bytes[28..32].copy_from_slice(&(inode.sectors as u32).to_le_bytes());
-            bytes[32..36].copy_from_slice(&0x80000u32.to_le_bytes());
+            bytes[32..36].copy_from_slice(&inode.flags.to_le_bytes());
             bytes[40..100].copy_from_slice(&inode.root);
             bytes[108..112].copy_from_slice(&((inode.size >> 32) as u32).to_le_bytes());
             Ok(())
         })
     }
+}
+
+fn store_timestamp(
+    bytes: &mut [u8],
+    offset: usize,
+    extra: usize,
+    time: crate::Timestamp,
+) -> Result<(), Error> {
+    let base = time.seconds as i32;
+    let epoch = time
+        .seconds
+        .checked_sub(i64::from(base))
+        .ok_or(Error::Unsupported)?
+        >> 32;
+    let extended =
+        bytes.len() >= extra + 4 && usize::from(super::half(bytes, 128)) >= extra + 4 - 128;
+    if time.nanoseconds >= 1_000_000_000
+        || !(0..=3).contains(&epoch)
+        || !extended && (epoch != 0 || time.nanoseconds != 0)
+    {
+        return Err(Error::Unsupported);
+    }
+    bytes[offset..offset + 4].copy_from_slice(&base.to_le_bytes());
+    if extended {
+        bytes[extra..extra + 4]
+            .copy_from_slice(&((time.nanoseconds << 2) | epoch as u32).to_le_bytes());
+    }
+    Ok(())
 }
 
 fn extent_header(bytes: &mut [u8], count: usize, max: usize, depth: u16) {

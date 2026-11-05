@@ -12,13 +12,15 @@ pub mod block;
 mod client;
 mod control;
 pub mod ext4;
+mod metadata;
 pub mod namespace;
 mod path;
 mod protocol;
 pub mod service;
 
-pub use client::{Client, File};
+pub use client::{Client, Directory, File};
 pub use control::Control;
+pub use metadata::{Attributes, Metadata, Timestamp};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -87,7 +89,7 @@ pub trait FileSystem {
     fn open(&self, path: &str) -> Result<Self::File<'_>, Error>;
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DirEntry {
     pub name: alloc::vec::Vec<u8>,
     pub directory: bool,

@@ -7,6 +7,7 @@ mod directory;
 mod extent;
 mod inode;
 mod journal;
+mod metadata;
 mod recovery;
 mod transaction;
 mod volume;
@@ -52,10 +53,25 @@ impl Ext4 {
     }
 
     pub fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
+        self.open_node(path, false)
+    }
+
+    pub fn open_directory(&self, path: &[u8]) -> Result<File, Error> {
+        self.open_node(path, true)
+    }
+
+    fn open_node(&self, path: &[u8], directory: bool) -> Result<File, Error> {
         let mut volume = self.volume.borrow_mut();
         let inode = volume.lookup(path)?;
-        if inode.directory() {
-            return Err(Error::IsDirectory);
+        if inode.directory() != directory {
+            return Err(if directory {
+                Error::NotDirectory
+            } else {
+                Error::IsDirectory
+            });
+        }
+        if inode.symlink() {
+            return Err(Error::InvalidRequest);
         }
         let identity = volume
             .open
@@ -79,6 +95,18 @@ impl Ext4 {
         self.volume.borrow_mut().create(path, false)?;
         self.open_bytes(path)
     }
+    pub fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
+        Ok(self.volume.borrow_mut().lookup(path)?.metadata())
+    }
+    pub fn hard_link(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
+        self.volume.borrow_mut().hard_link(source, target)
+    }
+    pub fn symlink(&self, target: &[u8], path: &[u8]) -> Result<(), Error> {
+        self.volume.borrow_mut().symlink(target, path)
+    }
+    pub fn read_link(&self, path: &[u8]) -> Result<Vec<u8>, Error> {
+        self.volume.borrow_mut().read_link(path)
+    }
     pub fn mkdir(&self, path: &[u8]) -> Result<(), Error> {
         self.volume.borrow_mut().create(path, true).map(|_| ())
     }
@@ -89,20 +117,7 @@ impl Ext4 {
         self.volume.borrow_mut().rename(source, target)
     }
     pub fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
-        let mut volume = self.volume.borrow_mut();
-        let inode = volume.lookup(path)?;
-        if !inode.directory() {
-            return Err(Error::NotDirectory);
-        }
-        Ok(volume
-            .entries(&inode)?
-            .into_iter()
-            .filter(|entry| entry.name != b"." && entry.name != b"..")
-            .map(|entry| crate::DirEntry {
-                name: entry.name,
-                directory: entry.file_type == 2,
-            })
-            .collect())
+        self.open_directory(path)?.read_dir()
     }
 }
 
@@ -123,11 +138,49 @@ impl ReadAt for File {
     fn read_at(&self, offset: usize, output: &mut [u8]) -> Result<usize, Error> {
         let mut volume = self.volume.borrow_mut();
         let inode = volume.inode(self.identity.number)?;
+        if inode.directory() {
+            return Err(Error::IsDirectory);
+        }
         volume.read(&inode, offset, output)
     }
 }
 
 impl File {
+    pub fn read_dir(&self) -> Result<Vec<crate::DirEntry>, Error> {
+        let mut volume = self.volume.borrow_mut();
+        let inode = volume.inode(self.identity.number)?;
+        if !inode.directory() {
+            return Err(Error::NotDirectory);
+        }
+        Ok(volume
+            .entries(&inode)?
+            .into_iter()
+            .filter(|entry| entry.name != b"." && entry.name != b"..")
+            .map(|entry| crate::DirEntry {
+                name: entry.name,
+                directory: entry.file_type == 2,
+            })
+            .collect())
+    }
+    pub fn metadata(&self) -> Result<crate::Metadata, Error> {
+        Ok(self
+            .volume
+            .borrow_mut()
+            .inode(self.identity.number)?
+            .metadata())
+    }
+    pub fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
+        self.volume
+            .borrow_mut()
+            .set_attributes(self.identity.number, attributes)
+    }
+    pub fn append(&self, input: &[u8]) -> Result<(usize, usize), Error> {
+        let mut volume = self.volume.borrow_mut();
+        let offset = volume.inode(self.identity.number)?.size as usize;
+        let count = volume.write(self.identity.number, offset, input)?;
+        self.identity.size.set(offset + count);
+        Ok((offset, count))
+    }
     pub fn fsync(&self) -> Result<(), Error> {
         self.volume.borrow_mut().sync()
     }

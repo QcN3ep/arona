@@ -13,6 +13,12 @@ pub(super) struct Inode {
     pub sectors: u64,
     pub orphan_next: u32,
     pub root: [u8; 60],
+    pub uid: u32,
+    pub gid: u32,
+    pub accessed: crate::Timestamp,
+    pub modified: crate::Timestamp,
+    pub changed: crate::Timestamp,
+    pub flags: u32,
 }
 
 #[derive(Clone)]
@@ -26,10 +32,11 @@ impl Inode {
     pub fn parse(number: u32, bytes: &[u8]) -> Result<Self, Error> {
         let size = u64::from(word(bytes, 4)) | u64::from(word(bytes, 108)) << 32;
         let mode = half(bytes, 0);
-        if !matches!(mode & 0xf000, 0x8000 | 0x4000) {
+        if !matches!(mode & 0xf000, 0x8000 | 0x4000 | 0xa000) {
             return Err(Error::Unsupported);
         }
-        if word(bytes, 32) != 0x80000
+        let fast_link = mode & 0xf000 == 0xa000 && word(bytes, 28) == 0 && size < 60;
+        if word(bytes, 32) != if fast_link { 0 } else { 0x80000 }
             || word(bytes, 20) != 0 && half(bytes, 26) != 0
             || word(bytes, 104) != 0
             || size > 2 * 1024 * 1024 * 1024
@@ -37,7 +44,7 @@ impl Inode {
         {
             return Err(Error::InvalidData);
         }
-        Ok(Self {
+        let inode = Self {
             number,
             size,
             mode,
@@ -45,11 +52,63 @@ impl Inode {
             sectors: u64::from(word(bytes, 28)),
             orphan_next: word(bytes, 20),
             root: bytes[40..100].try_into().unwrap(),
-        })
+            uid: u32::from(half(bytes, 2)) | (u32::from(half(bytes, 120)) << 16),
+            gid: u32::from(half(bytes, 24)) | (u32::from(half(bytes, 122)) << 16),
+            accessed: timestamp(bytes, 8, 140),
+            modified: timestamp(bytes, 16, 136),
+            changed: timestamp(bytes, 12, 132),
+            flags: word(bytes, 32),
+        };
+        inode
+            .metadata()
+            .validate()
+            .map_err(|_| Error::InvalidData)?;
+        Ok(inode)
     }
 
     pub fn directory(&self) -> bool {
         self.mode & 0xf000 == 0x4000
+    }
+
+    pub fn symlink(&self) -> bool {
+        self.mode & 0xf000 == 0xa000
+    }
+
+    pub fn file_type(&self) -> u8 {
+        if self.directory() {
+            2
+        } else if self.symlink() {
+            7
+        } else {
+            1
+        }
+    }
+
+    pub fn metadata(&self) -> crate::Metadata {
+        crate::Metadata {
+            inode: u64::from(self.number),
+            size: self.size,
+            blocks: self.sectors,
+            links: u32::from(self.links),
+            mode: u32::from(self.mode),
+            uid: self.uid,
+            gid: self.gid,
+            accessed: self.accessed,
+            modified: self.modified,
+            changed: self.changed,
+        }
+    }
+}
+
+fn timestamp(bytes: &[u8], offset: usize, extra: usize) -> crate::Timestamp {
+    let extended = if bytes.len() >= extra + 4 && usize::from(half(bytes, 128)) >= extra + 4 - 128 {
+        word(bytes, extra)
+    } else {
+        0
+    };
+    crate::Timestamp {
+        seconds: i64::from(word(bytes, offset) as i32) + (i64::from(extended & 3) << 32),
+        nanoseconds: extended >> 2,
     }
 }
 
@@ -63,6 +122,11 @@ impl Volume {
         let count = output
             .len()
             .min((inode.size as usize).saturating_sub(offset));
+        if inode.symlink() && inode.flags == 0 {
+            let start = offset.min(inode.size as usize);
+            output[..count].copy_from_slice(&inode.root[start..start + count]);
+            return Ok(count);
+        }
         let extents = self.extents(&inode.root)?;
         let mut done = 0;
         while done < count {
