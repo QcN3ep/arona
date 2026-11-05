@@ -50,7 +50,7 @@ impl<'a> Client<'a> {
         )?;
         path_frames.write(0, path)?;
         let (file, server) = self.task.channel(
-            CHANNEL_RIGHTS,
+            CHANNEL_RIGHTS.union(Rights::TRANSFER),
             Rights::READ | Rights::WAIT | Rights::TRANSFER,
         )?;
         let mut request = Message::new(method, &[path.len() as u64])?;
@@ -155,6 +155,27 @@ impl<'a> Client<'a> {
 }
 
 impl File<'_> {
+    pub fn from_channel(
+        task: &Handle<Task>,
+        channel: Handle<Channel>,
+        deadline: u64,
+    ) -> Result<File<'_>, Error> {
+        if !channel.info()?.rights.contains(CHANNEL_RIGHTS) {
+            return Err(Error::InvalidRequest);
+        }
+        let file = File {
+            task,
+            channel,
+            length: Cell::new(0),
+        };
+        file.size(deadline)?;
+        Ok(file)
+    }
+
+    pub fn into_channel(self) -> Handle<Channel> {
+        self.channel
+    }
+
     pub fn fsync(&self, deadline: u64) -> Result<(), Error> {
         let response = call(
             &self.channel,

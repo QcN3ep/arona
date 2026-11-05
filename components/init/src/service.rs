@@ -71,6 +71,7 @@ pub fn start_logger(
     devices: &Handle<DeviceSet>,
     devmgr: &Handle<Channel>,
     kernel_log: &Handle<KernelLog>,
+    persistent_log: Option<fs::File<'static>>,
 ) -> Result<(Service, logger::Control<'static>, logger::Client<'static>), crate::InitError> {
     let mut cursor = 0;
     let console = loop {
@@ -91,8 +92,21 @@ pub fn start_logger(
         control,
         output,
         kernel_log.try_clone(Rights::READ | Rights::TRANSFER)?,
+        persistent_log,
     )?;
     Ok((service, control, client))
+}
+
+pub fn persistent_log_file(files: &fs::Client<'static>) -> Result<fs::File<'static>, InitError> {
+    match files.mkdir("/var/log", deadline()?) {
+        Ok(()) | Err(fs::Error::AlreadyExists) => {}
+        Err(error) => return Err(error.into()),
+    }
+    match files.open("/var/log/system.log", deadline()?) {
+        Ok(file) => Ok(file),
+        Err(fs::Error::NotFound) => Ok(files.create("/var/log/system.log", deadline()?)?),
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub fn wait(services: &[&Service]) -> Result<usize, Error> {

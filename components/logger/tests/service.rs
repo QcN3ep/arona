@@ -5,20 +5,43 @@
 
 extern crate alloc;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{format, sync::Arc, vec::Vec};
 use devmgr::{
     Error as DeviceError,
+    block::{self, Block, Session as BlockSession},
     device::DeviceDescription,
     uart::{self, Configuration, Session, Settings, Uart},
 };
 use logger::{Client, Control, Error, Level, MAX_RECORD_SIZE, log};
 use runtime::{
-    Channel, DeviceSet, Handle, KernelError, KernelLog, Rights,
+    Channel, DeviceSet, Handle, KernelError, KernelLog, ObjectType, Rights,
     ipc::{CallError, Message, WaitMode},
     process, thread,
 };
 
 const CHANNEL_RIGHTS: Rights = Rights::READ_WRITE.union(Rights::WAIT);
+
+struct TestFilesystem {
+    control: fs::Control<'static>,
+    files: fs::Client<'static>,
+    worker: thread::JoinHandle<Result<(), fs::Error>>,
+    block_control: Handle<Channel>,
+    block_worker: thread::JoinHandle<Result<(), DeviceError>>,
+}
+
+struct RunningLogger {
+    control: Control<'static>,
+    client: Client<'static>,
+    worker: thread::JoinHandle<Result<(), Error>>,
+}
+
+impl RunningLogger {
+    fn stop(self) {
+        drop(self.client);
+        drop(self.control);
+        self.worker.join().unwrap().unwrap();
+    }
+}
 
 fn main() {
     let bootstrap = process::bootstrap().unwrap();
@@ -36,30 +59,157 @@ fn main() {
     let (id, group, configuration) = console(&devices);
     let (uart_control, uart_worker) = start_uart(&devices, id, group, configuration);
     let session = Session::open(process::task(), &uart_control, id).unwrap();
-    let (control, server) = process::task()
-        .channel(CHANNEL_RIGHTS, CHANNEL_RIGHTS)
+    let filesystem = start_filesystem(&devices);
+    let restart_kernel_log = kernel_log
+        .try_clone(Rights::READ | Rights::DUPLICATE | Rights::TRANSFER)
         .unwrap();
-    let worker = thread::spawn(move || logger::service::run(server)).unwrap();
-    let (control, client) = Control::start(process::task(), control, session, kernel_log).unwrap();
+    filesystem.files.mkdir("/var/log", deadline()).unwrap();
+    let persistent_file = filesystem
+        .files
+        .create("/var/log/system.log", deadline())
+        .unwrap();
+    let logger = start_logger(session, kernel_log, Some(persistent_file));
     backpressure();
-    let cursor = exercise(&control, &client);
-    logger::init(client.try_clone().unwrap(), log::LevelFilter::Info).unwrap();
+    let cursor = exercise(&logger.control, &logger.client);
+    logger::init(logger.client.try_clone().unwrap(), log::LevelFilter::Info).unwrap();
     log::debug!("filtered logger record");
     log::info!(target: "logger::test", "Logger service tests passed");
     log::logger().flush();
     assert_eq!(logger::failures(), 0);
     let mut bytes = [0; MAX_RECORD_SIZE];
     assert_eq!(
-        control
+        logger
+            .control
             .read(cursor, &mut bytes, deadline())
             .unwrap()
             .unwrap()
             .message,
         "Logger service tests passed"
     );
+    let logger = restart_persistent(
+        &filesystem.files,
+        &uart_control,
+        id,
+        logger,
+        restart_kernel_log,
+    );
+    verify_uart_failure(logger, &filesystem.files, uart_control, uart_worker);
+    filesystem.stop();
+    bootstrap
+        .send(&mut Message::new(73, &[2]).unwrap(), WaitMode::Forever)
+        .unwrap();
+}
+
+fn restart_persistent(
+    files: &fs::Client<'static>,
+    uart_control: &Handle<Channel>,
+    id: u32,
+    logger: RunningLogger,
+    kernel_log: Handle<KernelLog>,
+) -> RunningLogger {
+    let failure_kernel_log = kernel_log
+        .try_clone(Rights::READ | Rights::TRANSFER)
+        .unwrap();
+    let persisted = logger
+        .client
+        .write(
+            log::Level::Warn,
+            "logger::test",
+            "persisted before restart",
+            deadline(),
+        )
+        .unwrap();
+    logger.client.flush(deadline()).unwrap();
+    logger.stop();
+    verify_file_failure(files, uart_control, id, failure_kernel_log);
+    let file = files.open("/var/log/system.log", deadline()).unwrap();
+    let size = file.size(deadline()).unwrap();
+    assert_eq!(file.write_at(size, b"torn", deadline()).unwrap(), 4);
+    file.fsync(deadline()).unwrap();
+    drop(file);
+    let output = Session::open(process::task(), uart_control, id).unwrap();
+    let persistent_file = files.open("/var/log/system.log", deadline()).unwrap();
+    let logger = start_logger(output, kernel_log, Some(persistent_file));
+    assert_eq!(
+        files
+            .open("/var/log/system.log", deadline())
+            .unwrap()
+            .size(deadline())
+            .unwrap(),
+        size
+    );
+    let mut recovered = [0; MAX_RECORD_SIZE];
+    let record = logger
+        .control
+        .read(persisted, &mut recovered, deadline())
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.message, "persisted before restart");
+    let next = logger
+        .client
+        .write(
+            log::Level::Info,
+            "logger::test",
+            "continued after restart",
+            deadline(),
+        )
+        .unwrap();
+    assert_eq!(next, persisted + 1);
+    logger.client.flush(deadline()).unwrap();
+    logger
+}
+
+fn verify_file_failure(
+    files: &fs::Client<'static>,
+    uart_control: &Handle<Channel>,
+    id: u32,
+    kernel_log: Handle<KernelLog>,
+) {
+    let file = files.open("/readonly.log", deadline()).unwrap();
+    let output = Session::open(process::task(), uart_control, id).unwrap();
+    let logger = start_logger(output, kernel_log, Some(file));
+    let sequence = logger
+        .client
+        .write(
+            log::Level::Warn,
+            "logger::test",
+            "read-only log file",
+            deadline(),
+        )
+        .unwrap();
+    assert_eq!(logger.client.flush(deadline()), Err(Error::Unavailable));
+    assert_eq!(logger.client.flush(deadline()), Err(Error::Unavailable));
+    let mut bytes = [0; MAX_RECORD_SIZE];
+    assert_eq!(
+        logger
+            .control
+            .read(sequence, &mut bytes, deadline())
+            .unwrap()
+            .unwrap()
+            .message,
+        "read-only log file"
+    );
+    logger.stop();
+    assert_eq!(
+        files
+            .open("/readonly.log", deadline())
+            .unwrap()
+            .size(deadline())
+            .unwrap(),
+        0
+    );
+}
+
+fn verify_uart_failure(
+    logger: RunningLogger,
+    files: &fs::Client<'static>,
+    uart_control: Handle<Channel>,
+    uart_worker: thread::JoinHandle<Result<(), DeviceError>>,
+) {
     drop(uart_control);
     uart_worker.join().unwrap().unwrap();
-    let sequence = client
+    let sequence = logger
+        .client
         .write(
             log::Level::Warn,
             "logger::test",
@@ -67,23 +217,31 @@ fn main() {
             deadline(),
         )
         .unwrap();
+    let mut bytes = [0; MAX_RECORD_SIZE];
     assert_eq!(
-        control
+        logger
+            .control
             .read(sequence, &mut bytes, deadline())
             .unwrap()
             .unwrap()
             .message,
         "retained after UART shutdown"
     );
-    assert_eq!(client.flush(deadline()), Err(Error::Unavailable));
-    drop(client);
-    drop(control);
-    worker.join().unwrap().unwrap();
+    assert_eq!(logger.client.flush(deadline()), Err(Error::Unavailable));
+    logger.stop();
     log::info!("logger is no longer running");
     assert_eq!(logger::failures(), 1);
-    bootstrap
-        .send(&mut Message::new(73, &[2]).unwrap(), WaitMode::Forever)
-        .unwrap();
+    let file = files.open("/var/log/system.log", deadline()).unwrap();
+    let size = file.size(deadline()).unwrap();
+    let length =
+        abi::logger::HEADER_SIZE + "logger::test".len() + "retained after UART shutdown".len();
+    assert_eq!(
+        file.read_at(size - length, &mut bytes[..length], deadline())
+            .unwrap(),
+        length
+    );
+    let record = logger::Record::decode(&bytes[..length]).unwrap();
+    assert_eq!(record.message, "retained after UART shutdown");
 }
 
 fn exercise(control: &Control<'_>, client: &Client<'static>) -> u64 {
@@ -225,7 +383,7 @@ fn backpressure() {
 }
 
 fn deadline() -> u64 {
-    thread::now_ns().unwrap() + 5_000_000_000
+    thread::now_ns().unwrap() + 30_000_000_000
 }
 
 fn console(devices: &Handle<DeviceSet>) -> (u32, u32, Configuration) {
@@ -278,4 +436,134 @@ fn start_uart(
     })
     .unwrap();
     (control, worker)
+}
+
+fn start_filesystem(devices: &Handle<DeviceSet>) -> TestFilesystem {
+    let mut cursor = 0;
+    let (id, configuration, grant, domain, event) = loop {
+        let id = devices.next(cursor).unwrap().expect("missing test disk");
+        cursor = id;
+        let device = DeviceDescription::new(devices, id).unwrap();
+        let Some(configuration) = block::probe(&device).unwrap() else {
+            continue;
+        };
+        let group = device.info().group.unwrap();
+        let grant = devices
+            .claim_group(
+                group,
+                Rights::MAP | Rights::DEVICE_CONTROL | Rights::IRQ_ACK,
+            )
+            .unwrap();
+        let domain = grant
+            .create_dma(id, ObjectType::DmaDomain.supported_rights())
+            .unwrap();
+        let event = process::task()
+            .event(Rights::SIGNAL | Rights::WAIT)
+            .unwrap();
+        let supported = match Block::new(configuration, &grant, &domain, &event, process::task()) {
+            Ok(block) => {
+                drop(block);
+                true
+            }
+            Err(DeviceError::Unsupported) => false,
+            Err(error) => panic!("block initialization failed: {error:?}"),
+        };
+        if supported {
+            break (id, configuration, grant, domain, event);
+        }
+    };
+    let (block_control, block_server) = process::task()
+        .channel(CHANNEL_RIGHTS, CHANNEL_RIGHTS)
+        .unwrap();
+    let block_worker = thread::spawn(move || {
+        let mut block = Block::new(configuration, &grant, &domain, &event, process::task())?;
+        block::service::run(&mut block, &event, &block_server, id)?;
+        domain.revoke().unwrap();
+        Ok(())
+    })
+    .unwrap();
+    let session = BlockSession::open(process::task(), &block_control, id).unwrap();
+    let size = session.info().unwrap().capacity;
+    let (fs_channel, fs_server) = process::task()
+        .channel(CHANNEL_RIGHTS, CHANNEL_RIGHTS)
+        .unwrap();
+    let fs_worker = thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || fs::service::run(process::task(), fs_server))
+        .unwrap();
+    let archive = archive();
+    let mut frames = process::task()
+        .allocate(1, Rights::READ_WRITE | Rights::TRANSFER)
+        .unwrap();
+    frames.write(0, &archive).unwrap();
+    let filesystem = fs::Control::start(
+        process::task(),
+        fs_channel,
+        frames,
+        archive.len(),
+        deadline(),
+    )
+    .unwrap();
+    let files = filesystem.connect(deadline()).unwrap();
+    filesystem
+        .mount(b"/var", session, 0, size, deadline())
+        .unwrap();
+    TestFilesystem {
+        control: filesystem,
+        files,
+        worker: fs_worker,
+        block_control,
+        block_worker,
+    }
+}
+
+fn archive() -> Vec<u8> {
+    let mut archive = Vec::new();
+    for name in [b"readonly.log\0".as_slice(), b"TRAILER!!!\0"] {
+        let mut header = [b'0'; 110];
+        header[..6].copy_from_slice(b"070701");
+        if name != b"TRAILER!!!\0" {
+            header[14..22].copy_from_slice(b"00008124");
+            header[38..46].copy_from_slice(b"00000001");
+        }
+        header[94..102].copy_from_slice(format!("{:08x}", name.len()).as_bytes());
+        archive.extend_from_slice(&header);
+        archive.extend_from_slice(name);
+        archive.resize(archive.len().next_multiple_of(4), 0);
+    }
+    archive
+}
+
+impl TestFilesystem {
+    fn stop(self) {
+        drop(self.files);
+        drop(self.control);
+        self.worker.join().unwrap().unwrap();
+        drop(self.block_control);
+        self.block_worker.join().unwrap().unwrap();
+    }
+}
+
+fn start_logger(
+    output: Session,
+    kernel_log: Handle<KernelLog>,
+    persistent_file: Option<fs::File<'static>>,
+) -> RunningLogger {
+    let (channel, server) = process::task()
+        .channel(CHANNEL_RIGHTS, CHANNEL_RIGHTS)
+        .unwrap();
+    let worker = thread::spawn(move || logger::service::run(process::task(), server)).unwrap();
+    let (control, client) = Control::start(
+        process::task(),
+        channel,
+        output,
+        kernel_log,
+        persistent_file,
+    )
+    .unwrap();
+    RunningLogger {
+        control,
+        client,
+        worker,
+    }
 }

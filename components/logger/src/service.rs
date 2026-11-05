@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 日志记录的保存、管理请求与 UART 输出。
+//! 日志缓冲、持久化与 UART 输出。
 
 use alloc::{collections::VecDeque, format, vec, vec::Vec};
 use core::fmt::Write;
 use devmgr::uart::Session;
+use fs::{File, ReadAt};
 use runtime::{
-    Channel, FrameAllocation, Handle, KernelError, KernelLog, Reply,
+    Channel, FrameAllocation, Handle, KernelError, KernelLog, Reply, Task,
     ipc::{self, Message, ReceivedMessage, WaitItem, WaitMode},
     logger::MAX_RECORD_SIZE,
     thread,
@@ -18,19 +19,36 @@ use crate::{
 };
 
 const RETAINED_BYTES: usize = 1024 * 1024;
+const IO_TIMEOUT_NS: u64 = 10_000_000_000;
 
-struct Service {
+enum Persistence<'a> {
+    Disabled,
+    Active { file: File<'a>, offset: usize },
+    Failed,
+}
+
+struct Restored {
+    records: VecDeque<Vec<u8>>,
+    retained: usize,
+    sequence: u64,
+    offset: usize,
+}
+
+struct Service<'a> {
     output: Option<Session>,
     kernel_log: Handle<KernelLog>,
+    persistent: Persistence<'a>,
     records: VecDeque<Vec<u8>>,
     retained: usize,
     sequence: u64,
 }
 
-pub fn run(control: Handle<Channel>) -> Result<(), Error> {
+pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
     let mut startup = control.receive(WaitMode::Forever)?;
     let reply = startup.take_reply().ok_or(Error::InvalidRequest)?;
-    if startup.tag != protocol::START || !startup.words().is_empty() || startup.handles().len() != 3
+    if startup.tag != protocol::START
+        || !startup.words().is_empty()
+        || !(3..=4).contains(&startup.handles().len())
     {
         return Err(Error::InvalidRequest);
     }
@@ -51,13 +69,27 @@ pub fn run(control: Handle<Channel>) -> Result<(), Error> {
         .unwrap()
         .downcast::<Channel>()
         .map_err(|_| Error::InvalidRequest)?;
+    let persistent = match startup.take_handle(0) {
+        None => Persistence::Disabled,
+        Some(handle) => {
+            let channel = handle.downcast().map_err(|_| Error::InvalidRequest)?;
+            match deadline()
+                .and_then(|deadline| File::from_channel(task, channel, deadline).map_err(|_| ()))
+            {
+                Ok(file) => Persistence::Active { file, offset: 0 },
+                Err(_) => Persistence::Failed,
+            }
+        }
+    };
     let mut service = Service {
         output: Some(output),
         kernel_log,
+        persistent,
         records: VecDeque::new(),
         retained: 0,
         sequence: 0,
     };
+    service.restore();
     deliver(&reply, Ok(Message::new(protocol::SUCCESS, &[])?))?;
     let mut requests = Some(requests);
     loop {
@@ -93,7 +125,22 @@ pub fn run(control: Handle<Channel>) -> Result<(), Error> {
     }
 }
 
-impl Service {
+impl Service<'_> {
+    fn restore(&mut self) {
+        let Persistence::Active { file, offset } = &mut self.persistent else {
+            return;
+        };
+        match restore(file) {
+            Ok(restored) => {
+                self.records = restored.records;
+                self.retained = restored.retained;
+                self.sequence = restored.sequence;
+                *offset = restored.offset;
+            }
+            Err(()) => self.persistent = Persistence::Failed,
+        }
+    }
+
     fn dispatch(&mut self, mut message: ReceivedMessage, control: bool) -> Result<(), Error> {
         let reply = message.take_reply();
         if !control && message.tag == protocol::WRITE {
@@ -108,6 +155,7 @@ impl Service {
                             Ok(Message::new(protocol::SUCCESS, &[record.sequence])?),
                         )?;
                     }
+                    self.persist(&bytes);
                     let _ = self.output(record, "user");
                 }
                 Err(error) => {
@@ -143,14 +191,24 @@ impl Service {
             message,
         };
         let mut bytes = vec![0; abi::logger::HEADER_SIZE + submission.text.len()];
-        let length = record.encode(&mut bytes).ok_or(Error::InvalidRequest)?;
-        while self.retained + length > RETAINED_BYTES {
-            self.retained -= self.records.pop_front().unwrap().len();
-        }
-        self.retained += length;
-        self.records.push_back(bytes.clone());
+        record.encode(&mut bytes).ok_or(Error::InvalidRequest)?;
+        retain(&mut self.records, &mut self.retained, bytes.clone());
         self.sequence = sequence;
         Ok(bytes)
+    }
+
+    fn persist(&mut self, bytes: &[u8]) {
+        let Persistence::Active { file, offset } = &mut self.persistent else {
+            return;
+        };
+        let result = offset.checked_add(bytes.len()).ok_or(()).and_then(|end| {
+            write_all_at(file, *offset, bytes)?;
+            *offset = end;
+            Ok(())
+        });
+        if result.is_err() {
+            self.persistent = Persistence::Failed;
+        }
     }
 
     fn manage(&mut self, mut message: ReceivedMessage) -> Result<Message, Error> {
@@ -206,14 +264,32 @@ impl Service {
         }
     }
 
-    fn flush(&self, message: ReceivedMessage) -> Result<Message, Error> {
+    fn flush(&mut self, message: ReceivedMessage) -> Result<Message, Error> {
         if message.tag != protocol::FLUSH
             || !message.words().is_empty()
             || !message.handles().is_empty()
         {
             return Err(Error::InvalidRequest);
         }
-        self.output.as_ref().ok_or(Error::Unavailable)?.flush()?;
+        let mut failed = false;
+        if self
+            .output
+            .as_ref()
+            .is_none_or(|output| output.flush().is_err())
+        {
+            self.output = None;
+            failed = true;
+        }
+        if let Persistence::Active { file, .. } = &self.persistent
+            && deadline()
+                .and_then(|deadline| file.fsync(deadline).map_err(|_| ()))
+                .is_err()
+        {
+            self.persistent = Persistence::Failed;
+        }
+        if failed || matches!(self.persistent, Persistence::Failed) {
+            return Err(Error::Unavailable);
+        }
         Ok(Message::new(protocol::SUCCESS, &[])?)
     }
 
@@ -255,6 +331,88 @@ impl Service {
         }
         Ok(())
     }
+}
+
+fn restore(file: &File<'_>) -> Result<Restored, ()> {
+    let size = file.len();
+    let mut input = vec![0; 4096 + MAX_RECORD_SIZE];
+    let mut buffered = 0;
+    let mut records = VecDeque::new();
+    let mut retained = 0;
+    let mut sequence = 0;
+    let mut offset = 0;
+    while offset < size {
+        if buffered < MAX_RECORD_SIZE && offset + buffered < size {
+            let count = file
+                .read_at(offset + buffered, &mut input[buffered..], deadline()?)
+                .map_err(|_| ())?;
+            if count == 0 {
+                return Err(());
+            }
+            buffered += count;
+            continue;
+        }
+        if buffered < abi::logger::HEADER_SIZE {
+            break;
+        }
+        let target = u32::from_le_bytes(input[24..28].try_into().unwrap()) as usize;
+        let message = u32::from_le_bytes(input[28..32].try_into().unwrap()) as usize;
+        let Some(length) = abi::logger::HEADER_SIZE
+            .checked_add(target)
+            .and_then(|length| length.checked_add(message))
+            .filter(|length| *length <= MAX_RECORD_SIZE && *length <= buffered)
+        else {
+            break;
+        };
+        let Some(record) = Record::decode(&input[..length]) else {
+            break;
+        };
+        if record.sequence <= sequence {
+            break;
+        }
+        sequence = record.sequence;
+        retain(&mut records, &mut retained, input[..length].to_vec());
+        offset += length;
+        input.copy_within(length..buffered, 0);
+        buffered -= length;
+    }
+    if offset != size {
+        file.truncate(offset, deadline()?).map_err(|_| ())?;
+        file.fsync(deadline()?).map_err(|_| ())?;
+    }
+    Ok(Restored {
+        records,
+        retained,
+        sequence,
+        offset,
+    })
+}
+
+fn retain(records: &mut VecDeque<Vec<u8>>, retained: &mut usize, bytes: Vec<u8>) {
+    while *retained + bytes.len() > RETAINED_BYTES {
+        *retained -= records.pop_front().unwrap().len();
+    }
+    *retained += bytes.len();
+    records.push_back(bytes);
+}
+
+fn write_all_at(file: &File<'_>, mut offset: usize, mut input: &[u8]) -> Result<(), ()> {
+    while !input.is_empty() {
+        let count = file.write_at(offset, input, deadline()?).map_err(|_| ())?;
+        if count == 0 {
+            return Err(());
+        }
+        offset = offset.checked_add(count).ok_or(())?;
+        input = &input[count..];
+    }
+    Ok(())
+}
+
+fn deadline() -> Result<u64, ()> {
+    thread::now_ns()
+        .map_err(|_| ())?
+        .checked_add(IO_TIMEOUT_NS)
+        .ok_or(())
 }
 
 fn deliver(reply: &Handle<Reply>, result: Result<Message, Error>) -> Result<(), Error> {

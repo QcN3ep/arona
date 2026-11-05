@@ -70,10 +70,7 @@ fn main() -> Result<usize, InitError> {
     let loader = program::Loader::new(archive.open("/bin/init")?)?;
     let (filesystem, mounts, files) = service::start_fs(&loader, archive)?;
     let (devmgr, device_control) = service::start_devmgr(&loader, &files, &devices)?;
-    let (logger, _logger_control, client) =
-        service::start_logger(&loader, &files, &devices, &device_control, &kernel_log)?;
-    logger::init(client, logger::log::LevelFilter::Info).map_err(|_| Error::Protocol)?;
-    if let Some(id) = devmgr::device::next(
+    let persistent_log = if let Some(id) = devmgr::device::next(
         &device_control,
         devmgr::device::DriverKind::Block,
         0,
@@ -82,6 +79,21 @@ fn main() -> Result<usize, InitError> {
         let session = devmgr::block::Session::open(process::task(), &device_control, id)?;
         let size = session.info()?.capacity;
         mounts.mount(b"/var", session, 0, size, service::deadline()?)?;
+        Some(service::persistent_log_file(&files)?)
+    } else {
+        None
+    };
+    let mounted = persistent_log.is_some();
+    let (logger, _logger_control, client) = service::start_logger(
+        &loader,
+        &files,
+        &devices,
+        &device_control,
+        &kernel_log,
+        persistent_log,
+    )?;
+    logger::init(client, logger::log::LevelFilter::Info).map_err(|_| Error::Protocol)?;
+    if mounted {
         logger::log::info!(target: "init", "Mounted block device at /var");
     }
     logger::log::info!(target: "init", "System services ready");

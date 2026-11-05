@@ -5,5 +5,5 @@
 
 fn main() -> Result<(), logger::Error> {
     let bootstrap = runtime::process::bootstrap().ok_or(runtime::Error::Protocol)?;
-    logger::service::run(bootstrap)
+    logger::service::run(runtime::process::task(), bootstrap)
 }

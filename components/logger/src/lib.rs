@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 用户日志客户端、管理接口与 UART 日志服务。
+//! 用户日志客户端、管理接口与日志服务。
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -18,7 +18,7 @@ pub use runtime::logger::{Level, MAX_RECORD_SIZE, Record};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Once;
 
-const FLUSH_TIMEOUT_NS: u64 = 1_000_000_000;
+const FLUSH_TIMEOUT_NS: u64 = 10_000_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {

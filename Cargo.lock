@@ -78,6 +78,7 @@ version = "0.1.0"
 dependencies = [
  "arona-abi",
  "arona-devmgr",
+ "arona-fs",
  "arona-runtime",
  "arrayvec",
  "log",

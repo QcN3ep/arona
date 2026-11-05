@@ -2,6 +2,7 @@
 
 use core::fmt;
 use devmgr::uart::Session;
+use fs::File;
 use runtime::{
     Channel, Handle, KernelLog, Rights, Task,
     ipc::{Message, WaitMode},
@@ -58,7 +59,7 @@ impl<'a> Client<'a> {
         Ok(())
     }
 
-    /// 等待日志保存并返回序号。
+    /// 等待日志进入内存缓冲区并返回序号。
     pub fn write(
         &self,
         level: log::Level,
@@ -84,6 +85,7 @@ impl<'a> Client<'a> {
         }
     }
 
+    /// 完成先前日志的输出并同步日志文件。
     pub fn flush(&self, deadline_ns: u64) -> Result<(), Error> {
         let reply = call(
             &self.channel,
@@ -104,6 +106,7 @@ impl<'a> Control<'a> {
         channel: Handle<Channel>,
         output: Session,
         kernel_log: Handle<KernelLog>,
+        persistent_log: Option<File<'a>>,
     ) -> Result<(Self, Client<'a>), Error> {
         let client_rights = CHANNEL_RIGHTS | Rights::DUPLICATE | Rights::TRANSFER;
         let (client, requests) = task.channel(
@@ -114,6 +117,13 @@ impl<'a> Control<'a> {
         transfer(&mut startup, output.into_channel(), CHANNEL_RIGHTS)?;
         transfer(&mut startup, kernel_log, Rights::READ)?;
         transfer(&mut startup, requests, Rights::READ | Rights::WAIT)?;
+        if let Some(file) = persistent_log {
+            transfer(
+                &mut startup,
+                file.into_channel(),
+                Rights::READ_WRITE | Rights::WAIT,
+            )?;
+        }
         let deadline = thread::now_ns()?
             .checked_add(10_000_000_000)
             .ok_or(Error::Unavailable)?;

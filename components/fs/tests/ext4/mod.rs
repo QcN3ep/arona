@@ -66,7 +66,7 @@ fn main() {
         .unwrap();
         let session = Session::open(process::task(), &control, id).unwrap();
         let disk = Rc::new(Disk::new(process::task(), session).unwrap());
-1        exercise(&disk);
+        exercise(&disk);
         let writable = !disk.read_only() && disk.capacity() >= 8 * SLICE;
         drop(disk);
         if writable {
