@@ -30,6 +30,15 @@ pub struct UserEntry {
     pub argument: usize,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct UserState {
+    pub pc: usize,
+    pub registers: [usize; 32],
+    pub floating: [u64; 32],
+    pub floating_control: u32,
+    pub floating_conditions: [u8; 8],
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum ContextStart {
     /// 为当前控制流提供保存位置，首次切出前不可恢复。
@@ -76,6 +85,16 @@ pub struct Context {
 }
 
 impl Context {
+    pub fn user_state(&self) -> Result<UserState, ExecutionError> {
+        check_interrupts()?;
+        execution().user_state(&self.storage)
+    }
+
+    pub fn set_user_state(&self, state: &UserState) -> Result<(), ExecutionError> {
+        check_interrupts()?;
+        execution().set_user_state(&self.storage, state)
+    }
+
     /// # Safety
     ///
     /// 上下文须始终在同一处理器使用；其栈、入口及用户地址空间须存活至停止执行，
@@ -142,6 +161,13 @@ fn check_interrupts() -> Result<(), ExecutionError> {
 /// 切换不得保留指向 Context 包装对象的指针，且只能在同一处理器、关中断及标量浮点关闭时执行。
 pub trait Execution: Sync {
     fn context_layout(&self) -> Layout;
+    fn user_entry(&self, state: &UserState) -> Result<UserEntry, ExecutionError>;
+    fn user_state(&self, storage: &ContextStorage) -> Result<UserState, ExecutionError>;
+    fn set_user_state(
+        &self,
+        storage: &ContextStorage,
+        state: &UserState,
+    ) -> Result<(), ExecutionError>;
     fn initialize(
         &self,
         storage: &ContextStorage,

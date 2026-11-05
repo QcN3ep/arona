@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use core::arch::{asm, naked_asm};
-use kernel::hardware::execution::Context;
+use kernel::hardware::execution::{Context, UserState};
+
+pub fn set_user_marker(state: &mut UserState, id: usize) {
+    state.registers[10] = 0x8800 + id;
+}
+
+pub fn set_floating_control(state: &mut UserState, id: usize) {
+    state.floating_control = (id as u32 ^ 3) << 8;
+    state.floating_conditions.fill((id as u8 & 1) ^ 1);
+}
 
 pub fn frequency(_firmware: usize) -> Option<u64> {
     None
@@ -109,14 +118,20 @@ pub extern "C" fn user_code() -> ! {
         "bne $tp, $t0, 9f",
         "ld.d $t0, $sp, -8",
         "bne $t0, $s0, 9f",
+        "li.d $t0, 0x8800",
+        "add.d $t0, $t0, $s0",
+        "bne $a6, $t0, 9f",
+        "addi.d $t1, $s0, 256",
         ".irp index,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31",
         "movfr2gr.d $t0, $f\\index",
-        "bne $t0, $s0, 9f",
+        "bne $t0, $t1, 9f",
         ".endr",
         "movfcsr2gr $t0, $fcsr0",
-        "slli.d $t1, $s0, 8",
+        "xori $t1, $s0, 3",
+        "slli.d $t1, $t1, 8",
         "bne $t0, $t1, 9f",
         "andi $t1, $s0, 1",
+        "xori $t1, $t1, 1",
         ".irp index,0,1,2,3,4,5,6,7",
         "movcf2gr $t0, $fcc\\index",
         "bne $t0, $t1, 9f",

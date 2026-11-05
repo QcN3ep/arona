@@ -9,7 +9,7 @@ use core::{
 
 use kernel::hardware::{
     cpu::{Cpu, InterruptState},
-    execution::{ContextStart, ContextStorage, Execution, ExecutionError},
+    execution::{ContextStart, ContextStorage, Execution, ExecutionError, UserEntry, UserState},
 };
 
 use super::{
@@ -18,6 +18,7 @@ use super::{
 };
 use crate::execution::{
     ContextStatus, EntryContext, SavedContext, activate, capture_frame, pointer,
+    validate_user_access, validate_user_entry,
 };
 
 crate::declare_hardware!(static EXECUTION: LoongArchExecution = LoongArchExecution => kernel::hardware::execution::bind);
@@ -40,6 +41,65 @@ struct LoongArchExecution;
 impl Execution for LoongArchExecution {
     fn context_layout(&self) -> Layout {
         Layout::new::<Context>()
+    }
+
+    fn user_entry(&self, state: &UserState) -> Result<UserEntry, ExecutionError> {
+        if state.registers[0] != 0
+            || state.floating_control & !0x1f1f_031f != 0
+            || state
+                .floating_conditions
+                .iter()
+                .any(|condition| *condition > 1)
+        {
+            return Err(ExecutionError::InvalidState);
+        }
+        validate_user_entry(
+            UserEntry {
+                pc: state.pc,
+                stack_pointer: state.registers[3],
+                thread_pointer: state.registers[2],
+                argument: state.registers[4],
+            },
+            4,
+        )
+    }
+
+    fn user_state(&self, storage: &ContextStorage) -> Result<UserState, ExecutionError> {
+        check_environment()?;
+        let context = user_context(storage)?;
+        // SAFETY: 上下文须由当前处理器在关中断时独占。
+        let frame = unsafe { &(*context).frame };
+        Ok(UserState {
+            pc: frame.pc,
+            registers: frame.registers,
+            floating: if frame.extensions & 1 != 0 {
+                // SAFETY: FPU 启用时入口须已保存全部浮点寄存器。
+                unsafe { frame.floating.assume_init() }
+            } else {
+                [0; 32]
+            },
+            floating_control: frame.fcsr as u32,
+            floating_conditions: frame.fcc.to_le_bytes(),
+        })
+    }
+
+    fn set_user_state(
+        &self,
+        storage: &ContextStorage,
+        state: &UserState,
+    ) -> Result<(), ExecutionError> {
+        check_environment()?;
+        self.user_entry(state)?;
+        let context = user_context(storage)?;
+        // SAFETY: 上下文须由当前处理器在关中断时独占。
+        let frame = unsafe { &mut (*context).frame };
+        frame.pc = state.pc;
+        frame.registers = state.registers;
+        frame.floating = MaybeUninit::new(state.floating);
+        frame.fcsr = state.floating_control as usize;
+        frame.fcc = usize::from_le_bytes(state.floating_conditions);
+        frame.extensions = 1;
+        Ok(())
     }
 
     fn initialize(
@@ -170,6 +230,22 @@ impl Execution for LoongArchExecution {
             restore(next)
         }
     }
+}
+
+fn user_context(storage: &ContextStorage) -> Result<*mut Context, ExecutionError> {
+    let context = pointer::<Context>(storage)?;
+    // SAFETY: 上下文和入口状态须由当前处理器在关中断时独占。
+    unsafe {
+        validate_user_access(
+            context,
+            (*context).status,
+            &*core::ptr::addr_of!(trap::STATE),
+        )?;
+        if (*context).frame.status & 3 != 3 {
+            return Err(ExecutionError::InvalidState);
+        }
+    }
+    Ok(context)
 }
 
 fn check_environment() -> Result<(), ExecutionError> {

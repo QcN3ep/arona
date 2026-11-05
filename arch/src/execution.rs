@@ -5,7 +5,7 @@ use core::alloc::Layout;
 use kernel::{
     hardware::{
         self,
-        execution::{ContextStart, ContextStorage, ExecutionError},
+        execution::{ContextStart, ContextStorage, ExecutionError, UserEntry},
     },
     memory::VirtRange,
 };
@@ -111,6 +111,39 @@ pub(crate) fn pointer<T>(storage: &ContextStorage) -> Result<*mut T, ExecutionEr
         return Err(ExecutionError::InvalidLayout);
     }
     Ok(storage.address() as *mut T)
+}
+
+pub(crate) fn validate_user_entry(
+    entry: UserEntry,
+    pc_alignment: usize,
+) -> Result<UserEntry, ExecutionError> {
+    if entry.pc == 0
+        || !valid_address(entry.pc, true)
+        || !entry.pc.is_multiple_of(pc_alignment)
+        || !valid_address(entry.thread_pointer, true)
+    {
+        return Err(ExecutionError::InvalidEntry);
+    }
+    if entry.stack_pointer == 0 || !valid_address(entry.stack_pointer, true) {
+        return Err(ExecutionError::InvalidStack);
+    }
+    Ok(entry)
+}
+
+pub(crate) fn validate_user_access<F, C>(
+    context: *const SavedContext<F, C>,
+    status: ContextStatus,
+    state: &EntryState,
+) -> Result<(), ExecutionError> {
+    match status {
+        ContextStatus::Suspended => Ok(()),
+        ContextStatus::Running
+            if state.context == context.cast_mut().cast() && state.active == 1 =>
+        {
+            Ok(())
+        }
+        _ => Err(ExecutionError::InvalidState),
+    }
 }
 
 /// # Safety

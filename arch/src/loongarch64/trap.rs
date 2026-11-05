@@ -260,15 +260,18 @@ extern "C" fn double_fault() -> ! {
     );
 }
 
-extern "C" fn handle(frame: &mut TrapFrame) -> *const TrapFrame {
-    let trap = frame.decode();
-    if frame.reason == EntryReason::Normal {
+extern "C" fn handle(frame: *mut TrapFrame) -> *const TrapFrame {
+    // SAFETY: frame 须为当前入口的有效现场。
+    let (trap, reason) = unsafe { ((*frame).decode(), (*frame).reason) };
+    if reason == EntryReason::Normal {
         // SAFETY: STATE 须已完成安装，访问期间须关闭本地中断。
         let handler = unsafe { (*core::ptr::addr_of!(STATE)).handler }.unwrap();
         match handler(trap) {
             TrapOutcome::Resume => return frame,
             TrapOutcome::Return { status, values } => {
                 if let TrapEvent::Syscall { successor, .. } = trap.event {
+                    // SAFETY: handler 返回后现场须仍由当前入口独占。
+                    let frame = unsafe { &mut *frame };
                     frame.registers[4..7].copy_from_slice(&[status, values[0], values[1]]);
                     frame.pc = successor;
                     return frame;
@@ -277,6 +280,8 @@ extern "C" fn handle(frame: &mut TrapFrame) -> *const TrapFrame {
             TrapOutcome::Stop => {}
         }
     }
+    // SAFETY: 停止前现场须仍由当前入口独占。
+    let frame = unsafe { &*frame };
     EARLY_CONSOLE.emergency_write(format_args!(
         "\nFATAL TRAP: {:?} at {:#x}: {:?}\nsp={:#x} cause={:#x} entry={:?}\n",
         trap.origin, trap.pc, trap.event, frame.registers[3], frame.cause, frame.reason,

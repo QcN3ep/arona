@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use core::arch::{asm, naked_asm};
-use kernel::hardware::execution::Context;
+use kernel::hardware::execution::{Context, UserState};
+
+pub fn set_user_marker(state: &mut UserState, id: usize) {
+    state.registers[16] = 0x8800 + id;
+}
+
+pub fn set_floating_control(state: &mut UserState, id: usize) {
+    state.floating_control = (id as u32 + 2) << 5;
+}
 
 pub fn frequency(dtb: usize) -> Option<u64> {
     let pointer = (0xffff_ffc0_0040_0000 + (dtb & 0x1f_ffff)) as *const u32;
@@ -116,12 +124,17 @@ pub extern "C" fn user_code() -> ! {
         "bne tp, t0, 9f",
         "ld t0, -8(sp)",
         "bne t0, s0, 9f",
+        "li t0, 0x8800",
+        "add t0, t0, s0",
+        "bne a6, t0, 9f",
+        "addi t1, s0, 256",
         ".irp index,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31",
         "fmv.x.d t0, f\\index",
-        "bne t0, s0, 9f",
+        "bne t0, t1, 9f",
         ".endr",
         "frcsr t0",
-        "slli t1, s0, 5",
+        "addi t1, s0, 2",
+        "slli t1, t1, 5",
         "bne t0, t1, 9f",
         "addi s1, s1, 1",
         "li t0, {rounds}",

@@ -127,6 +127,10 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
         }
         hardware::cpu().halt()
     }
+    run_execution(manager)
+}
+
+fn run_execution(manager: &'static MemoryManager) -> ! {
     let stacks: [HeapAllocation; 3] = core::array::from_fn(|index| {
         let stack = manager
             .allocate_heap(Layout::from_size_align(STACK_SIZE, PAGE_SIZE).unwrap())
@@ -159,6 +163,12 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
     ])
     .unwrap();
     CONTEXTS.store(owned.as_ptr().cast_mut(), Ordering::Relaxed);
+    for index in 2..4 {
+        let mut state = context(index).user_state().unwrap();
+        assert_eq!(state.floating, [0; 32]);
+        isa::set_user_marker(&mut state, index - 1);
+        context(index).set_user_state(&state).unwrap();
+    }
     kernel_round_trips();
     map_user(manager);
     CURRENT.store(2, Ordering::Relaxed);
@@ -173,6 +183,7 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
     assert_eq!(hardware::cpu().interrupt_state(), InterruptState::Disabled);
     assert!(!isa::floating_enabled());
     let retired = context(RETIRED.load(Ordering::Relaxed));
+    assert_eq!(retired.user_state(), Err(ExecutionError::InvalidState));
     assert_eq!(
         retired.switch_to(context(1)),
         Err(ExecutionError::InvalidState)
@@ -256,6 +267,8 @@ fn select_suite() -> Suite {
 }
 
 fn kernel_round_trips() {
+    assert_eq!(context(0).user_state(), Err(ExecutionError::InvalidState));
+    assert_eq!(context(1).user_state(), Err(ExecutionError::InvalidState));
     assert_eq!(
         context(0).restore(context(0)),
         Err(ExecutionError::InvalidState)
@@ -265,6 +278,10 @@ fn kernel_round_trips() {
         Err(ExecutionError::InvalidState)
     );
     hardware::cpu().restore_interrupts(InterruptState::Enabled);
+    assert_eq!(
+        context(2).user_state(),
+        Err(ExecutionError::InterruptsEnabled)
+    );
     assert_eq!(
         context(0).switch_to(context(1)),
         Err(ExecutionError::InterruptsEnabled)
@@ -359,6 +376,7 @@ fn handle(trap: Trap) -> TrapOutcome {
             assert_eq!(arguments[1], round);
             assert_eq!(arguments[2], id * 0x1000);
             assert_eq!(arguments[3], 0x20000 + id * PAGE_SIZE);
+            user_state_round_trip(current, id, round, trap.pc);
             let next = 5 - current;
             CURRENT.store(next, Ordering::Relaxed);
             context(current).switch_to(context(next)).unwrap();
@@ -389,6 +407,53 @@ fn handle(trap: Trap) -> TrapOutcome {
         }
         _ => panic!("invalid user register state: {arguments:?}"),
     }
+}
+
+fn user_state_round_trip(current: usize, id: usize, round: usize, pc: usize) {
+    let context = context(current);
+    let before = context.user_state().unwrap();
+    assert_eq!(before.pc, pc);
+    assert_eq!(
+        before.floating,
+        [if round == 0 {
+            id as u64
+        } else {
+            id as u64 + 256
+        }; 32]
+    );
+    let entry = hardware::execution().user_entry(&before).unwrap();
+    assert_eq!(entry.stack_pointer, user_entry(id).stack_pointer);
+    assert_eq!(entry.thread_pointer, user_entry(id).thread_pointer);
+    let mut invalid = before.clone();
+    invalid.registers[0] = 1;
+    assert_eq!(
+        context.set_user_state(&invalid),
+        Err(ExecutionError::InvalidState)
+    );
+    invalid = before.clone();
+    invalid.pc = usize::MAX;
+    assert_eq!(
+        context.set_user_state(&invalid),
+        Err(ExecutionError::InvalidEntry)
+    );
+    invalid = before.clone();
+    invalid.floating_control = u32::MAX;
+    assert_eq!(
+        context.set_user_state(&invalid),
+        Err(ExecutionError::InvalidState)
+    );
+    invalid = before.clone();
+    invalid.floating_conditions = [2; 8];
+    assert_eq!(
+        context.set_user_state(&invalid),
+        Err(ExecutionError::InvalidState)
+    );
+    assert_eq!(context.user_state().unwrap(), before);
+    let mut state = before;
+    state.floating.fill(id as u64 + 256);
+    isa::set_floating_control(&mut state, id);
+    context.set_user_state(&state).unwrap();
+    assert_eq!(context.user_state().unwrap(), state);
 }
 
 fn context(index: usize) -> &'static Context {
