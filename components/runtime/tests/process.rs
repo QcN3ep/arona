@@ -21,6 +21,7 @@ pub fn run(mut startup: ReceivedMessage) {
     image.read(0, &mut header).unwrap();
     let entry = word(&header, 24) as usize;
     frame_io();
+    remote_memory();
     rollback();
     let mut child = ChildTask::new(process::task(), ProcessStart::REQUIRED_RIGHTS).unwrap();
     let count = u16::from_le_bytes(header[56..58].try_into().unwrap());
@@ -54,6 +55,70 @@ pub fn run(mut startup: ReceivedMessage) {
     assert_eq!(task.wait(deadline).unwrap(), 0);
     assert_eq!(super::INITIALIZED.get(), 37);
     assert_eq!(super::ZERO.get(), 41);
+}
+
+fn remote_memory() {
+    let task = process::task()
+        .create_task(
+            Rights::MAP_MEMORY
+                | Rights::READ_MEMORY
+                | Rights::WRITE_MEMORY
+                | Rights::TERMINATE
+                | Rights::DUPLICATE,
+        )
+        .unwrap();
+    let mut frames = process::task()
+        .allocate(3, Rights::READ_WRITE | Rights::MAP)
+        .unwrap();
+    let mapping = task
+        .map(&frames, 0, 3, None, Permissions::ReadWrite)
+        .unwrap();
+    let range = mapping.range().unwrap();
+    let expected: alloc::vec::Vec<u8> = (0..PAGE_SIZE + 17)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    task.write_memory(range.start + PAGE_SIZE - 1, &expected)
+        .unwrap();
+    let mut actual = alloc::vec![0; expected.len()];
+    task.read_memory(range.start + PAGE_SIZE - 1, &mut actual)
+        .unwrap();
+    assert_eq!(actual, expected);
+    frames.read(PAGE_SIZE - 1, &mut actual).unwrap();
+    assert_eq!(actual, expected);
+    let restricted = task.try_clone(Rights::NONE).unwrap();
+    assert_eq!(
+        restricted.read_memory(range.start, &mut actual),
+        Err(Error::Kernel(abi::Error::Denied))
+    );
+    assert_eq!(
+        restricted.write_memory(range.start, &actual),
+        Err(Error::Kernel(abi::Error::Denied))
+    );
+    assert_eq!(
+        task.write_memory(range.end - 1, &[1, 2]),
+        Err(Error::Kernel(abi::Error::BadAddress))
+    );
+    assert_eq!(
+        task.read_memory(usize::MAX, &mut actual),
+        Err(Error::Kernel(abi::Error::BadAddress))
+    );
+    assert_eq!(actual, expected);
+    let mut tail = [0; 1];
+    frames.read(3 * PAGE_SIZE - 1, &mut tail).unwrap();
+    assert_eq!(tail, [0]);
+    task.write_memory(0, &[]).unwrap();
+    task.read_memory(0, &mut []).unwrap();
+    drop(mapping);
+    task.terminate(0).unwrap();
+    assert_eq!(
+        task.read_memory(range.start, &mut actual),
+        Err(Error::Kernel(abi::Error::BadAddress))
+    );
+    assert_eq!(
+        process::task().write_memory(actual.as_ptr() as usize, &[0]),
+        Err(Error::Kernel(abi::Error::Denied))
+    );
+    frames.write(0, b"still owned").unwrap();
 }
 
 fn frame_io() {

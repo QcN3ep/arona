@@ -95,6 +95,19 @@ impl MemoryBuffer {
         Ok(())
     }
 
+    pub(crate) fn copy_to(&self, output: &Self) -> Result<(), MemoryError> {
+        if self.length != output.length {
+            return Err(MemoryError::InvalidRequest);
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(self.length)
+            .map_err(|_| MemoryError::NoMemory)?;
+        bytes.resize(self.length, 0);
+        self.read(0, &mut bytes)?;
+        output.write(0, &bytes)
+    }
+
     pub(crate) fn write(&self, offset: usize, bytes: &[u8]) -> Result<(), MemoryError> {
         self.check(offset, bytes.len())?;
         let mut words = [0; PAGE_SIZE / 8];

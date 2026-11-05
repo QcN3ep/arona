@@ -34,6 +34,7 @@ pub(super) fn task(
 ) -> Result<[u64; 2], Error> {
     match method {
         task::ALLOCATE => allocate(caller, target, args),
+        task::READ_MEMORY | task::WRITE_MEMORY => copy_task_memory(caller, target, method, args),
         task::MAP => map(caller, target, args),
         task::UNMAP => {
             target.unmap(range(args[0], args[1])?)?;
@@ -71,6 +72,28 @@ pub(super) fn task(
         }
         _ => Err(Error::Unsupported),
     }
+}
+
+fn copy_task_memory(
+    caller: &Task,
+    target: &Task,
+    method: u64,
+    args: [u64; 5],
+) -> Result<[u64; 2], Error> {
+    let write = method == task::WRITE_MEMORY;
+    if write && caller.same(target) {
+        return Err(Error::Denied);
+    }
+    let length = usize::try_from(args[2]).map_err(|_| Error::InvalidArgument)?;
+    let remote = target.pin_user_memory(args[0] as usize, length, write)?;
+    let local = caller.pin_user_memory(args[1] as usize, length, !write)?;
+    let result = if write {
+        local.copy_to(&remote)
+    } else {
+        remote.copy_to(&local)
+    };
+    result.map_err(mm::UserMemoryError)?;
+    Ok([args[2], 0])
 }
 
 fn allocate(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {

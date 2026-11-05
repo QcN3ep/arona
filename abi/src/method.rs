@@ -30,6 +30,8 @@ methods!(task {
     CHANNEL = 29 => CREATE_CHANNEL;
     EVENT = 30 => CREATE_EVENT;
     TIMER = 31 => CREATE_TIMER;
+    READ_MEMORY = 32 => READ_MEMORY;
+    WRITE_MEMORY = 33 => WRITE_MEMORY;
 });
 methods!(memory {
     SIZE = 16 => NONE;

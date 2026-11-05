@@ -20,6 +20,35 @@ pub struct MappingInfo {
 }
 
 impl Handle<Task> {
+    pub fn read_memory(&self, address: usize, output: &mut [u8]) -> Result<(), Error> {
+        self.borrow().invoke(
+            task::READ_MEMORY,
+            [
+                address as u64,
+                output.as_mut_ptr() as u64,
+                output.len() as u64,
+                0,
+                0,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 写入其他 Task 的用户内存。
+    pub fn write_memory(&self, address: usize, input: &[u8]) -> Result<(), Error> {
+        self.borrow().invoke(
+            task::WRITE_MEMORY,
+            [
+                address as u64,
+                input.as_ptr() as u64,
+                input.len() as u64,
+                0,
+                0,
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn allocate(&self, frames: u64, rights: Rights) -> Result<Handle<FrameAllocation>, Error> {
         let [raw, _] = self
             .borrow()
