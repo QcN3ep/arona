@@ -2,12 +2,27 @@
 
 use crate::{
     hardware,
+    task::Task,
     thread::{self as threads, Thread, ThreadState, scheduler},
 };
 use abi::{Error, method::thread};
 
-pub(super) fn invoke(target: &Thread, method: u64, args: [u64; 5]) -> Result<[u64; 2], Error> {
+pub(super) fn invoke(
+    caller: &Task,
+    target: &Thread,
+    method: u64,
+    args: [u64; 5],
+) -> Result<[u64; 2], Error> {
     match method {
+        thread::ID => Ok([target.id(), 0]),
+        thread::SET_STATE => {
+            target.set_user_state(&super::trap::read_state(caller, args[0])?)?;
+            Ok([0; 2])
+        }
+        thread::INTERRUPT => {
+            target.interrupt()?;
+            Ok([0; 2])
+        }
         thread::STATE => Ok(match target.state() {
             ThreadState::Created => [0, 0],
             ThreadState::Ready => [1, 0],

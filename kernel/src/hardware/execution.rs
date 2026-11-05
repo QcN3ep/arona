@@ -30,14 +30,7 @@ pub struct UserEntry {
     pub argument: usize,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct UserState {
-    pub pc: usize,
-    pub registers: [usize; 32],
-    pub floating: [u64; 32],
-    pub floating_control: u32,
-    pub floating_conditions: [u8; 8],
-}
+pub use abi::trap::UserState;
 
 #[derive(Clone, Copy, Debug)]
 pub enum ContextStart {

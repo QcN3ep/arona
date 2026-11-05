@@ -7,11 +7,12 @@ pub mod scheduler;
 mod user;
 mod wait;
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::{
     hardware::{
+        self,
         cpu::InterruptGuard,
         execution::{Context, ContextStart, ExecutionError, UserEntry},
         mmu::PAGE_SIZE,
@@ -29,6 +30,7 @@ pub(crate) use wait::{finish_task_exit, wait_for_task};
 pub const MAX_THREADS: usize = 4096;
 const STACK_SIZE: usize = 32 * 1024;
 static THREADS: AtomicUsize = AtomicUsize::new(0);
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub fn allocated_threads() -> usize {
     THREADS.load(Ordering::Relaxed)
@@ -81,6 +83,7 @@ impl From<TimerError> for ThreadError {
 pub struct Thread(HeapArc<ThreadInner>);
 
 struct ThreadInner {
+    id: u64,
     kind: ThreadKind,
     data: Mutex<ThreadData>,
     _capacity: ThreadCapacity,
@@ -102,12 +105,14 @@ struct ThreadData {
     exit_waiters: Option<Thread>,
     observers: Observers,
     generation: u64,
+    trapped: Option<u64>,
+    interrupted: bool,
 }
 
 struct ThreadResources {
     context: Context,
     _stack: KernelStack,
-    initial: Option<UserEntry>,
+    executed: bool,
 }
 
 struct WaitState {
@@ -126,6 +131,10 @@ struct ExitWait {
 struct ThreadCapacity;
 
 impl Thread {
+    pub fn id(&self) -> u64 {
+        self.0.id
+    }
+
     pub fn new(entry: ThreadEntry, argument: usize) -> Result<Self, ThreadError> {
         let _interrupts = InterruptGuard::new();
         scheduler::dispatcher()?;
@@ -141,7 +150,6 @@ impl Thread {
             capacity,
             stack,
             context,
-            None,
         )
     }
 
@@ -154,13 +162,7 @@ impl Thread {
             stack: stack.range(),
             entry,
         })?;
-        Self::create(
-            ThreadKind::User(task),
-            capacity,
-            stack,
-            context,
-            Some(entry),
-        )
+        Self::create(ThreadKind::User(task), capacity, stack, context)
     }
 
     fn create(
@@ -168,16 +170,19 @@ impl Thread {
         capacity: ThreadCapacity,
         stack: KernelStack,
         context: Context,
-        initial: Option<UserEntry>,
     ) -> Result<Self, ThreadError> {
+        let id = NEXT_ID
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| ThreadError::GenerationExhausted)?;
         let inner = memory::manager().allocate_arc(ThreadInner {
+            id,
             kind,
             data: Mutex::new(ThreadData {
                 state: ThreadState::Created,
                 resources: Some(ThreadResources {
                     context,
                     _stack: stack,
-                    initial,
+                    executed: false,
                 }),
                 ready_next: None,
                 live_next: None,
@@ -187,6 +192,8 @@ impl Thread {
                 exit_waiters: None,
                 observers: Observers::new(),
                 generation: 0,
+                trapped: None,
+                interrupted: false,
             }),
             _capacity: capacity,
         })?;
@@ -224,7 +231,8 @@ impl Thread {
             .lock()
             .resources
             .as_ref()
-            .and_then(|resources| resources.initial)
+            .and_then(|resources| resources.context.user_state().ok())
+            .and_then(|state| hardware::execution().user_entry(&state).ok())
     }
 
     pub(crate) fn task_next(&self) -> Option<Thread> {

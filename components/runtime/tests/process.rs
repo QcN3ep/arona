@@ -23,6 +23,7 @@ pub fn run(mut startup: ReceivedMessage) {
     frame_io();
     remote_memory();
     rollback();
+    supervised();
     let mut child = ChildTask::new(process::task(), ProcessStart::REQUIRED_RIGHTS).unwrap();
     let count = u16::from_le_bytes(header[56..58].try_into().unwrap());
     for index in 0..count {
@@ -55,6 +56,72 @@ pub fn run(mut startup: ReceivedMessage) {
     assert_eq!(task.wait(deadline).unwrap(), 0);
     assert_eq!(super::INITIALIZED.get(), 37);
     assert_eq!(super::ZERO.get(), 41);
+}
+
+fn supervised() {
+    let port = process::task()
+        .trap_port(ObjectType::TrapPort.supported_rights())
+        .unwrap();
+    let child = process::SupervisedTask::new(process::task(), &port).unwrap();
+    let code = process::task()
+        .allocate(1, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)
+        .unwrap();
+    let stack = process::task()
+        .allocate(2, Rights::READ_WRITE | Rights::MAP)
+        .unwrap();
+    let text = child
+        .task()
+        .map(&code, 0, 1, None, Permissions::ReadExecute)
+        .unwrap();
+    let stack = child
+        .task()
+        .map(&stack, 0, 2, None, Permissions::ReadWrite)
+        .unwrap();
+    let text_range = text.range().unwrap();
+    let stack_range = stack.range().unwrap();
+    let thread = child
+        .create_thread(
+            thread::UserEntry {
+                pc: text_range.start as u64,
+                stack_pointer: stack_range.end as u64,
+                thread_pointer: 0,
+                argument: 0,
+            },
+            ObjectType::Thread.supported_rights(),
+        )
+        .unwrap();
+    let id = thread.id().unwrap();
+    thread.start().unwrap();
+    let trap = port
+        .receive(WaitMode::Until(thread::now_ns().unwrap() + 2_000_000_000))
+        .unwrap();
+    assert_eq!(trap.info.thread, id);
+    assert_eq!(trap.info.kind, runtime::trap::TrapInfo::ILLEGAL_INSTRUCTION);
+    let state = trap.state().unwrap();
+    assert_eq!(state.pc, text_range.start);
+    let mut invalid = state.clone();
+    invalid.pc = usize::MAX;
+    let (_, trap) = trap.resume(&invalid).unwrap_err();
+    assert_eq!(trap.state().unwrap(), state);
+    trap.resume(&state).unwrap();
+    let trap = port
+        .receive(WaitMode::Until(thread::now_ns().unwrap() + 2_000_000_000))
+        .unwrap();
+    assert_eq!(trap.info.thread, id);
+    drop(trap);
+    assert_eq!(
+        thread
+            .wait(thread::now_ns().unwrap() + 2_000_000_000)
+            .unwrap(),
+        usize::MAX
+    );
+    assert_eq!(
+        child
+            .task()
+            .wait(thread::now_ns().unwrap() + 2_000_000_000)
+            .unwrap(),
+        usize::MAX
+    );
 }
 
 fn remote_memory() {

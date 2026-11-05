@@ -14,11 +14,13 @@ mod ipc;
 mod syscall;
 mod task;
 mod thread;
+mod trap;
 
 pub use device::{run as run_devices, run_dma_failure};
 pub use syscall::{handle_program, run_device_program, run_init_program};
 
 pub trait Platform {
+    fn return_values(state: &mut kernel::hardware::execution::UserState, values: [usize; 3]);
     fn set_floating_enabled(enabled: bool);
     fn syscall_code() -> &'static [u64];
     fn user_code() -> &'static [u64];
@@ -33,6 +35,7 @@ pub fn run<P: Platform>() {
     ipc::run();
     syscall::run(P::syscall_code());
     thread::run_user(P::user_code(), P::set_floating_enabled);
+    trap::run::<P>();
 }
 
 pub fn run_program<P: Platform>() {
@@ -46,7 +49,7 @@ pub fn run_process<P: Platform>() {
 }
 
 pub fn handle(trap: Trap) -> TrapOutcome {
-    if syscall::active() {
+    if syscall::active() || trap::active() {
         return kernel::trap::dispatch(trap);
     }
     match trap.origin {

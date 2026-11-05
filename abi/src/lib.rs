@@ -16,6 +16,7 @@ mod object;
 pub mod process;
 mod status;
 pub mod thread;
+pub mod trap;
 
 pub use handle::{Handle, Rights};
 pub use object::ObjectType;

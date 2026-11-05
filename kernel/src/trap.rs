@@ -1,28 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
+pub mod port;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrapOrigin {
     Kernel,
     User,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FaultAccess {
-    Read,
-    Write,
-    Execute,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ExceptionClass {
-    MisalignedAddress,
-    AccessFault,
-    BoundsCheck,
-    Breakpoint,
-    Arithmetic,
-    Privilege,
-    Unknown,
-}
+pub use abi::trap::{ExceptionClass, FaultAccess};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrapEvent {

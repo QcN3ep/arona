@@ -7,6 +7,20 @@ use crate::{
 };
 use abi::Error;
 
+impl From<crate::trap::port::ForwardError> for Error {
+    fn from(error: crate::trap::port::ForwardError) -> Self {
+        use crate::trap::port::ForwardError;
+        match error {
+            ForwardError::Closed => Self::Closed,
+            ForwardError::WouldBlock => Self::WouldBlock,
+            ForwardError::InvalidState => Self::InvalidState,
+            ForwardError::Memory(error) => error.into(),
+            ForwardError::Thread(error) => error.into(),
+            ForwardError::Execution(_) => Self::InvalidArgument,
+        }
+    }
+}
+
 impl From<HandleError> for Error {
     fn from(error: HandleError) -> Self {
         match error {

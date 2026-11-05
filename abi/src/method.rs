@@ -32,6 +32,8 @@ methods!(task {
     TIMER = 31 => CREATE_TIMER;
     READ_MEMORY = 32 => READ_MEMORY;
     WRITE_MEMORY = 33 => WRITE_MEMORY;
+    TRAP_PORT = 34 => SET_TRAP;
+    SET_TRAP = 35 => SET_TRAP;
 });
 methods!(memory {
     SIZE = 16 => NONE;
@@ -49,7 +51,13 @@ methods!(thread {
     SLEEP = 22 => NONE;
     NOW = 23 => NONE;
     WAIT_MANY = 24 => NONE;
+    SET_STATE = 25 => SET_STATE;
+    INTERRUPT = 26 => INTERRUPT;
+    ID = 27 => NONE;
 });
+
+methods!(trap_port { RECEIVE = 16 => READ; });
+methods!(trap_continuation { STATE = 16 => READ; RESUME = 17 => SET_STATE; });
 
 methods!(channel {
     SEND = 16 => WRITE;
@@ -104,6 +112,8 @@ pub const fn required_rights(kind: ObjectType, method: u64) -> Option<Rights> {
             ObjectType::Device => device::required(method),
             ObjectType::KernelLog => kernel_log::required(method),
             ObjectType::DmaDomain => dma::required(method),
+            ObjectType::TrapPort => trap_port::required(method),
+            ObjectType::TrapContinuation => trap_continuation::required(method),
         },
     }
 }

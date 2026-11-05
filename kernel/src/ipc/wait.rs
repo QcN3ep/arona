@@ -293,6 +293,9 @@ fn resolve(
                 Source::Channel(channel)
             }
             ObjectReference::Event(event) => Source::Event(event),
+            ObjectReference::TrapPort(port) if item.condition_mask == READABLE => {
+                Source::Event(port.event().map_err(|_| WaitManyError::Closed)?)
+            }
             ObjectReference::Task(target) if item.condition_mask == EXITED => Source::Task(target),
             ObjectReference::Thread(target) if item.condition_mask == DEAD => {
                 Source::Thread(target)

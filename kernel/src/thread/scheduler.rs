@@ -263,7 +263,7 @@ fn dispatch() -> Result<bool, ThreadError> {
         (thread, resources, previous)
     };
     let task = thread.task();
-    let initial = resources.initial.take();
+    let executed = core::mem::replace(&mut resources.executed, true);
     let result = task
         .as_ref()
         .map_or(Ok(()), |task| task.activate())
@@ -277,7 +277,7 @@ fn dispatch() -> Result<bool, ThreadError> {
     if let Err(error) = result {
         let mut scheduler = STATE.lock();
         let mut data = thread.0.data.lock();
-        resources.initial = initial;
+        resources.executed = executed;
         data.resources = Some(resources);
         data.state = previous;
         drop(data);
@@ -366,7 +366,7 @@ pub(crate) fn terminate(thread: &Thread, status: usize) {
         let initial = data
             .resources
             .as_ref()
-            .is_some_and(|resources| resources.initial.is_some());
+            .is_some_and(|resources| !resources.executed);
         data.state = ThreadState::Dying(status);
         drop(data);
         scheduler.cancel_wait(thread);
@@ -380,6 +380,28 @@ pub(crate) fn terminate(thread: &Thread, status: usize) {
         } else if previous == ThreadState::Blocked {
             scheduler.ready.push(thread.clone());
         }
+    });
+}
+
+pub(crate) fn suspend_interrupted(thread: &Thread, generation: u64) -> Result<(), ThreadError> {
+    with_scheduler(|scheduler| {
+        let mut data = thread.0.data.lock();
+        if data.state != ThreadState::Ready || data.trapped.is_some() {
+            return Err(ThreadError::InvalidState);
+        }
+        data.generation = generation;
+        data.trapped = Some(generation);
+        data.state = ThreadState::Blocked;
+        drop(data);
+        scheduler.ready.remove(thread);
+        Ok(())
+    })
+}
+
+pub(crate) fn resume_interrupted(thread: &Thread) {
+    with_scheduler(|scheduler| {
+        thread.0.data.lock().state = ThreadState::Ready;
+        scheduler.ready.push(thread.clone());
     });
 }
 

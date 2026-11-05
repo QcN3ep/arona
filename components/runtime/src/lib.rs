@@ -17,6 +17,7 @@ pub mod ipc;
 pub mod logger;
 pub mod memory;
 pub mod thread;
+pub mod trap;
 
 #[cfg(all(feature = "program", target_os = "none"))]
 mod heap;

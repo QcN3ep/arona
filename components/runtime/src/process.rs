@@ -26,6 +26,44 @@ pub struct ChildTask {
     rights: Rights,
 }
 
+#[must_use]
+pub struct SupervisedTask {
+    task: Handle<Task>,
+}
+
+impl SupervisedTask {
+    pub fn new(parent: &Handle<Task>, port: &Handle<crate::TrapPort>) -> Result<Self, Error> {
+        let rights = CONSTRUCTION_RIGHTS
+            .union(Rights::SET_TRAP)
+            .union(Rights::READ_MEMORY)
+            .union(Rights::WRITE_MEMORY);
+        let child = Self {
+            task: parent.create_task(rights)?,
+        };
+        child.task.bind_trap(port)?;
+        Ok(child)
+    }
+
+    pub fn task(&self) -> &Handle<Task> {
+        &self.task
+    }
+
+    pub fn create_thread(
+        &self,
+        entry: UserEntry,
+        rights: Rights,
+    ) -> Result<Handle<crate::Thread>, Error> {
+        // SAFETY: 目标须为该构建器新建且与调用方隔离的 Task。
+        unsafe { self.task.create_thread(entry, rights) }
+    }
+}
+
+impl Drop for SupervisedTask {
+    fn drop(&mut self) {
+        let _ = self.task.terminate(0);
+    }
+}
+
 impl ChildTask {
     /// rights 指定子进程持有的自身 Task 权限。
     pub fn new(parent: &Handle<Task>, rights: Rights) -> Result<Self, Error> {

@@ -115,13 +115,14 @@ impl HandleTable {
 
     pub fn close(&self, handle: Handle) -> Result<(), HandleError> {
         let _interrupts = InterruptGuard::new();
-        let entry = {
-            let mut state = self.state.lock();
-            state.entry(handle)?;
-            state.release(handle)
-        };
-        drop(entry);
+        drop(self.remove(handle)?);
         Ok(())
+    }
+
+    pub(crate) fn remove(&self, handle: Handle) -> Result<HandleEntry, HandleError> {
+        let mut state = self.state.lock();
+        state.entry(handle)?;
+        Ok(state.release(handle).unwrap())
     }
 
     pub fn duplicate(&self, handle: Handle, rights: Rights) -> Result<Handle, HandleError> {

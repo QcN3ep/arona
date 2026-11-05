@@ -43,6 +43,7 @@ pub(super) fn invoke(
             Ok([handle.raw(), 0])
         }
         task::CREATE_THREAD => create_thread(caller, target, args),
+        task::TRAP_PORT | task::SET_TRAP => super::trap::task(caller, target, method, args),
         task::INSTALL => Ok([
             target
                 .install_handle(

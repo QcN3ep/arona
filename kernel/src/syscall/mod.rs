@@ -11,6 +11,7 @@ mod memory;
 mod object;
 mod task;
 mod thread;
+mod trap;
 
 use crate::{
     task::{Object, ObjectReference},
@@ -85,7 +86,13 @@ fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, Error> {
                 ObjectReference::Task(target) => {
                     task::invoke(&caller, &target, rights, arguments[0], args)?
                 }
-                ObjectReference::Thread(target) => thread::invoke(&target, arguments[0], args)?,
+                ObjectReference::Thread(target) => {
+                    thread::invoke(&caller, &target, arguments[0], args)?
+                }
+                ObjectReference::TrapPort(target) => trap::receive(&caller, &target, args)?,
+                ObjectReference::TrapContinuation(target) => {
+                    trap::continuation(&caller, &target, arguments[0], args)?
+                }
                 ObjectReference::FrameAllocation(allocation) => {
                     memory::frames(&caller, &allocation, arguments[0], args)?
                 }

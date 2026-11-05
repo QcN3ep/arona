@@ -167,6 +167,10 @@ impl ExitTarget {
 }
 
 impl Wait {
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn waker(&self) -> Waker {
         Waker {
             thread: self.thread.clone(),

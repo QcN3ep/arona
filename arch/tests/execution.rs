@@ -201,6 +201,9 @@ fn run_execution(manager: &'static MemoryManager) -> ! {
 struct Platform;
 
 impl kernel_tests::Platform for Platform {
+    fn return_values(state: &mut kernel::hardware::execution::UserState, values: [usize; 3]) {
+        isa::return_values(state, values);
+    }
     #[cfg(feature = "runtime-tests")]
     fn program() -> Option<&'static [u8]> {
         Some(include_bytes!(env!("ARONA_RUNTIME_TEST_IMAGE")))

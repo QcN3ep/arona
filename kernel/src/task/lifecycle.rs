@@ -2,6 +2,7 @@
 
 //! Task 的创建归属、运行资源回收与退出等待。
 
+use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use core::{
     ops::Range,
@@ -16,7 +17,7 @@ use crate::{
     hardware::{
         self,
         cpu::InterruptGuard,
-        execution::{ExecutionError, UserEntry},
+        execution::{ExecutionError, UserEntry, UserState},
         mmu::PagePermissions,
     },
     ipc::{
@@ -29,6 +30,7 @@ use crate::{
         MemoryError, VirtRange,
     },
     thread::{self, Thread, ThreadError, ThreadState, scheduler},
+    trap::port::{ForwardError, TrapPort, TrapPortReference},
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -131,6 +133,8 @@ struct TaskResources {
     space: HeapArc<AddressSpace>,
     handles: HandleTable,
     threads: Option<Thread>,
+    trap: Option<TrapPortReference>,
+    ports: Vec<TrapPortReference>,
     next: Option<HeapBox<TaskResources>>,
 }
 
@@ -145,6 +149,69 @@ pub(crate) struct ReservedHandles {
 }
 
 impl Task {
+    pub fn create_trap_port(&self) -> Result<TrapPort, ForwardError> {
+        let _interrupts = InterruptGuard::new();
+        let port = TrapPort::new(self.clone())?;
+        {
+            let mut registry = TASKS.lock();
+            let resources = registry
+                .find_mut(self)
+                .map_err(|_| ForwardError::InvalidState)?;
+            if resources.trap.is_some() {
+                return Err(ForwardError::InvalidState);
+            }
+            resources
+                .ports
+                .try_reserve(1)
+                .map_err(|_| MemoryError::NoMemory)?;
+            resources.ports.push(port.reference());
+        }
+        Ok(port)
+    }
+
+    pub(crate) fn remove_trap_port(&self, port: &TrapPortReference) {
+        let mut registry = TASKS.lock();
+        if let Ok(resources) = registry.find_mut(self) {
+            resources.ports.retain(|owned| !owned.same(port));
+        }
+    }
+
+    pub fn bind_trap(&self, port: &TrapPortReference) -> Result<(), ForwardError> {
+        let _interrupts = InterruptGuard::new();
+        let mut registry = TASKS.lock();
+        let resources = registry
+            .find_mut(self)
+            .map_err(|_| ForwardError::InvalidState)?;
+        if self.state() != TaskState::Created
+            || resources.trap.is_some()
+            || !resources.ports.is_empty()
+        {
+            return Err(ForwardError::InvalidState);
+        }
+        port.bind(self)?;
+        resources.trap = Some(port.clone());
+        Ok(())
+    }
+
+    pub(crate) fn forwarding_port(&self) -> Result<Option<TrapPortReference>, ForwardError> {
+        let registry = TASKS.lock();
+        Ok(registry
+            .find(self)
+            .map_err(|_| ForwardError::InvalidState)?
+            .trap
+            .clone())
+    }
+
+    pub(crate) fn validate_user_state(&self, state: &UserState) -> Result<UserEntry, ForwardError> {
+        let entry = hardware::execution().user_entry(state)?;
+        TASKS
+            .lock()
+            .find(self)
+            .map_err(|_| ForwardError::InvalidState)?
+            .validate_entry(entry)?;
+        Ok(entry)
+    }
+
     pub fn new() -> Result<Self, TaskError> {
         let _interrupts = InterruptGuard::new();
         let creator = thread::current().ok_or(TaskError::InvalidState)?;
@@ -169,11 +236,13 @@ impl Task {
         self.0.data.lock().state
     }
 
-    pub fn insert(&self, incoming: Object, rights: Rights) -> Result<Handle, TaskError> {
+    pub fn insert(&self, object: Object, rights: Rights) -> Result<Handle, TaskError> {
         let _interrupts = InterruptGuard::new();
-        let object = incoming;
-        let registry = TASKS.lock();
-        Ok(registry.find(self)?.handles.insert(object, rights)?)
+        let mut entries = ArrayVec::from([super::HandleEntry { object, rights }]);
+        let mut reservation = self.reserve_handles(1)?;
+        let handle = reservation.handles[0];
+        reservation.publish(&mut entries)?;
+        Ok(handle)
     }
 
     pub(crate) fn handle_info(&self, handle: Handle) -> Result<(ObjectType, Rights), TaskError> {
@@ -200,8 +269,9 @@ impl Task {
 
     pub fn close(&self, handle: Handle) -> Result<(), TaskError> {
         let _interrupts = InterruptGuard::new();
-        let registry = TASKS.lock();
-        Ok(registry.find(self)?.handles.close(handle)?)
+        let entry = TASKS.lock().find(self)?.handles.remove(handle)?;
+        drop(entry);
+        Ok(())
     }
 
     pub fn duplicate(&self, handle: Handle, rights: Rights) -> Result<Handle, TaskError> {
@@ -755,6 +825,8 @@ impl TaskRegistry {
             space,
             handles: HandleTable::new(),
             threads: None,
+            trap: None,
+            ports: Vec::new(),
             next: None,
         })
         .map_err(|_| MemoryError::NoMemory)?;
@@ -833,6 +905,12 @@ impl Drop for TaskRecord {
 
 impl Drop for TaskResources {
     fn drop(&mut self) {
+        for port in &self.ports {
+            port.close();
+        }
+        if let Some(port) = &self.trap {
+            port.unbind(&self.task);
+        }
         TASK_RESOURCES.fetch_sub(1, Ordering::Relaxed);
     }
 }

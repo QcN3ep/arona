@@ -17,6 +17,8 @@ macro_rules! objects {
             Device = 9 => [DUPLICATE, TRANSFER, MAP, DEVICE_CONTROL, IRQ_ACK, REVOKE];
             KernelLog = 10 => [DUPLICATE, TRANSFER, READ];
             DmaDomain = 11 => [DUPLICATE, TRANSFER, READ, DMA_MAP, DEVICE_CONTROL, REVOKE];
+            TrapPort = 12 => [DUPLICATE, TRANSFER, WAIT, READ];
+            TrapContinuation = 13 => [TRANSFER, READ, SET_STATE];
         }
     };
 }

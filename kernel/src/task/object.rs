@@ -11,6 +11,7 @@ use crate::{
     logger::KernelLog,
     memory::{self, HeapArc},
     thread::Thread,
+    trap::port::{TrapContinuation, TrapContinuationReference, TrapPort, TrapPortReference},
 };
 pub use abi::ObjectType;
 
@@ -79,7 +80,17 @@ macro_rules! referenced_payload {
         }
     )* };
 }
-referenced_payload!(Channel => ChannelReference, Event => EventReference, Timer => TimerReference);
+referenced_payload!(Channel => ChannelReference, Event => EventReference, Timer => TimerReference, TrapPort => TrapPortReference);
+
+impl ObjectPayload for TrapContinuation {
+    type Reference = TrapContinuationReference;
+    fn reference(&self) -> Self::Reference {
+        self.reference()
+    }
+    fn try_clone(&self) -> Result<Self, HandleError> {
+        Err(HandleError::Denied)
+    }
+}
 
 impl ObjectPayload for Reply {
     type Reference = ReplyReference;
