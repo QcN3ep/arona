@@ -3,7 +3,7 @@
 //! 设备描述查询与会话交接。
 
 use runtime::{
-    Channel, DeviceSet, Handle, KernelError, Reply, Rights,
+    Call, Channel, DeviceSet, Handle, KernelError, Reply, Rights, Task,
     device::{DeviceField, DeviceInfo},
     ipc::{Message, ReceivedMessage, Transfer, WaitMode},
 };
@@ -11,6 +11,44 @@ use runtime::{
 use crate::Error;
 
 const NEXT: u64 = 2;
+
+pub type Pending<T, S = ()> = runtime::ipc::PendingCall<T, S, Error>;
+
+pub(crate) fn open_call(
+    task: &Handle<Task>,
+    service: &Handle<Channel>,
+    device: u32,
+) -> Result<(Handle<Call>, Handle<Channel>), Error> {
+    let rights = CHANNEL_RIGHTS | Rights::TRANSFER;
+    let (channel, server) = task.channel(rights, rights)?;
+    let mut request = Message::new(OPEN, &[device.into()])?;
+    request
+        .push(Transfer {
+            handle: server.into(),
+            rights,
+        })
+        .map_err(|_| Error::InvalidRequest)?;
+    Ok((service.start_call(&mut request)?, channel))
+}
+
+pub(crate) fn complete_open(
+    channel: Handle<Channel>,
+    response: ReceivedMessage,
+) -> Result<Handle<Channel>, Error> {
+    if !response.handles().is_empty() || !response.words().is_empty() {
+        return Err(runtime::Error::Protocol.into());
+    }
+    match response.tag {
+        SUCCESS => Ok(channel),
+        INVALID_REQUEST => Err(Error::InvalidRequest),
+        BUSY => Err(Error::Busy),
+        UNSUPPORTED => Err(Error::Unsupported),
+        INVALID_CONFIGURATION => Err(Error::InvalidConfiguration),
+        CLOCK_UNAVAILABLE => Err(Error::ClockUnavailable),
+        UNAVAILABLE => Err(Error::Unavailable),
+        _ => Err(runtime::Error::Protocol.into()),
+    }
+}
 
 #[derive(Clone, Copy)]
 #[repr(u64)]
@@ -33,6 +71,19 @@ pub fn next(
             Some(deadline),
         )
         .map_err(Error::Call)?;
+    complete_next(after, response)
+}
+
+pub fn start_next(
+    service: &Handle<Channel>,
+    kind: DriverKind,
+    after: u32,
+) -> Result<Pending<Option<u32>, u32>, Error> {
+    let call = service.start_call(&mut Message::new(NEXT, &[kind as u64, after.into()])?)?;
+    Ok(Pending::new(call, after, complete_next))
+}
+
+fn complete_next(after: u32, response: ReceivedMessage) -> Result<Option<u32>, Error> {
     if response.tag != SUCCESS || !response.handles().is_empty() {
         return Err(runtime::Error::Protocol.into());
     }

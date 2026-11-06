@@ -5,7 +5,7 @@
 pub mod service;
 mod session;
 
-pub use session::{Access, Session};
+pub use session::{Access, PendingOpen, PendingRead, Session};
 
 use runtime::{
     Device, Event, Handle,

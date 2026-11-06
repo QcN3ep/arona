@@ -133,6 +133,49 @@ pub enum CallError {
     NotSubmitted(Error),
     Submitted(Error),
 }
+
+pub struct PendingCall<T, S = (), E = Error> {
+    call: Handle<Call>,
+    state: Option<S>,
+    complete: fn(S, ReceivedMessage) -> Result<T, E>,
+}
+
+impl<T, S, E: From<Error>> PendingCall<T, S, E> {
+    pub fn new(
+        call: Handle<Call>,
+        state: S,
+        complete: fn(S, ReceivedMessage) -> Result<T, E>,
+    ) -> Self {
+        Self {
+            call,
+            state: Some(state),
+            complete,
+        }
+    }
+
+    pub fn call(&self) -> &Handle<Call> {
+        &self.call
+    }
+
+    pub fn cancel(&self) -> Result<(), E> {
+        self.call.cancel().map_err(E::from)
+    }
+
+    /// 超时后仍可等待或取消本次调用。
+    pub fn wait(&mut self, mode: WaitMode) -> Result<T, E> {
+        wait_many(&[WaitItem::new(&self.call, READABLE)], mode).map_err(E::from)?;
+        self.try_complete()
+    }
+
+    pub fn try_complete(&mut self) -> Result<T, E> {
+        let response = self.call.try_receive().map_err(E::from)?;
+        let state = self
+            .state
+            .take()
+            .ok_or_else(|| E::from(Error::Kernel(abi::Error::InvalidState)))?;
+        (self.complete)(state, response)
+    }
+}
 impl Handle<Task> {
     pub fn channel(
         &self,

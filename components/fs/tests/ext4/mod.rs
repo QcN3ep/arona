@@ -190,15 +190,13 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
             deadline(),
         )
         .unwrap();
-    let file = client.open("/var/data/message", deadline()).unwrap();
+    let file = client
+        .start_open(b"/var/data/message")
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap();
+    service_reads(&file);
     let mut bytes = [0; 32];
-    assert_eq!(
-        file.read_at(4091, &mut bytes, deadline()).unwrap(),
-        bytes.len()
-    );
-    for (index, byte) in bytes.iter().enumerate() {
-        assert_eq!(*byte, ((4091 + index) % 251) as u8);
-    }
     assert!(matches!(
         control.unmount(b"/var", deadline()),
         Err(Error::Busy)
@@ -207,30 +205,7 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
     assert_eq!(raw.read_at(0, &mut bytes, deadline()).unwrap(), 3);
     assert_eq!(&bytes[..3], b"raw");
     service_metadata(&client);
-    client.mkdir("/var/session", deadline()).unwrap();
-    let writable = client.create("/var/session/file", deadline()).unwrap();
-    assert_eq!(writable.write_at(5, b"hello", deadline()).unwrap(), 5);
-    assert_eq!(writable.size(deadline()).unwrap(), 10);
-    let mut output = [1; 10];
-    assert_eq!(writable.read_at(0, &mut output, deadline()).unwrap(), 10);
-    assert_eq!(&output, b"\0\0\0\0\0hello");
-    writable.truncate(7, deadline()).unwrap();
-    assert_eq!(writable.size(deadline()).unwrap(), 7);
-    assert_eq!(
-        client.read_dir("/var/session", deadline()).unwrap().len(),
-        1
-    );
-    client
-        .rename("/var/session/file", "/var/session/renamed", deadline())
-        .unwrap();
-    client.unlink("/var/session/renamed", deadline()).unwrap();
-    writable.fsync(deadline()).unwrap();
-    drop(writable);
-    client.unlink("/var/session", deadline()).unwrap();
-    assert!(matches!(
-        client.create("/archive-file", deadline()),
-        Err(Error::ReadOnly)
-    ));
+    service_writes(&client);
     drop(raw);
     drop(file);
     control.unmount(b"/var", deadline()).unwrap();
@@ -244,42 +219,106 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
 }
 
 fn service_metadata(client: &fs::Client<'_>) {
-    client.mkdir_bytes(b"/var/\xfe", deadline()).unwrap();
-    let directory = client.open_directory(b"/var/\xfe", deadline()).unwrap();
-    let file = client.create_bytes(b"/var/\xfe/\xff", deadline()).unwrap();
-    let mut attributes = file.metadata(deadline()).unwrap().attributes();
+    client
+        .start_mkdir(b"/var/\xfe")
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap();
+    let directory = client
+        .start_open_directory(b"/var/\xfe")
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap();
+    let file = client
+        .start_create(b"/var/\xfe/\xff")
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap();
+    let mut attributes = file
+        .start_metadata()
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap()
+        .attributes();
     attributes.permissions = 0o640;
     attributes.uid = 100_000;
     attributes.modified = fs::Timestamp {
         seconds: 4_000_000_000,
         nanoseconds: 987_654_321,
     };
-    file.set_attributes(attributes, deadline()).unwrap();
+    file.start_set_attributes(attributes)
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap();
     assert_eq!(
         client
-            .metadata(b"/var/\xfe/\xff", deadline())
+            .start_metadata(b"/var/\xfe/\xff")
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
             .unwrap()
             .attributes(),
         attributes
     );
+    service_links(client, directory, file);
+}
+
+fn service_links(client: &fs::Client<'_>, directory: fs::Directory<'_>, file: fs::File<'_>) {
     client
-        .hard_link(b"/var/\xfe/\xff", b"/var/\xfe/link", deadline())
-        .unwrap();
-    assert_eq!(file.metadata(deadline()).unwrap().links, 2);
-    assert_eq!(file.append(b"first", deadline()).unwrap(), (0, 5));
-    let other = client.open_bytes(b"/var/\xfe/link", deadline()).unwrap();
-    assert_eq!(other.append(b"second", deadline()).unwrap(), (5, 6));
-    client
-        .symlink(b"../\xfe/link", b"/var/\xfe/symlink", deadline())
+        .start_hard_link(b"/var/\xfe/\xff", b"/var/\xfe/link")
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
         .unwrap();
     assert_eq!(
-        client.read_link(b"/var/\xfe/symlink", deadline()).unwrap(),
+        file.start_metadata()
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap()
+            .links,
+        2
+    );
+    assert_eq!(
+        file.start_append(b"first")
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap(),
+        (0, 5)
+    );
+    let other = client.open_bytes(b"/var/\xfe/link", deadline()).unwrap();
+    assert_eq!(
+        other
+            .start_append(b"second")
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap(),
+        (5, 6)
+    );
+    client
+        .start_symlink(b"../\xfe/link", b"/var/\xfe/symlink")
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap();
+    assert_eq!(
+        client
+            .start_read_link(b"/var/\xfe/symlink")
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap(),
         b"../\xfe/link"
     );
     client
-        .rename_bytes(b"/var/\xfe", b"/var/renamed", deadline())
+        .start_rename(b"/var/\xfe", b"/var/renamed")
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
         .unwrap();
-    assert_eq!(directory.read_dir(deadline()).unwrap().len(), 3);
+    assert_eq!(
+        directory
+            .start_read_dir(0)
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap()
+            .len(),
+        3
+    );
     assert_eq!(
         client
             .read_dir_bytes(b"/var/renamed", deadline())
@@ -287,16 +326,38 @@ fn service_metadata(client: &fs::Client<'_>) {
             .len(),
         3
     );
+    service_unlink(client, directory, file, other);
+}
+
+fn service_unlink(
+    client: &fs::Client<'_>,
+    directory: fs::Directory<'_>,
+    file: fs::File<'_>,
+    other: fs::File<'_>,
+) {
     client
-        .unlink_bytes(b"/var/renamed/\xff", deadline())
+        .start_unlink(b"/var/renamed/\xff")
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
         .unwrap();
     client
-        .unlink_bytes(b"/var/renamed/link", deadline())
+        .start_unlink(b"/var/renamed/link")
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
         .unwrap();
     client
-        .unlink_bytes(b"/var/renamed/symlink", deadline())
+        .start_unlink(b"/var/renamed/symlink")
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
         .unwrap();
-    assert_eq!(file.metadata(deadline()).unwrap().links, 0);
+    assert_eq!(
+        file.start_metadata()
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap()
+            .links,
+        0
+    );
     let mut bytes = [0; 11];
     file.read_at(0, &mut bytes, deadline()).unwrap();
     assert_eq!(&bytes, b"firstsecond");
@@ -708,4 +769,75 @@ fn archive_metadata() {
     );
     assert_eq!(archive.open_directory(b"data").unwrap().read_dir().len(), 3);
     assert_eq!(archive.open_directory(b"/").unwrap().read_dir().len(), 1);
+}
+
+fn service_reads(file: &fs::File<'_>) {
+    let mut first = file.start_read_at(4091, 32).unwrap();
+    let mut second = file.start_read_at(0, 13).unwrap();
+    runtime::ipc::wait_many(
+        &[
+            runtime::ipc::WaitItem::new(first.call(), runtime::ipc::READABLE),
+            runtime::ipc::WaitItem::new(second.call(), runtime::ipc::READABLE),
+        ],
+        WaitMode::Until(deadline()),
+    )
+    .unwrap();
+    let head = second.wait(WaitMode::Until(deadline())).unwrap();
+    assert_eq!(head, (0..13).collect::<alloc::vec::Vec<u8>>());
+    let first = first.wait(WaitMode::Until(deadline())).unwrap();
+    for (index, byte) in first.iter().enumerate() {
+        assert_eq!(*byte, ((4091 + index) % 251) as u8);
+    }
+}
+
+fn service_writes(client: &fs::Client<'_>) {
+    client.mkdir("/var/session", deadline()).unwrap();
+    let writable = client.create("/var/session/file", deadline()).unwrap();
+    assert_eq!(
+        writable
+            .start_write_at(5, b"hello")
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap(),
+        5
+    );
+    assert_eq!(writable.size(deadline()).unwrap(), 10);
+    let mut output = [1; 10];
+    assert_eq!(writable.read_at(0, &mut output, deadline()).unwrap(), 10);
+    assert_eq!(&output, b"\0\0\0\0\0hello");
+    writable
+        .start_truncate(7)
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap();
+    assert_eq!(
+        writable
+            .start_size()
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap(),
+        7
+    );
+    assert_eq!(
+        client.read_dir("/var/session", deadline()).unwrap().len(),
+        1
+    );
+    client
+        .rename("/var/session/file", "/var/session/renamed", deadline())
+        .unwrap();
+    client.unlink("/var/session/renamed", deadline()).unwrap();
+    writable
+        .start_fsync()
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap();
+    drop(writable);
+    client.unlink("/var/session", deadline()).unwrap();
+    assert!(matches!(
+        client
+            .start_create(b"/archive-file")
+            .unwrap()
+            .wait(WaitMode::Until(deadline())),
+        Err(Error::ReadOnly)
+    ));
 }

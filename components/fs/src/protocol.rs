@@ -68,6 +68,10 @@ pub fn call(
         return Err(Error::InvalidRequest);
     }
     let response = channel.call(message, Some(deadline)).map_err(Error::Call)?;
+    response_result(response)
+}
+
+pub(crate) fn response_result(response: ReceivedMessage) -> Result<ReceivedMessage, Error> {
     if !response.handles().is_empty() {
         return Err(Error::InvalidData);
     }

@@ -92,6 +92,16 @@ fn calls() {
     let second = client
         .start_call(&mut Message::new(2, &[]).unwrap())
         .unwrap();
+    let mut second = ipc::PendingCall::new(second, 20, |base, response| {
+        if !response.words().is_empty() || !response.handles().is_empty() {
+            return Err(Error::Protocol);
+        }
+        Ok(base + response.tag)
+    });
+    assert_eq!(
+        second.wait(WaitMode::Until(thread::now_ns().unwrap())),
+        Err(Error::Kernel(KernelError::TimedOut))
+    );
     assert_eq!(
         first.try_receive().unwrap_err(),
         Error::Kernel(KernelError::WouldBlock)
@@ -103,13 +113,13 @@ fn calls() {
     second_reply
         .send(&mut Message::new(22, &[]).unwrap())
         .unwrap();
-    let items = [&first, &second].map(|call| WaitItem::new(call, ipc::READABLE));
+    let items = [&first, second.call()].map(|call| WaitItem::new(call, ipc::READABLE));
     assert_eq!(ipc::wait_many(&items, WaitMode::Poll).unwrap().index, 1);
     assert_eq!(
         second.cancel(),
         Err(Error::Kernel(KernelError::InvalidState))
     );
-    assert_eq!(second.try_receive().unwrap().tag, 22);
+    assert_eq!(second.try_complete().unwrap(), 42);
     let mut response = Message::new(11, &[]).unwrap();
     response
         .push(Transfer {

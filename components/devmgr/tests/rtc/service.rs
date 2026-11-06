@@ -7,7 +7,7 @@ use devmgr::{
 };
 use runtime::{
     Device, Handle, Rights,
-    ipc::{Message, Transfer},
+    ipc::{self, Message, Transfer, WaitItem, WaitMode},
     process, thread,
 };
 
@@ -23,16 +23,26 @@ pub fn exercise(configuration: rtc::Configuration, id: u32, grant: Handle<Device
         Session::open(process::task(), &control, u32::MAX, deadline()),
         Err(Error::Unsupported)
     ));
-    let first = Session::open(process::task(), &control, id, deadline()).unwrap();
+    let first = Session::start_open(process::task(), &control, id)
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap();
     assert_eq!(first.now(0), Err(Error::InvalidRequest));
     assert_eq!(first.now(u64::MAX), Err(Error::InvalidRequest));
     let second = Session::open(process::task(), &control, id, deadline()).unwrap();
-    let before = first.now(deadline()).unwrap();
+    let mut before = first.start_now().unwrap();
+    let mut other = second.start_now().unwrap();
+    ipc::wait_many(
+        &[
+            WaitItem::new(before.call(), ipc::READABLE),
+            WaitItem::new(other.call(), ipc::READABLE),
+        ],
+        WaitMode::Until(deadline()),
+    )
+    .unwrap();
+    let before = before.wait(WaitMode::Until(deadline())).unwrap();
+    let other = other.wait(WaitMode::Until(deadline())).unwrap();
     check_time(before);
-    let other = thread::spawn(move || second.now(deadline()).unwrap())
-        .unwrap()
-        .join()
-        .unwrap();
     assert!(other >= before);
     drop(first);
     let reconnected = Session::open(process::task(), &control, id, deadline()).unwrap();

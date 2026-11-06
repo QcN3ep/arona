@@ -96,8 +96,26 @@ fn exercise_service(
         domain.revoke().unwrap();
     })
     .unwrap();
-    let first = Session::open(process::task(), &control, id, deadline()).unwrap();
+    let first = Session::start_open(process::task(), &control, id)
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap();
     let second = Session::open(process::task(), &control, id, deadline()).unwrap();
+    let mut first_read = first.start_read(128).unwrap();
+    let mut second_read = second.start_read(128).unwrap();
+    runtime::ipc::wait_many(
+        &[
+            runtime::ipc::WaitItem::new(first_read.call(), runtime::ipc::READABLE),
+            runtime::ipc::WaitItem::new(second_read.call(), runtime::ipc::READABLE),
+        ],
+        WaitMode::Until(deadline()),
+    )
+    .unwrap();
+    let first_bytes = first_read.wait(WaitMode::Until(deadline())).unwrap();
+    let second_bytes = second_read.wait(WaitMode::Until(deadline())).unwrap();
+    assert!(!first_bytes.is_empty());
+    assert!(!second_bytes.is_empty());
+    assert_ne!(first_bytes, second_bytes);
     let other = thread::spawn(move || {
         let mut bytes = alloc::vec![0; 8193];
         second.fill(&mut bytes, deadline()).unwrap();

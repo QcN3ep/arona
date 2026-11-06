@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::cell::Cell;
+mod pending;
+
+pub use pending::{
+    Pending, PendingAppend, PendingDirectory, PendingDirectoryPage, PendingMetadata, PendingOpen,
+    PendingRead, PendingSize, PendingTruncate, PendingWrite,
+};
+
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use runtime::{Channel, Handle, Rights, Task, ipc::Message};
 
 use crate::{
@@ -19,7 +27,7 @@ pub struct Client<'a> {
 pub struct File<'a> {
     task: &'a Handle<Task>,
     channel: Handle<Channel>,
-    length: Cell<usize>,
+    length: Arc<AtomicUsize>,
 }
 
 pub struct Directory<'a> {
@@ -29,6 +37,10 @@ pub struct Directory<'a> {
 impl<'a> Client<'a> {
     pub fn from_channel(task: &'a Handle<Task>, channel: Handle<Channel>) -> Self {
         Self { task, channel }
+    }
+
+    pub fn channel(&self) -> &Handle<Channel> {
+        &self.channel
     }
 
     pub fn open(&self, path: &str, deadline: u64) -> Result<File<'a>, Error> {
@@ -143,7 +155,9 @@ impl<'a> Client<'a> {
         Ok(File {
             task: self.task,
             channel: file,
-            length: Cell::new(usize::try_from(*length).map_err(|_| Error::InvalidData)?),
+            length: Arc::new(AtomicUsize::new(
+                usize::try_from(*length).map_err(|_| Error::InvalidData)?,
+            )),
         })
     }
     fn path_request(&self, method: u64, path: &[u8], deadline: u64) -> Result<(), Error> {
@@ -214,6 +228,10 @@ impl<'a> Client<'a> {
 }
 
 impl File<'_> {
+    pub fn channel(&self) -> &Handle<Channel> {
+        &self.channel
+    }
+
     pub fn metadata(&self, deadline: u64) -> Result<crate::Metadata, Error> {
         let output = self
             .task
@@ -269,8 +287,10 @@ impl File<'_> {
         if count > input.len() as u64 || offset.checked_add(count) != Some(size) {
             return Err(Error::InvalidData);
         }
-        self.length
-            .set(usize::try_from(size).map_err(|_| Error::InvalidData)?);
+        self.length.store(
+            usize::try_from(size).map_err(|_| Error::InvalidData)?,
+            Ordering::Relaxed,
+        );
         Ok((offset as usize, count as usize))
     }
 
@@ -285,7 +305,7 @@ impl File<'_> {
         let file = File {
             task,
             channel,
-            length: Cell::new(0),
+            length: Arc::new(AtomicUsize::new(0)),
         };
         file.size(deadline)?;
         Ok(file)
@@ -326,8 +346,10 @@ impl File<'_> {
         if count > length as u64 {
             return Err(Error::InvalidData);
         }
-        self.length
-            .set(usize::try_from(size).map_err(|_| Error::InvalidData)?);
+        self.length.store(
+            usize::try_from(size).map_err(|_| Error::InvalidData)?,
+            Ordering::Relaxed,
+        );
         Ok(count as usize)
     }
     pub fn truncate(&self, length: usize, deadline: u64) -> Result<(), Error> {
@@ -339,7 +361,7 @@ impl File<'_> {
         if response.words() != [length as u64] {
             return Err(Error::InvalidData);
         }
-        self.length.set(length);
+        self.length.store(length, Ordering::Relaxed);
         Ok(())
     }
     pub fn size(&self, deadline: u64) -> Result<usize, Error> {
@@ -352,7 +374,7 @@ impl File<'_> {
             return Err(Error::InvalidData);
         };
         let size = usize::try_from(size).map_err(|_| Error::InvalidData)?;
-        self.length.set(size);
+        self.length.store(size, Ordering::Relaxed);
         Ok(size)
     }
 
@@ -386,7 +408,7 @@ impl File<'_> {
 
 impl crate::ReadAt for File<'_> {
     fn len(&self) -> usize {
-        self.length.get()
+        self.length.load(Ordering::Relaxed)
     }
 
     fn read_at(&self, offset: usize, output: &mut [u8]) -> Result<usize, Error> {
@@ -398,6 +420,10 @@ impl crate::ReadAt for File<'_> {
 }
 
 impl Directory<'_> {
+    pub fn channel(&self) -> &Handle<Channel> {
+        self.file.channel()
+    }
+
     pub fn metadata(&self, deadline: u64) -> Result<crate::Metadata, Error> {
         self.file.metadata(deadline)
     }
@@ -430,24 +456,10 @@ impl Directory<'_> {
             }
             let mut bytes = [0; PAGE_SIZE];
             output.read(0, &mut bytes[..length as usize])?;
-            let mut inside = 0;
-            for _ in 0..count {
-                if inside + 3 > length as usize || bytes[inside] > 1 {
-                    return Err(Error::InvalidData);
-                }
-                let size = usize::from(u16::from_le_bytes([bytes[inside + 1], bytes[inside + 2]]));
-                if size == 0 || size > 255 || inside + 3 + size > length as usize {
-                    return Err(Error::InvalidData);
-                }
-                result.push(crate::DirEntry {
-                    name: bytes[inside + 3..inside + 3 + size].to_vec(),
-                    directory: bytes[inside] != 0,
-                });
-                inside += 3 + size;
-            }
-            if inside != length as usize {
-                return Err(Error::InvalidData);
-            }
+            result.extend(pending::directory_entries(
+                &bytes[..length as usize],
+                count as usize,
+            )?);
             if count == 0 {
                 return Ok(result);
             }

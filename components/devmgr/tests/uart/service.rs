@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Arc;
 use devmgr::{
     Error,
     uart::{self, Access, Configuration, DataBits, LineErrors, Session, Settings, StopBits, Uart},
@@ -77,12 +76,23 @@ fn exercise(control: &Handle<Channel>, id: u32) -> Session {
         Session::open(process::task(), control, id + 1, Access::InputOutput),
         Err(Error::Unsupported)
     ));
-    let session = Session::open(process::task(), control, id, Access::InputOutput).unwrap();
+    let session = Session::start_open(process::task(), control, id, Access::InputOutput)
+        .unwrap()
+        .wait(WaitMode::Until(thread::now_ns().unwrap() + 5_000_000_000))
+        .unwrap();
     assert!(matches!(
         Session::open(process::task(), control, id, Access::InputOutput),
         Err(Error::Busy)
     ));
-    assert_eq!(session.try_read(&mut [0; 16]).unwrap().bytes, 0);
+    assert!(
+        session
+            .start_try_read(16)
+            .unwrap()
+            .wait(WaitMode::Until(thread::now_ns().unwrap() + 5_000_000_000))
+            .unwrap()
+            .0
+            .is_empty()
+    );
     assert_eq!(
         session.configure(Settings {
             data_bits: DataBits::Five,
@@ -91,11 +101,12 @@ fn exercise(control: &Handle<Channel>, id: u32) -> Session {
         }),
         Err(Error::InvalidConfiguration)
     );
-    session.configure(Settings::default()).unwrap();
-    session.write_all(b"UART buffered TX: ").unwrap();
-    session.write_all(&[b'@'; 8192]).unwrap();
-    session.write_all(b"\n").unwrap();
-    session.flush().unwrap();
+    session
+        .start_configure(Settings::default())
+        .unwrap()
+        .wait(WaitMode::Until(thread::now_ns().unwrap() + 5_000_000_000))
+        .unwrap();
+    buffered_output(&session);
     shared_output(control, id);
     let session = receive(session, b"UART service RX 1\n", b"service-uart");
     let (sender, receiver) = process::task()
@@ -134,35 +145,28 @@ fn exercise(control: &Handle<Channel>, id: u32) -> Session {
 }
 
 fn receive(session: Session, marker: &[u8], expected: &[u8]) -> Session {
-    let session = Arc::new(session);
-    let reading = Arc::clone(&session);
-    let length = expected.len();
-    let reader = thread::spawn(move || {
-        let mut bytes = [0; 32];
-        let mut received = 0;
-        while received < length {
-            let result = reading.read(&mut bytes[received..length]).unwrap();
-            assert!(result.bytes != 0);
-            assert_eq!(result.errors, LineErrors::default());
-            received += result.bytes;
-        }
-        bytes
-    })
-    .unwrap();
-    let deadline = thread::now_ns().unwrap() + 1_000_000_000;
-    while reader.thread().state().unwrap().0 != thread::ThreadState::Blocked {
-        assert!(thread::now_ns().unwrap() < deadline);
-        thread::yield_now().unwrap();
-    }
+    let mut reading = session.start_read(expected.len()).unwrap();
     session.write_all(marker).unwrap();
     session.flush().unwrap();
-    let mut bytes = reader.join().unwrap();
-    assert_eq!(&bytes[..length], expected);
-    assert_eq!(session.try_read(&mut bytes).unwrap().bytes, 0);
+    let mut bytes = alloc::vec::Vec::new();
+    loop {
+        let (part, errors) = reading
+            .wait(WaitMode::Until(thread::now_ns().unwrap() + 5_000_000_000))
+            .unwrap();
+        assert!(!part.is_empty());
+        assert_eq!(errors, LineErrors::default());
+        bytes.extend_from_slice(&part);
+        if bytes.len() == expected.len() {
+            break;
+        }
+        reading = session.start_read(expected.len() - bytes.len()).unwrap();
+    }
+    assert_eq!(bytes, expected);
+    assert_eq!(session.try_read(&mut [0; 32]).unwrap().bytes, 0);
     session.write_all(expected).unwrap();
     session.write_all(b"\n").unwrap();
     session.flush().unwrap();
-    Arc::try_unwrap(session).unwrap_or_else(|_| panic!("UART session is still shared"))
+    session
 }
 
 fn shared_output(control: &Handle<Channel>, id: u32) {
@@ -190,4 +194,18 @@ fn shared_output(control: &Handle<Channel>, id: u32) {
         Session::open(process::task(), control, id, Access::InputOutput),
         Err(Error::Busy)
     ));
+}
+
+fn buffered_output(session: &Session) {
+    let mut prefix = session.start_write(b"UART buffered TX: ").unwrap();
+    let mut flush = session.start_flush().unwrap();
+    prefix
+        .wait(WaitMode::Until(thread::now_ns().unwrap() + 5_000_000_000))
+        .unwrap();
+    flush
+        .wait(WaitMode::Until(thread::now_ns().unwrap() + 5_000_000_000))
+        .unwrap();
+    session.write_all(&[b'@'; 8192]).unwrap();
+    session.write_all(b"\n").unwrap();
+    session.flush().unwrap();
 }

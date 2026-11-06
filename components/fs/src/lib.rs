@@ -9,7 +9,7 @@ extern crate alloc;
 
 pub mod archive;
 pub mod block;
-mod client;
+pub mod client;
 mod control;
 pub mod ext4;
 mod metadata;
