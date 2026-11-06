@@ -10,7 +10,7 @@ use devmgr::{
     Error as DeviceError,
     block::{self, Block, Session as BlockSession},
     device::DeviceDescription,
-    uart::{self, Configuration, Session, Settings, Uart},
+    uart::{self, Access, Configuration, Session, Settings, Uart},
 };
 use logger::{Client, Control, Error, Level, MAX_RECORD_SIZE, log};
 use runtime::{
@@ -58,7 +58,7 @@ fn main() {
         .unwrap();
     let (id, group, configuration) = console(&devices);
     let (uart_control, uart_worker) = start_uart(&devices, id, group, configuration);
-    let session = Session::open(process::task(), &uart_control, id).unwrap();
+    let session = Session::open(process::task(), &uart_control, id, Access::Output).unwrap();
     let filesystem = start_filesystem(&devices);
     let restart_kernel_log = kernel_log
         .try_clone(Rights::READ | Rights::DUPLICATE | Rights::TRANSFER)
@@ -86,6 +86,7 @@ fn main() {
             .message,
         "Logger service tests passed"
     );
+    shared_console(&uart_control, id, &logger);
     let logger = restart_persistent(
         &filesystem.files,
         &uart_control,
@@ -127,7 +128,7 @@ fn restart_persistent(
     assert_eq!(file.write_at(size, b"torn", deadline()).unwrap(), 4);
     file.fsync(deadline()).unwrap();
     drop(file);
-    let output = Session::open(process::task(), uart_control, id).unwrap();
+    let output = Session::open(process::task(), uart_control, id, Access::Output).unwrap();
     let persistent_file = files.open("/var/log/system.log", deadline()).unwrap();
     let logger = start_logger(output, kernel_log, Some(persistent_file));
     assert_eq!(
@@ -166,7 +167,7 @@ fn verify_file_failure(
     kernel_log: Handle<KernelLog>,
 ) {
     let file = files.open("/readonly.log", deadline()).unwrap();
-    let output = Session::open(process::task(), uart_control, id).unwrap();
+    let output = Session::open(process::task(), uart_control, id, Access::Output).unwrap();
     let logger = start_logger(output, kernel_log, Some(file));
     let sequence = logger
         .client
@@ -566,4 +567,44 @@ fn start_logger(
         client,
         worker,
     }
+}
+
+fn shared_console(control: &Handle<Channel>, id: u32, logger: &RunningLogger) {
+    let terminal =
+        Arc::new(Session::open(process::task(), control, id, Access::InputOutput).unwrap());
+    let input = Arc::clone(&terminal);
+    let reader = thread::spawn(move || {
+        let expected = b"shared-console-input";
+        let mut bytes = [0; 20];
+        let mut count = 0;
+        while count < bytes.len() {
+            let read = input.read(&mut bytes[count..]).unwrap();
+            assert!(read.bytes > 0);
+            count += read.bytes;
+        }
+        assert_eq!(&bytes, expected);
+    })
+    .unwrap();
+    let end = deadline();
+    while reader.thread().state().unwrap().0 != thread::ThreadState::Blocked {
+        assert!(thread::now_ns().unwrap() < end);
+        thread::yield_now().unwrap();
+    }
+    logger
+        .client
+        .write(
+            log::Level::Info,
+            "logger::test",
+            "Shared console log",
+            deadline(),
+        )
+        .unwrap();
+    logger.client.flush(deadline()).unwrap();
+    terminal.write_all(b"Logger shared console RX\n").unwrap();
+    terminal.flush().unwrap();
+    reader.join().unwrap();
+    terminal
+        .write_all(b"Logger shared console tests passed\n")
+        .unwrap();
+    terminal.flush().unwrap();
 }

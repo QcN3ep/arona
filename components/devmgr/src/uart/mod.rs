@@ -5,7 +5,7 @@
 pub mod service;
 mod session;
 
-pub use session::Session;
+pub use session::{Access, Session};
 
 use runtime::{
     Device, Event, Handle,

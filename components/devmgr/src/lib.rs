@@ -30,6 +30,7 @@ pub enum Error {
     DeviceFault,
     NotFound,
     ReadOnly,
+    Denied,
 }
 
 impl From<runtime::Error> for Error {

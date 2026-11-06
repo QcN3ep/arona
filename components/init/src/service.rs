@@ -81,7 +81,12 @@ pub fn start_logger(
         }
         cursor = id;
     };
-    let output = devmgr::uart::Session::open(process::task(), devmgr, console)?;
+    let output = devmgr::uart::Session::open(
+        process::task(),
+        devmgr,
+        console,
+        devmgr::uart::Access::Output,
+    )?;
     let (service, control) = launch(
         loader,
         files.open("/bin/logger", deadline()?)?,

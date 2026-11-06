@@ -98,6 +98,7 @@ pub(crate) const UNSUPPORTED: u64 = 3;
 pub(crate) const INVALID_CONFIGURATION: u64 = 4;
 pub(crate) const CLOCK_UNAVAILABLE: u64 = 5;
 pub(crate) const UNAVAILABLE: u64 = 6;
+pub(crate) const DENIED: u64 = 7;
 
 pub struct OpenRequest {
     pub device: u32,

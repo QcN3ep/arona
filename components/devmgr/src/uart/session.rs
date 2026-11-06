@@ -9,8 +9,8 @@ use super::{DataBits, LineErrors, Parity, ReadResult, Settings, StopBits};
 use crate::{
     Error,
     device::{
-        BUSY, CHANNEL_RIGHTS, CLOCK_UNAVAILABLE, INVALID_CONFIGURATION, INVALID_REQUEST, OPEN,
-        SUCCESS, UNAVAILABLE, UNSUPPORTED,
+        BUSY, CHANNEL_RIGHTS, CLOCK_UNAVAILABLE, DENIED, INVALID_CONFIGURATION, INVALID_REQUEST,
+        OPEN, SUCCESS, UNAVAILABLE, UNSUPPORTED,
     },
 };
 
@@ -19,9 +19,16 @@ pub(super) const TRY_READ: u64 = 3;
 pub(super) const WRITE: u64 = 4;
 pub(super) const FLUSH: u64 = 5;
 pub(super) const CONFIGURE: u64 = 6;
+pub(super) const SET_ACCESS: u64 = 7;
 pub(super) const MAX_BYTES: usize = (runtime::ipc::MESSAGE_WORDS - 2) * 8;
 
-/// UART 的独占会话。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u64)]
+pub enum Access {
+    InputOutput = 1,
+    Output = 2,
+}
+
 pub struct Session {
     channel: Handle<Channel>,
 }
@@ -31,6 +38,7 @@ impl Session {
         task: &Handle<Task>,
         service: &Handle<Channel>,
         device: u32,
+        access: Access,
     ) -> Result<Self, Error> {
         let (channel, server) = task.channel(
             CHANNEL_RIGHTS.union(Rights::TRANSFER),
@@ -44,6 +52,10 @@ impl Session {
             })
             .map_err(|_| runtime::Error::Protocol)?;
         empty(response(service, &mut request)?)?;
+        empty(response(
+            &channel,
+            &mut Message::new(SET_ACCESS, &[access as u64])?,
+        )?)?;
         Ok(Self { channel })
     }
 
@@ -183,6 +195,7 @@ fn response(channel: &Handle<Channel>, request: &mut Message) -> Result<Received
         SUCCESS => return Ok(response),
         INVALID_REQUEST => runtime::Error::Protocol.into(),
         BUSY => Error::Busy,
+        DENIED => Error::Denied,
         UNSUPPORTED => Error::Unsupported,
         INVALID_CONFIGURATION => Error::InvalidConfiguration,
         CLOCK_UNAVAILABLE => Error::ClockUnavailable,

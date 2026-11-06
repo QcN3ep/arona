@@ -2,7 +2,7 @@
 
 //! UART 会话、收发缓冲与中断驱动的请求处理。
 
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, vec::Vec};
 use runtime::{
     Channel, Event, Handle, KernelError, Reply,
     ipc::{self, Message, ReceivedMessage, WaitItem, WaitMode},
@@ -10,14 +10,14 @@ use runtime::{
 };
 
 use super::{
-    DataBits, Parity, Settings, StopBits, Uart,
+    Access, DataBits, Parity, Settings, StopBits, Uart,
     session::{self, MAX_BYTES},
 };
 use crate::{
     Error,
     device::{
-        BUSY, CLOCK_UNAVAILABLE, INVALID_CONFIGURATION, INVALID_REQUEST, OpenRequest, SUCCESS,
-        UNSUPPORTED,
+        BUSY, CLOCK_UNAVAILABLE, DENIED, INVALID_CONFIGURATION, INVALID_REQUEST, OpenRequest,
+        SUCCESS, UNSUPPORTED,
     },
 };
 
@@ -32,8 +32,8 @@ struct Buffer {
 
 struct Connection {
     channel: Handle<Channel>,
+    access: Option<Access>,
     reads: VecDeque<(Handle<Reply>, usize)>,
-    writes: VecDeque<PendingWrite>,
 }
 
 enum PendingWrite {
@@ -49,7 +49,8 @@ struct State {
     receive: Buffer,
     transmit: Buffer,
     errors: u64,
-    connection: Option<Connection>,
+    connections: Vec<Connection>,
+    writes: VecDeque<PendingWrite>,
     interrupt_pending: bool,
 }
 
@@ -63,12 +64,13 @@ pub fn run(
         receive: Buffer::new(),
         transmit: Buffer::new(),
         errors: 0,
-        connection: None,
+        connections: Vec::new(),
+        writes: VecDeque::new(),
         interrupt_pending: false,
     };
     loop {
         let mut again = state.pump(uart)?;
-        state.receive_request(uart)?;
+        again |= state.receive_requests(uart)?;
         if let Some(control) = control {
             match control.receive(WaitMode::Poll) {
                 Ok(request) => {
@@ -85,9 +87,8 @@ pub fn run(
         if again {
             continue;
         }
-        let mode = if state.connection.as_ref().is_some_and(|connection| {
-            matches!(connection.writes.front(), Some(PendingWrite::Flush(_)))
-        }) && state.transmit.length == 0
+        let mode = if matches!(state.writes.front(), Some(PendingWrite::Flush(_)))
+            && state.transmit.length == 0
         {
             WaitMode::Until(
                 thread::now_ns()?
@@ -97,21 +98,15 @@ pub fn run(
         } else {
             WaitMode::Forever
         };
-        let mut items = [
-            WaitItem::new(event, 1),
-            WaitItem::new(event, 1),
-            WaitItem::new(event, 1),
-        ];
-        let mut count = 1;
+        let mut items = Vec::with_capacity(state.connections.len() + 2);
+        items.push(WaitItem::new(event, 1));
         if let Some(control) = control {
-            items[count] = WaitItem::new(control, ipc::READABLE | ipc::PEER_CLOSED);
-            count += 1;
+            items.push(WaitItem::new(control, ipc::READABLE | ipc::PEER_CLOSED));
         }
-        if let Some(connection) = &state.connection {
-            items[count] = WaitItem::new(&connection.channel, ipc::READABLE | ipc::PEER_CLOSED);
-            count += 1;
-        }
-        match ipc::wait_many(&items[..count], mode) {
+        items.extend(state.connections.iter().map(|connection| {
+            WaitItem::new(&connection.channel, ipc::READABLE | ipc::PEER_CLOSED)
+        }));
+        match ipc::wait_many(&items, mode) {
             Ok(ready) => state.interrupt_pending |= ready.index == 0,
             Err(runtime::Error::Kernel(KernelError::TimedOut)) => {}
             Err(error) => return Err(error.into()),
@@ -123,12 +118,18 @@ impl State {
     fn pump(&mut self, uart: &mut Uart<'_>) -> Result<bool, Error> {
         let mut bytes = [0; MAX_BYTES];
         let read = uart.read(&mut bytes)?;
-        self.errors |= session::error_bits(read.errors);
-        for byte in &bytes[..read.bytes] {
-            if self.receive.length == BUFFER_SIZE {
-                self.errors |= 1;
-            } else {
-                self.receive.push(*byte);
+        if self
+            .connections
+            .iter()
+            .any(|connection| connection.access == Some(Access::InputOutput))
+        {
+            self.errors |= session::error_bits(read.errors);
+            for byte in &bytes[..read.bytes] {
+                if self.receive.length == BUFFER_SIZE {
+                    self.errors |= 1;
+                } else {
+                    self.receive.push(*byte);
+                }
             }
         }
         self.transmit(uart)?;
@@ -163,42 +164,70 @@ impl State {
         if request.device != device {
             return request.reject(Error::Unsupported);
         }
-        if self.connection.is_some() {
-            return request.reject(Error::Busy);
-        }
         if deliver(&request.reply, &mut Message::new(SUCCESS, &[])?)? {
-            self.connection = Some(Connection {
+            self.connections.push(Connection {
                 channel: request.channel,
+                access: None,
                 reads: VecDeque::new(),
-                writes: VecDeque::new(),
             });
         }
         Ok(())
     }
 
-    fn receive_request(&mut self, uart: &mut Uart<'_>) -> Result<(), Error> {
-        let Some(connection) = &mut self.connection else {
-            return Ok(());
-        };
-        let mut request = match connection.channel.receive(WaitMode::Poll) {
-            Ok(request) => request,
-            Err(runtime::Error::Kernel(KernelError::WouldBlock)) => return Ok(()),
-            Err(runtime::Error::Kernel(KernelError::EndOfStream)) => {
-                self.connection = None;
-                self.receive = Buffer::new();
-                self.errors = 0;
-                return Ok(());
+    fn receive_requests(&mut self, uart: &mut Uart<'_>) -> Result<bool, Error> {
+        let mut again = false;
+        let mut index = 0;
+        while index < self.connections.len() {
+            match self.connections[index].channel.receive(WaitMode::Poll) {
+                Ok(request) => {
+                    self.request(uart, index, request)?;
+                    again = true;
+                    index += 1;
+                }
+                Err(runtime::Error::Kernel(KernelError::WouldBlock)) => index += 1,
+                Err(runtime::Error::Kernel(KernelError::EndOfStream)) => {
+                    let connection = self.connections.remove(index);
+                    if connection.access == Some(Access::InputOutput) {
+                        self.receive = Buffer::new();
+                        self.errors = 0;
+                    }
+                    again = true;
+                }
+                Err(error) => return Err(error.into()),
             }
-            Err(error) => return Err(error.into()),
-        };
+        }
+        Ok(again)
+    }
+
+    fn request(
+        &mut self,
+        uart: &mut Uart<'_>,
+        index: usize,
+        mut request: ReceivedMessage,
+    ) -> Result<(), Error> {
         let Some(reply) = request.take_reply() else {
             return Ok(());
         };
         if !request.handles().is_empty() {
             return reject(&reply, INVALID_REQUEST);
         }
+        if request.tag == session::SET_ACCESS {
+            let access = match request.words() {
+                [1] => Access::InputOutput,
+                [2] => Access::Output,
+                _ => return reject(&reply, INVALID_REQUEST),
+            };
+            return self.set_access(index, access, &reply);
+        }
+        let Some(access) = self.connections[index].access else {
+            return reject(&reply, DENIED);
+        };
         match (request.tag, request.words()) {
             (session::READ | session::TRY_READ, [length]) if *length <= MAX_BYTES as u64 => {
+                if access != Access::InputOutput {
+                    return reject(&reply, DENIED);
+                }
+                let connection = &mut self.connections[index];
                 if *length == 0 || request.tag == session::TRY_READ && !connection.reads.is_empty()
                 {
                     deliver(&reply, &mut Message::new(SUCCESS, &[0, 0])?)?;
@@ -215,17 +244,43 @@ impl State {
                 for (index, byte) in bytes[..*length as usize].iter_mut().enumerate() {
                     *byte = (data[index / 8] >> ((index % 8) * 8)) as u8;
                 }
-                connection.writes.push_back(PendingWrite::Write {
+                self.writes.push_back(PendingWrite::Write {
                     reply,
                     bytes,
                     length: *length as usize,
                 });
             }
-            (session::FLUSH, []) => connection.writes.push_back(PendingWrite::Flush(reply)),
+            (session::FLUSH, []) => self.writes.push_back(PendingWrite::Flush(reply)),
             (session::CONFIGURE, [baud, bits, parity, stop]) => {
+                if access != Access::InputOutput {
+                    return reject(&reply, DENIED);
+                }
                 self.configure(uart, &reply, [*baud, *bits, *parity, *stop])?;
             }
             _ => reject(&reply, INVALID_REQUEST)?,
+        }
+        Ok(())
+    }
+
+    fn set_access(
+        &mut self,
+        index: usize,
+        access: Access,
+        reply: &Handle<Reply>,
+    ) -> Result<(), Error> {
+        if self.connections[index].access.is_some() {
+            return reject(reply, DENIED);
+        }
+        if access == Access::InputOutput
+            && self
+                .connections
+                .iter()
+                .any(|connection| connection.access == Some(Access::InputOutput))
+        {
+            return reject(reply, BUSY);
+        }
+        if deliver(reply, &mut Message::new(SUCCESS, &[])?)? {
+            self.connections[index].access = Some(access);
         }
         Ok(())
     }
@@ -260,12 +315,11 @@ impl State {
             }
             _ => return reject(reply, INVALID_CONFIGURATION),
         };
-        let result =
-            if self.transmit.length == 0 && self.connection.as_ref().unwrap().writes.is_empty() {
-                uart.configure(settings)
-            } else {
-                Err(Error::Busy)
-            };
+        let result = if self.transmit.length == 0 && self.writes.is_empty() {
+            uart.configure(settings)
+        } else {
+            Err(Error::Busy)
+        };
         match result {
             Ok(()) => {
                 deliver(reply, &mut Message::new(SUCCESS, &[])?)?;
@@ -280,24 +334,24 @@ impl State {
     }
 
     fn complete(&mut self, uart: &mut Uart<'_>) -> Result<bool, Error> {
-        let Some(connection) = &mut self.connection else {
-            return Ok(false);
-        };
         let read = if self.receive.length != 0 || self.errors != 0 {
-            connection.reads.pop_front()
+            self.connections
+                .iter_mut()
+                .find(|connection| connection.access == Some(Access::InputOutput))
+                .and_then(|connection| connection.reads.pop_front())
         } else {
             None
         };
-        let write = match connection.writes.front() {
+        let write = match self.writes.front() {
             Some(PendingWrite::Write { length, .. })
                 if BUFFER_SIZE - self.transmit.length >= *length =>
             {
-                connection.writes.pop_front()
+                self.writes.pop_front()
             }
             Some(PendingWrite::Flush(_))
                 if self.transmit.length == 0 && uart.is_transmit_empty()? =>
             {
-                connection.writes.pop_front()
+                self.writes.pop_front()
             }
             _ => None,
         };

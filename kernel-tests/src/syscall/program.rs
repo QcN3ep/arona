@@ -411,8 +411,14 @@ fn managed_service(task: &Task, user: &Thread, control: Channel) {
         }
         let (status, channel) = open_session(&client, control, id);
         assert_eq!(status, 0, "UART {id} did not start");
+        assert_eq!(service_call(&client, channel, 7, &[1]).tag, 0);
         let (status, unused) = open_session(&client, control, id);
-        assert_eq!(status, 2);
+        assert_eq!(status, 0);
+        assert_eq!(service_call(&client, unused, 7, &[1]).tag, 2);
+        assert_eq!(service_call(&client, unused, 7, &[2]).tag, 0);
+        assert_eq!(service_call(&client, unused, 3, &[1]).tag, 7);
+        assert_eq!(service_call(&client, unused, 7, &[1]).tag, 7);
+        assert_eq!(service_call(&client, unused, 5, &[]).tag, 0);
         client.close(unused).unwrap();
         assert_eq!(
             service_call(&client, channel, 3, &[1]),
@@ -519,7 +525,10 @@ fn open_session(client: &Task, control: abi::Handle, id: u32) -> (u64, abi::Hand
 fn reconnect_uart(client: &Task, control: abi::Handle, id: u32) -> abi::Handle {
     let deadline = service_deadline();
     loop {
-        let (status, channel) = open_session(client, control, id);
+        let (mut status, channel) = open_session(client, control, id);
+        if status == 0 {
+            status = service_call(client, channel, 7, &[1]).tag;
+        }
         if status == 0 {
             return channel;
         }
