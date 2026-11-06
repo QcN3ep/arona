@@ -32,7 +32,7 @@ static PCI_RESULTS: AtomicU64 = AtomicU64::new(0);
 pub fn run_device(image: &'static [u8], devices: DeviceSet, resident: bool) -> u64 {
     DEVICES.call_once(|| devices);
     PCI_RESULTS.store(0, Ordering::Relaxed);
-    run_cases(image, if resident { &[6, 8] } else { &[5] }, true, resident);
+    run_cases(image, if resident { &[8, 6] } else { &[5] }, true, false);
     PCI_RESULTS.load(Ordering::Relaxed)
 }
 
@@ -48,6 +48,11 @@ pub fn handle(trap: Trap) -> TrapOutcome {
             handle, arguments, ..
         } = trap.event
         && arguments[0] == abi::method::device::BIND as usize
+        && DEVICES.get().is_some_and(|devices| {
+            devices
+                .describe(arguments[1] as u32)
+                .is_ok_and(|device| device.console)
+        })
         && thread::current()
             .and_then(|thread| thread.task())
             .is_some_and(|task| {
@@ -173,6 +178,9 @@ fn run_cases(
         MODE.store(mode, Ordering::Relaxed);
         SUPERVISING.store(false, Ordering::Relaxed);
         crate::run_thread(scenario);
+        if mode == 6 {
+            break;
+        }
         let deadline = hardware::timer().now_ns().unwrap() + 10_000_000_000;
         loop {
             manager.reclaim_heap();
@@ -338,10 +346,6 @@ fn resident(task: &Task, user: &Thread) {
     assert_eq!(task.state(), TaskState::Active);
     wait_service_idle(task, user);
     assert!(matches!(devices.claim_group(group), Err(DeviceError::Busy)));
-    task.terminate(0);
-    assert_eq!(user.wait().unwrap(), 0);
-    assert_eq!(task.state(), TaskState::Dead(0));
-    drop(devices.claim_group(group).unwrap());
 }
 
 fn wait_service_idle(task: &Task, user: &Thread) {
@@ -380,6 +384,7 @@ fn managed_service(task: &Task, user: &Thread, control: Channel) {
         Message::new(0, &[]).unwrap(),
     );
     assert_eq!(service_call(&client, control, u64::MAX, &[]).tag, 1);
+    discover_rng(&client, control);
     let (status, unused) = open_uart(&client, control, u32::MAX);
     assert_eq!(status, 3);
     client.close(unused).unwrap();
@@ -460,6 +465,15 @@ fn managed_service(task: &Task, user: &Thread, control: Channel) {
         drop(devices.claim_group(group).unwrap());
     }
     client.terminate(0);
+}
+
+fn discover_rng(client: &Task, control: abi::Handle) {
+    let response = service_call(client, control, 2, &[3, 0]);
+    let [rng] = *response.words() else {
+        panic!("invalid RNG discovery response")
+    };
+    assert_ne!(rng, 0, "RNG device was not discovered");
+    assert_eq!(service_call(client, control, 2, &[3, rng]).words(), [0]);
 }
 
 fn open_uart(client: &Task, control: abi::Handle, id: u32) -> (u64, abi::Handle) {

@@ -148,7 +148,10 @@ fn run_program(
     program: Option<kernel::memory::PhysRange>,
     devices: kernel::device::DeviceSet,
 ) {
-    if matches!(suite, "dma" | "dma-drop" | "dma-revoke" | "block" | "fs") {
+    if matches!(
+        suite,
+        "dma" | "dma-drop" | "dma-revoke" | "block" | "fs" | "rng" | "service"
+    ) {
         kernel::logger::init(kernel::log::LevelFilter::Info).unwrap();
         kernel::logger::LOGGER.add_sink(&TestLog).unwrap();
     }
@@ -204,6 +207,11 @@ fn run_program(
             .write(format_args!("Filesystem tests passed\n"))
             .unwrap();
     }
+    if suite == "rng" {
+        uart()
+            .write(format_args!("RNG driver tests passed\n"))
+            .unwrap();
+    }
     if suite == "service" {
         uart()
             .write(format_args!("Device service tests passed\n"))
@@ -231,6 +239,7 @@ fn select_program() -> &'static str {
                 b"init" => "init",
                 b"dma" => "dma",
                 b"block" => "block",
+                b"rng" => "rng",
                 b"fs" => "fs",
                 b"dma-drop" => "dma-drop",
                 b"dma-revoke" => "dma-revoke",

@@ -8,6 +8,7 @@ use devmgr::{
     Error,
     block::{self, Block},
     device::{DeviceDescription, DiscoveryRequest, DriverKind, OpenRequest},
+    rng::{self, Rng},
     uart::{self, Settings, Uart},
 };
 use runtime::{
@@ -22,6 +23,7 @@ const START_TIMEOUT_NS: u64 = 1_000_000_000;
 enum Configuration {
     Uart(uart::Configuration),
     Block(block::Configuration),
+    Rng(rng::Configuration),
 }
 
 pub struct DeviceManager {
@@ -144,7 +146,14 @@ impl DeviceManager {
         let id = self.instances.iter()
             .filter(|instance| instance.id > request.after)
             .filter(|instance| matches!(&instance.state, InstanceState::Running(worker) if worker.ready.load(Ordering::Acquire)))
-            .filter(|instance| matches!((instance.configuration, request.kind), (Ok((_, Configuration::Uart(_))), DriverKind::Uart) | (Ok((_, Configuration::Block(_))), DriverKind::Block)))
+            .filter(|instance| {
+                matches!(
+                    (instance.configuration, request.kind),
+                    (Ok((_, Configuration::Uart(_))), DriverKind::Uart)
+                        | (Ok((_, Configuration::Block(_))), DriverKind::Block)
+                        | (Ok((_, Configuration::Rng(_))), DriverKind::Rng)
+                )
+            })
             .map(|instance| instance.id).min();
         request.respond(id)
     }
@@ -294,16 +303,30 @@ fn serve(
     ready: &AtomicBool,
     wake: &Handle<Event>,
 ) -> Result<(), Error> {
-    if let Configuration::Block(configuration) = configuration {
-        let domain = grant.create_dma(
-            id,
-            Rights::READ | Rights::DMA_MAP | Rights::DEVICE_CONTROL | Rights::REVOKE,
-        )?;
-        let mut block = Block::new(configuration, grant, &domain, event, process::task())?;
-        ready.store(true, Ordering::Release);
-        wake.signal(1)?;
-        block::service::run(&mut block, event, server, id)?;
-        return Ok(domain.revoke()?);
+    match configuration {
+        Configuration::Block(configuration) => {
+            let domain = grant.create_dma(
+                id,
+                Rights::READ | Rights::DMA_MAP | Rights::DEVICE_CONTROL | Rights::REVOKE,
+            )?;
+            let mut block = Block::new(configuration, grant, &domain, event, process::task())?;
+            ready.store(true, Ordering::Release);
+            wake.signal(1)?;
+            block::service::run(&mut block, event, server, id)?;
+            return Ok(domain.revoke()?);
+        }
+        Configuration::Rng(configuration) => {
+            let domain = grant.create_dma(
+                id,
+                Rights::READ | Rights::DMA_MAP | Rights::DEVICE_CONTROL | Rights::REVOKE,
+            )?;
+            let mut rng = Rng::new(configuration, grant, &domain, event, process::task())?;
+            ready.store(true, Ordering::Release);
+            wake.signal(1)?;
+            rng::service::run(&mut rng, event, server, id)?;
+            return Ok(domain.revoke()?);
+        }
+        Configuration::Uart(_) => {}
     }
     let Configuration::Uart(configuration) = configuration else {
         unreachable!()
@@ -325,5 +348,8 @@ fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Error>
     if let Some(configuration) = uart::probe(device)? {
         return Ok(Some(Configuration::Uart(configuration)));
     }
-    Ok(block::probe(device)?.map(Configuration::Block))
+    if let Some(configuration) = block::probe(device)? {
+        return Ok(Some(Configuration::Block(configuration)));
+    }
+    Ok(rng::probe(device)?.map(Configuration::Rng))
 }

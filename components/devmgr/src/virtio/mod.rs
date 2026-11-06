@@ -21,6 +21,8 @@ const FEATURES_OK: u8 = 8;
 const NEEDS_RESET: u8 = 64;
 const FAILED: u8 = 128;
 const RESET_TIMEOUT_NS: u64 = 1_000_000_000;
+pub(crate) const BLOCK_DEVICE_TYPE: u16 = 2;
+pub(crate) const RNG_DEVICE_TYPE: u16 = 4;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Configuration {
@@ -33,11 +35,19 @@ pub(crate) enum Transport<'a> {
     Pci(Box<pci::Pci<'a>>),
 }
 
-pub(crate) fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Error> {
-    if device.matches("pci", "1af4:1042")? {
-        return Ok(Some(Configuration::Pci(pci::probe(device)?)));
+pub(crate) fn probe(
+    device: &DeviceDescription<'_>,
+    device_type: u16,
+) -> Result<Option<Configuration>, Error> {
+    let identity = match device_type {
+        BLOCK_DEVICE_TYPE => "1af4:1042",
+        RNG_DEVICE_TYPE => "1af4:1044",
+        _ => return Err(Error::Unsupported),
+    };
+    if device.matches("pci", identity)? {
+        return Ok(Some(Configuration::Pci(pci::probe(device, device_type)?)));
     }
-    if device.matches("devicetree", "virtio,mmio")? {
+    if device_type == BLOCK_DEVICE_TYPE && device.matches("devicetree", "virtio,mmio")? {
         if device.info().mmio_regions != 1 || device.info().interrupts != 1 {
             return Err(Error::Unsupported);
         }

@@ -119,10 +119,12 @@ enum State {
 }
 
 pub fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Error> {
-    Ok(virtio::probe(device)?.map(|transport| Configuration {
-        id: device.info().id,
-        transport,
-    }))
+    Ok(
+        virtio::probe(device, virtio::BLOCK_DEVICE_TYPE)?.map(|transport| Configuration {
+            id: device.info().id,
+            transport,
+        }),
+    )
 }
 
 impl<'a> Block<'a> {

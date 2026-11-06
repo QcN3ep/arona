@@ -4,7 +4,10 @@
 
 use runtime::{Device, Handle, device::Mmio};
 
+use super::{BLOCK_DEVICE_TYPE, RNG_DEVICE_TYPE};
 use crate::{Error, device::DeviceDescription};
+
+const VIRTIO_DEVICE_ID_BASE: u16 = 0x1040;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Configuration {
@@ -12,7 +15,7 @@ pub(crate) struct Configuration {
     common: Region,
     notify: Region,
     isr: Region,
-    device: Region,
+    device: Option<Region>,
     multiplier: usize,
 }
 
@@ -27,19 +30,25 @@ pub(crate) struct Pci<'a> {
     common: Mmio<'a>,
     notify: Mmio<'a>,
     isr: Mmio<'a>,
-    device: Mmio<'a>,
+    device: Option<Mmio<'a>>,
     config: Configuration,
     queue_notify: usize,
 }
 
 // REFERENCE: https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html#x1-1100004
-pub(super) fn probe(device: &DeviceDescription<'_>) -> Result<Configuration, Error> {
+pub(super) fn probe(
+    device: &DeviceDescription<'_>,
+    device_type: u16,
+) -> Result<Configuration, Error> {
     if device.info().interrupts != 1 {
         return Err(Error::Unsupported);
     }
     let mut bytes = [0; 4096];
     device.pci_config(&mut bytes)?;
-    if bytes[..4] != [0xf4, 0x1a, 0x42, 0x10] || bytes[6] & 0x10 == 0 {
+    if bytes[..2] != [0xf4, 0x1a]
+        || bytes[2..4] != (VIRTIO_DEVICE_ID_BASE + device_type).to_le_bytes()
+        || bytes[6] & 0x10 == 0
+    {
         return Err(Error::InvalidConfiguration);
     }
     let mut regions = [None; 4];
@@ -57,7 +66,7 @@ pub(super) fn probe(device: &DeviceDescription<'_>) -> Result<Configuration, Err
                 return Err(Error::InvalidConfiguration);
             }
             let kind = bytes[offset + 3];
-            if (1..=4).contains(&kind) {
+            if (1..=4).contains(&kind) && !(kind == 4 && device_type == RNG_DEVICE_TYPE) {
                 let index = usize::from(kind - 1);
                 if regions[index].is_some() || kind == 2 && length < 20 {
                     return Err(Error::InvalidConfiguration);
@@ -90,9 +99,12 @@ pub(super) fn probe(device: &DeviceDescription<'_>) -> Result<Configuration, Err
         }
         offset = usize::from(bytes[offset + 1]);
     }
-    let [Some(common), Some(notify), Some(isr), Some(config)] = regions else {
+    let [Some(common), Some(notify), Some(isr), config] = regions else {
         return Err(Error::InvalidConfiguration);
     };
+    if device_type == BLOCK_DEVICE_TYPE && config.is_none() {
+        return Err(Error::InvalidConfiguration);
+    }
     Ok(Configuration {
         id: device.info().id,
         common,
@@ -109,7 +121,10 @@ impl<'a> Pci<'a> {
             common: grant.map_mmio(config.id, config.common.index)?,
             notify: grant.map_mmio(config.id, config.notify.index)?,
             isr: grant.map_mmio(config.id, config.isr.index)?,
-            device: grant.map_mmio(config.id, config.device.index)?,
+            device: config
+                .device
+                .map(|region| grant.map_mmio(config.id, region.index))
+                .transpose()?,
             config,
             queue_notify: 0,
         })
@@ -192,13 +207,12 @@ impl<'a> Pci<'a> {
     }
 
     pub(super) fn config_word(&mut self, offset: usize) -> Result<u32, Error> {
-        if offset
-            .checked_add(4)
-            .is_none_or(|end| end > self.config.device.length)
-        {
+        let region = self.config.device.ok_or(Error::Unsupported)?;
+        if offset.checked_add(4).is_none_or(|end| end > region.length) {
             return Err(Error::InvalidConfiguration);
         }
-        Ok(self.device.read_u32(self.config.device.offset + offset)?)
+        let device = self.device.as_mut().ok_or(Error::Unsupported)?;
+        Ok(device.read_u32(region.offset + offset)?)
     }
 }
 

@@ -17,6 +17,7 @@ const NEXT: u64 = 2;
 pub enum DriverKind {
     Uart = 1,
     Block = 2,
+    Rng = 3,
 }
 
 pub fn next(
@@ -59,11 +60,11 @@ impl DiscoveryRequest {
             return Ok(None);
         };
         let (kind, after) = match message.words() {
-            [kind @ 1..=2, after] if *after <= u32::MAX as u64 && message.handles().is_empty() => (
-                if *kind == 1 {
-                    DriverKind::Uart
-                } else {
-                    DriverKind::Block
+            [kind @ 1..=3, after] if *after <= u32::MAX as u64 && message.handles().is_empty() => (
+                match *kind {
+                    1 => DriverKind::Uart,
+                    2 => DriverKind::Block,
+                    _ => DriverKind::Rng,
                 },
                 *after as u32,
             ),
