@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod call;
 mod channel;
 mod event;
 mod reply;
@@ -16,6 +17,7 @@ pub fn run() {
     timer::run();
     wait::run();
     reply::run();
+    call::run();
     manager.reclaim_heap();
     assert_eq!(manager.heap_stats(), heap);
     assert_eq!(manager.stats(), frames);

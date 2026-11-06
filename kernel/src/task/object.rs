@@ -5,8 +5,8 @@ use crate::{
     device::dma::DmaDomain,
     device::{Device, DeviceReference, DeviceSet},
     ipc::{
-        Channel, ChannelReference, Event, EventReference, Reply, ReplyReference, Timer,
-        TimerReference,
+        Call, CallReference, Channel, ChannelReference, Event, EventReference, Reply,
+        ReplyReference, Timer, TimerReference,
     },
     logger::KernelLog,
     memory::{self, HeapArc},
@@ -94,6 +94,16 @@ impl ObjectPayload for TrapContinuation {
 
 impl ObjectPayload for Reply {
     type Reference = ReplyReference;
+    fn reference(&self) -> Self::Reference {
+        self.reference()
+    }
+    fn try_clone(&self) -> Result<Self, HandleError> {
+        Err(HandleError::Denied)
+    }
+}
+
+impl ObjectPayload for Call {
+    type Reference = CallReference;
     fn reference(&self) -> Self::Reference {
         self.reference()
     }

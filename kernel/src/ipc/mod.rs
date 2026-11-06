@@ -2,19 +2,20 @@
 
 //! 消息通信、一次性回复、合并通知与多对象等待。
 
+mod call;
 mod channel;
 mod event;
 mod reply;
 mod timer;
 pub(crate) mod wait;
 
+pub use call::{Call, CallReference};
 pub(crate) use channel::MESSAGE_HANDLES;
 pub use channel::{
     Channel, ChannelError, ChannelReference, Message, ReceivedMessage, active_channels,
     queued_messages,
 };
 pub use event::{Event, EventError, EventReference, active_events};
-pub(crate) use reply::Call;
 pub use reply::{Reply, ReplyReference, active_replies};
 pub use timer::{Timer, TimerError, TimerReference, active_timers};
 pub(crate) use wait::WaitMode;

@@ -64,6 +64,7 @@ pub enum ChannelError {
     TimedOut,
     InvalidState,
     ServerGone,
+    Cancelled,
     Memory(MemoryError),
     Thread(ThreadError),
 }

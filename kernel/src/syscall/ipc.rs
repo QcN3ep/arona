@@ -71,6 +71,30 @@ pub(super) fn invoke(
             }
             method::channel::RECEIVE => return receive(caller, handle, args),
             method::channel::CALL => return request(caller, handle, args),
+            method::channel::START_CALL => {
+                let (message, transfers) = read_message(caller, args[0])?;
+                let [pending] =
+                    super::object::create(caller, [ObjectType::Call.supported_rights()], || {
+                        Ok([Object::Call(
+                            caller.start_call(handle, message, &transfers)?,
+                        )])
+                    })?;
+                return Ok(Return::success([pending.raw(), 0]));
+            }
+            _ => return Err(Error::Unsupported),
+        },
+        ObjectReference::Call(pending) => match method {
+            method::call::RECEIVE => {
+                let output =
+                    caller.pin_user_memory(args[0] as usize, abi::ipc::Message::SIZE, true)?;
+                caller.receive_call_deliver(&pending, |response, entries| {
+                    write_message(&output, response, |index| {
+                        Ok((entries[index].object.kind(), entries[index].rights))
+                    })
+                })?;
+                return Ok(Return::success([abi::ipc::Message::SIZE as u64, 0]));
+            }
+            method::call::CANCEL => pending.cancel()?,
             _ => return Err(Error::Unsupported),
         },
         ObjectReference::Reply(_) => {
@@ -141,9 +165,9 @@ fn request(caller: &Task, handle: Handle, args: [u64; 5]) -> Result<Return, Erro
         &transfers,
         (args[2] != u64::MAX).then_some(args[2]),
         &mut committed,
-        |response| {
+        |response, entries| {
             write_message(&output, response, |index| {
-                caller.handle_info(response.handles()[index])
+                Ok((entries[index].object.kind(), entries[index].rights))
             })
         },
     );

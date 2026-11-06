@@ -21,8 +21,8 @@ use crate::{
         mmu::PagePermissions,
     },
     ipc::{
-        Call, ChannelError, ChannelReference, MESSAGE_HANDLES, Message, ReceivedMessage, WaitItem,
-        WaitManyError, WaitManyResult, WaitMode,
+        Call, CallReference, ChannelError, ChannelReference, MESSAGE_HANDLES, Message,
+        ReceivedMessage, WaitItem, WaitManyError, WaitManyResult, WaitMode,
         wait::{Observer, Observers, notify_observers},
     },
     memory::{
@@ -383,7 +383,9 @@ impl Task {
         transfers: &[TransferRequest],
         deadline: Option<u64>,
     ) -> Result<ReceivedMessage, TaskError> {
-        self.call_deliver(handle, message, transfers, deadline, &mut false, |_| Ok(()))
+        self.call_deliver(handle, message, transfers, deadline, &mut false, |_, _| {
+            Ok(())
+        })
     }
 
     pub(crate) fn call_deliver(
@@ -393,19 +395,40 @@ impl Task {
         transfers: &[TransferRequest],
         deadline: Option<u64>,
         committed: &mut bool,
-        deliver: impl FnOnce(&ReceivedMessage) -> Result<(), TaskError>,
+        deliver: impl FnOnce(&ReceivedMessage, &[super::HandleEntry]) -> Result<(), TaskError>,
     ) -> Result<ReceivedMessage, TaskError> {
-        let channel = self.channel(handle, Rights::READ | Rights::WRITE)?;
-        {
-            let _interrupts = InterruptGuard::new();
-            TASKS
-                .lock()
-                .find(self)?
-                .handles
-                .validate_transfer::<{ MESSAGE_HANDLES - 1 }>(transfers)?;
-        }
-        let mut call = Call::new(self, deadline)?;
         let mode = deadline.map_or(WaitMode::Blocking, WaitMode::Deadline);
+        let call = self.submit_call(handle, message, transfers, deadline, mode)?;
+        *committed = true;
+        call.wait_with(deliver)
+    }
+
+    pub fn start_call(
+        &self,
+        handle: Handle,
+        message: Message,
+        transfers: &[TransferRequest],
+    ) -> Result<Call, TaskError> {
+        self.submit_call(handle, message, transfers, None, WaitMode::NonBlocking)
+    }
+
+    fn submit_call(
+        &self,
+        handle: Handle,
+        message: Message,
+        transfers: &[TransferRequest],
+        deadline: Option<u64>,
+        mode: WaitMode,
+    ) -> Result<Call, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        let channel = self.channel(handle, Rights::READ | Rights::WRITE)?;
+        TASKS
+            .lock()
+            .find(self)?
+            .handles
+            .validate_transfer::<{ MESSAGE_HANDLES - 1 }>(transfers)?;
+        let (call, reply) = Call::new(self, deadline)?;
+        let mut reply = Some(reply);
         channel.send_with(message, mode, true, || {
             let registry = TASKS.lock();
             let table = &registry.find(self)?.handles;
@@ -415,15 +438,30 @@ impl Task {
             {
                 return Err(ChannelError::TimedOut.into());
             }
-            let reply = call.attach()?;
             table.transfer_out::<{ MESSAGE_HANDLES - 1 }, TaskError>(
                 transfers,
-                Some(super::HandleEntry::reply(reply)),
+                Some(super::HandleEntry::reply(reply.take().unwrap())),
                 |objects| channel.check_transfer(objects).map_err(Into::into),
             )
         })?;
-        *committed = true;
-        call.wait_with(deliver)
+        Ok(call)
+    }
+
+    pub(crate) fn receive_call_deliver(
+        &self,
+        call: &CallReference,
+        deliver: impl FnOnce(&ReceivedMessage, &[super::HandleEntry]) -> Result<(), TaskError>,
+    ) -> Result<ReceivedMessage, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        if !call.destination_task()?.same(self) {
+            return Err(HandleError::Denied.into());
+        }
+        let result = {
+            let registry = TASKS.lock();
+            call.receive_with(&registry.find(self)?.handles, deliver)
+        };
+        call.notify();
+        result
     }
 
     pub fn reply(
@@ -437,11 +475,17 @@ impl Task {
         else {
             unreachable!("invalid reply handle type");
         };
-        let target = reply.destination()?;
-        let registry = TASKS.lock();
-        let source = &registry.find(self)?.handles;
-        let target = &registry.find(&target)?.handles;
-        source.reply_to(handle, &reply, target, message, transfers)
+        let result = {
+            let target = reply.destination()?;
+            let registry = TASKS.lock();
+            registry.find(&target)?;
+            registry
+                .find(self)?
+                .handles
+                .reply_to(handle, &reply, message, transfers)
+        };
+        reply.notify();
+        result
     }
 
     pub(crate) fn reserve_handles(&self, count: usize) -> Result<ReservedHandles, TaskError> {

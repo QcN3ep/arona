@@ -63,7 +63,9 @@ methods!(channel {
     SEND = 16 => WRITE;
     RECEIVE = 17 => READ;
     CALL = 18 => READ_WRITE;
+    START_CALL = 19 => READ_WRITE;
 });
+methods!(call { RECEIVE = 16 => READ; CANCEL = 17 => WRITE; });
 methods!(reply { SEND = 16 => WRITE; });
 methods!(event { SIGNAL = 16 => SIGNAL; });
 methods!(timer { ARM = 16 => WRITE; CANCEL = 17 => WRITE; });
@@ -106,6 +108,7 @@ pub const fn required_rights(kind: ObjectType, method: u64) -> Option<Rights> {
             ObjectType::FrameAllocation => memory::required(method),
             ObjectType::Channel => channel::required(method),
             ObjectType::Reply => reply::required(method),
+            ObjectType::Call => call::required(method),
             ObjectType::Event => event::required(method),
             ObjectType::Timer => timer::required(method),
             ObjectType::DeviceSet => device_set::required(method),

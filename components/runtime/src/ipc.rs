@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::{
-    AnyHandle, Channel, Error, Event, Handle, Object, Reply, Rights, Task, Timer, call, thread,
+    AnyHandle, Call, Channel, Error, Event, Handle, Object, Reply, Rights, Task, Timer, call,
+    thread,
 };
 pub use abi::ipc::{EXITED, MESSAGE_HANDLES, MESSAGE_WORDS, PEER_CLOSED, READABLE, WRITABLE};
 use abi::method;
@@ -172,6 +173,17 @@ impl Handle<Task> {
     }
 }
 impl Handle<Channel> {
+    pub fn start_call(&self, message: &mut Message) -> Result<Handle<Call>, Error> {
+        let bytes = message.encode()?;
+        let [raw, _] = self.borrow().invoke(
+            method::channel::START_CALL,
+            [bytes.as_ptr() as u64, 0, 0, 0, 0],
+        )?;
+        message.commit();
+        // SAFETY: START_CALL 成功交付独占的 Call 句柄。
+        Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
+    }
+
     pub fn send(&self, message: &mut Message, mode: WaitMode) -> Result<(), Error> {
         let bytes = message.encode()?;
         self.borrow().invoke(
@@ -232,6 +244,24 @@ impl Handle<Channel> {
         }
     }
 }
+impl Handle<Call> {
+    pub fn try_receive(&self) -> Result<ReceivedMessage, Error> {
+        let mut output = [0; abi::ipc::Message::SIZE];
+        self.borrow().invoke(
+            method::call::RECEIVE,
+            [output.as_mut_ptr() as u64, 0, 0, 0, 0],
+        )?;
+        ReceivedMessage::decode(&output)
+    }
+
+    /// 取消尚未完成的等待，服务端已经执行的操作不会撤销。
+    pub fn cancel(&self) -> Result<(), Error> {
+        self.borrow()
+            .invoke(method::call::CANCEL, [0; 5])
+            .map(|_| ())
+    }
+}
+
 impl Handle<Reply> {
     pub fn send(&self, message: &mut Message) -> Result<(), Error> {
         let bytes = message.encode()?;

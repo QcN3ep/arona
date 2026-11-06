@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-use spin::Mutex;
-
-use super::{ChannelError, ReceivedMessage};
-use crate::{
-    hardware::{self, cpu::InterruptGuard},
-    memory::{self, HeapArc},
-    task::{Handle, ReservedHandles, Task, TaskError},
-    thread::{self, Wait, WaitOutcome, Waker},
-};
+use super::{CallReference, ChannelError, Message};
+use crate::task::{HandleEntry, Task};
+use alloc::vec::Vec;
 
 /// # Safety
 ///
@@ -22,112 +15,19 @@ pub struct Reply {
 ///
 /// 操作及析构期间须保留内存管理器所需的内核映射。
 #[derive(Clone)]
-pub struct ReplyReference(HeapArc<Mutex<ReplyState>>);
-
-struct ReplyState {
-    destination: Option<ReservedHandles>,
-    waker: Option<Waker>,
-    deadline: Option<u64>,
-    result: Option<Result<ReceivedMessage, ChannelError>>,
-}
-
-static REPLIES: AtomicUsize = AtomicUsize::new(0);
+pub struct ReplyReference(CallReference);
 
 pub fn active_replies() -> usize {
-    REPLIES.load(Ordering::Relaxed)
-}
-
-pub(crate) struct Call {
-    reference: ReplyReference,
-    reply: Option<Reply>,
-    wait: Option<Wait>,
-}
-
-impl Call {
-    pub(crate) fn new(task: &Task, deadline: Option<u64>) -> Result<Self, TaskError> {
-        let destination = task.reserve_reply_handles()?;
-        let reference = ReplyReference(memory::manager().allocate_arc(Mutex::new(ReplyState {
-            destination: Some(destination),
-            waker: None,
-            deadline,
-            result: None,
-        }))?);
-        REPLIES.fetch_add(1, Ordering::Relaxed);
-        Ok(Self {
-            reply: Some(Reply {
-                reference: reference.clone(),
-            }),
-            reference,
-            wait: None,
-        })
-    }
-
-    pub(crate) fn attach(&mut self) -> Result<Reply, ChannelError> {
-        let wait = thread::prepare_wait()?;
-        self.reference.0.lock().waker = Some(wait.waker());
-        self.wait = Some(wait);
-        Ok(self.reply.take().expect("call already submitted"))
-    }
-
-    pub(crate) fn wait_with<E: From<ChannelError>>(
-        mut self,
-        deliver: impl FnOnce(&ReceivedMessage) -> Result<(), E>,
-    ) -> Result<ReceivedMessage, E> {
-        let wait = self.wait.take().expect("call not submitted");
-        let deadline = self.reference.0.lock().deadline;
-        let outcome = match deadline {
-            Some(deadline) => wait.wait_until(deadline).map_err(ChannelError::from)?,
-            None => {
-                wait.wait().map_err(ChannelError::from)?;
-                WaitOutcome::Notified
-            }
-        };
-        let _interrupts = InterruptGuard::new();
-        if outcome == WaitOutcome::TimedOut {
-            return Err(ChannelError::TimedOut.into());
-        }
-        let result = self
-            .reference
-            .0
-            .lock()
-            .result
-            .replace(Err(ChannelError::InvalidState))
-            .expect("reply wait completed without a result");
-        let response = result?;
-        deliver(&response)?;
-        self.reference
-            .0
-            .lock()
-            .destination
-            .as_mut()
-            .unwrap()
-            .handles
-            .drain(..response.handles().len());
-        Ok(response)
-    }
-}
-
-impl Drop for ReplyState {
-    fn drop(&mut self) {
-        REPLIES.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-impl Drop for Call {
-    fn drop(&mut self) {
-        let _interrupts = InterruptGuard::new();
-        let (destination, waker) = {
-            let mut state = self.reference.0.lock();
-            state.result.get_or_insert(Err(ChannelError::InvalidState));
-            (state.destination.take(), state.waker.take())
-        };
-        drop(self.wait.take());
-        drop(waker);
-        drop(destination);
-    }
+    super::call::active_calls()
 }
 
 impl Reply {
+    pub(crate) fn new(reference: CallReference) -> Self {
+        Self {
+            reference: ReplyReference(reference),
+        }
+    }
+
     pub(crate) fn reference(&self) -> ReplyReference {
         self.reference.clone()
     }
@@ -135,54 +35,25 @@ impl Reply {
 
 impl ReplyReference {
     pub(crate) fn destination(&self) -> Result<Task, ChannelError> {
-        let state = self.0.lock();
-        if state.result.is_some() {
-            return Err(ChannelError::InvalidState);
-        }
-        Ok(state
-            .destination
-            .as_ref()
-            .ok_or(ChannelError::InvalidState)?
-            .task
-            .clone())
+        self.0
+            .destination_task()
+            .map_err(|_| ChannelError::InvalidState)
     }
 
     pub(crate) fn complete(
         &self,
-        commit: impl FnOnce(&[Handle]) -> ReceivedMessage,
+        commit: impl FnOnce(&mut Vec<HandleEntry>) -> Message,
     ) -> Result<(), ChannelError> {
-        let mut state = self.0.lock();
-        if state.result.is_some() {
-            return Err(ChannelError::InvalidState);
-        }
-        if let Some(deadline) = state.deadline
-            && hardware::timer()
-                .now_ns()
-                .map_err(crate::thread::ThreadError::from)?
-                >= deadline
-        {
-            state.result = Some(Err(ChannelError::TimedOut));
-            state.waker.as_ref().unwrap().wake();
-            return Err(ChannelError::InvalidState);
-        }
-        if !state.waker.as_ref().unwrap().wake() {
-            return Err(ChannelError::InvalidState);
-        }
-        let response = commit(&state.destination.as_ref().unwrap().handles);
-        state.result = Some(Ok(response));
-        Ok(())
+        self.0.complete(commit)
+    }
+
+    pub(crate) fn notify(&self) {
+        self.0.notify();
     }
 }
 
 impl Drop for Reply {
     fn drop(&mut self) {
-        let _interrupts = InterruptGuard::new();
-        let mut state = self.reference.0.lock();
-        if state.result.is_none() {
-            state.result = Some(Err(ChannelError::ServerGone));
-            if let Some(waker) = &state.waker {
-                waker.wake();
-            }
-        }
+        self.reference.0.fail(ChannelError::ServerGone);
     }
 }

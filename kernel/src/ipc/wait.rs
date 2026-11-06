@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
-use super::{ChannelError, ChannelReference, EventError, EventReference};
+use super::{CallReference, ChannelError, ChannelReference, EventError, EventReference};
 use crate::{
     hardware::{self, cpu::InterruptGuard},
     memory::{self, HeapArc, MemoryError},
@@ -53,6 +53,7 @@ pub enum WaitManyError {
 }
 
 enum Source {
+    Call(CallReference),
     Channel(ChannelReference),
     Event(EventReference),
     Task(Task),
@@ -222,6 +223,7 @@ impl Drop for Selection {
 impl Source {
     fn register(&self, observer: Observer) -> Result<(), MemoryError> {
         match self {
+            Self::Call(call) => call.register_observer(observer),
             Self::Channel(channel) => channel.register_observer(observer),
             Self::Event(event) => event.register_observer(observer),
             Self::Task(task) => task.register_observer(observer),
@@ -231,6 +233,7 @@ impl Source {
 
     fn unregister(&self, observer: &Observer) {
         match self {
+            Self::Call(call) => call.unregister_observer(observer),
             Self::Channel(channel) => channel.unregister_observer(observer),
             Self::Event(event) => event.unregister_observer(observer),
             Self::Task(task) => task.unregister_observer(observer),
@@ -241,6 +244,7 @@ impl Source {
     fn identity(&self) -> usize {
         // 引用保持存储存活，Channel 另以最低位区分端点。
         match self {
+            Self::Call(call) => call.identity(),
             Self::Channel(channel) => channel.identity(),
             Self::Event(event) => event.identity(),
             Self::Task(task) => task.identity(),
@@ -286,6 +290,7 @@ fn resolve(
             return Err(WaitManyError::InvalidArgument);
         }
         let source = match task.waitable(item.handle)? {
+            ObjectReference::Call(call) if item.condition_mask == READABLE => Source::Call(call),
             ObjectReference::Channel(channel) => {
                 if item.condition_mask & !(READABLE | WRITABLE | PEER_CLOSED) != 0 {
                     return Err(WaitManyError::InvalidArgument);
@@ -354,6 +359,7 @@ fn checkpoint(index: usize) -> Result<(), ThreadError> {
 impl ResolvedItem {
     fn ready(&self, index: usize) -> Result<Option<WaitManyResult>, WaitManyError> {
         let ready = match &self.source {
+            Source::Call(call) => call.readiness()?,
             Source::Channel(channel) => channel.readiness(self.condition_mask)?,
             Source::Event(event) => event.readiness(self.condition_mask)?,
             Source::Task(task) => {

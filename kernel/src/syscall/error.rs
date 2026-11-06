@@ -93,6 +93,7 @@ impl From<crate::ipc::ChannelError> for Error {
             E::TimedOut => Self::TimedOut,
             E::InvalidState => Self::InvalidState,
             E::ServerGone => Self::ServerGone,
+            E::Cancelled => Self::Cancelled,
             E::Memory(error) => error.into(),
             E::Thread(error) => error.into(),
         }

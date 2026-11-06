@@ -19,6 +19,7 @@ errors! {
     NoMemory = 5, InvalidState = 6, BadAddress = 7, WouldBlock = 8,
     TimedOut = 9, Closed = 10, PeerClosed = 11, EndOfStream = 12,
     BufferTooSmall = 13, ServerGone = 14, Unsupported = 15, Busy = 16,
+    Cancelled = 17,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

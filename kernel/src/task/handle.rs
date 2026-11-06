@@ -10,7 +10,7 @@ use spin::Mutex;
 
 use crate::{
     hardware::cpu::InterruptGuard,
-    ipc::{MESSAGE_HANDLES, Message, ReceivedMessage, Reply, ReplyReference},
+    ipc::{MESSAGE_HANDLES, Message, Reply, ReplyReference},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -311,33 +311,26 @@ impl HandleTable {
         &self,
         handle: Handle,
         reply: &ReplyReference,
-        target: &Self,
         message: Message,
         requests: &[TransferRequest],
     ) -> Result<(), super::TaskError> {
-        self.with_tables(target, |source, mut target| {
-            source.entry(handle)?.require(Rights::WRITE)?;
-            source.validate_transfer::<MESSAGE_HANDLES>(requests)?;
-            for request in requests {
-                if matches!(source.entry(request.handle)?.object, Object::Reply(_)) {
-                    return Err(HandleError::Denied.into());
-                }
+        let mut source = self.state.lock();
+        source.entry(handle)?.require(Rights::WRITE)?;
+        source.validate_transfer::<MESSAGE_HANDLES>(requests)?;
+        for request in requests {
+            if matches!(source.entry(request.handle)?.object, Object::Reply(_)) {
+                return Err(HandleError::Denied.into());
             }
-            reply.complete(|slots| {
-                let mut handles = ArrayVec::new();
-                for (request, destination) in requests.iter().zip(slots) {
-                    let mut entry = source.release(request.handle).unwrap();
-                    entry.rights = request.rights;
-                    target
-                        .as_deref_mut()
-                        .unwrap_or(source)
-                        .publish(*destination, entry);
-                    handles.push(*destination);
-                }
-                ReceivedMessage::new(message, handles, false)
-            })?;
-            Ok(())
-        })
+        }
+        reply.complete(|entries| {
+            for request in requests {
+                let mut entry = source.release(request.handle).unwrap();
+                entry.rights = request.rights;
+                entries.push(entry);
+            }
+            message
+        })?;
+        Ok(())
     }
 
     pub(crate) fn install<const N: usize>(

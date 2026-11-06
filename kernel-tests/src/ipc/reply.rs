@@ -60,6 +60,7 @@ pub fn run() {
         let fixture = Fixture::new();
         reply_under_pressure(&fixture)
     });
+    super::run_thread(deadline_before_server_close);
     FIXTURE.lock().take();
     assert!(REQUESTS.lock().is_empty());
 }
@@ -376,6 +377,20 @@ fn reply_under_pressure(fixture: &Fixture) -> usize {
         .reply(request.handles()[0], message(73), &requests)
         .unwrap();
     drop(exhausted);
+    assert_eq!(caller.wait().unwrap(), 0);
+    FIXTURE.lock().take();
+    0
+}
+
+fn deadline_before_server_close(_: usize) -> usize {
+    let fixture = Fixture::new();
+    let caller = fixture.start(timeout, 100_000_000);
+    let request = fixture.server.receive(fixture.receiver, 8).unwrap();
+    let limit = hardware::timer().now_ns().unwrap() + 200_000_000;
+    while hardware::timer().now_ns().unwrap() < limit {
+        core::hint::spin_loop();
+    }
+    fixture.server.close(request.handles()[0]).unwrap();
     assert_eq!(caller.wait().unwrap(), 0);
     FIXTURE.lock().take();
     0
