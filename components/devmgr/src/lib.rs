@@ -13,6 +13,7 @@ extern crate alloc;
 pub mod block;
 pub mod device;
 pub mod rng;
+pub mod rtc;
 pub mod uart;
 mod virtio;
 

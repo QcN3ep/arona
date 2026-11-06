@@ -186,8 +186,6 @@ fn parse_device(
                         | "syscon"
                         | "syscon-poweroff"
                         | "syscon-reboot"
-                        | "google,goldfish-rtc"
-                        | "loongson,ls7a-rtc"
                 )
             })
         })
@@ -307,6 +305,8 @@ fn dma(walk: &Nodes<'_>) -> Result<DmaCapability> {
         let capability = if matches(node, "ns16550a")?
             || matches(node, "ns16550")?
             || matches(node, "cfi-flash")?
+            || matches(node, "google,goldfish-rtc")?
+            || matches(node, "loongson,ls7a-rtc")?
         {
             DmaCapability::None
         } else {

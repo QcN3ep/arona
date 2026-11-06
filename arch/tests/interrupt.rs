@@ -150,7 +150,7 @@ fn run_program(
 ) {
     if matches!(
         suite,
-        "dma" | "dma-drop" | "dma-revoke" | "block" | "fs" | "rng" | "service"
+        "dma" | "dma-drop" | "dma-revoke" | "block" | "fs" | "rng" | "rtc" | "service"
     ) {
         kernel::logger::init(kernel::log::LevelFilter::Info).unwrap();
         kernel::logger::LOGGER.add_sink(&TestLog).unwrap();
@@ -212,6 +212,11 @@ fn run_program(
             .write(format_args!("RNG driver tests passed\n"))
             .unwrap();
     }
+    if suite == "rtc" {
+        uart()
+            .write(format_args!("RTC driver tests passed\n"))
+            .unwrap();
+    }
     if suite == "service" {
         uart()
             .write(format_args!("Device service tests passed\n"))
@@ -240,6 +245,7 @@ fn select_program() -> &'static str {
                 b"dma" => "dma",
                 b"block" => "block",
                 b"rng" => "rng",
+                b"rtc" => "rtc",
                 b"fs" => "fs",
                 b"dma-drop" => "dma-drop",
                 b"dma-revoke" => "dma-revoke",

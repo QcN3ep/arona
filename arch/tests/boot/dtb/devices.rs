@@ -239,21 +239,22 @@ fn rejects_invalid_device_properties() {
         },
         "page envelope overflow"
     );
+}
 
+#[test]
+fn rtc_resources_are_user_assignable_without_dma() {
     for (blob, identity) in [
         (LOONGARCH_DTB, "loongson,ls7a-rtc"),
         (RISCV_DTB, "google,goldfish-rtc"),
     ] {
         let hardware = parse_hardware(blob);
-        assert_eq!(
-            hardware
-                .devices
-                .iter()
-                .find(|device| device.has_identity("devicetree", identity))
-                .unwrap()
-                .use_policy,
-            DeviceUsePolicy::KernelReserved
-        );
+        let device = hardware
+            .devices
+            .iter()
+            .find(|device| device.has_identity("devicetree", identity))
+            .unwrap();
+        assert_eq!(device.use_policy, DeviceUsePolicy::UserAssignable);
+        assert_eq!(device.dma, DmaCapability::None);
     }
 }
 

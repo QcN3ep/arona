@@ -385,7 +385,8 @@ fn managed_service(task: &Task, user: &Thread, control: Channel) {
     );
     assert_eq!(service_call(&client, control, u64::MAX, &[]).tag, 1);
     discover_rng(&client, control);
-    let (status, unused) = open_uart(&client, control, u32::MAX);
+    exercise_rtc(&client, control);
+    let (status, unused) = open_session(&client, control, u32::MAX);
     assert_eq!(status, 3);
     client.close(unused).unwrap();
 
@@ -408,9 +409,9 @@ fn managed_service(task: &Task, user: &Thread, control: Channel) {
         }) {
             continue;
         }
-        let (status, channel) = open_uart(&client, control, id);
+        let (status, channel) = open_session(&client, control, id);
         assert_eq!(status, 0, "UART {id} did not start");
-        let (status, unused) = open_uart(&client, control, id);
+        let (status, unused) = open_session(&client, control, id);
         assert_eq!(status, 2);
         client.close(unused).unwrap();
         assert_eq!(
@@ -476,7 +477,25 @@ fn discover_rng(client: &Task, control: abi::Handle) {
     assert_eq!(service_call(client, control, 2, &[3, rng]).words(), [0]);
 }
 
-fn open_uart(client: &Task, control: abi::Handle, id: u32) -> (u64, abi::Handle) {
+fn exercise_rtc(client: &Task, control: abi::Handle) {
+    let response = service_call(client, control, 2, &[4, 0]);
+    let [rtc] = *response.words() else {
+        panic!("invalid RTC discovery response")
+    };
+    assert_ne!(rtc, 0, "RTC device was not discovered");
+    assert_eq!(service_call(client, control, 2, &[4, rtc]).words(), [0]);
+    let (status, channel) = open_session(client, control, rtc as u32);
+    assert_eq!(status, 0);
+    let response = service_call(client, channel, 2, &[]);
+    assert_eq!(response.tag, 0);
+    let [seconds, nanoseconds] = *response.words() else {
+        panic!("invalid RTC time response")
+    };
+    assert!(seconds > 0 && nanoseconds < 1_000_000_000);
+    client.close(channel).unwrap();
+}
+
+fn open_session(client: &Task, control: abi::Handle, id: u32) -> (u64, abi::Handle) {
     let (channel, server) = Channel::pair().unwrap();
     let channel = client
         .insert(Object::Channel(channel), Rights::READ_WRITE)
@@ -500,7 +519,7 @@ fn open_uart(client: &Task, control: abi::Handle, id: u32) -> (u64, abi::Handle)
 fn reconnect_uart(client: &Task, control: abi::Handle, id: u32) -> abi::Handle {
     let deadline = service_deadline();
     loop {
-        let (status, channel) = open_uart(client, control, id);
+        let (status, channel) = open_session(client, control, id);
         if status == 0 {
             return channel;
         }
