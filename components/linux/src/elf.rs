@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 静态 ELF64 的布局校验与机器调用约定。
+//! 静态 ELF64 的布局校验与机器标识。
 
 use alloc::vec::Vec;
 use core::ops::Range;
-use runtime::{memory::Permissions, trap::UserState};
+use runtime::memory::Permissions;
 
 use crate::Error;
 
@@ -39,37 +39,6 @@ impl Machine {
             258 => Ok(Self::LoongArch64),
             _ => Err(Error::InvalidExecutable),
         }
-    }
-
-    pub(crate) fn initial(self, entry: usize, stack: usize) -> UserState {
-        let mut state = UserState {
-            pc: entry,
-            ..UserState::default()
-        };
-        state.registers[match self {
-            Self::Riscv64 => 2,
-            Self::LoongArch64 => 3,
-        }] = stack;
-        state
-    }
-
-    pub(crate) fn syscall(self, state: &UserState) -> (usize, [usize; 6]) {
-        let (number, first) = match self {
-            Self::Riscv64 => (17, 10),
-            Self::LoongArch64 => (11, 4),
-        };
-        (
-            state.registers[number],
-            state.registers[first..first + 6].try_into().unwrap(),
-        )
-    }
-
-    pub(crate) fn complete(self, state: &mut UserState, successor: usize, result: isize) {
-        state.pc = successor;
-        state.registers[match self {
-            Self::Riscv64 => 10,
-            Self::LoongArch64 => 4,
-        }] = result as usize;
     }
 }
 

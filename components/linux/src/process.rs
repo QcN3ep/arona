@@ -13,13 +13,13 @@ use crate::{
     elf::{Image, Machine},
     memory::AddressSpace,
     protocol::Arguments,
-    syscall::{self, PendingWrite},
+    syscall::{self, Pending},
 };
 
 pub(crate) struct Thread {
     pub native: Handle<runtime::Thread>,
     pub native_id: u64,
-    pub pending: Option<PendingWrite>,
+    pub pending: Option<Pending>,
 }
 
 pub(crate) struct OpenFileDescription {
@@ -119,7 +119,7 @@ impl Process {
                 progress = true;
                 continue;
             }
-            progress |= syscall::poll(self.machine, &mut self.threads[index])?;
+            progress |= syscall::poll(&mut self.threads[index])?;
             index += 1;
         }
         Ok(progress)
@@ -129,7 +129,7 @@ impl Process {
         for thread in &self.threads {
             items.push(WaitItem::new(&thread.native, EXITED));
             if let Some(pending) = &thread.pending {
-                items.push(WaitItem::new(pending.request.call(), READABLE));
+                items.push(WaitItem::new(pending.call(), READABLE));
             }
         }
     }
