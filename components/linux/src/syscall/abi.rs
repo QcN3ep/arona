@@ -9,14 +9,21 @@ pub(super) const WRITE: usize = 64;
 pub(super) const EXIT: usize = 93;
 pub(super) const EXIT_GROUP: usize = 94;
 pub(super) const BRK: usize = 214;
+pub(super) const MUNMAP: usize = 215;
+pub(super) const MMAP: usize = 222;
+pub(super) const MPROTECT: usize = 226;
 
 pub(super) struct Errno(isize);
 
 pub(super) const EIO: Errno = Errno(5);
 pub(super) const EBADF: Errno = Errno(9);
+pub(super) const ENOMEM: Errno = Errno(12);
+pub(super) const EACCES: Errno = Errno(13);
 pub(super) const EFAULT: Errno = Errno(14);
+pub(super) const EEXIST: Errno = Errno(17);
 pub(super) const EINVAL: Errno = Errno(22);
 pub(super) const ENOSYS: Errno = Errno(38);
+pub(super) const EOPNOTSUPP: Errno = Errno(95);
 
 pub(super) type SyscallResult = Result<usize, Errno>;
 

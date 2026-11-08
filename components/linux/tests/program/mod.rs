@@ -142,7 +142,16 @@ fn execution(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
             signal: 0
         }
     );
-    for mode in [b"shrunk".as_slice(), b"xheap"] {
+    for mode in [
+        b"shrunk".as_slice(),
+        b"xheap",
+        b"0-none-read",
+        b"1-unmapped",
+        b"2-readonly",
+        b"3-nonexec",
+        b"4-none-write",
+        b"5-none-execute",
+    ] {
         assert_eq!(
             start(mode).wait(until()).unwrap(),
             ExitStatus {

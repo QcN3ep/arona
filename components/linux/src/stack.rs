@@ -87,7 +87,7 @@ pub(crate) fn build(
     let count = (length / PAGE_SIZE) as u64;
     let mut frames = task
         .task()
-        .allocate(count, Rights::READ_WRITE | Rights::MAP)?;
+        .allocate(count, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
     frames.write(stack, &bytes[stack..])?;
     task.map(&frames, 0, count, Some(base), Permissions::ReadWrite)?;
     Ok(base + stack)

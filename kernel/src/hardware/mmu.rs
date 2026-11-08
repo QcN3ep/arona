@@ -31,6 +31,7 @@ pub enum MmuError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PagePermissions {
+    NoAccess,
     ReadOnly,
     ReadWrite,
     ReadExecute,

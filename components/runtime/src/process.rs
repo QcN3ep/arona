@@ -86,6 +86,18 @@ impl SupervisedTask {
         Ok(())
     }
 
+    pub fn protect(&self, range: Range<usize>, permissions: Permissions) -> Result<(), Error> {
+        let length = range
+            .end
+            .checked_sub(range.start)
+            .ok_or(Error::Kernel(abi::Error::InvalidArgument))?;
+        self.task.borrow().invoke(
+            abi::method::task::PROTECT,
+            [range.start as u64, length as u64, permissions as u64, 0, 0],
+        )?;
+        Ok(())
+    }
+
     pub fn create_thread(
         &self,
         entry: UserEntry,

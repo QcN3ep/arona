@@ -714,6 +714,12 @@ impl Task {
         Ok(registry.find(self)?.space.query(address)?)
     }
 
+    pub fn query_next(&self, address: usize) -> Result<Option<MappingInfo>, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        let registry = TASKS.lock();
+        Ok(registry.find(self)?.space.query_next(address)?)
+    }
+
     pub fn terminate(&self, status: usize) {
         let _interrupts = InterruptGuard::new();
         TASKS

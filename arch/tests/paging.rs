@@ -173,6 +173,7 @@ fn run_entries(mmu: &dyn Mmu, tables: &Tables, data: u64) {
         PageTableEntry::Empty
     );
     for permissions in [
+        PagePermissions::NoAccess,
         PagePermissions::ReadOnly,
         PagePermissions::ReadWrite,
         PagePermissions::ReadExecute,

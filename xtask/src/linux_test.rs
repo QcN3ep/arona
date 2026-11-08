@@ -126,11 +126,21 @@ fn build_guest(
         .arg("-o")
         .arg(&object);
     execute(assemble)?;
+    let memory = directory.join("memory.o");
+    let mut assemble = Command::new("clang");
+    assemble
+        .arg(format!("--target={triple}"))
+        .args(["-c", "-x", "assembler"])
+        .arg(root.join(format!("components/linux/tests/memory/{isa}.S")))
+        .arg("-o")
+        .arg(&memory);
+    execute(assemble)?;
     for (name, address) in [("linux-test", "0x400000"), ("linux-compact", "0x11000")] {
         let mut link = Command::new("ld.lld");
         link.args(["-static", "--entry=_start", "-z", "max-page-size=4096"])
             .arg(format!("-Ttext={address}"))
             .arg(&object)
+            .arg(&memory)
             .arg("-o")
             .arg(directory.join(name));
         execute(link)?;

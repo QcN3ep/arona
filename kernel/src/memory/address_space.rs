@@ -605,18 +605,31 @@ impl AddressSpace {
     }
 
     pub fn query(&self, address: usize) -> Result<Option<MappingInfo>, MemoryError> {
+        self.query_inner(address, false)
+    }
+
+    pub fn query_next(&self, address: usize) -> Result<Option<MappingInfo>, MemoryError> {
+        self.query_inner(address, true)
+    }
+
+    fn query_inner(&self, address: usize, next: bool) -> Result<Option<MappingInfo>, MemoryError> {
         if address < self.bounds.start || address >= self.bounds.end {
             return Err(MemoryError::InvalidRequest);
         }
         super::paging::validate_address(address, false)?;
         let state = self.state.lock();
-        let Some(record) = state.mappings.get(address) else {
+        let record = if next {
+            state.mappings.next(address)
+        } else {
+            state.mappings.get(address)
+        };
+        let Some(record) = record else {
             return Ok(None);
         };
         let mapping = if matches!(record.kind, MappingKind::Reserved | MappingKind::Guard) {
             None
         } else {
-            self.table.query(address)?
+            self.table.query(address.max(record.range.start))?
         };
         Ok(Some(MappingInfo {
             range: record.range,
@@ -654,7 +667,11 @@ impl AddressSpace {
                 if !mapping.attributes.user_accessible
                     || mapping.attributes.memory_type != MemoryType::Normal
                     || (write && permissions != PagePermissions::ReadWrite)
-                    || (!write && permissions == PagePermissions::ExecuteOnly)
+                    || (!write
+                        && matches!(
+                            permissions,
+                            PagePermissions::NoAccess | PagePermissions::ExecuteOnly
+                        ))
                 {
                     return Err(MemoryError::AccessConflict);
                 }

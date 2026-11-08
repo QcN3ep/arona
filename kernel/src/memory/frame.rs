@@ -71,7 +71,7 @@ pub enum FrameAccess {
 impl From<PagePermissions> for FrameAccess {
     fn from(permissions: PagePermissions) -> Self {
         match permissions {
-            PagePermissions::ReadOnly => Self::Read,
+            PagePermissions::NoAccess | PagePermissions::ReadOnly => Self::Read,
             PagePermissions::ReadWrite => Self::Write,
             PagePermissions::ReadExecute | PagePermissions::ExecuteOnly => Self::Execute,
         }

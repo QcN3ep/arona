@@ -83,11 +83,14 @@ auxv_done:
     beq s3, t1, illegal
     li t1, 103
     beq s3, t1, group
+    li t1, 54
+    bltu s3, t1, memory_fault
     jal ra, heap
     li t1, 115
     beq s3, t1, shrunk
     li t1, 120
     beq s3, t1, execute_heap
+    jal ra, mappings
     li a7, -1
     ecall
     li t0, -38

@@ -106,9 +106,16 @@ impl Handle<Task> {
         })
     }
     pub fn query(&self, address: usize) -> Result<Option<MappingInfo>, Error> {
-        let [start, end] = self
-            .borrow()
-            .invoke(task::QUERY, [address as u64, 0, 0, 0, 0])?;
+        self.query_mapping(address, task::QUERY)
+    }
+
+    /// 查询覆盖 address 的区域或其后的第一个区域。
+    pub fn query_next(&self, address: usize) -> Result<Option<MappingInfo>, Error> {
+        self.query_mapping(address, task::QUERY_NEXT)
+    }
+
+    fn query_mapping(&self, address: usize, method: u64) -> Result<Option<MappingInfo>, Error> {
+        let [start, end] = self.borrow().invoke(method, [address as u64, 0, 0, 0, 0])?;
         if end == 0 {
             return Ok(None);
         }

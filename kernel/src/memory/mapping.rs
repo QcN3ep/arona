@@ -64,6 +64,7 @@ impl BitOr for MappingRights {
 impl From<PagePermissions> for MappingRights {
     fn from(permissions: PagePermissions) -> Self {
         Self(match permissions {
+            PagePermissions::NoAccess => 0,
             PagePermissions::ReadOnly => 1,
             PagePermissions::ReadWrite => 3,
             PagePermissions::ReadExecute => 5,
@@ -179,6 +180,23 @@ impl MappingIndex {
     pub fn get(&self, address: usize) -> Option<MappingRecord> {
         self.find(address)
             .map(|node| MappingNode::read(node).record)
+    }
+
+    pub fn next(&self, address: usize) -> Option<MappingRecord> {
+        let mut current = self.root;
+        let mut candidate = None;
+        while current != NIL {
+            let node = MappingNode::read(current);
+            if address < node.record.range.start {
+                candidate = Some(node.record);
+                current = node.left;
+            } else if address >= node.record.range.end {
+                current = node.right;
+            } else {
+                return Some(node.record);
+            }
+        }
+        candidate
     }
 
     fn find(&self, address: usize) -> Option<u64> {
@@ -529,10 +547,11 @@ impl MappingNode {
         let mapping = (words[10] & 64 != 0).then(|| PageMapping {
             physical_address: words[8],
             attributes: PageAttributes {
-                permissions: match words[9] & 3 {
+                permissions: match words[9] & 19 {
                     0 => PagePermissions::ReadOnly,
                     1 => PagePermissions::ReadWrite,
                     2 => PagePermissions::ReadExecute,
+                    16 => PagePermissions::NoAccess,
                     _ => PagePermissions::ExecuteOnly,
                 },
                 memory_type: if words[9] & 4 != 0 {
@@ -595,6 +614,7 @@ impl MappingNode {
             (
                 mapping.physical_address,
                 match attributes.permissions {
+                    PagePermissions::NoAccess => 16,
                     PagePermissions::ReadOnly => 0,
                     PagePermissions::ReadWrite => 1,
                     PagePermissions::ReadExecute => 2,

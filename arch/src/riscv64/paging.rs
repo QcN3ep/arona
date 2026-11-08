@@ -22,6 +22,8 @@ const EXECUTE: u64 = 1 << 3;
 const USER: u64 = 1 << 4;
 const ACCESSED: u64 = 1 << 6;
 const DIRTY: u64 = 1 << 7;
+// 用 RSW 标记保留后备页框的无效叶子项。
+const NO_ACCESS: u64 = 1 << 8;
 const PPN: u64 = ((1 << 44) - 1) << 10;
 
 fn invalidate_address(address: usize) {
@@ -53,6 +55,7 @@ impl Format for Sv39 {
     fn encode_mapping(&self, mapping: PageMapping) -> Result<u64, MmuError> {
         let attributes = mapping.attributes;
         let permissions = match attributes.permissions {
+            PagePermissions::NoAccess => NO_ACCESS,
             PagePermissions::ReadOnly => READ,
             PagePermissions::ReadWrite => READ | WRITE | DIRTY,
             PagePermissions::ReadExecute => READ | EXECUTE,
@@ -66,19 +69,25 @@ impl Format for Sv39 {
             });
         }
         Ok((mapping.physical_address >> 2)
-            | VALID
-            | ACCESSED
+            | if attributes.permissions == PagePermissions::NoAccess {
+                0
+            } else {
+                VALID | ACCESSED
+            }
             | permissions
             | if attributes.user_accessible { USER } else { 0 })
     }
 
     fn decode_mapping(&self, entry: u64) -> Result<PageMapping, MmuError> {
-        if entry & VALID == 0
-            || entry & !(PPN | VALID | READ | WRITE | EXECUTE | USER | ACCESSED | DIRTY) != 0
+        let no_access = entry & !(PPN | USER) == NO_ACCESS;
+        if !no_access
+            && (entry & VALID == 0
+                || entry & !(PPN | VALID | READ | WRITE | EXECUTE | USER | ACCESSED | DIRTY) != 0)
         {
             return Err(MmuError::InvalidTable);
         }
-        let permissions = match entry & (READ | WRITE | EXECUTE) {
+        let permissions = match entry & (READ | WRITE | EXECUTE | NO_ACCESS) {
+            NO_ACCESS => PagePermissions::NoAccess,
             READ => PagePermissions::ReadOnly,
             flags if flags == READ | WRITE => PagePermissions::ReadWrite,
             flags if flags == READ | EXECUTE => PagePermissions::ReadExecute,

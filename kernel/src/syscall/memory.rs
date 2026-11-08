@@ -12,6 +12,7 @@ use abi::{
 
 pub(super) fn permissions(raw: u64) -> Result<PagePermissions, Error> {
     match abi::memory::Permissions::from_raw(raw).ok_or(Error::InvalidArgument)? {
+        abi::memory::Permissions::NoAccess => Ok(PagePermissions::NoAccess),
         abi::memory::Permissions::ReadOnly => Ok(PagePermissions::ReadOnly),
         abi::memory::Permissions::ReadWrite => Ok(PagePermissions::ReadWrite),
         abi::memory::Permissions::ReadExecute => Ok(PagePermissions::ReadExecute),
@@ -60,13 +61,19 @@ pub(super) fn task(
             target.unreserve(range(args[0], args[1])?)?;
             Ok([0; 2])
         }
-        task::QUERY => {
-            let Some(info) = target.query(args[0] as usize)? else {
+        task::QUERY | task::QUERY_NEXT => {
+            let info = if method == task::QUERY_NEXT {
+                target.query_next(args[0] as usize)?
+            } else {
+                target.query(args[0] as usize)?
+            };
+            let Some(info) = info else {
                 return Ok([0; 2]);
             };
             let permission =
                 info.mapping
                     .map_or(0, |mapping| match mapping.attributes.permissions {
+                        PagePermissions::NoAccess => 8,
                         PagePermissions::ReadOnly => 1,
                         PagePermissions::ReadWrite => 3,
                         PagePermissions::ExecuteOnly => 4,
@@ -136,6 +143,7 @@ fn map(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> 
         }
     }
     match permissions {
+        PagePermissions::NoAccess => {}
         PagePermissions::ReadOnly => required = required | Rights::READ,
         PagePermissions::ReadWrite => required = required | Rights::READ | Rights::WRITE,
         PagePermissions::ReadExecute => required = required | Rights::READ | Rights::EXECUTE,

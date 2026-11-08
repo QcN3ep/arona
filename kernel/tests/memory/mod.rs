@@ -224,10 +224,11 @@ impl Mmu for PhysicalMmu {
         Ok(PageTableEntry::Mapping(PageMapping {
             physical_address: frame.address(),
             attributes: PageAttributes {
-                permissions: match (word >> 1) & 3 {
+                permissions: match (word >> 1) & 7 {
                     0 => PagePermissions::ReadOnly,
                     1 => PagePermissions::ReadWrite,
                     2 => PagePermissions::ReadExecute,
+                    4 => PagePermissions::NoAccess,
                     _ => PagePermissions::ExecuteOnly,
                 },
                 memory_type: kernel::hardware::mmu::MemoryType::Normal,
@@ -262,6 +263,7 @@ impl Mmu for PhysicalMmu {
             PageTableEntry::Mapping(mapping) if level == 0 => {
                 self.validate(mapping.physical_address, 0, 1)?;
                 let permissions = match mapping.attributes.permissions {
+                    PagePermissions::NoAccess => 4,
                     PagePermissions::ReadOnly => 0,
                     PagePermissions::ReadWrite => 1,
                     PagePermissions::ReadExecute => 2,

@@ -65,6 +65,7 @@ impl Format for LoongArchMmu {
     fn encode_mapping(&self, mapping: PageMapping) -> Result<u64, MmuError> {
         let attributes = mapping.attributes;
         let permissions = match attributes.permissions {
+            PagePermissions::NoAccess => NO_READ | NO_EXECUTE,
             PagePermissions::ReadOnly => NO_EXECUTE,
             PagePermissions::ReadWrite => DIRTY | NO_EXECUTE,
             PagePermissions::ReadExecute => 0,
@@ -91,6 +92,7 @@ impl Format for LoongArchMmu {
             return Err(MmuError::InvalidTable);
         }
         let permissions = match entry & (DIRTY | NO_READ | NO_EXECUTE) {
+            flags if flags == NO_READ | NO_EXECUTE => PagePermissions::NoAccess,
             NO_EXECUTE => PagePermissions::ReadOnly,
             flags if flags == DIRTY | NO_EXECUTE => PagePermissions::ReadWrite,
             0 => PagePermissions::ReadExecute,

@@ -4,6 +4,7 @@
 
 mod abi;
 mod file;
+mod memory;
 mod process;
 
 use runtime::{
@@ -52,6 +53,18 @@ pub(crate) fn dispatch(process: &mut Process, index: usize, trap: Trap) -> Resul
         abi::EXIT => process::exit(process, index, arguments[0])?,
         abi::EXIT_GROUP => process::exit_group(process, arguments[0])?,
         abi::BRK => Outcome::Complete(Ok(process.address_space.brk(arguments[0])?)),
+        abi::MMAP => Outcome::Complete(memory::mmap(&process.address_space, arguments)),
+        abi::MUNMAP => Outcome::Complete(memory::munmap(
+            &process.address_space,
+            arguments[0],
+            arguments[1],
+        )),
+        abi::MPROTECT => Outcome::Complete(memory::mprotect(
+            &process.address_space,
+            arguments[0],
+            arguments[1],
+            arguments[2],
+        )),
         _ => Outcome::Complete(Err(ENOSYS)),
     };
     match outcome {

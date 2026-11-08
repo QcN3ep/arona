@@ -82,11 +82,14 @@ auxv_done:
     beq $s3, $t1, illegal
     li.d $t1, 103
     beq $s3, $t1, group
+    li.d $t1, 54
+    bltu $s3, $t1, memory_fault
     bl heap
     li.d $t1, 115
     beq $s3, $t1, shrunk
     li.d $t1, 120
     beq $s3, $t1, execute_heap
+    bl mappings
     li.d $a7, -1
     syscall 0
     li.d $t0, -38

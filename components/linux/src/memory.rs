@@ -49,6 +49,74 @@ impl AddressSpace {
         self.native.task().read_memory(address, output)
     }
 
+    pub fn map_anonymous(
+        &self,
+        address: Option<usize>,
+        length: usize,
+        permissions: Permissions,
+        exact: bool,
+    ) -> Result<usize, runtime::Error> {
+        let reservation = self.native.task().reserve(length, PAGE_SIZE, address);
+        let mut reservation = match reservation {
+            Err(runtime::Error::Kernel(
+                runtime::KernelError::Busy | runtime::KernelError::InvalidArgument,
+            )) if !exact && address.is_some() => {
+                self.native.task().reserve(length, PAGE_SIZE, None)?
+            }
+            result => result?,
+        };
+        let range = reservation.range().ok_or(runtime::Error::Protocol)?;
+        reservation.release()?;
+        self.map_zeroed(range.clone(), permissions)?;
+        Ok(range.start)
+    }
+
+    pub fn unmap(&self, range: Range<usize>) -> Result<(), runtime::Error> {
+        let bounds = self.native.task().address_range()?;
+        if range.end > bounds.end {
+            return Err(runtime::Error::Kernel(
+                runtime::KernelError::InvalidArgument,
+            ));
+        }
+        let range = range.start.max(bounds.start)..range.end.min(bounds.end);
+        let mut cursor = range.start;
+        while cursor < range.end {
+            let Some(info) = self.native.task().query_next(cursor)? else {
+                break;
+            };
+            if info.range.start >= range.end {
+                break;
+            }
+            if info.permissions.is_none() {
+                return Err(runtime::Error::Kernel(runtime::KernelError::Busy));
+            }
+            cursor = info.range.end;
+        }
+        cursor = range.start;
+        while cursor < range.end {
+            let Some(info) = self.native.task().query_next(cursor)? else {
+                break;
+            };
+            if info.range.start >= range.end {
+                break;
+            }
+            let start = cursor.max(info.range.start);
+            let mut end = info.range.end.min(range.end);
+            while end < range.end {
+                let Some(next) = self.native.task().query_next(end)? else {
+                    break;
+                };
+                if next.range.start != end {
+                    break;
+                }
+                end = next.range.end.min(range.end);
+            }
+            self.native.unmap(start..end)?;
+            cursor = end;
+        }
+        Ok(())
+    }
+
     // REFERENCE: https://man7.org/linux/man-pages/man2/brk.2.html
     pub fn brk(&mut self, address: usize) -> Result<usize, runtime::Error> {
         if address < self.heap.start {
@@ -59,7 +127,7 @@ impl AddressSpace {
         };
         let previous = self.heap.end.next_multiple_of(PAGE_SIZE);
         let changed = match end.cmp(&previous) {
-            core::cmp::Ordering::Less => self.native.unmap(end..previous).is_ok(),
+            core::cmp::Ordering::Less => self.unmap(end..previous).is_ok(),
             core::cmp::Ordering::Equal => true,
             core::cmp::Ordering::Greater => self.grow_heap(previous..end)?,
         };
@@ -78,23 +146,36 @@ impl AddressSpace {
             return Ok(false);
         };
         reservation.release()?;
-        // 独立分配页框，使收缩能逐页回收。
+        match self.map_zeroed(range, Permissions::ReadWrite) {
+            Ok(()) => Ok(true),
+            Err(runtime::Error::Kernel(
+                runtime::KernelError::NoMemory
+                | runtime::KernelError::Busy
+                | runtime::KernelError::InvalidArgument,
+            )) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn map_zeroed(
+        &self,
+        range: Range<usize>,
+        permissions: Permissions,
+    ) -> Result<(), runtime::Error> {
+        // 独立分配页框，使部分解除映射能逐页回收。
         for address in range.clone().step_by(PAGE_SIZE) {
             let result = self
                 .native
                 .task()
-                .allocate(1, Rights::READ_WRITE | Rights::MAP)
-                .and_then(|frames| {
-                    self.native
-                        .map(&frames, 0, 1, Some(address), Permissions::ReadWrite)
-                });
-            if result.is_err() {
+                .allocate(1, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)
+                .and_then(|frames| self.native.map(&frames, 0, 1, Some(address), permissions));
+            if let Err(error) = result {
                 if address != range.start {
                     self.native.unmap(range.start..address)?;
                 }
-                return Ok(false);
+                return Err(error);
             }
         }
-        Ok(true)
+        Ok(())
     }
 }
