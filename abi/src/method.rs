@@ -34,6 +34,7 @@ methods!(task {
     WRITE_MEMORY = 33 => WRITE_MEMORY;
     TRAP_PORT = 34 => SET_TRAP;
     SET_TRAP = 35 => SET_TRAP;
+    ADDRESS_RANGE = 36 => MAP_MEMORY;
 });
 methods!(memory {
     SIZE = 16 => NONE;

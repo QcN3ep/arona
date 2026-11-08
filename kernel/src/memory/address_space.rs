@@ -600,6 +600,10 @@ impl AddressSpace {
         result
     }
 
+    pub(crate) fn bounds(&self) -> VirtRange {
+        self.bounds
+    }
+
     pub fn query(&self, address: usize) -> Result<Option<MappingInfo>, MemoryError> {
         if address < self.bounds.start || address >= self.bounds.end {
             return Err(MemoryError::InvalidRequest);

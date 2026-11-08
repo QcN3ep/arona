@@ -4,21 +4,17 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use runtime::{
     Handle, Rights, Task, TrapPort,
     ipc::{EXITED, READABLE, WaitItem},
-    process::SupervisedTask,
     thread::{ThreadState, UserEntry},
     trap::{Trap, TrapInfo},
 };
 
 use crate::{
     Error, ExitStatus,
-    elf::{Image, Machine, PAGE_SIZE},
+    elf::{Image, Machine},
+    memory::AddressSpace,
     protocol::Arguments,
     syscall::{self, PendingWrite},
 };
-
-pub(crate) struct AddressSpace {
-    native: SupervisedTask,
-}
 
 pub(crate) struct Thread {
     pub native: Handle<runtime::Thread>,
@@ -140,35 +136,5 @@ impl Process {
 
     pub fn status(&self) -> ExitStatus {
         self.status
-    }
-}
-
-impl AddressSpace {
-    fn load(
-        parent: &Handle<Task>,
-        port: &Handle<TrapPort>,
-        image: &Image<'_>,
-        arguments: &Arguments,
-    ) -> Result<(Self, usize), Error> {
-        let address_space = Self {
-            native: SupervisedTask::new(parent, port)?,
-        };
-        for segment in &image.segments {
-            let range = segment.pages();
-            let count = (range.len() / PAGE_SIZE) as u64;
-            let mut frames =
-                parent.allocate(count, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
-            frames.write(segment.memory.start - range.start, segment.data)?;
-            address_space
-                .native
-                .map(&frames, 0, count, Some(range.start), segment.permissions)?;
-        }
-        let stack = crate::stack::build(&address_space.native, image, arguments)?;
-
-        Ok((address_space, stack))
-    }
-
-    pub fn read(&self, address: usize, output: &mut [u8]) -> Result<(), runtime::Error> {
-        self.native.task().read_memory(address, output)
     }
 }

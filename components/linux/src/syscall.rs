@@ -41,6 +41,10 @@ pub(crate) fn dispatch(process: &mut Process, index: usize, trap: Trap) -> Resul
             }
             Ok(())
         }
+        214 => {
+            let address = process.address_space.brk(arguments[0])?;
+            complete(process.machine, trap, state, address as isize)
+        }
         _ => complete(process.machine, trap, state, ENOSYS),
     }
 }

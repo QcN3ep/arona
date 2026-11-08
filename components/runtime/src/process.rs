@@ -74,6 +74,18 @@ impl SupervisedTask {
         self.task.reserve(length, alignment, address)?.into_range()
     }
 
+    pub fn unmap(&self, range: Range<usize>) -> Result<(), Error> {
+        let length = range
+            .end
+            .checked_sub(range.start)
+            .ok_or(Error::Kernel(abi::Error::InvalidArgument))?;
+        self.task.borrow().invoke(
+            abi::method::task::UNMAP,
+            [range.start as u64, length as u64, 0, 0, 0],
+        )?;
+        Ok(())
+    }
+
     pub fn create_thread(
         &self,
         entry: UserEntry,

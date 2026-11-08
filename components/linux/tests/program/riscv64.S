@@ -83,6 +83,11 @@ auxv_done:
     beq s3, t1, illegal
     li t1, 103
     beq s3, t1, group
+    jal ra, heap
+    li t1, 115
+    beq s3, t1, shrunk
+    li t1, 120
+    beq s3, t1, execute_heap
     li a7, -1
     ecall
     li t0, -38
@@ -161,6 +166,112 @@ group:
     li a7, 94
     ecall
     j failure
+shrunk:
+    li t0, 4096
+    add t0, s4, t0
+    lbu t0, 0(t0)
+    j failure
+execute_heap:
+    jr s4
+
+heap:
+    li a0, 0
+    li a7, 214
+    ecall
+    mv s4, a0
+    la t0, zeroed_end
+    li t1, 4095
+    add t0, t0, t1
+    li t1, -4096
+    and t0, t0, t1
+    bne s4, t0, failure
+    addi a0, s4, -1
+    ecall
+    bne a0, s4, failure
+    li a0, -1
+    ecall
+    bne a0, s4, failure
+    addi s5, s4, 1
+    mv a0, s5
+    ecall
+    bne a0, s5, failure
+    lbu t0, 0(s4)
+    bnez t0, failure
+    li t0, 90
+    sb t0, 0(s4)
+    li t0, 107
+    sb t0, 128(s4)
+    addi s5, s4, 129
+    mv a0, s5
+    ecall
+    bne a0, s5, failure
+    lbu t0, 128(s4)
+    li t1, 107
+    bne t0, t1, failure
+    li s5, 8193
+    add s5, s4, s5
+    mv a0, s5
+    ecall
+    bne a0, s5, failure
+    li t0, 4096
+    add t0, s4, t0
+    li t1, 12288
+    add t1, s4, t1
+heap_new_zero:
+    lbu t2, 0(t0)
+    bnez t2, failure
+    addi t0, t0, 1
+    bne t0, t1, heap_new_zero
+    li a0, 0x7ffffffffffff000
+    ecall
+    bne a0, s5, failure
+    li a0, 0
+    ecall
+    bne a0, s5, failure
+    lbu t0, 0(s4)
+    li t1, 90
+    bne t0, t1, failure
+    li t0, 4096
+    add s6, s4, t0
+    li t1, 60
+    sb t1, 0(s6)
+    add s7, s6, t0
+    li t1, 125
+    sb t1, 0(s7)
+    addi a0, s6, 1
+    ecall
+    addi t0, s6, 1
+    bne a0, t0, failure
+    mv a0, s5
+    ecall
+    bne a0, s5, failure
+    lbu t0, 0(s7)
+    bnez t0, failure
+    lbu t0, 0(s6)
+    li t1, 60
+    bne t0, t1, failure
+    mv a0, s4
+    ecall
+    bne a0, s4, failure
+    li a0, 0
+    ecall
+    bne a0, s4, failure
+    mv a0, s5
+    ecall
+    bne a0, s5, failure
+    mv t0, s4
+    li t1, 12288
+    add t1, s4, t1
+heap_reused_zero:
+    lbu t2, 0(t0)
+    bnez t2, failure
+    addi t0, t0, 1
+    bne t0, t1, heap_reused_zero
+    addi a0, s4, 1
+    ecall
+    addi t0, s4, 1
+    bne a0, t0, failure
+    ret
 
 .section .rodata
 message:
@@ -174,6 +285,7 @@ message_end:
 .section .bss
 .balign 4096
 zeroed:
-    .zero 4096
+    .zero 4097
+zeroed_end:
 
 .section .note.GNU-stack,"",@progbits

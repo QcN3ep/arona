@@ -33,6 +33,10 @@ pub(super) fn task(
     args: [u64; 5],
 ) -> Result<[u64; 2], Error> {
     match method {
+        task::ADDRESS_RANGE => {
+            let bounds = target.address_space()?.bounds();
+            Ok([bounds.start as u64, bounds.end as u64])
+        }
         task::ALLOCATE => allocate(caller, target, args),
         task::READ_MEMORY | task::WRITE_MEMORY => copy_task_memory(caller, target, method, args),
         task::MAP => map(caller, target, args),

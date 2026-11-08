@@ -141,6 +141,13 @@ fn remote_memory() {
         .map(&frames, 0, 3, None, Permissions::ReadWrite)
         .unwrap();
     let range = mapping.range().unwrap();
+    let bounds = task.address_range().unwrap();
+    assert!(bounds.start <= range.start && bounds.end >= range.end);
+    assert!(task.query(bounds.end - 1).unwrap().is_none());
+    assert_eq!(
+        task.query(bounds.end),
+        Err(Error::Kernel(abi::Error::InvalidArgument))
+    );
     let expected: alloc::vec::Vec<u8> = (0..PAGE_SIZE + 17)
         .map(|index| (index % 251) as u8)
         .collect();
@@ -153,6 +160,10 @@ fn remote_memory() {
     frames.read(PAGE_SIZE - 1, &mut actual).unwrap();
     assert_eq!(actual, expected);
     let restricted = task.try_clone(Rights::NONE).unwrap();
+    assert_eq!(
+        restricted.address_range(),
+        Err(Error::Kernel(abi::Error::Denied))
+    );
     assert_eq!(
         restricted.read_memory(range.start, &mut actual),
         Err(Error::Kernel(abi::Error::Denied))

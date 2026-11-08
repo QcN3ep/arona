@@ -17,7 +17,7 @@ pub(crate) fn build(
     image: &Image<'_>,
     arguments: &Arguments,
 ) -> Result<usize, Error> {
-    let phdr = load_headers(task, image)?;
+    let (phdr, top) = load_headers(task, image)?;
     let auxv = [
         (3, phdr),
         (4, 56),
@@ -50,11 +50,9 @@ pub(crate) fn build(
         .and_then(|size| size.checked_add(15))
         .and_then(|size| size.checked_next_multiple_of(PAGE_SIZE))
         .ok_or(Error::InvalidRequest)?;
-    let mut reservation = task.task().reserve(
-        length.checked_add(PAGE_SIZE).ok_or(Error::InvalidRequest)?,
-        PAGE_SIZE,
-        None,
-    )?;
+    let reserved = length.checked_add(PAGE_SIZE).ok_or(Error::InvalidRequest)?;
+    let start = top.checked_sub(reserved).ok_or(Error::InvalidRequest)?;
+    let mut reservation = task.task().reserve(reserved, PAGE_SIZE, Some(start))?;
     let range = reservation.range().ok_or(runtime::Error::Protocol)?;
     reservation.release()?;
     task.reserve(PAGE_SIZE, PAGE_SIZE, Some(range.start))?;
@@ -95,16 +93,20 @@ pub(crate) fn build(
     Ok(base + stack)
 }
 
-fn load_headers(task: &SupervisedTask, image: &Image<'_>) -> Result<usize, Error> {
+fn load_headers(task: &SupervisedTask, image: &Image<'_>) -> Result<(usize, usize), Error> {
+    let top = task.task().address_range()?.end;
     Ok(if let Some(address) = image.phdr {
-        address
+        (address, top)
     } else {
         let count = image.headers.len().div_ceil(PAGE_SIZE) as u64;
+        let address = top
+            .checked_sub(count as usize * PAGE_SIZE)
+            .ok_or(Error::InvalidRequest)?;
         let mut frames = task
             .task()
             .allocate(count, Rights::READ_WRITE | Rights::MAP)?;
         frames.write(0, image.headers)?;
-        task.map(&frames, 0, count, None, Permissions::ReadOnly)?
-            .start
+        task.map(&frames, 0, count, Some(address), Permissions::ReadOnly)?;
+        (address, address)
     })
 }

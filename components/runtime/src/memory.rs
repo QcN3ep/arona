@@ -20,6 +20,11 @@ pub struct MappingInfo {
 }
 
 impl Handle<Task> {
+    pub fn address_range(&self) -> Result<Range<usize>, Error> {
+        let [start, end] = self.borrow().invoke(task::ADDRESS_RANGE, [0; 5])?;
+        decode_range(start, end.checked_sub(start).ok_or(Error::Protocol)?)
+    }
+
     pub fn read_memory(&self, address: usize, output: &mut [u8]) -> Result<(), Error> {
         self.borrow().invoke(
             task::READ_MEMORY,

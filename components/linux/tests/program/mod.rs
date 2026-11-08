@@ -54,6 +54,7 @@ fn main() {
         .unwrap()
     };
     execution(&linux, &output);
+    layouts(&linux, &output);
     malformed(&linux, &output);
     let output = output();
     output.write_all(b"Linux program tests passed\n").unwrap();
@@ -141,6 +142,40 @@ fn execution(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
             signal: 0
         }
     );
+    for mode in [b"shrunk".as_slice(), b"xheap"] {
+        assert_eq!(
+            start(mode).wait(until()).unwrap(),
+            ExitStatus {
+                code: 0,
+                signal: 11
+            }
+        );
+    }
+}
+
+fn layouts(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
+    for path in [
+        b"/bin/linux-compact".as_slice(),
+        b"/bin/linux-separate-headers",
+    ] {
+        assert_eq!(
+            linux
+                .run(
+                    Program {
+                        path,
+                        arguments: &[path, b"normal"],
+                        environment: &[b"ARONA_TEST=yes"],
+                    },
+                    output(),
+                    until()
+                )
+                .unwrap(),
+            ExitStatus {
+                code: 42,
+                signal: 0
+            }
+        );
+    }
 }
 
 fn malformed(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {

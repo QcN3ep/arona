@@ -9,6 +9,7 @@ extern crate alloc;
 
 mod client;
 pub mod elf;
+mod memory;
 mod process;
 mod protocol;
 pub mod service;
