@@ -251,6 +251,13 @@ fn list(
 
 fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Error> {
     match (request.tag, request.words()) {
+        (protocol::FSYNC, []) if request.handles().is_empty() => {
+            match node {
+                Node::File(file) => file.fsync()?,
+                Node::Directory(directory) => directory.fsync()?,
+            }
+            Ok(Message::new(protocol::SUCCESS, &[])?)
+        }
         (protocol::METADATA, []) if request.handles().len() == 1 => {
             let mut output = take_frames(&mut request, Rights::WRITE)?;
             let metadata = match node {
@@ -298,7 +305,7 @@ fn file_request(file: &File, mut request: ReceivedMessage) -> Result<Message, Er
             offset
                 .checked_add(length)
                 .filter(|end| *end <= 2 * 1024 * 1024 * 1024)
-                .ok_or(Error::InvalidRequest)?;
+                .ok_or(Error::FileTooLarge)?;
             let input = take_frames(&mut request, Rights::READ)?;
             if length as u64 > input.frames()?.saturating_mul(PAGE_SIZE as u64) {
                 return Err(Error::InvalidRequest);
@@ -323,10 +330,6 @@ fn file_request(file: &File, mut request: ReceivedMessage) -> Result<Message, Er
             file.truncate(size)?;
             Ok(Message::new(protocol::SUCCESS, &[size as u64])?)
         }
-        (protocol::FSYNC, []) if request.handles().is_empty() => {
-            file.fsync()?;
-            Ok(Message::new(protocol::SUCCESS, &[])?)
-        }
         (protocol::FILE_INFO, []) if request.handles().is_empty() => {
             Ok(Message::new(protocol::SUCCESS, &[file.len() as u64])?)
         }
@@ -342,8 +345,13 @@ fn open(namespace: &Namespace, mut request: ReceivedMessage) -> Result<FileSessi
     {
         return Err(Error::InvalidRequest);
     }
-    let [length] = *request.words() else {
-        return Err(Error::InvalidRequest);
+    let (length, options) = match *request.words() {
+        [length] => (length, None),
+        [length, flags, permissions] if request.tag == protocol::OPEN => (
+            length,
+            Some(crate::OpenOptions::decode(flags, permissions)?),
+        ),
+        _ => return Err(Error::InvalidRequest),
     };
     let path = path(&mut request, length)?;
     let channel = take_channel(&mut request, Rights::READ | Rights::WAIT)?;
@@ -352,6 +360,9 @@ fn open(namespace: &Namespace, mut request: ReceivedMessage) -> Result<FileSessi
         node: match request.tag {
             protocol::CREATE => Node::File(namespace.create(&path)?),
             protocol::OPEN_DIRECTORY => Node::Directory(namespace.open_directory(&path)?),
+            protocol::OPEN if options.is_some() => {
+                Node::File(namespace.open_with(&path, options.unwrap())?)
+            }
             _ => Node::File(namespace.open_bytes(&path)?),
         },
     })

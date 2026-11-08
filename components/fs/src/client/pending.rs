@@ -30,6 +30,21 @@ impl<'a> Client<'a> {
         Ok(Pending::new(call, (self.task, channel), complete_open))
     }
 
+    pub fn start_open_with(
+        &self,
+        path: &[u8],
+        options: crate::OpenOptions,
+    ) -> Result<PendingOpen<'a>, Error> {
+        options.validate()?;
+        let [flags, permissions] = options.encode();
+        let (call, channel) = self.open_call_with(
+            protocol::OPEN,
+            path,
+            &[path.len() as u64, flags, permissions],
+        )?;
+        Ok(Pending::new(call, (self.task, channel), complete_open))
+    }
+
     pub fn start_create(&self, path: &[u8]) -> Result<PendingOpen<'a>, Error> {
         let (call, channel) = self.open_call(protocol::CREATE, path)?;
         Ok(Pending::new(call, (self.task, channel), complete_open))
@@ -106,11 +121,20 @@ impl<'a> Client<'a> {
         method: u64,
         path: &[u8],
     ) -> Result<(Handle<runtime::Call>, Handle<Channel>), Error> {
+        self.open_call_with(method, path, &[path.len() as u64])
+    }
+
+    fn open_call_with(
+        &self,
+        method: u64,
+        path: &[u8],
+        words: &[u64],
+    ) -> Result<(Handle<runtime::Call>, Handle<Channel>), Error> {
         let (channel, server) = self.task.channel(
             CHANNEL_RIGHTS | Rights::TRANSFER,
             Rights::READ | Rights::WAIT | Rights::TRANSFER,
         )?;
-        let mut request = Message::new(method, &[path.len() as u64])?;
+        let mut request = Message::new(method, words)?;
         transfer(&mut request, self.path(path)?, Rights::READ)?;
         transfer(&mut request, server, Rights::READ | Rights::WAIT)?;
         Ok((self.channel.start_call(&mut request)?, channel))
@@ -242,6 +266,10 @@ impl File<'_> {
 }
 
 impl Directory<'_> {
+    pub fn start_fsync(&self) -> Result<Pending<()>, Error> {
+        self.file.start_fsync()
+    }
+
     pub fn start_metadata(&self) -> Result<PendingMetadata, Error> {
         self.file.start_metadata()
     }

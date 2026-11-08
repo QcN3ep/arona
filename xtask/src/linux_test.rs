@@ -125,6 +125,7 @@ fn build_guest(
         ("program", "program"),
         ("memory", "memory"),
         ("syscall/file", "file"),
+        ("syscall/file/io", "file-io"),
     ] {
         let object = directory.join(format!("{name}.o"));
         let mut assemble = Command::new("clang");

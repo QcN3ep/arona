@@ -43,6 +43,7 @@ pub const NOT_EMPTY: u64 = 9;
 pub const CROSS_DEVICE: u64 = 10;
 pub const NOT_DIRECTORY: u64 = 11;
 pub const IO: u64 = 12;
+pub const FILE_TOO_LARGE: u64 = 13;
 
 pub const CHANNEL_RIGHTS: Rights = Rights::READ_WRITE.union(Rights::WAIT);
 
@@ -90,6 +91,7 @@ pub(crate) fn response_result(response: ReceivedMessage) -> Result<ReceivedMessa
         IO => Error::Io,
         READ_ONLY => Error::ReadOnly,
         NO_SPACE => Error::NoSpace,
+        FILE_TOO_LARGE => Error::FileTooLarge,
         ALREADY_EXISTS => Error::AlreadyExists,
         NOT_EMPTY => Error::NotEmpty,
         CROSS_DEVICE => Error::CrossDevice,
@@ -110,6 +112,7 @@ pub fn respond(reply: Handle<Reply>, result: Result<Message, Error>) -> Result<(
                 Error::Io => IO,
                 Error::ReadOnly => READ_ONLY,
                 Error::NoSpace => NO_SPACE,
+                Error::FileTooLarge => FILE_TOO_LARGE,
                 Error::AlreadyExists => ALREADY_EXISTS,
                 Error::NotEmpty => NOT_EMPTY,
                 Error::CrossDevice => CROSS_DEVICE,

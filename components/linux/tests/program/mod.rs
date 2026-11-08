@@ -15,6 +15,8 @@ use runtime::{
     process,
 };
 
+const WRITE_TIMEOUT_NS: u64 = 120_000_000_000;
+
 fn main() {
     let bootstrap = process::bootstrap().unwrap();
     let mut startup = bootstrap.receive(WaitMode::Forever).unwrap();
@@ -33,8 +35,9 @@ fn main() {
     let machine = Machine::from_header(&native).unwrap();
     let fs = service::read(&archive, "/bin/fs");
     let devmgr = service::read(&archive, "/bin/devmgr");
-    let (_filesystem, mounts, _files) = service::filesystem(archive, &fs, machine);
     let (_devices, device_service) = service::devices(&devmgr, machine, &devices);
+    let (_filesystem, mounts, files) = service::filesystem(archive, &fs, machine);
+    service::mount(&mounts, &device_service);
     let (_linux, channel) = service::launch(&native, machine, linux::service::REQUIRED_RIGHTS);
     let linux = Control::start(
         process::task(),
@@ -56,12 +59,96 @@ fn main() {
     execution(&linux, &output);
     layouts(&linux, &output);
     malformed(&linux, &output);
+    writable(&linux, &files, &output);
+    mounts.unmount(b"/var", service::deadline()).unwrap();
     let output = output();
     output.write_all(b"Linux program tests passed\n").unwrap();
     output.flush().unwrap();
+    drop(output);
+    drop(linux);
+    _linux.wait();
+    drop(files);
+    drop(mounts);
+    _filesystem.wait();
+    drop(device_service);
+    _devices.wait();
     bootstrap
         .send(&mut Message::new(73, &[37, 41]).unwrap(), WaitMode::Forever)
         .unwrap();
+}
+
+fn writable(
+    linux: &Control<'_>,
+    files: &fs::Client<'_>,
+    output: &impl Fn() -> devmgr::uart::Session,
+) {
+    for path in [
+        b"/var/linux-write".as_slice(),
+        b"/var/linux-new",
+        b"/var/linux-append",
+    ] {
+        match files.unlink_bytes(path, service::deadline()) {
+            Ok(()) | Err(fs::Error::NotFound) => {}
+            Err(error) => panic!("test cleanup failed: {error:?}"),
+        }
+    }
+    let run = |mode: &[u8]| {
+        linux
+            .start_run(
+                Program {
+                    path: b"/bin/linux-test",
+                    arguments: &[b"/bin/linux-test", mode],
+                    environment: &[b"ARONA_TEST=yes"],
+                },
+                output(),
+            )
+            .unwrap()
+    };
+    assert_eq!(
+        run(b"writable")
+            .wait(WaitMode::Until(
+                runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS
+            ))
+            .unwrap(),
+        ExitStatus {
+            code: 42,
+            signal: 0
+        }
+    );
+    assert_eq!(
+        files
+            .metadata(b"/var/linux-new", service::deadline())
+            .unwrap()
+            .mode
+            & 0o777,
+        0o600
+    );
+    let append = files
+        .create("/var/linux-append", service::deadline())
+        .unwrap();
+    let mut first = run(b"A");
+    let mut second = run(b"B");
+    for guest in [&mut first, &mut second] {
+        assert_eq!(
+            guest.wait(until()).unwrap(),
+            ExitStatus {
+                code: 42,
+                signal: 0
+            }
+        );
+    }
+    let mut bytes = [0; 1024];
+    assert_eq!(
+        append.read_at(0, &mut bytes, service::deadline()).unwrap(),
+        bytes.len()
+    );
+    let mut counts = [0; 2];
+    for record in bytes.as_chunks::<64>().0 {
+        assert!(matches!(record[0], b'A' | b'B'));
+        assert!(record.iter().all(|byte| *byte == record[0]));
+        counts[usize::from(record[0] - b'A')] += 1;
+    }
+    assert_eq!(counts, [8, 8]);
 }
 
 fn until() -> WaitMode {

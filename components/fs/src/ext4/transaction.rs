@@ -7,10 +7,7 @@ use crate::{Error, block::BLOCK_SIZE};
 use alloc::rc::Rc;
 
 impl Volume {
-    pub fn transaction<T>(
-        &mut self,
-        operation: impl FnOnce(&mut Self) -> Result<T, Error>,
-    ) -> Result<T, Error> {
+    pub fn check_writable(&self) -> Result<(), Error> {
         if self.closed {
             return Err(Error::Unavailable);
         }
@@ -20,6 +17,14 @@ impl Volume {
         if self.disk.read_only() || self.journal.is_none() {
             return Err(Error::ReadOnly);
         }
+        Ok(())
+    }
+
+    pub fn transaction<T>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        self.check_writable()?;
         let value = match operation(self) {
             Ok(value) => value,
             Err(error) => {

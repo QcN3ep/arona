@@ -51,7 +51,7 @@ impl Volume {
         Ok((inode, name.to_vec()))
     }
 
-    pub fn create(&mut self, path: &[u8], directory: bool) -> Result<u32, Error> {
+    pub fn create(&mut self, path: &[u8], directory: bool, permissions: u16) -> Result<u32, Error> {
         let (mut parent, name) = self.parent(path)?;
         let mut entries = self.entries(&parent)?;
         if entries.iter().any(|entry| entry.name == name) {
@@ -68,7 +68,7 @@ impl Volume {
             })?;
             let mut inode = Inode {
                 number,
-                mode: if directory { 0x41ed } else { 0x81a4 },
+                mode: (if directory { 0x4000 } else { 0x8000 }) | permissions,
                 size: 0,
                 sectors: 0,
                 orphan_next: 0,

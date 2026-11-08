@@ -28,6 +28,7 @@ pub(crate) struct Process<'a> {
     pub threads: Vec<Thread<'a>>,
     pub files: FileTable<'a>,
     pub machine: Machine,
+    pub umask: u16,
     status: ExitStatus,
 }
 
@@ -63,6 +64,7 @@ impl<'a> Process<'a> {
             }],
             files,
             machine,
+            umask: 0o022,
             status: ExitStatus { code: 0, signal: 0 },
         })
     }

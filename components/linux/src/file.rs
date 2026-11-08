@@ -5,6 +5,10 @@
 use alloc::{collections::BTreeMap, rc::Rc};
 use core::cell::Cell;
 
+pub(crate) const O_APPEND: u32 = 0x400;
+pub(crate) const O_NONBLOCK: u32 = 0x800;
+pub(crate) const O_DSYNC: u32 = 0x1000;
+
 pub(crate) struct FileTable<'a> {
     entries: BTreeMap<usize, Descriptor<'a>>,
 }
@@ -15,14 +19,17 @@ pub(crate) struct Descriptor<'a> {
 }
 
 pub(crate) enum OpenFileDescription<'a> {
-    Output(devmgr::uart::Session),
+    Output {
+        session: devmgr::uart::Session,
+        flags: Cell<u32>,
+    },
     Directory {
-        _session: fs::Directory<'a>,
-        flags: u32,
+        session: fs::Directory<'a>,
+        flags: Cell<u32>,
     },
     Regular {
         file: fs::File<'a>,
-        flags: u32,
+        flags: Cell<u32>,
         offset: Cell<usize>,
         busy: Cell<bool>,
     },
@@ -34,7 +41,10 @@ pub(crate) struct FilePosition<'a> {
 
 impl<'a> FileTable<'a> {
     pub fn new(output: devmgr::uart::Session) -> Self {
-        let description = Rc::new(OpenFileDescription::Output(output));
+        let description = Rc::new(OpenFileDescription::Output {
+            session: output,
+            flags: Cell::new(1),
+        });
         Self {
             entries: [
                 (
@@ -94,7 +104,7 @@ impl<'a> Descriptor<'a> {
         Self {
             description: Rc::new(OpenFileDescription::Regular {
                 file,
-                flags,
+                flags: Cell::new(flags),
                 offset: Cell::new(0),
                 busy: Cell::new(false),
             }),
@@ -113,9 +123,17 @@ impl<'a> Descriptor<'a> {
 impl<'a> OpenFileDescription<'a> {
     pub fn flags(&self) -> u32 {
         match self {
-            Self::Output(_) => 1,
-            Self::Directory { flags, .. } | Self::Regular { flags, .. } => *flags,
+            Self::Output { flags, .. }
+            | Self::Directory { flags, .. }
+            | Self::Regular { flags, .. } => flags.get(),
         }
+    }
+
+    pub fn set_flags(&self, value: u32) {
+        let (Self::Output { flags, .. }
+        | Self::Directory { flags, .. }
+        | Self::Regular { flags, .. }) = self;
+        flags.set((flags.get() & !(O_APPEND | O_NONBLOCK)) | (value & (O_APPEND | O_NONBLOCK)));
     }
 
     pub fn position(self: &Rc<Self>) -> Option<FilePosition<'a>> {

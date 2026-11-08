@@ -28,6 +28,13 @@ pub enum Directory {
 }
 
 impl Directory {
+    pub fn fsync(&self) -> Result<(), Error> {
+        match self {
+            Self::Archive(_) => Ok(()),
+            Self::Ext4(directory) => directory.fsync(),
+        }
+    }
+
     pub fn metadata(&self) -> Result<crate::Metadata, Error> {
         match self {
             Self::Archive(directory) => Ok(directory.metadata()),
@@ -96,6 +103,29 @@ impl Namespace {
 
     pub fn create(&self, path: &[u8]) -> Result<File, Error> {
         self.mounted(path, |fs, path| fs.create(path).map(File::Ext4))
+    }
+
+    pub fn open_with(&self, path: &[u8], options: crate::OpenOptions) -> Result<File, Error> {
+        options.validate()?;
+        let file = match self.open_bytes(path) {
+            Ok(_) if options.create && options.exclusive => return Err(Error::AlreadyExists),
+            Err(Error::IsDirectory) if options.create && options.exclusive => {
+                return Err(Error::AlreadyExists);
+            }
+            Ok(file) => file,
+            Err(Error::NotFound) if options.create => self.mounted(path, |fs, path| {
+                fs.create_with_permissions(path, options.permissions)
+                    .map(File::Ext4)
+            })?,
+            Err(error) => return Err(error),
+        };
+        if options.write || options.truncate {
+            file.check_writable()?;
+        }
+        if options.truncate {
+            file.truncate(0)?;
+        }
+        Ok(file)
     }
     pub fn mkdir(&self, path: &[u8]) -> Result<(), Error> {
         self.mounted(path, |fs, path| fs.mkdir(path))
@@ -258,6 +288,13 @@ impl ReadAt for File {
 }
 
 impl File {
+    pub fn check_writable(&self) -> Result<(), Error> {
+        match self {
+            Self::Archive(_) => Err(Error::ReadOnly),
+            Self::Ext4(file) => file.check_writable(),
+        }
+    }
+
     pub fn metadata(&self) -> Result<crate::Metadata, Error> {
         match self {
             Self::Archive(file) => Ok(file.metadata()),

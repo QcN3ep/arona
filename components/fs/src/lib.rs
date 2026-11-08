@@ -14,6 +14,7 @@ mod control;
 pub mod ext4;
 mod metadata;
 pub mod namespace;
+mod open;
 mod path;
 mod protocol;
 pub mod service;
@@ -21,6 +22,7 @@ pub mod service;
 pub use client::{Client, Directory, File};
 pub use control::Control;
 pub use metadata::{Attributes, Metadata, Timestamp};
+pub use open::OpenOptions;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -34,6 +36,7 @@ pub enum Error {
     Busy,
     ReadOnly,
     NoSpace,
+    FileTooLarge,
     AlreadyExists,
     NotEmpty,
     CrossDevice,

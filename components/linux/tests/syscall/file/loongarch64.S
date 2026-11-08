@@ -404,7 +404,7 @@ files:
     invoke 56
     expect -2
     open_data 1
-    expect -95
+    expect -30
     open_data 3
     expect -22
 

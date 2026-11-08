@@ -11,7 +11,7 @@ impl Volume {
         let end = offset
             .checked_add(input.len())
             .filter(|end| *end <= 2 * 1024 * 1024 * 1024)
-            .ok_or(Error::InvalidRequest)?;
+            .ok_or(Error::FileTooLarge)?;
         let inode = self.inode(number)?;
         if inode.directory() {
             return Err(Error::IsDirectory);
@@ -145,7 +145,7 @@ impl Volume {
 
     pub fn truncate(&mut self, number: u32, size: usize) -> Result<(), Error> {
         if size > 2 * 1024 * 1024 * 1024 {
-            return Err(Error::InvalidRequest);
+            return Err(Error::FileTooLarge);
         }
         let mut inode = self.inode(number)?;
         if inode.directory() {

@@ -83,6 +83,12 @@ auxv_done:
     beq s3, t1, illegal
     li t1, 103
     beq s3, t1, group
+    li t1, 119
+    beq s3, t1, files_write
+    li t1, 65
+    beq s3, t1, files_append
+    li t1, 66
+    beq s3, t1, files_append
     li t1, 54
     bltu s3, t1, memory_fault
     jal ra, heap

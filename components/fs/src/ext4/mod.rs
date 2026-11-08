@@ -92,7 +92,14 @@ impl Ext4 {
     }
 
     pub fn create(&self, path: &[u8]) -> Result<File, Error> {
-        self.volume.borrow_mut().create(path, false)?;
+        self.create_with_permissions(path, 0o644)
+    }
+
+    pub fn create_with_permissions(&self, path: &[u8], permissions: u16) -> Result<File, Error> {
+        if permissions & !0o7777 != 0 {
+            return Err(Error::InvalidRequest);
+        }
+        self.volume.borrow_mut().create(path, false, permissions)?;
         self.open_bytes(path)
     }
     pub fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
@@ -108,7 +115,10 @@ impl Ext4 {
         self.volume.borrow_mut().read_link(path)
     }
     pub fn mkdir(&self, path: &[u8]) -> Result<(), Error> {
-        self.volume.borrow_mut().create(path, true).map(|_| ())
+        self.volume
+            .borrow_mut()
+            .create(path, true, 0o755)
+            .map(|_| ())
     }
     pub fn unlink(&self, path: &[u8]) -> Result<(), Error> {
         self.volume.borrow_mut().unlink(path)
@@ -146,6 +156,10 @@ impl ReadAt for File {
 }
 
 impl File {
+    pub fn check_writable(&self) -> Result<(), Error> {
+        self.volume.borrow().check_writable()
+    }
+
     pub fn read_dir(&self) -> Result<Vec<crate::DirEntry>, Error> {
         let mut volume = self.volume.borrow_mut();
         let inode = volume.inode(self.identity.number)?;

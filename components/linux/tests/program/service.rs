@@ -11,6 +11,12 @@ use runtime::{
 
 pub struct Service(Handle<Task>);
 
+impl Service {
+    pub fn wait(&self) {
+        assert_eq!(self.0.wait(deadline()).unwrap(), 0);
+    }
+}
+
 impl Drop for Service {
     fn drop(&mut self) {
         self.0.terminate(0).unwrap();
@@ -89,6 +95,26 @@ pub fn devices(
         .unwrap();
     assert_eq!(channel.call(&mut request, Some(deadline())).unwrap().tag, 0);
     (service, channel)
+}
+
+pub fn mount(control: &fs::Control<'_>, service: &Handle<Channel>) {
+    let until = deadline();
+    let id = loop {
+        if let Some(id) =
+            devmgr::device::next(service, devmgr::device::DriverKind::Block, 0, until).unwrap()
+        {
+            break id;
+        }
+        assert!(
+            runtime::thread::now_ns().unwrap() < until,
+            "missing test block device"
+        );
+        runtime::thread::yield_now().unwrap();
+    };
+    let session = devmgr::block::Session::open(process::task(), service, id).unwrap();
+    control
+        .mount(b"/var", session, 0, 16 * 1024 * 1024, deadline())
+        .unwrap();
 }
 
 pub fn deadline() -> u64 {
