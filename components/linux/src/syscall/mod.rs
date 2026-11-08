@@ -45,64 +45,27 @@ pub(crate) fn dispatch<'a>(
         trap,
     };
     let (number, arguments) = context.machine.syscall(&context.state);
-    let outcome = match number {
-        abi::DUP => Outcome::Complete(file::duplicate(process, arguments[0], 0, false)),
-        abi::DUP3 => Outcome::Complete(file::dup3(
-            process,
-            arguments[0],
-            arguments[1],
-            arguments[2],
-        )),
-        abi::FCNTL => Outcome::Complete(file::fcntl(
-            process,
-            arguments[0],
-            arguments[1],
-            arguments[2],
-        )),
-        abi::OPENAT => file::openat(
-            process,
-            files,
-            arguments[0],
-            arguments[1],
-            arguments[2],
-            arguments[3],
-        ),
-        abi::CLOSE => Outcome::Complete(file::close(process, arguments[0])),
-        abi::LSEEK => file::seek(process, arguments[0], arguments[1], arguments[2]),
-        abi::READ | abi::PREAD64 | abi::READV | abi::PREADV => file::read(
-            process,
-            arguments[0],
-            io_buffer(number, &arguments),
-            matches!(number, abi::PREAD64 | abi::PREADV).then_some(arguments[3]),
-        ),
-        abi::WRITE | abi::PWRITE64 | abi::WRITEV | abi::PWRITEV => file::write(
-            process,
-            arguments[0],
-            io_buffer(number, &arguments),
-            matches!(number, abi::PWRITE64 | abi::PWRITEV).then_some(arguments[3]),
-        ),
-        abi::FTRUNCATE => file::truncate(process, arguments[0], arguments[1]),
-        abi::FSYNC | abi::FDATASYNC => file::sync(process, arguments[0]),
-        abi::UMASK => Outcome::Complete(Ok(core::mem::replace(
-            &mut process.umask,
-            arguments[0] as u16 & 0o777,
-        ) as usize)),
-        abi::EXIT => process::exit(process, index, arguments[0])?,
-        abi::EXIT_GROUP => process::exit_group(process, arguments[0])?,
-        abi::BRK => Outcome::Complete(Ok(process.address_space.brk(arguments[0])?)),
-        abi::MMAP => Outcome::Complete(memory::mmap(&process.address_space, arguments)),
-        abi::MUNMAP => Outcome::Complete(memory::munmap(
-            &process.address_space,
-            arguments[0],
-            arguments[1],
-        )),
-        abi::MPROTECT => Outcome::Complete(memory::mprotect(
-            &process.address_space,
-            arguments[0],
-            arguments[1],
-            arguments[2],
-        )),
-        _ => Outcome::Complete(Err(ENOSYS)),
+    let outcome = if let Some(outcome) = file::dispatch(process, files, number, arguments) {
+        outcome
+    } else {
+        match number {
+            abi::EXIT => process::exit(process, index, arguments[0])?,
+            abi::EXIT_GROUP => process::exit_group(process, arguments[0])?,
+            abi::BRK => Outcome::Complete(Ok(process.address_space.brk(arguments[0])?)),
+            abi::MMAP => Outcome::Complete(memory::mmap(&process.address_space, arguments)),
+            abi::MUNMAP => Outcome::Complete(memory::munmap(
+                &process.address_space,
+                arguments[0],
+                arguments[1],
+            )),
+            abi::MPROTECT => Outcome::Complete(memory::mprotect(
+                &process.address_space,
+                arguments[0],
+                arguments[1],
+                arguments[2],
+            )),
+            _ => Outcome::Complete(Err(ENOSYS)),
+        }
     };
     match outcome {
         Outcome::Complete(result) => context.complete(result),
@@ -111,23 +74,6 @@ pub(crate) fn dispatch<'a>(
             Ok(())
         }
         Outcome::Terminated => Ok(()),
-    }
-}
-
-fn io_buffer(number: usize, arguments: &[usize; 6]) -> file::Buffer {
-    if matches!(
-        number,
-        abi::READV | abi::PREADV | abi::WRITEV | abi::PWRITEV
-    ) {
-        file::Buffer::Vector {
-            address: arguments[1],
-            count: arguments[2],
-        }
-    } else {
-        file::Buffer::Slice {
-            address: arguments[1],
-            length: arguments[2],
-        }
     }
 }
 

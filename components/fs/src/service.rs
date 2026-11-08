@@ -236,13 +236,14 @@ fn list(
     let (mut done, mut count) = (0, 0);
     for entry in entries.iter().skip(start) {
         let size = entry.name.len();
-        if done + 3 + size > bytes.len() {
+        if done + 11 + size > bytes.len() {
             break;
         }
-        bytes[done] = u8::from(entry.directory);
-        bytes[done + 1..done + 3].copy_from_slice(&(size as u16).to_le_bytes());
-        bytes[done + 3..done + 3 + size].copy_from_slice(&entry.name);
-        done += 3 + size;
+        bytes[done..done + 8].copy_from_slice(&entry.inode.to_le_bytes());
+        bytes[done + 8] = entry.kind as u8;
+        bytes[done + 9..done + 11].copy_from_slice(&(size as u16).to_le_bytes());
+        bytes[done + 11..done + 11 + size].copy_from_slice(&entry.name);
+        done += 11 + size;
         count += 1;
     }
     output.write(0, &bytes[..done])?;
@@ -251,6 +252,14 @@ fn list(
 
 fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Error> {
     match (request.tag, request.words()) {
+        (protocol::LIST, [start, 1]) if request.handles().len() == 1 => {
+            let start = *start;
+            let Node::Directory(directory) = node else {
+                return Err(Error::NotDirectory);
+            };
+            let mut output = take_frames(&mut request, Rights::WRITE)?;
+            list(directory.read_dir_all()?, start, &mut output)
+        }
         (protocol::FSYNC, []) if request.handles().is_empty() => {
             match node {
                 Node::File(file) => file.fsync()?,

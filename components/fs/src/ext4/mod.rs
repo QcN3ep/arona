@@ -103,7 +103,8 @@ impl Ext4 {
         self.open_bytes(path)
     }
     pub fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
-        Ok(self.volume.borrow_mut().lookup(path)?.metadata())
+        let mut volume = self.volume.borrow_mut();
+        Ok(volume.lookup(path)?.metadata(volume.device))
     }
     pub fn hard_link(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
         self.volume.borrow_mut().hard_link(source, target)
@@ -172,16 +173,33 @@ impl File {
             .filter(|entry| entry.name != b"." && entry.name != b"..")
             .map(|entry| crate::DirEntry {
                 name: entry.name,
-                directory: entry.file_type == 2,
+                inode: u64::from(entry.inode),
+                kind: match entry.file_type {
+                    1 => crate::FileType::Regular,
+                    2 => crate::FileType::Directory,
+                    7 => crate::FileType::SymbolicLink,
+                    _ => crate::FileType::Unknown,
+                },
             })
             .collect())
     }
     pub fn metadata(&self) -> Result<crate::Metadata, Error> {
-        Ok(self
-            .volume
-            .borrow_mut()
-            .inode(self.identity.number)?
-            .metadata())
+        let mut volume = self.volume.borrow_mut();
+        Ok(volume.inode(self.identity.number)?.metadata(volume.device))
+    }
+    pub fn parent_metadata(&self) -> Result<Option<crate::Metadata>, Error> {
+        if self.identity.number == 2 {
+            return Ok(None);
+        }
+        let mut volume = self.volume.borrow_mut();
+        let inode = volume.inode(self.identity.number)?;
+        let parent = volume
+            .entries(&inode)?
+            .into_iter()
+            .find(|entry| entry.name == b"..")
+            .ok_or(Error::InvalidData)?
+            .inode;
+        Ok(Some(volume.inode(parent)?.metadata(volume.device)))
     }
     pub fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
         self.volume

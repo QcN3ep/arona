@@ -26,6 +26,8 @@ pub(crate) enum OpenFileDescription<'a> {
     Directory {
         session: fs::Directory<'a>,
         flags: Cell<u32>,
+        offset: Cell<usize>,
+        busy: Cell<bool>,
     },
     Regular {
         file: fs::File<'a>,
@@ -137,8 +139,9 @@ impl<'a> OpenFileDescription<'a> {
     }
 
     pub fn position(self: &Rc<Self>) -> Option<FilePosition<'a>> {
-        let Self::Regular { busy, .. } = self.as_ref() else {
-            return None;
+        let busy = match self.as_ref() {
+            Self::Regular { busy, .. } | Self::Directory { busy, .. } => busy,
+            _ => return None,
         };
         if busy.replace(true) {
             return None;
@@ -151,15 +154,19 @@ impl<'a> OpenFileDescription<'a> {
 
 impl FilePosition<'_> {
     pub fn get(&self) -> usize {
-        let OpenFileDescription::Regular { offset, .. } = self.description.as_ref() else {
-            unreachable!()
+        let offset = match self.description.as_ref() {
+            OpenFileDescription::Regular { offset, .. }
+            | OpenFileDescription::Directory { offset, .. } => offset,
+            _ => unreachable!(),
         };
         offset.get()
     }
 
     pub fn set(&self, position: usize) {
-        let OpenFileDescription::Regular { offset, .. } = self.description.as_ref() else {
-            unreachable!()
+        let offset = match self.description.as_ref() {
+            OpenFileDescription::Regular { offset, .. }
+            | OpenFileDescription::Directory { offset, .. } => offset,
+            _ => unreachable!(),
         };
         offset.set(position);
     }
@@ -167,8 +174,10 @@ impl FilePosition<'_> {
 
 impl Drop for FilePosition<'_> {
     fn drop(&mut self) {
-        let OpenFileDescription::Regular { busy, .. } = self.description.as_ref() else {
-            unreachable!()
+        let busy = match self.description.as_ref() {
+            OpenFileDescription::Regular { busy, .. }
+            | OpenFileDescription::Directory { busy, .. } => busy,
+            _ => unreachable!(),
         };
         busy.set(false);
     }

@@ -86,6 +86,10 @@ auxv_done:
     beq $s3, $t1, files_write
     li.d $t1, 118
     beq $s3, $t1, files_vector
+    li.d $t1, 109
+    beq $s3, $t1, files_metadata
+    li.d $t1, 100
+    beq $s3, $t1, files_directory
     li.d $t1, 65
     beq $s3, $t1, files_append
     li.d $t1, 66

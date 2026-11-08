@@ -3,11 +3,13 @@
 //! Linux 文件系统调用与异步完成。
 
 mod buffer;
+mod directory;
 mod io;
+mod metadata;
 mod open;
 
 use super::{
-    Outcome,
+    Outcome, abi,
     abi::{EBADF, EINVAL, EIO, EMFILE, EOPNOTSUPP, Errno, SyscallResult},
 };
 use crate::{
@@ -18,7 +20,9 @@ use alloc::rc::Rc;
 use runtime::{Call, Handle};
 
 pub(super) use buffer::Buffer;
+pub(super) use directory::read as getdents;
 pub(super) use io::{read, seek, sync, truncate, write};
+pub(super) use metadata::{fstat, statat};
 pub(super) use open::openat;
 
 pub(super) const O_CLOEXEC: u32 = 0x80000;
@@ -28,6 +32,8 @@ pub(super) enum Pending<'a> {
     Read(io::Read<'a>),
     Write(io::Write<'a>),
     Seek(io::Seek<'a>),
+    Stat(metadata::Stat<'a>),
+    Directory(directory::ReadDirectory<'a>),
     Output {
         request: devmgr::device::Pending<usize, usize>,
         _description: Rc<OpenFileDescription<'a>>,
@@ -40,6 +46,75 @@ pub(super) enum Pending<'a> {
         request: fs::client::Pending<()>,
         _description: Rc<OpenFileDescription<'a>>,
     },
+}
+
+pub(super) fn dispatch<'a>(
+    process: &mut Process<'a>,
+    files: &fs::Client<'a>,
+    number: usize,
+    arguments: [usize; 6],
+) -> Option<Outcome<'a>> {
+    Some(match number {
+        abi::DUP => Outcome::Complete(duplicate(process, arguments[0], 0, false)),
+        abi::DUP3 => Outcome::Complete(dup3(process, arguments[0], arguments[1], arguments[2])),
+        abi::FCNTL => Outcome::Complete(fcntl(process, arguments[0], arguments[1], arguments[2])),
+        abi::OPENAT => openat(
+            process,
+            files,
+            arguments[0],
+            arguments[1],
+            arguments[2],
+            arguments[3],
+        ),
+        abi::CLOSE => Outcome::Complete(close(process, arguments[0])),
+        abi::FSTAT => fstat(process, arguments[0], arguments[1]),
+        abi::GETDENTS64 => getdents(process, arguments[0], arguments[1], arguments[2]),
+        abi::NEWFSTATAT => statat(
+            process,
+            files,
+            arguments[0],
+            arguments[1],
+            arguments[2],
+            arguments[3],
+        ),
+        abi::LSEEK => seek(process, arguments[0], arguments[1], arguments[2]),
+        abi::READ | abi::PREAD64 | abi::READV | abi::PREADV => read(
+            process,
+            arguments[0],
+            io_buffer(number, &arguments),
+            matches!(number, abi::PREAD64 | abi::PREADV).then_some(arguments[3]),
+        ),
+        abi::WRITE | abi::PWRITE64 | abi::WRITEV | abi::PWRITEV => write(
+            process,
+            arguments[0],
+            io_buffer(number, &arguments),
+            matches!(number, abi::PWRITE64 | abi::PWRITEV).then_some(arguments[3]),
+        ),
+        abi::FTRUNCATE => truncate(process, arguments[0], arguments[1]),
+        abi::FSYNC | abi::FDATASYNC => sync(process, arguments[0]),
+        abi::UMASK => Outcome::Complete(Ok(core::mem::replace(
+            &mut process.umask,
+            arguments[0] as u16 & 0o777,
+        ) as usize)),
+        _ => return None,
+    })
+}
+
+fn io_buffer(number: usize, arguments: &[usize; 6]) -> Buffer {
+    if matches!(
+        number,
+        abi::READV | abi::PREADV | abi::WRITEV | abi::PWRITEV
+    ) {
+        Buffer::Vector {
+            address: arguments[1],
+            count: arguments[2],
+        }
+    } else {
+        Buffer::Slice {
+            address: arguments[1],
+            length: arguments[2],
+        }
+    }
 }
 
 pub(super) fn close(process: &mut Process<'_>, raw: usize) -> SyscallResult {
@@ -136,6 +211,8 @@ impl<'a> Pending<'a> {
             Self::Read(read) => read.call(),
             Self::Write(write) => write.call(),
             Self::Seek(seek) => seek.call(),
+            Self::Stat(stat) => Some(stat.call()),
+            Self::Directory(directory) => directory.call(),
             Self::Output { request, .. } => Some(request.call()),
             Self::Truncate { request, .. } => Some(request.call()),
             Self::Sync { request, .. } => Some(request.call()),
@@ -152,6 +229,8 @@ impl<'a> Pending<'a> {
             Self::Read(read) => read.poll(process),
             Self::Write(write) => write.poll(),
             Self::Seek(seek) => seek.poll(),
+            Self::Stat(stat) => stat.poll(process),
+            Self::Directory(directory) => directory.poll(process),
             Self::Output { request, .. } => match request.try_complete() {
                 Err(devmgr::Error::Runtime(runtime::Error::Kernel(
                     runtime::KernelError::WouldBlock,

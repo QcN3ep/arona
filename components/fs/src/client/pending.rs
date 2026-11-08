@@ -282,8 +282,16 @@ impl Directory<'_> {
     }
 
     pub fn start_read_dir(&self, cursor: usize) -> Result<PendingDirectoryPage, Error> {
+        self.read_dir_call(&[cursor as u64])
+    }
+
+    pub fn start_read_dir_all(&self, cursor: usize) -> Result<PendingDirectoryPage, Error> {
+        self.read_dir_call(&[cursor as u64, 1])
+    }
+
+    fn read_dir_call(&self, words: &[u64]) -> Result<PendingDirectoryPage, Error> {
         let output = output_buffer(self.file.task, PAGE_SIZE)?;
-        let mut request = Message::new(protocol::LIST, &[cursor as u64])?;
+        let mut request = Message::new(protocol::LIST, words)?;
         transfer(
             &mut request,
             output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
@@ -297,7 +305,7 @@ impl Directory<'_> {
                 let [count, length] = *response.words() else {
                     return Err(Error::InvalidData);
                 };
-                if length > PAGE_SIZE as u64 || count > length / 3 {
+                if length > PAGE_SIZE as u64 || count > length / 11 {
                     return Err(Error::InvalidData);
                 }
                 let mut bytes = [0; PAGE_SIZE];
@@ -414,18 +422,26 @@ pub(super) fn directory_entries(bytes: &[u8], count: usize) -> Result<Vec<crate:
     let mut entries = Vec::new();
     let mut inside = 0;
     for _ in 0..count {
-        if inside + 3 > bytes.len() || bytes[inside] > 1 {
+        if inside + 11 > bytes.len() {
             return Err(Error::InvalidData);
         }
-        let size = usize::from(u16::from_le_bytes([bytes[inside + 1], bytes[inside + 2]]));
-        if size == 0 || size > 255 || inside + 3 + size > bytes.len() {
+        let kind = match bytes[inside + 8] {
+            0 => crate::FileType::Unknown,
+            1 => crate::FileType::Regular,
+            2 => crate::FileType::Directory,
+            3 => crate::FileType::SymbolicLink,
+            _ => return Err(Error::InvalidData),
+        };
+        let size = usize::from(u16::from_le_bytes([bytes[inside + 9], bytes[inside + 10]]));
+        if size == 0 || size > 255 || inside + 11 + size > bytes.len() {
             return Err(Error::InvalidData);
         }
         entries.push(crate::DirEntry {
-            name: bytes[inside + 3..inside + 3 + size].to_vec(),
-            directory: bytes[inside] != 0,
+            name: bytes[inside + 11..inside + 11 + size].to_vec(),
+            inode: u64::from_le_bytes(bytes[inside..inside + 8].try_into().unwrap()),
+            kind,
         });
-        inside += 3 + size;
+        inside += 11 + size;
     }
     if inside != bytes.len() {
         return Err(Error::InvalidData);

@@ -455,7 +455,7 @@ impl Directory<'_> {
             let [count, length] = *response.words() else {
                 return Err(Error::InvalidData);
             };
-            if length > PAGE_SIZE as u64 || count > length / 3 {
+            if length > PAGE_SIZE as u64 || count > length / 11 {
                 return Err(Error::InvalidData);
             }
             let mut bytes = [0; PAGE_SIZE];

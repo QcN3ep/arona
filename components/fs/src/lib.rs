@@ -95,5 +95,25 @@ pub trait FileSystem {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DirEntry {
     pub name: alloc::vec::Vec<u8>,
-    pub directory: bool,
+    pub inode: u64,
+    pub kind: FileType,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileType {
+    Unknown,
+    Regular,
+    Directory,
+    SymbolicLink,
+}
+
+impl FileType {
+    pub(crate) fn from_mode(mode: u32) -> Self {
+        match mode & 0o170000 {
+            0o100000 => Self::Regular,
+            0o040000 => Self::Directory,
+            0o120000 => Self::SymbolicLink,
+            _ => Self::Unknown,
+        }
+    }
 }

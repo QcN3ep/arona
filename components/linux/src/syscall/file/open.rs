@@ -157,6 +157,8 @@ impl<'a> Open<'a> {
                         description: Rc::new(OpenFileDescription::Directory {
                             session: directory,
                             flags: Cell::new(flags),
+                            offset: Cell::new(0),
+                            busy: Cell::new(false),
                         }),
                         close_on_exec,
                     }
@@ -168,7 +170,15 @@ impl<'a> Open<'a> {
     }
 }
 
-fn path(process: &Process<'_>, mut address: usize) -> Result<Vec<u8>, Errno> {
+pub(super) fn path(process: &Process<'_>, address: usize) -> Result<Vec<u8>, Errno> {
+    let path = path_bytes(process, address)?;
+    if path.is_empty() {
+        return Err(ENOENT);
+    }
+    Ok(path)
+}
+
+pub(super) fn path_bytes(process: &Process<'_>, mut address: usize) -> Result<Vec<u8>, Errno> {
     let mut path = Vec::new();
     while path.len() < PATH_MAX {
         let mut bytes = [0; 256];
@@ -183,9 +193,6 @@ fn path(process: &Process<'_>, mut address: usize) -> Result<Vec<u8>, Errno> {
         let end = bytes[..length].iter().position(|byte| *byte == 0);
         path.extend_from_slice(&bytes[..end.unwrap_or(length)]);
         if end.is_some() {
-            if path.is_empty() {
-                return Err(ENOENT);
-            }
             for part in path.split(|byte| *byte == b'/') {
                 if part.len() > 255 {
                     return Err(ENAMETOOLONG);

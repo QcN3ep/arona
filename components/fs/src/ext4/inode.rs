@@ -60,7 +60,7 @@ impl Inode {
             flags: word(bytes, 32),
         };
         inode
-            .metadata()
+            .metadata(0)
             .validate()
             .map_err(|_| Error::InvalidData)?;
         Ok(inode)
@@ -84,8 +84,9 @@ impl Inode {
         }
     }
 
-    pub fn metadata(&self) -> crate::Metadata {
+    pub fn metadata(&self, device: u64) -> crate::Metadata {
         crate::Metadata {
+            device,
             inode: u64::from(self.number),
             size: self.size,
             blocks: self.sectors,

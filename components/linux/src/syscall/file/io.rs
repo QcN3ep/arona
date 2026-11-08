@@ -4,7 +4,7 @@
 
 use super::super::{
     Outcome,
-    abi::{EBADF, EFBIG, EINVAL, EIO, EISDIR, EOPNOTSUPP, EOVERFLOW, ESPIPE, SyscallResult},
+    abi::{EBADF, EFBIG, EINVAL, EIO, EISDIR, EOVERFLOW, ESPIPE, SyscallResult},
 };
 use super::{Buffer, Pending, buffer::IoVectors, completion, fd, filesystem_error, outcome};
 use crate::{
@@ -186,7 +186,8 @@ pub(in crate::syscall) fn seek<'a>(
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         match descriptor.description.as_ref() {
             OpenFileDescription::Output { .. } => return Err(ESPIPE),
-            OpenFileDescription::Directory { .. } => return Err(EOPNOTSUPP),
+            OpenFileDescription::Directory { .. } if whence as u32 == 2 => return Err(EINVAL),
+            OpenFileDescription::Directory { .. } => {}
             OpenFileDescription::Regular { .. } => {}
         }
         if whence as u32 > 2 {

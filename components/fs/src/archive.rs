@@ -12,6 +12,7 @@ const PAGE_SIZE: usize = 4096;
 const HEADER_SIZE: usize = 110;
 
 pub struct Archive {
+    device: u64,
     frames: Rc<Handle<FrameAllocation>>,
     length: usize,
     entries: BTreeMap<Vec<u8>, Entry>,
@@ -58,6 +59,7 @@ impl Archive {
             return Err(Error::InvalidData);
         }
         let mut archive = Self {
+            device: crate::metadata::device_identity()?,
             frames: Rc::new(frames),
             length,
             entries: BTreeMap::new(),
@@ -85,21 +87,20 @@ impl Archive {
             if rest.is_empty() {
                 continue;
             }
-            let end = rest
-                .iter()
-                .position(|byte| *byte == b'/')
-                .unwrap_or(rest.len());
-            children.insert(
-                rest[..end].to_vec(),
-                end != rest.len() || entry.metadata.mode & 0o170000 == 0o040000,
-            );
+            if !rest.contains(&b'/') {
+                children.insert(rest.to_vec(), entry.metadata);
+            }
         }
         if children.is_empty() && !path.is_empty() && !self.entries.contains_key(&path) {
             return Err(Error::NotFound);
         }
         Ok(children
             .into_iter()
-            .map(|(name, directory)| crate::DirEntry { name, directory })
+            .map(|(name, metadata)| crate::DirEntry {
+                name,
+                inode: metadata.inode,
+                kind: crate::FileType::from_mode(metadata.mode),
+            })
             .collect())
     }
 
@@ -166,6 +167,7 @@ impl Archive {
                     Entry {
                         range: data_start..data_end,
                         metadata: crate::Metadata {
+                            device: self.device,
                             inode: field(&header, 6)? as u64,
                             size: size as u64,
                             blocks: (size as u64).div_ceil(512),
@@ -232,6 +234,7 @@ impl Archive {
                         Entry {
                             range: 0..0,
                             metadata: crate::Metadata {
+                                device: self.device,
                                 inode: synthetic,
                                 mode: 0o040755,
                                 links: 2,

@@ -22,35 +22,60 @@ pub enum File {
     Ext4(crate::ext4::File),
 }
 
-pub enum Directory {
+pub struct Directory {
+    node: DirectoryNode,
+    parent: crate::Metadata,
+}
+
+enum DirectoryNode {
     Archive(archive::Directory),
     Ext4(crate::ext4::File),
 }
 
 impl Directory {
     pub fn fsync(&self) -> Result<(), Error> {
-        match self {
-            Self::Archive(_) => Ok(()),
-            Self::Ext4(directory) => directory.fsync(),
+        match &self.node {
+            DirectoryNode::Archive(_) => Ok(()),
+            DirectoryNode::Ext4(directory) => directory.fsync(),
         }
     }
 
     pub fn metadata(&self) -> Result<crate::Metadata, Error> {
-        match self {
-            Self::Archive(directory) => Ok(directory.metadata()),
-            Self::Ext4(directory) => directory.metadata(),
+        match &self.node {
+            DirectoryNode::Archive(directory) => Ok(directory.metadata()),
+            DirectoryNode::Ext4(directory) => directory.metadata(),
         }
     }
     pub fn read_dir(&self) -> Result<Vec<crate::DirEntry>, Error> {
-        match self {
-            Self::Archive(directory) => Ok(directory.read_dir()),
-            Self::Ext4(directory) => directory.read_dir(),
+        match &self.node {
+            DirectoryNode::Archive(directory) => Ok(directory.read_dir()),
+            DirectoryNode::Ext4(directory) => directory.read_dir(),
         }
     }
+    pub fn read_dir_all(&self) -> Result<Vec<crate::DirEntry>, Error> {
+        let parent = match &self.node {
+            DirectoryNode::Ext4(directory) => directory.parent_metadata()?.unwrap_or(self.parent),
+            DirectoryNode::Archive(_) => self.parent,
+        };
+        let mut entries = alloc::vec![
+            crate::DirEntry {
+                name: b".".to_vec(),
+                inode: self.metadata()?.inode,
+                kind: crate::FileType::Directory
+            },
+            crate::DirEntry {
+                name: b"..".to_vec(),
+                inode: parent.inode,
+                kind: crate::FileType::Directory
+            },
+        ];
+        entries.extend(self.read_dir()?);
+        Ok(entries)
+    }
     pub fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
-        match self {
-            Self::Archive(_) => Err(Error::ReadOnly),
-            Self::Ext4(directory) => directory.set_attributes(attributes),
+        match &self.node {
+            DirectoryNode::Archive(_) => Err(Error::ReadOnly),
+            DirectoryNode::Ext4(directory) => directory.set_attributes(attributes),
         }
     }
 }
@@ -162,7 +187,8 @@ impl Namespace {
                 entries.retain(|entry| entry.name != name);
                 entries.push(crate::DirEntry {
                     name: name.to_vec(),
-                    directory: true,
+                    inode: mounts.get(prefix).unwrap().metadata(b"/")?.inode,
+                    kind: crate::FileType::Directory,
                 });
             }
         }
@@ -198,18 +224,29 @@ impl Namespace {
     }
     pub fn open_directory(&self, path: &[u8]) -> Result<Directory, Error> {
         let path = normalize(path)?;
+        let parent_path = path
+            .iter()
+            .rposition(|byte| *byte == b'/')
+            .map_or(b"/".as_slice(), |end| &path[..end]);
+        let parent = self.metadata(parent_path)?;
         for (prefix, fs) in self.mounts.borrow().iter() {
             if beneath(&path, prefix) {
                 return fs
                     .open_directory(path.get(prefix.len() + 1..).unwrap_or(b"/"))
-                    .map(Directory::Ext4);
+                    .map(|directory| Directory {
+                        node: DirectoryNode::Ext4(directory),
+                        parent,
+                    });
             }
         }
         let mut directory =
             self.archive
                 .open_directory(if path.is_empty() { b"/" } else { &path })?;
         directory.set_entries(self.read_dir(if path.is_empty() { b"/" } else { &path })?);
-        Ok(Directory::Archive(directory))
+        Ok(Directory {
+            node: DirectoryNode::Archive(directory),
+            parent,
+        })
     }
     pub fn hard_link(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
         let source = normalize(source)?;

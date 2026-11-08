@@ -13,6 +13,7 @@ use alloc::{
 };
 
 pub(super) struct Volume {
+    pub device: u64,
     pub disk: Rc<Disk>,
     pub start: u64,
     pub(super) dirty: bool,
@@ -85,8 +86,10 @@ impl Volume {
         if inodes.div_ceil(inodes_per_group) != count {
             return Err(Error::InvalidData);
         }
+        let device = crate::metadata::device_identity()?;
         disk.claim(start, length)?;
         let mut volume = Self {
+            device,
             disk,
             start,
             dirty: false,

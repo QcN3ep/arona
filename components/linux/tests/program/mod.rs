@@ -87,6 +87,9 @@ fn writable(
         b"/var/linux-new",
         b"/var/linux-append",
         b"/var/linux-vector",
+        b"/var/linux-stat-link",
+        b"/var/linux-stat-symlink",
+        b"/var/linux-stat",
     ] {
         match files.unlink_bytes(path, service::deadline()) {
             Ok(()) | Err(fs::Error::NotFound) => {}
@@ -105,17 +108,20 @@ fn writable(
             )
             .unwrap()
     };
-    assert_eq!(
-        run(b"writable")
-            .wait(WaitMode::Until(
-                runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS
-            ))
-            .unwrap(),
-        ExitStatus {
-            code: 42,
-            signal: 0
-        }
-    );
+    metadata_fixture(files);
+    for mode in [b"metadata".as_slice(), b"directory", b"writable", b"vector"] {
+        assert_eq!(
+            run(mode)
+                .wait(WaitMode::Until(
+                    runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS
+                ))
+                .unwrap(),
+            ExitStatus {
+                code: 42,
+                signal: 0
+            }
+        );
+    }
     assert_eq!(
         files
             .metadata(b"/var/linux-new", service::deadline())
@@ -123,17 +129,6 @@ fn writable(
             .mode
             & 0o777,
         0o600
-    );
-    assert_eq!(
-        run(b"vector")
-            .wait(WaitMode::Until(
-                runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS
-            ))
-            .unwrap(),
-        ExitStatus {
-            code: 42,
-            signal: 0
-        }
     );
     let append = files
         .create("/var/linux-append", service::deadline())
@@ -161,6 +156,48 @@ fn writable(
         counts[usize::from(record[0] - b'A')] += 1;
     }
     assert_eq!(counts, [8, 8]);
+}
+
+fn metadata_fixture(files: &fs::Client<'_>) {
+    let file = files
+        .create("/var/linux-stat", service::deadline())
+        .unwrap();
+    file.write_at(0, b"test", service::deadline()).unwrap();
+    file.set_attributes(
+        fs::Attributes {
+            permissions: 0o600,
+            uid: 123,
+            gid: 456,
+            accessed: fs::Timestamp {
+                seconds: -5,
+                nanoseconds: 99,
+            },
+            modified: fs::Timestamp {
+                seconds: 7,
+                nanoseconds: 123,
+            },
+            changed: fs::Timestamp {
+                seconds: 9,
+                nanoseconds: 321,
+            },
+        },
+        service::deadline(),
+    )
+    .unwrap();
+    files
+        .hard_link(
+            b"/var/linux-stat",
+            b"/var/linux-stat-link",
+            service::deadline(),
+        )
+        .unwrap();
+    files
+        .symlink(
+            b"/var/linux-stat",
+            b"/var/linux-stat-symlink",
+            service::deadline(),
+        )
+        .unwrap();
 }
 
 fn until() -> WaitMode {
