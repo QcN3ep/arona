@@ -69,21 +69,17 @@ pub(crate) fn dispatch<'a>(
         ),
         abi::CLOSE => Outcome::Complete(file::close(process, arguments[0])),
         abi::LSEEK => file::seek(process, arguments[0], arguments[1], arguments[2]),
-        abi::READ => file::read(process, arguments[0], arguments[1], arguments[2], None),
-        abi::PREAD64 => file::read(
+        abi::READ | abi::PREAD64 | abi::READV | abi::PREADV => file::read(
             process,
             arguments[0],
-            arguments[1],
-            arguments[2],
-            Some(arguments[3]),
+            io_buffer(number, &arguments),
+            matches!(number, abi::PREAD64 | abi::PREADV).then_some(arguments[3]),
         ),
-        abi::WRITE => file::write(process, arguments[0], arguments[1], arguments[2], None),
-        abi::PWRITE64 => file::write(
+        abi::WRITE | abi::PWRITE64 | abi::WRITEV | abi::PWRITEV => file::write(
             process,
             arguments[0],
-            arguments[1],
-            arguments[2],
-            Some(arguments[3]),
+            io_buffer(number, &arguments),
+            matches!(number, abi::PWRITE64 | abi::PWRITEV).then_some(arguments[3]),
         ),
         abi::FTRUNCATE => file::truncate(process, arguments[0], arguments[1]),
         abi::FSYNC | abi::FDATASYNC => file::sync(process, arguments[0]),
@@ -115,6 +111,23 @@ pub(crate) fn dispatch<'a>(
             Ok(())
         }
         Outcome::Terminated => Ok(()),
+    }
+}
+
+fn io_buffer(number: usize, arguments: &[usize; 6]) -> file::Buffer {
+    if matches!(
+        number,
+        abi::READV | abi::PREADV | abi::WRITEV | abi::PWRITEV
+    ) {
+        file::Buffer::Vector {
+            address: arguments[1],
+            count: arguments[2],
+        }
+    } else {
+        file::Buffer::Slice {
+            address: arguments[1],
+            length: arguments[2],
+        }
     }
 }
 

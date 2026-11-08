@@ -318,13 +318,26 @@ files_write:
 
 .global files_append
 files_append:
-    addi sp, sp, -64
-    mv s0, sp
-    addi t0, sp, 64
+    addi sp, sp, -128
+    addi s0, sp, 64
+    addi t0, sp, 128
 .Lfill:
     sb s3, 0(s0)
     addi s0, s0, 1
     bne s0, t0, .Lfill
+    addi t0, sp, 64
+    li t1, 16
+    sd t0, 0(sp)
+    sd t1, 8(sp)
+    addi t0, t0, 16
+    sd t0, 16(sp)
+    sd t1, 24(sp)
+    addi t0, t0, 16
+    sd t0, 32(sp)
+    sd t1, 40(sp)
+    addi t0, t0, 16
+    sd t0, 48(sp)
+    sd t1, 56(sp)
     open_file 0x401, append_path
     expect 0
     mv s0, a0
@@ -332,8 +345,8 @@ files_append:
 .Lappend:
     mv a0, s0
     mv a1, sp
-    li a2, 64
-    invoke 64
+    li a2, 4
+    invoke 66
     expect 64
     addi s1, s1, -1
     bnez s1, .Lappend

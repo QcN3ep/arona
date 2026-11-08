@@ -2,6 +2,7 @@
 
 //! Linux 文件系统调用与异步完成。
 
+mod buffer;
 mod io;
 mod open;
 
@@ -16,6 +17,7 @@ use crate::{
 use alloc::rc::Rc;
 use runtime::{Call, Handle};
 
+pub(super) use buffer::Buffer;
 pub(super) use io::{read, seek, sync, truncate, write};
 pub(super) use open::openat;
 

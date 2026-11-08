@@ -86,6 +86,7 @@ fn writable(
         b"/var/linux-write".as_slice(),
         b"/var/linux-new",
         b"/var/linux-append",
+        b"/var/linux-vector",
     ] {
         match files.unlink_bytes(path, service::deadline()) {
             Ok(()) | Err(fs::Error::NotFound) => {}
@@ -122,6 +123,17 @@ fn writable(
             .mode
             & 0o777,
         0o600
+    );
+    assert_eq!(
+        run(b"vector")
+            .wait(WaitMode::Until(
+                runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS
+            ))
+            .unwrap(),
+        ExitStatus {
+            code: 42,
+            signal: 0
+        }
     );
     let append = files
         .create("/var/linux-append", service::deadline())

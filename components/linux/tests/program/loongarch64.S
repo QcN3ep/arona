@@ -84,6 +84,8 @@ auxv_done:
     beq $s3, $t1, group
     li.d $t1, 119
     beq $s3, $t1, files_write
+    li.d $t1, 118
+    beq $s3, $t1, files_vector
     li.d $t1, 65
     beq $s3, $t1, files_append
     li.d $t1, 66

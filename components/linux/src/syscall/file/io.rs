@@ -4,13 +4,10 @@
 
 use super::super::{
     Outcome,
-    abi::{
-        EBADF, EFAULT, EFBIG, EINVAL, EIO, EISDIR, EOPNOTSUPP, EOVERFLOW, ESPIPE, SyscallResult,
-    },
+    abi::{EBADF, EFBIG, EINVAL, EIO, EISDIR, EOPNOTSUPP, EOVERFLOW, ESPIPE, SyscallResult},
 };
-use super::{Pending, completion, fd, filesystem_error, outcome};
+use super::{Buffer, Pending, buffer::IoVectors, completion, fd, filesystem_error, outcome};
 use crate::{
-    elf::PAGE_SIZE,
     file::{FilePosition, O_APPEND, O_DSYNC, OpenFileDescription},
     process::Process,
 };
@@ -19,8 +16,7 @@ use runtime::{Call, Handle};
 
 pub(in crate::syscall) struct Read<'a> {
     description: Rc<OpenFileDescription<'a>>,
-    address: usize,
-    length: usize,
+    buffers: IoVectors,
     offset: Option<usize>,
     position: Option<FilePosition<'a>>,
     request: Option<fs::client::PendingRead>,
@@ -54,8 +50,7 @@ enum WriteRequest {
 pub(in crate::syscall) fn read<'a>(
     process: &Process<'a>,
     fd_raw: usize,
-    address: usize,
-    length: usize,
+    buffer: Buffer,
     offset: Option<usize>,
 ) -> Outcome<'a> {
     let operation = (|| {
@@ -71,13 +66,12 @@ pub(in crate::syscall) fn read<'a>(
                 }
             }
         }
-        if length > isize::MAX as usize || offset.is_some_and(|offset| offset > i64::MAX as usize) {
+        if offset.is_some_and(|offset| offset > i64::MAX as usize) {
             return Err(EINVAL);
         }
         Ok(Pending::Read(Read {
             description: Rc::clone(&descriptor.description),
-            address,
-            length: length.min(PAGE_SIZE - address % PAGE_SIZE),
+            buffers: buffer.import(process)?,
             offset,
             position: None,
             request: None,
@@ -89,8 +83,7 @@ pub(in crate::syscall) fn read<'a>(
 pub(in crate::syscall) fn write<'a>(
     process: &Process<'a>,
     fd_raw: usize,
-    address: usize,
-    length: usize,
+    buffer: Buffer,
     offset: Option<usize>,
 ) -> Outcome<'a> {
     let operation = (|| {
@@ -106,26 +99,22 @@ pub(in crate::syscall) fn write<'a>(
         {
             return Err(ESPIPE);
         }
-        if length > isize::MAX as usize || offset.is_some_and(|offset| offset > i64::MAX as usize) {
+        if offset.is_some_and(|offset| offset > i64::MAX as usize) {
             return Err(EINVAL);
         }
-        if length == 0 {
-            return Ok(None);
-        }
-        let length = length.min(PAGE_SIZE - address % PAGE_SIZE);
-        let length = if matches!(
+        let buffers = buffer.import(process)?;
+        let limit = if matches!(
             descriptor.description.as_ref(),
             OpenFileDescription::Output { .. }
         ) {
-            length.min(devmgr::uart::MAX_BYTES)
+            devmgr::uart::MAX_BYTES
         } else {
-            length
+            buffers.length()
         };
-        let mut input = alloc::vec![0; length];
-        process
-            .address_space
-            .read(address, &mut input)
-            .map_err(|_| EFAULT)?;
+        let input = buffers.gather(process, limit)?;
+        if input.is_empty() {
+            return Ok(None);
+        }
         let description = Rc::clone(&descriptor.description);
         Ok(Some(match description.as_ref() {
             OpenFileDescription::Output { session, .. } => Pending::Output {
@@ -220,7 +209,7 @@ impl Read<'_> {
     }
 
     pub fn poll(&mut self, process: &Process<'_>) -> Option<SyscallResult> {
-        if self.length == 0 {
+        if self.buffers.length() == 0 {
             return Some(Ok(0));
         }
         let OpenFileDescription::Regular { file, .. } = self.description.as_ref() else {
@@ -235,22 +224,26 @@ impl Read<'_> {
                 self.position = Some(position);
                 offset
             };
-            match file.start_read_at(offset, self.length.min(i64::MAX as usize - offset)) {
+            match file.start_read_at(
+                offset,
+                self.buffers.length().min(i64::MAX as usize - offset),
+            ) {
                 Ok(request) => self.request = Some(request),
                 Err(error) => return Some(Err(filesystem_error(error))),
             }
         }
-        let bytes = match completion(self.request.as_mut().unwrap().try_complete())? {
+        let mut bytes = match completion(self.request.as_mut().unwrap().try_complete())? {
             Ok(bytes) => bytes,
             Err(error) => return Some(Err(filesystem_error(error))),
         };
-        if process.address_space.write(self.address, &bytes).is_err() {
-            return Some(Err(EFAULT));
-        }
+        let count = match self.buffers.scatter(process, &mut bytes) {
+            Ok(count) => count,
+            Err(error) => return Some(Err(error)),
+        };
         if let Some(position) = &self.position {
-            position.set(position.get() + bytes.len());
+            position.set(position.get() + count);
         }
-        Some(Ok(bytes.len()))
+        Some(Ok(count))
     }
 }
 
