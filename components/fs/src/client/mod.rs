@@ -43,6 +43,10 @@ impl<'a> Client<'a> {
         &self.channel
     }
 
+    pub fn into_channel(self) -> Handle<Channel> {
+        self.channel
+    }
+
     pub fn open(&self, path: &str, deadline: u64) -> Result<File<'a>, Error> {
         self.open_bytes(path.as_bytes(), deadline)
     }

@@ -17,7 +17,7 @@ mod thread;
 mod trap;
 
 pub use device::{run as run_devices, run_dma_failure};
-pub use syscall::{handle_program, run_device_program, run_init_program};
+pub use syscall::{handle_program, run_device_program, run_init_program, run_linux_program};
 
 pub trait Platform {
     fn return_values(state: &mut kernel::hardware::execution::UserState, values: [usize; 3]);

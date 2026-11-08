@@ -12,6 +12,7 @@ members = [
     "components/devmgr",
     "components/logger",
     "components/fs",
+    "components/linux",
     "xtask",
 ]
 

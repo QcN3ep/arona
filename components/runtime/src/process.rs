@@ -33,7 +33,11 @@ pub struct SupervisedTask {
 
 impl SupervisedTask {
     pub fn new(parent: &Handle<Task>, port: &Handle<crate::TrapPort>) -> Result<Self, Error> {
-        let rights = CONSTRUCTION_RIGHTS
+        let rights = Rights::WAIT
+            .union(Rights::TERMINATE)
+            .union(Rights::CREATE_THREAD)
+            .union(Rights::FRAME_ALLOCATE)
+            .union(Rights::MAP_MEMORY)
             .union(Rights::SET_TRAP)
             .union(Rights::READ_MEMORY)
             .union(Rights::WRITE_MEMORY);
@@ -46,6 +50,28 @@ impl SupervisedTask {
 
     pub fn task(&self) -> &Handle<Task> {
         &self.task
+    }
+
+    pub fn map(
+        &self,
+        frames: &Handle<FrameAllocation>,
+        offset: u64,
+        count: u64,
+        address: Option<usize>,
+        permissions: Permissions,
+    ) -> Result<Range<usize>, Error> {
+        self.task
+            .map(frames, offset, count, address, permissions)?
+            .into_range()
+    }
+
+    pub fn reserve(
+        &self,
+        length: usize,
+        alignment: usize,
+        address: Option<usize>,
+    ) -> Result<Range<usize>, Error> {
+        self.task.reserve(length, alignment, address)?.into_range()
     }
 
     pub fn create_thread(

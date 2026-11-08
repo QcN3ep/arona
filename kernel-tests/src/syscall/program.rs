@@ -42,6 +42,12 @@ pub fn run_init(image: &'static [u8], archive: &'static [u8], devices: DeviceSet
     run_cases(image, &[9, 10, 11, 12, 13], true, true);
 }
 
+pub fn run_linux(image: &'static [u8], archive: &'static [u8], devices: DeviceSet) {
+    DEVICES.call_once(|| devices);
+    ARCHIVE.call_once(|| archive);
+    run_cases(image, &[14], true, true);
+}
+
 pub fn handle(trap: Trap) -> TrapOutcome {
     let binding = if TRACK_BINDINGS.load(Ordering::Relaxed)
         && let TrapEvent::Syscall {
@@ -71,10 +77,10 @@ pub fn handle(trap: Trap) -> TrapOutcome {
         None
     };
     let caller = thread::current().and_then(|thread| thread.task());
-    let supervising = if ARCHIVE.get().is_some()
+    let supervising = if (9..=13).contains(&MODE.load(Ordering::Relaxed))
         && let TrapEvent::Syscall { arguments, .. } = trap.event
         && arguments[0] == abi::method::thread::WAIT_MANY as usize
-        && arguments[2] == 3
+        && arguments[2] == 4
     {
         caller.as_ref().is_some_and(|caller| {
             caller
@@ -88,7 +94,7 @@ pub fn handle(trap: Trap) -> TrapOutcome {
     } else {
         false
     };
-    let method = if ARCHIVE.get().is_some()
+    let method = if (9..=13).contains(&MODE.load(Ordering::Relaxed))
         && let TrapEvent::Syscall {
             handle, arguments, ..
         } = trap.event
@@ -255,13 +261,13 @@ fn scenario(_: usize) -> usize {
         rights = Rights::from_bits(rights.bits() & !Rights::CREATE_THREAD.bits()).unwrap();
     }
     let task_handle = task.insert(Object::Task(task.clone()), rights).unwrap();
-    if mode >= 9 {
+    if (9..=13).contains(&mode) {
         INIT_TASK.store(task_handle.raw(), Ordering::Relaxed);
     }
     let bootstrap = task
         .insert(
             Object::Channel(sender),
-            if mode == 6 || mode >= 9 {
+            if mode == 6 || (9..=13).contains(&mode) {
                 Rights::READ
             } else if mode == 8 {
                 Rights::READ_WRITE | Rights::WAIT
@@ -300,7 +306,7 @@ fn scenario(_: usize) -> usize {
         *BINDING.lock() = None;
         return 0;
     }
-    if mode >= 9 {
+    if (9..=13).contains(&mode) {
         drop(receiver);
         init_lifecycle(&task, &user, mode);
         *SERVICES.lock() = Vec::new();
@@ -582,13 +588,13 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
         }
         return;
     }
-    let deadline = hardware::timer().now_ns().unwrap() + 30_000_000_000;
+    let deadline = hardware::timer().now_ns().unwrap() + 60_000_000_000;
     let devices = DEVICES.get().unwrap();
     let group = console_group();
     loop {
         let busy = matches!(devices.claim_group(group), Err(DeviceError::Busy));
         let children = SERVICES.lock().clone();
-        let active = children.len() == 3
+        let active = children.len() == 4
             && children
                 .iter()
                 .all(|child| child.state() == TaskState::Active);
@@ -609,7 +615,7 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
         thread::yield_now().unwrap();
     }
     let children = SERVICES.lock().clone();
-    assert_eq!(children.len(), 3);
+    assert_eq!(children.len(), 4);
     for (index, child) in children.iter().enumerate() {
         assert_eq!(child.state(), TaskState::Active, "service {index}");
     }
@@ -717,7 +723,7 @@ fn word(bytes: &[u8], offset: usize) -> u64 {
 }
 
 fn bootstrap(receiver: &Channel, mode: u64) {
-    if let Some(devices) = DEVICES.get().filter(|_| matches!(mode, 5 | 6 | 9..=13)) {
+    if let Some(devices) = DEVICES.get().filter(|_| matches!(mode, 5 | 6 | 9..=14)) {
         let source = Task::new().unwrap();
         let channel = source
             .insert(Object::Channel(receiver.clone()), Rights::WRITE)

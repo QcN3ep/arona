@@ -1,0 +1,179 @@
+# SPDX-License-Identifier: MPL-2.0
+
+.section .text
+.global _start
+.option norelax
+_start:
+    andi t0, sp, 15
+    bnez t0, failure
+    ld t0, 0(sp)
+    li t1, 2
+    bne t0, t1, failure
+    ld t0, 24(sp)
+    bnez t0, failure
+    ld t0, 32(sp)
+    lbu t0, 0(t0)
+    li t1, 65
+    bne t0, t1, failure
+    ld t0, 40(sp)
+    bnez t0, failure
+    addi t0, sp, 48
+    li s2, 0
+auxv:
+    ld t1, 0(t0)
+    ld t2, 8(t0)
+    addi t0, t0, 16
+    beqz t1, auxv_done
+    li t3, 3
+    beq t1, t3, aux_phdr
+    li t3, 4
+    beq t1, t3, aux_phent
+    li t3, 5
+    beq t1, t3, aux_phnum
+    li t3, 6
+    beq t1, t3, aux_pagesz
+    li t3, 9
+    beq t1, t3, aux_entry
+    li t3, 31
+    beq t1, t3, aux_execfn
+    j auxv
+aux_phdr:
+    lw t3, 0(t2)
+    beqz t3, failure
+    ori s2, s2, 1
+    j auxv
+aux_phent:
+    li t3, 56
+    bne t2, t3, failure
+    ori s2, s2, 2
+    j auxv
+aux_phnum:
+    beqz t2, failure
+    ori s2, s2, 4
+    j auxv
+aux_pagesz:
+    li t3, 4096
+    bne t2, t3, failure
+    ori s2, s2, 8
+    j auxv
+aux_entry:
+    la t3, _start
+    bne t2, t3, failure
+    ori s2, s2, 16
+    j auxv
+aux_execfn:
+    lbu t3, 0(t2)
+    li t4, 47
+    bne t3, t4, failure
+    ori s2, s2, 32
+    j auxv
+auxv_done:
+    li t0, 63
+    bne s2, t0, failure
+    la t0, zeroed
+    ld t0, 0(t0)
+    bnez t0, failure
+    ld t0, 16(sp)
+    lbu s3, 0(t0)
+    li t1, 102
+    beq s3, t1, fault
+    li t1, 114
+    beq s3, t1, readonly
+    li t1, 105
+    beq s3, t1, illegal
+    li t1, 103
+    beq s3, t1, group
+    li a7, -1
+    ecall
+    li t0, -38
+    bne a0, t0, failure
+    li a0, 99
+    li a1, 0
+    li a2, 1
+    li a7, 64
+    ecall
+    li t0, -9
+    bne a0, t0, failure
+    li a0, 1
+    li a1, 0
+    li a2, 1
+    li a7, 64
+    ecall
+    li t0, -14
+    bne a0, t0, failure
+    li a0, 1
+    li a1, -4096
+    li a2, 1
+    li a7, 64
+    ecall
+    li t0, -14
+    bne a0, t0, failure
+    li a0, 1
+    li a1, 0
+    li a2, 0
+    li a7, 64
+    ecall
+    bnez a0, failure
+    li a0, 1
+    li a1, 0
+    li a2, -1
+    li a7, 64
+    ecall
+    li t0, -22
+    bne a0, t0, failure
+    la s0, message
+    li s1, message_end - message
+    li s2, 0
+write:
+    li a0, 1
+    mv a1, s0
+    mv a2, s1
+    li a7, 64
+    ecall
+    blez a0, failure
+    bgtu a0, s1, failure
+    add s0, s0, a0
+    sub s1, s1, a0
+    addi s2, s2, 1
+    bnez s1, write
+    li t0, 2
+    bltu s2, t0, failure
+    li a0, 298
+    li a7, 93
+    ecall
+failure:
+    li a0, 1
+    li a7, 94
+    ecall
+    j failure
+fault:
+    ld t0, 0(zero)
+    j failure
+readonly:
+    la t0, message
+    sb zero, 0(t0)
+    j failure
+illegal:
+    .word 0
+    j failure
+group:
+    li a0, 43
+    li a7, 94
+    ecall
+    j failure
+
+.section .rodata
+message:
+    .ascii "Linux ABI guest write\nLinux partial write: "
+    .rept 256
+    .ascii "#"
+    .endr
+    .ascii "\n"
+message_end:
+
+.section .bss
+.balign 4096
+zeroed:
+    .zero 4096
+
+.section .note.GNU-stack,"",@progbits

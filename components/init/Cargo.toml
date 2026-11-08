@@ -25,3 +25,4 @@ runtime = { package = "arona-runtime", path = "../runtime" }
 devmgr = { package = "arona-devmgr", path = "../devmgr" }
 logger = { package = "arona-logger", path = "../logger" }
 fs = { package = "arona-fs", path = "../fs" }
+linux = { package = "arona-linux", path = "../linux" }

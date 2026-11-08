@@ -14,7 +14,7 @@ use spin::Once;
 mod program;
 pub use program::{
     handle as handle_program, run as run_program, run_device as run_device_program,
-    run_init as run_init_program, run_process,
+    run_init as run_init_program, run_linux as run_linux_program, run_process,
 };
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);

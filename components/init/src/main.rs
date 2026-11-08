@@ -16,6 +16,7 @@ enum InitError {
     Device(devmgr::Error),
     Logger(logger::Error),
     Filesystem(fs::Error),
+    Linux(linux::Error),
 }
 
 impl core::fmt::Debug for InitError {
@@ -25,6 +26,7 @@ impl core::fmt::Debug for InitError {
             Self::Device(error) => output.debug_tuple("Device").field(error).finish(),
             Self::Logger(error) => output.debug_tuple("Logger").field(error).finish(),
             Self::Filesystem(error) => output.debug_tuple("Filesystem").field(error).finish(),
+            Self::Linux(error) => output.debug_tuple("Linux").field(error).finish(),
         }
     }
 }
@@ -40,7 +42,8 @@ init_errors!(
     Runtime(Error),
     Device(devmgr::Error),
     Logger(logger::Error),
-    Filesystem(fs::Error)
+    Filesystem(fs::Error),
+    Linux(linux::Error)
 );
 
 fn main() -> Result<usize, InitError> {
@@ -93,10 +96,11 @@ fn main() -> Result<usize, InitError> {
         persistent_log,
     )?;
     logger::init(client, logger::log::LevelFilter::Info).map_err(|_| Error::Protocol)?;
+    let (linux, _linux_control) = service::start_linux(&loader, &files, &mounts)?;
     if mounted {
         logger::log::info!(target: "init", "Mounted block device at /var");
     }
     logger::log::info!(target: "init", "System services ready");
     logger::log::logger().flush();
-    Ok(service::wait(&[&filesystem, &devmgr, &logger])?.max(1))
+    Ok(service::wait(&[&filesystem, &devmgr, &logger, &linux])?.max(1))
 }

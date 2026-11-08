@@ -27,7 +27,7 @@ impl<'a> Control<'a> {
 
     pub fn connect(&self, deadline: u64) -> Result<Client<'a>, Error> {
         let (channel, server) = self.task.channel(
-            CHANNEL_RIGHTS,
+            CHANNEL_RIGHTS | Rights::TRANSFER,
             Rights::READ | Rights::WAIT | Rights::TRANSFER,
         )?;
         let mut request = Message::new(protocol::CONNECT, &[])?;

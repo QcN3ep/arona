@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod linux_test;
+
 use std::{
     env,
     ffi::OsString,
@@ -60,7 +62,8 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
     match command.as_str() {
         "build" => build(arguments, false),
         "run" => build(arguments, true),
-        "package-init" => package_init(BuildOptions::parse(arguments)?).map(|_| ()),
+        "package-init" => package_init(BuildOptions::parse(arguments)?, false).map(|_| ()),
+        "package-linux-test" => package_init(BuildOptions::parse(arguments)?, true).map(|_| ()),
         "help" | "--help" | "-h" => {
             println!("{}", usage());
             Ok(())
@@ -71,7 +74,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
 
 fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), String> {
     let options = BuildOptions::parse(arguments)?;
-    let archive = package_init(options)?;
+    let archive = package_init(options, false)?;
     run_cargo_build(options, &archive)?;
     if run {
         let root = workspace_root()?;
@@ -113,16 +116,23 @@ fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), Str
     Ok(())
 }
 
-fn package_init(options: BuildOptions) -> Result<PathBuf, String> {
+fn package_init(options: BuildOptions, linux_test: bool) -> Result<PathBuf, String> {
     let root = workspace_root()?;
     let profile = options.profile();
     let target_directory = target_directory(&root);
     let archive = target_directory
         .join(options.target.triple())
         .join(profile)
-        .join("initramfs.cpio");
+        .join(if linux_test {
+            "initramfs-linux-test.cpio"
+        } else {
+            "initramfs.cpio"
+        });
     let mut bytes = Vec::new();
-    for component in ["init", "devmgr", "logger", "fs"] {
+    for component in ["init", "devmgr", "logger", "fs", "linux"] {
+        if linux_test && component == "init" {
+            continue;
+        }
         build_component(options.target, options.release, component)?;
         let executable = target_directory
             .join(options.target.triple())
@@ -131,6 +141,9 @@ fn package_init(options: BuildOptions) -> Result<PathBuf, String> {
         let image = fs::read(&executable)
             .map_err(|error| format!("failed to read {}: {error}", executable.display()))?;
         append_entry(&mut bytes, &format!("bin/{component}"), 0o100755, &image)?;
+    }
+    if linux_test {
+        linux_test::append(options, &root, &target_directory, &mut bytes)?;
     }
     append_entry(&mut bytes, "TRAILER!!!", 0, &[])?;
     fs::write(&archive, bytes)
@@ -296,5 +309,5 @@ fn execute(mut command: Command) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|package-init> <riscv64|loongarch64> [--release] [--initramfs embedded|external]".to_owned()
+    "usage: cargo xtask <build|run|package-init|package-linux-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external]".to_owned()
 }

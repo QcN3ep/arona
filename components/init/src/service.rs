@@ -114,6 +114,25 @@ pub fn persistent_log_file(files: &fs::Client<'static>) -> Result<fs::File<'stat
     }
 }
 
+pub fn start_linux(
+    loader: &Loader,
+    files: &fs::Client<'_>,
+    filesystem: &fs::Control<'static>,
+) -> Result<(Service, linux::Control<'static>), InitError> {
+    let (service, channel) = launch(
+        loader,
+        files.open("/bin/linux", deadline()?)?,
+        linux::service::REQUIRED_RIGHTS,
+    )?;
+    let control = linux::Control::start(
+        process::task(),
+        channel,
+        filesystem.connect(deadline()?)?,
+        deadline()?,
+    )?;
+    Ok((service, control))
+}
+
 pub fn wait(services: &[&Service]) -> Result<usize, Error> {
     let items: alloc::vec::Vec<_> = services
         .iter()

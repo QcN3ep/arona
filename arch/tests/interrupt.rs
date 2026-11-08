@@ -166,20 +166,28 @@ fn run_program(
         data.read(0, &mut bytes).unwrap();
         bytes
     });
-    if suite == "init" {
+    if matches!(suite, "init" | "linux") {
         let init = arch::boot::initramfs::find_init(
             arch::boot::initramfs::Image::from_bytes(bytes, 0).unwrap(),
         )
         .unwrap()
         .data()
         .physical;
-        kernel_tests::run_init_program(
+        let run = if suite == "init" {
+            kernel_tests::run_init_program
+        } else {
+            kernel_tests::run_linux_program
+        };
+        run(
             &bytes[init.start as usize..init.end as usize],
             bytes,
             devices,
         );
         uart()
-            .write(format_args!("Init service tests passed\n"))
+            .write(format_args!(
+                "{} service tests passed\n",
+                if suite == "init" { "Init" } else { "Linux" }
+            ))
             .unwrap();
     } else {
         let counts = kernel_tests::run_device_program(bytes, devices, suite == "service");
@@ -242,6 +250,7 @@ fn select_program() -> &'static str {
                 b"device" => "device",
                 b"service" => "service",
                 b"init" => "init",
+                b"linux" => "linux",
                 b"dma" => "dma",
                 b"block" => "block",
                 b"rng" => "rng",

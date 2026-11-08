@@ -20,7 +20,7 @@ pub(super) const WRITE: u64 = 4;
 pub(super) const FLUSH: u64 = 5;
 pub(super) const CONFIGURE: u64 = 6;
 pub(super) const SET_ACCESS: u64 = 7;
-pub(super) const MAX_BYTES: usize = (runtime::ipc::MESSAGE_WORDS - 2) * 8;
+pub const MAX_BYTES: usize = (runtime::ipc::MESSAGE_WORDS - 2) * 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u64)]
