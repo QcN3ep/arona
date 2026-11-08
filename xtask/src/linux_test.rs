@@ -47,6 +47,9 @@ pub(super) fn append(
         }
     }
     append_entry(bytes, "bin/linux-writable-code", 0o100755, &writable)?;
+    let mut data = b"0123456789abcdef".repeat(512);
+    data.push(b'Z');
+    append_entry(bytes, "etc/linux-data", 0o100644, &data)?;
     let mut command = cargo_command(root.to_path_buf());
     command.args([
         "+nightly",
@@ -117,30 +120,28 @@ fn build_guest(
         .join(options.profile())
         .join("linux-tests");
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let object = directory.join("program.o");
-    let mut assemble = Command::new("clang");
-    assemble
-        .arg(format!("--target={triple}"))
-        .args(["-c", "-x", "assembler"])
-        .arg(root.join(format!("components/linux/tests/program/{isa}.S")))
-        .arg("-o")
-        .arg(&object);
-    execute(assemble)?;
-    let memory = directory.join("memory.o");
-    let mut assemble = Command::new("clang");
-    assemble
-        .arg(format!("--target={triple}"))
-        .args(["-c", "-x", "assembler"])
-        .arg(root.join(format!("components/linux/tests/memory/{isa}.S")))
-        .arg("-o")
-        .arg(&memory);
-    execute(assemble)?;
+    let mut objects = Vec::new();
+    for (module, name) in [
+        ("program", "program"),
+        ("memory", "memory"),
+        ("syscall/file", "file"),
+    ] {
+        let object = directory.join(format!("{name}.o"));
+        let mut assemble = Command::new("clang");
+        assemble
+            .arg(format!("--target={triple}"))
+            .args(["-c", "-x", "assembler"])
+            .arg(root.join(format!("components/linux/tests/{module}/{isa}.S")))
+            .arg("-o")
+            .arg(&object);
+        execute(assemble)?;
+        objects.push(object);
+    }
     for (name, address) in [("linux-test", "0x400000"), ("linux-compact", "0x11000")] {
         let mut link = Command::new("ld.lld");
         link.args(["-static", "--entry=_start", "-z", "max-page-size=4096"])
             .arg(format!("-Ttext={address}"))
-            .arg(&object)
-            .arg(&memory)
+            .args(&objects)
             .arg("-o")
             .arg(directory.join(name));
         execute(link)?;

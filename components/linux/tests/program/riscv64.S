@@ -91,6 +91,7 @@ auxv_done:
     li t1, 120
     beq s3, t1, execute_heap
     jal ra, mappings
+    jal ra, files
     li a7, -1
     ecall
     li t0, -38

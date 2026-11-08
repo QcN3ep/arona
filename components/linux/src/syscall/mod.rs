@@ -12,11 +12,7 @@ use runtime::{
     trap::{Trap, UserState},
 };
 
-use crate::{
-    Error,
-    elf::Machine,
-    process::{Process, Thread},
-};
+use crate::{Error, elf::Machine, process::Process};
 
 use abi::{ENOSYS, SyscallResult};
 
@@ -26,22 +22,23 @@ struct Context {
     state: UserState,
 }
 
-pub(crate) struct Pending {
+pub(crate) struct Pending<'a> {
     context: Context,
-    operation: Operation,
+    operation: file::Pending<'a>,
 }
 
-enum Outcome {
+enum Outcome<'a> {
     Complete(SyscallResult),
-    Pending(Operation),
+    Pending(file::Pending<'a>),
     Terminated,
 }
 
-enum Operation {
-    Write(devmgr::device::Pending<usize, usize>),
-}
-
-pub(crate) fn dispatch(process: &mut Process, index: usize, trap: Trap) -> Result<(), Error> {
+pub(crate) fn dispatch<'a>(
+    process: &mut Process<'a>,
+    index: usize,
+    trap: Trap,
+    files: &fs::Client<'a>,
+) -> Result<(), Error> {
     let context = Context {
         machine: process.machine,
         state: trap.state()?,
@@ -49,6 +46,30 @@ pub(crate) fn dispatch(process: &mut Process, index: usize, trap: Trap) -> Resul
     };
     let (number, arguments) = context.machine.syscall(&context.state);
     let outcome = match number {
+        abi::DUP => Outcome::Complete(file::duplicate(process, arguments[0], 0, false)),
+        abi::DUP3 => Outcome::Complete(file::dup3(
+            process,
+            arguments[0],
+            arguments[1],
+            arguments[2],
+        )),
+        abi::FCNTL => Outcome::Complete(file::fcntl(
+            process,
+            arguments[0],
+            arguments[1],
+            arguments[2],
+        )),
+        abi::OPENAT => file::openat(process, files, arguments[0], arguments[1], arguments[2]),
+        abi::CLOSE => Outcome::Complete(file::close(process, arguments[0])),
+        abi::LSEEK => file::seek(process, arguments[0], arguments[1], arguments[2]),
+        abi::READ => file::read(process, arguments[0], arguments[1], arguments[2], None),
+        abi::PREAD64 => file::read(
+            process,
+            arguments[0],
+            arguments[1],
+            arguments[2],
+            Some(arguments[3]),
+        ),
         abi::WRITE => file::write(process, arguments[0], arguments[1], arguments[2]),
         abi::EXIT => process::exit(process, index, arguments[0])?,
         abi::EXIT_GROUP => process::exit_group(process, arguments[0])?,
@@ -77,25 +98,25 @@ pub(crate) fn dispatch(process: &mut Process, index: usize, trap: Trap) -> Resul
     }
 }
 
-pub(crate) fn poll(thread: &mut Thread) -> Result<bool, Error> {
-    let Some(pending) = &mut thread.pending else {
+pub(crate) fn poll<'a>(
+    process: &mut Process<'a>,
+    index: usize,
+    files: &fs::Client<'a>,
+) -> Result<bool, Error> {
+    let Some(mut pending) = process.threads[index].pending.take() else {
         return Ok(false);
     };
-    let result = match &mut pending.operation {
-        Operation::Write(request) => file::poll_write(request),
-    };
-    let Some(result) = result else {
+    let Some(result) = pending.operation.poll(process, files) else {
+        process.threads[index].pending = Some(pending);
         return Ok(false);
     };
-    thread.pending.take().unwrap().context.complete(result)?;
+    pending.context.complete(result)?;
     Ok(true)
 }
 
-impl Pending {
-    pub fn call(&self) -> &Handle<Call> {
-        match &self.operation {
-            Operation::Write(request) => request.call(),
-        }
+impl Pending<'_> {
+    pub fn call(&self) -> Option<&Handle<Call>> {
+        self.operation.call()
     }
 }
 

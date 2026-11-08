@@ -5,7 +5,15 @@ use runtime::trap::UserState;
 use crate::elf::Machine;
 
 // REFERENCE: https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h
+pub(super) const DUP: usize = 23;
+pub(super) const DUP3: usize = 24;
+pub(super) const FCNTL: usize = 25;
+pub(super) const OPENAT: usize = 56;
+pub(super) const CLOSE: usize = 57;
+pub(super) const LSEEK: usize = 62;
+pub(super) const READ: usize = 63;
 pub(super) const WRITE: usize = 64;
+pub(super) const PREAD64: usize = 67;
 pub(super) const EXIT: usize = 93;
 pub(super) const EXIT_GROUP: usize = 94;
 pub(super) const BRK: usize = 214;
@@ -15,14 +23,21 @@ pub(super) const MPROTECT: usize = 226;
 
 pub(super) struct Errno(isize);
 
+pub(super) const ENOENT: Errno = Errno(2);
 pub(super) const EIO: Errno = Errno(5);
 pub(super) const EBADF: Errno = Errno(9);
 pub(super) const ENOMEM: Errno = Errno(12);
 pub(super) const EACCES: Errno = Errno(13);
 pub(super) const EFAULT: Errno = Errno(14);
 pub(super) const EEXIST: Errno = Errno(17);
+pub(super) const ENOTDIR: Errno = Errno(20);
+pub(super) const EISDIR: Errno = Errno(21);
 pub(super) const EINVAL: Errno = Errno(22);
+pub(super) const EMFILE: Errno = Errno(24);
+pub(super) const ESPIPE: Errno = Errno(29);
+pub(super) const ENAMETOOLONG: Errno = Errno(36);
 pub(super) const ENOSYS: Errno = Errno(38);
+pub(super) const EOVERFLOW: Errno = Errno(75);
 pub(super) const EOPNOTSUPP: Errno = Errno(95);
 
 pub(super) type SyscallResult = Result<usize, Errno>;

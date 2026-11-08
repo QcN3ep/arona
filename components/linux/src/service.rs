@@ -20,8 +20,8 @@ pub const REQUIRED_RIGHTS: Rights = runtime::process::ProcessStart::REQUIRED_RIG
     .union(Rights::CREATE_CHANNEL)
     .union(Rights::SET_TRAP);
 
-struct Running {
-    process: Process,
+struct Running<'a> {
+    process: Process<'a>,
     reply: Handle<Reply>,
 }
 
@@ -39,10 +39,10 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
     let port = task.trap_port(Rights::READ | Rights::WAIT)?;
     reply.send(&mut Message::new(0, &[])?)?;
     let mut loading: Vec<Loading<'_>> = Vec::new();
-    let mut running: Vec<Running> = Vec::new();
+    let mut running: Vec<Running<'_>> = Vec::new();
     loop {
         let mut progress = poll_loading(&mut loading, &mut running, task, &port, machine)?;
-        progress |= poll_running(&mut running)?;
+        progress |= poll_running(&mut running, &files)?;
         match port.receive(WaitMode::Poll) {
             Ok(trap) => {
                 if let Some(owner) = running.iter_mut().find(|running| {
@@ -52,7 +52,7 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
                         .iter()
                         .any(|thread| thread.native_id == trap.info.thread)
                 }) {
-                    owner.process.trap(trap)?;
+                    owner.process.trap(trap, &files)?;
                 }
                 progress = true;
             }
@@ -120,10 +120,10 @@ fn reply_error(reply: Handle<Reply>, error: Error) -> Result<(), Error> {
     Ok(())
 }
 
-fn poll_loading(
-    loading: &mut Vec<Loading<'_>>,
-    running: &mut Vec<Running>,
-    task: &Handle<Task>,
+fn poll_loading<'a>(
+    loading: &mut Vec<Loading<'a>>,
+    running: &mut Vec<Running<'a>>,
+    task: &'a Handle<Task>,
     port: &Handle<runtime::TrapPort>,
     machine: Machine,
 ) -> Result<bool, Error> {
@@ -152,11 +152,11 @@ fn poll_loading(
     Ok(progress)
 }
 
-fn poll_running(running: &mut Vec<Running>) -> Result<bool, Error> {
+fn poll_running<'a>(running: &mut Vec<Running<'a>>, files: &fs::Client<'a>) -> Result<bool, Error> {
     let mut progress = false;
     let mut index = 0;
     while index < running.len() {
-        progress |= running[index].process.poll()?;
+        progress |= running[index].process.poll(files)?;
         if running[index].process.threads.is_empty() {
             let finished = running.swap_remove(index);
             let status = finished.process.status();

@@ -74,10 +74,10 @@ impl<'a> Loading<'a> {
 
     pub fn poll(
         &mut self,
-        task: &Handle<Task>,
+        task: &'a Handle<Task>,
         port: &Handle<TrapPort>,
         machine: Machine,
-    ) -> Result<Option<Process>, Error> {
+    ) -> Result<Option<Process<'a>>, Error> {
         match &mut self.stage {
             Stage::Open(pending) => match pending.try_complete() {
                 Ok(file) => {

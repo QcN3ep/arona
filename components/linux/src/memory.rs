@@ -49,6 +49,10 @@ impl AddressSpace {
         self.native.task().read_memory(address, output)
     }
 
+    pub fn write(&self, address: usize, input: &[u8]) -> Result<(), runtime::Error> {
+        self.native.task().write_memory(address, input)
+    }
+
     pub fn map_anonymous(
         &self,
         address: Option<usize>,

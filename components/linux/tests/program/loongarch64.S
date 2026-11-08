@@ -90,6 +90,7 @@ auxv_done:
     li.d $t1, 120
     beq $s3, $t1, execute_heap
     bl mappings
+    bl files
     li.d $a7, -1
     syscall 0
     li.d $t0, -38

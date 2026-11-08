@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 use runtime::{
     Handle, Rights, Task, TrapPort,
     ipc::{EXITED, READABLE, WaitItem},
@@ -11,32 +11,29 @@ use runtime::{
 use crate::{
     Error, ExitStatus,
     elf::{Image, Machine},
+    file::FileTable,
     memory::AddressSpace,
     protocol::Arguments,
     syscall::{self, Pending},
 };
 
-pub(crate) struct Thread {
+pub(crate) struct Thread<'a> {
     pub native: Handle<runtime::Thread>,
     pub native_id: u64,
-    pub pending: Option<Pending>,
+    pub pending: Option<Pending<'a>>,
 }
 
-pub(crate) struct OpenFileDescription {
-    pub output: devmgr::uart::Session,
-}
-
-pub(crate) struct Process {
+pub(crate) struct Process<'a> {
     pub address_space: AddressSpace,
-    pub threads: Vec<Thread>,
-    pub files: BTreeMap<usize, Arc<OpenFileDescription>>,
+    pub threads: Vec<Thread<'a>>,
+    pub files: FileTable<'a>,
     pub machine: Machine,
     status: ExitStatus,
 }
 
-impl Process {
+impl<'a> Process<'a> {
     pub fn start(
-        parent: &Handle<Task>,
+        parent: &'a Handle<Task>,
         port: &Handle<TrapPort>,
         machine: Machine,
         image: &Image<'_>,
@@ -55,10 +52,7 @@ impl Process {
         )?;
         native.set_user_state(&machine.initial(image.entry, stack))?;
         let id = native.id()?;
-        let output = Arc::new(OpenFileDescription { output });
-        let files = [(1, Arc::clone(&output)), (2, output)]
-            .into_iter()
-            .collect();
+        let files = FileTable::new(output);
         native.start()?;
         Ok(Self {
             address_space,
@@ -73,7 +67,7 @@ impl Process {
         })
     }
 
-    pub fn trap(&mut self, trap: Trap) -> Result<(), Error> {
+    pub fn trap(&mut self, trap: Trap, files: &fs::Client<'a>) -> Result<(), Error> {
         let Some(index) = self
             .threads
             .iter()
@@ -85,7 +79,7 @@ impl Process {
             return Ok(());
         }
         match trap.info.kind {
-            TrapInfo::SYSCALL => syscall::dispatch(self, index, trap),
+            TrapInfo::SYSCALL => syscall::dispatch(self, index, trap, files),
             TrapInfo::INTERRUPTED => {
                 let state = trap.state()?;
                 trap.resume(&state).map_err(|(error, _)| error.into())
@@ -104,7 +98,7 @@ impl Process {
         }
     }
 
-    pub fn poll(&mut self) -> Result<bool, Error> {
+    pub fn poll(&mut self, files: &fs::Client<'a>) -> Result<bool, Error> {
         let mut progress = false;
         let mut index = 0;
         while index < self.threads.len() {
@@ -119,17 +113,17 @@ impl Process {
                 progress = true;
                 continue;
             }
-            progress |= syscall::poll(&mut self.threads[index])?;
+            progress |= syscall::poll(self, index, files)?;
             index += 1;
         }
         Ok(progress)
     }
 
-    pub fn waits<'a>(&'a self, items: &mut Vec<WaitItem<'a>>) {
+    pub fn waits<'b>(&'b self, items: &mut Vec<WaitItem<'b>>) {
         for thread in &self.threads {
             items.push(WaitItem::new(&thread.native, EXITED));
-            if let Some(pending) = &thread.pending {
-                items.push(WaitItem::new(pending.call(), READABLE));
+            if let Some(call) = thread.pending.as_ref().and_then(Pending::call) {
+                items.push(WaitItem::new(call, READABLE));
             }
         }
     }
