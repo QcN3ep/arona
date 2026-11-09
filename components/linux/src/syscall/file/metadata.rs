@@ -7,7 +7,7 @@ use runtime::{Call, Handle};
 
 use super::super::{
     Outcome,
-    abi::{EBADF, EFAULT, EINVAL, ENOENT, ENOTDIR, EOPNOTSUPP, EOVERFLOW, Errno, SyscallResult},
+    abi::{EBADF, EFAULT, EINVAL, ENOENT, EOVERFLOW, Errno, SyscallResult},
 };
 use super::{Pending, completion, fd, filesystem_error, open, outcome};
 use crate::{file::OpenFileDescription, process::Process};
@@ -15,7 +15,6 @@ use crate::{file::OpenFileDescription, process::Process};
 pub(in crate::syscall) struct Stat<'a> {
     request: fs::client::PendingMetadata,
     address: usize,
-    follow: bool,
     _description: Option<Rc<OpenFileDescription<'a>>>,
 }
 
@@ -35,7 +34,6 @@ pub(in crate::syscall) fn fstat<'a>(
         Ok(Some(Pending::Stat(Stat {
             request,
             address,
-            follow: false,
             _description: Some(description),
         })))
     })();
@@ -65,38 +63,57 @@ pub(in crate::syscall) fn statat<'a>(
     if flags as u32 & !(0x100 | 0x800 | 0x1000) != 0 {
         return Outcome::Complete(Err(EINVAL));
     }
+    if path == 0 && flags & 0x1000 != 0 {
+        return empty_stat(process, files, directory, address);
+    }
     let path = match open::path_bytes(process, path) {
         Ok(path) => path,
         Err(error) => return Outcome::Complete(Err(error)),
     };
     if path.is_empty() && flags & 0x1000 != 0 {
-        return fstat(process, directory, address);
+        return empty_stat(process, files, directory, address);
     }
     let operation = (|| {
         if path.is_empty() {
             return Err(ENOENT);
         }
-        if path[0] != b'/' && directory as i32 != -100 {
-            let descriptor = process.files.get(fd(directory)?).ok_or(EBADF)?;
-            return Err(
-                if matches!(
-                    descriptor.description.as_ref(),
-                    OpenFileDescription::Directory { .. }
-                ) {
-                    EOPNOTSUPP
-                } else {
-                    ENOTDIR
-                },
-            );
-        }
+        let lookup = super::path::Lookup::from_name(process, directory, path)?;
         Ok(Pending::Stat(Stat {
-            request: files.start_metadata(&path).map_err(filesystem_error)?,
+            request: files
+                .start_metadata_at(lookup.directory(), &lookup.name, flags & 0x100 == 0)
+                .map_err(filesystem_error)?,
             address,
-            follow: flags & 0x100 == 0,
-            _description: None,
+            _description: lookup.anchor,
         }))
     })();
     outcome(operation)
+}
+
+fn empty_stat<'a>(
+    process: &Process<'a>,
+    files: &fs::Client<'a>,
+    directory: usize,
+    address: usize,
+) -> Outcome<'a> {
+    if directory as i32 != -100 {
+        return fstat(process, directory, address);
+    }
+    let lookup = super::path::Lookup {
+        name: b".".to_vec(),
+        anchor: process.cwd.clone(),
+    };
+    outcome(
+        files
+            .start_metadata_at(lookup.directory(), b".", true)
+            .map(|request| {
+                Pending::Stat(Stat {
+                    request,
+                    address,
+                    _description: lookup.anchor,
+                })
+            })
+            .map_err(filesystem_error),
+    )
 }
 
 impl Stat<'_> {
@@ -109,9 +126,6 @@ impl Stat<'_> {
             Ok(info) => info,
             Err(error) => return Some(Err(filesystem_error(error))),
         };
-        if self.follow && info.mode & 0o170000 == 0o120000 {
-            return Some(Err(EOPNOTSUPP));
-        }
         Some(write_stat(process, self.address, info))
     }
 }

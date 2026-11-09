@@ -368,7 +368,7 @@ files:
     la a1, relative_path
     li a2, 0
     invoke 56
-    expect -95
+    expect -2
     mv a0, s0
     invoke 57
     expect 0

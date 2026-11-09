@@ -5,6 +5,16 @@ use runtime::trap::UserState;
 use crate::elf::Machine;
 
 // REFERENCE: https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h
+pub(super) const GETCWD: usize = 17;
+pub(super) const MKDIRAT: usize = 34;
+pub(super) const UNLINKAT: usize = 35;
+pub(super) const SYMLINKAT: usize = 36;
+pub(super) const LINKAT: usize = 37;
+pub(super) const RENAMEAT: usize = 38;
+pub(super) const CHDIR: usize = 49;
+pub(super) const FCHDIR: usize = 50;
+pub(super) const READLINKAT: usize = 78;
+pub(super) const RENAMEAT2: usize = 276;
 pub(super) const DUP: usize = 23;
 pub(super) const DUP3: usize = 24;
 pub(super) const FCNTL: usize = 25;
@@ -44,6 +54,11 @@ pub(super) const EACCES: Errno = Errno(13);
 pub(super) const EFAULT: Errno = Errno(14);
 pub(super) const EEXIST: Errno = Errno(17);
 pub(super) const ENOTDIR: Errno = Errno(20);
+pub(super) const EBUSY: Errno = Errno(16);
+pub(super) const EXDEV: Errno = Errno(18);
+pub(super) const ENOTEMPTY: Errno = Errno(39);
+pub(super) const ELOOP: Errno = Errno(40);
+pub(super) const ERANGE: Errno = Errno(34);
 pub(super) const EISDIR: Errno = Errno(21);
 pub(super) const EINVAL: Errno = Errno(22);
 pub(super) const EMFILE: Errno = Errno(24);

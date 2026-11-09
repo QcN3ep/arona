@@ -116,9 +116,15 @@ impl Ext4 {
         self.volume.borrow_mut().read_link(path)
     }
     pub fn mkdir(&self, path: &[u8]) -> Result<(), Error> {
+        self.mkdir_with_permissions(path, 0o755)
+    }
+    pub fn mkdir_with_permissions(&self, path: &[u8], permissions: u16) -> Result<(), Error> {
+        if permissions & !0o7777 != 0 {
+            return Err(Error::InvalidRequest);
+        }
         self.volume
             .borrow_mut()
-            .create(path, true, 0o755)
+            .create(path, true, permissions)
             .map(|_| ())
     }
     pub fn unlink(&self, path: &[u8]) -> Result<(), Error> {
@@ -157,6 +163,12 @@ impl ReadAt for File {
 }
 
 impl File {
+    pub fn path(&self) -> Result<Vec<u8>, Error> {
+        self.volume
+            .borrow_mut()
+            .directory_path(self.identity.number)
+    }
+
     pub fn check_writable(&self) -> Result<(), Error> {
         self.volume.borrow().check_writable()
     }

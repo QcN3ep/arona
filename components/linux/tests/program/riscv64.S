@@ -87,6 +87,8 @@ auxv_done:
     beq s3, t1, files_write
     li t1, 118
     beq s3, t1, files_vector
+    li t1, 112
+    beq s3, t1, files_path
     li t1, 109
     beq s3, t1, files_metadata
     li t1, 100

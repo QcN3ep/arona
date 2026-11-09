@@ -29,6 +29,8 @@ pub const SYMLINK: u64 = 18;
 pub const READ_LINK: u64 = 19;
 pub const APPEND: u64 = 20;
 pub const OPEN_DIRECTORY: u64 = 21;
+pub const RELATIVE: u64 = 22;
+pub const DIRECTORY_PATH: u64 = 23;
 
 pub const SUCCESS: u64 = 0;
 pub const INVALID_REQUEST: u64 = 1;
@@ -44,6 +46,8 @@ pub const CROSS_DEVICE: u64 = 10;
 pub const NOT_DIRECTORY: u64 = 11;
 pub const IO: u64 = 12;
 pub const FILE_TOO_LARGE: u64 = 13;
+pub const TOO_MANY_LINKS: u64 = 14;
+pub const NAME_TOO_LONG: u64 = 15;
 
 pub const CHANNEL_RIGHTS: Rights = Rights::READ_WRITE.union(Rights::WAIT);
 
@@ -96,6 +100,8 @@ pub(crate) fn response_result(response: ReceivedMessage) -> Result<ReceivedMessa
         NOT_EMPTY => Error::NotEmpty,
         CROSS_DEVICE => Error::CrossDevice,
         NOT_DIRECTORY => Error::NotDirectory,
+        TOO_MANY_LINKS => Error::TooManyLinks,
+        NAME_TOO_LONG => Error::NameTooLong,
         _ => Error::InvalidData,
     })
 }
@@ -117,6 +123,8 @@ pub fn respond(reply: Handle<Reply>, result: Result<Message, Error>) -> Result<(
                 Error::NotEmpty => NOT_EMPTY,
                 Error::CrossDevice => CROSS_DEVICE,
                 Error::NotDirectory => NOT_DIRECTORY,
+                Error::TooManyLinks => TOO_MANY_LINKS,
+                Error::NameTooLong => NAME_TOO_LONG,
                 _ => UNAVAILABLE,
             },
             &[],

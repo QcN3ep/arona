@@ -10,10 +10,11 @@ use crate::{
     path::normalize,
 };
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 
 pub struct Namespace {
     archive: Archive,
+    next_directory: Cell<u64>,
     mounts: RefCell<BTreeMap<Vec<u8>, Ext4>>,
 }
 
@@ -23,8 +24,10 @@ pub enum File {
 }
 
 pub struct Directory {
+    pub(crate) id: u64,
     node: DirectoryNode,
     parent: crate::Metadata,
+    path: Vec<u8>,
 }
 
 enum DirectoryNode {
@@ -33,6 +36,19 @@ enum DirectoryNode {
 }
 
 impl Directory {
+    pub fn path(&self) -> Result<Vec<u8>, Error> {
+        let mut path = self.path.clone();
+        if let DirectoryNode::Ext4(directory) = &self.node {
+            let relative = directory.path()?;
+            if !relative.is_empty() {
+                path.push(b'/');
+                path.extend(relative);
+            }
+        }
+        path.insert(0, b'/');
+        Ok(path)
+    }
+
     pub fn fsync(&self) -> Result<(), Error> {
         match &self.node {
             DirectoryNode::Archive(_) => Ok(()),
@@ -84,6 +100,7 @@ impl Namespace {
     pub fn new(archive: Archive) -> Self {
         Self {
             archive,
+            next_directory: Cell::new(1),
             mounts: RefCell::new(BTreeMap::new()),
         }
     }
@@ -153,9 +170,18 @@ impl Namespace {
         Ok(file)
     }
     pub fn mkdir(&self, path: &[u8]) -> Result<(), Error> {
-        self.mounted(path, |fs, path| fs.mkdir(path))
+        self.mkdir_with_permissions(path, 0o755)
+    }
+    pub fn mkdir_with_permissions(&self, path: &[u8], permissions: u16) -> Result<(), Error> {
+        self.mounted(path, |fs, path| {
+            fs.mkdir_with_permissions(path, permissions)
+        })
     }
     pub fn unlink(&self, path: &[u8]) -> Result<(), Error> {
+        let normalized = normalize(path)?;
+        if normalized.is_empty() || self.mounts.borrow().contains_key(&normalized) {
+            return Err(Error::Busy);
+        }
         self.mounted(path, |fs, path| fs.unlink(path))
     }
     pub fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
@@ -198,6 +224,13 @@ impl Namespace {
     pub fn rename(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
         let source = crate::path::normalize(source)?;
         let target = crate::path::normalize(target)?;
+        if source.is_empty()
+            || target.is_empty()
+            || self.mounts.borrow().contains_key(&source)
+            || self.mounts.borrow().contains_key(&target)
+        {
+            return Err(Error::Busy);
+        }
         for (prefix, filesystem) in self.mounts.borrow().iter() {
             if beneath(&source, prefix) {
                 if !beneath(&target, prefix) {
@@ -223,6 +256,9 @@ impl Namespace {
             .metadata(if path.is_empty() { b"/" } else { &path })
     }
     pub fn open_directory(&self, path: &[u8]) -> Result<Directory, Error> {
+        let id = self.next_directory.get();
+        self.next_directory
+            .set(id.checked_add(1).ok_or(Error::NoSpace)?);
         let path = normalize(path)?;
         let parent_path = path
             .iter()
@@ -234,8 +270,10 @@ impl Namespace {
                 return fs
                     .open_directory(path.get(prefix.len() + 1..).unwrap_or(b"/"))
                     .map(|directory| Directory {
+                        id,
                         node: DirectoryNode::Ext4(directory),
                         parent,
+                        path: prefix.clone(),
                     });
             }
         }
@@ -244,8 +282,10 @@ impl Namespace {
                 .open_directory(if path.is_empty() { b"/" } else { &path })?;
         directory.set_entries(self.read_dir(if path.is_empty() { b"/" } else { &path })?);
         Ok(Directory {
+            id,
             node: DirectoryNode::Archive(directory),
             parent,
+            path,
         })
     }
     pub fn hard_link(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {

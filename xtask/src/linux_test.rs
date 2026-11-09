@@ -129,6 +129,7 @@ fn build_guest(
         ("syscall/file/buffer", "file-buffer"),
         ("syscall/file/metadata", "file-metadata"),
         ("syscall/file/directory", "file-directory"),
+        ("syscall/file/path", "file-path"),
     ] {
         let object = directory.join(format!("{name}.o"));
         let mut assemble = Command::new("clang");

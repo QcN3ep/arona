@@ -109,7 +109,13 @@ fn writable(
             .unwrap()
     };
     metadata_fixture(files);
-    for mode in [b"metadata".as_slice(), b"directory", b"writable", b"vector"] {
+    for mode in [
+        b"metadata".as_slice(),
+        b"directory",
+        b"path",
+        b"writable",
+        b"vector",
+    ] {
         assert_eq!(
             run(mode)
                 .wait(WaitMode::Until(

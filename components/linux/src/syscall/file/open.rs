@@ -3,41 +3,35 @@
 //! Linux 路径与文件打开选项。
 
 use alloc::{rc::Rc, vec::Vec};
-use core::cell::Cell;
 use fs::ReadAt;
 use runtime::{Call, Handle};
 
 use super::super::{
     Outcome,
     abi::{
-        EBADF, EFAULT, EINVAL, EISDIR, EMFILE, ENAMETOOLONG, ENOENT, ENOTDIR, EOPNOTSUPP,
-        EOVERFLOW, Errno, SyscallResult,
+        EFAULT, EINVAL, EISDIR, EMFILE, ENAMETOOLONG, ENOENT, EOPNOTSUPP, EOVERFLOW, Errno,
+        SyscallResult,
     },
 };
-use super::{O_CLOEXEC, Pending, completion, fd, filesystem_error, outcome};
+use super::{O_CLOEXEC, Pending, completion, filesystem_error, outcome};
 use crate::{
     elf::PAGE_SIZE,
     file::{Descriptor, O_APPEND, O_DSYNC, O_NONBLOCK, OpenFileDescription},
     process::Process,
 };
 
-const AT_FDCWD: i32 = -100;
 // REFERENCE: https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/fcntl.h
 const O_CREAT: u32 = 0x40;
 const O_EXCL: u32 = 0x80;
 const O_TRUNC: u32 = 0x200;
 const O_DIRECTORY: u32 = 0x10000;
+const O_NOFOLLOW: u32 = 0x20000;
 const PATH_MAX: usize = 4096;
 
 pub(in crate::syscall) struct Open<'a> {
-    request: Request<'a>,
-    path: Vec<u8>,
+    request: fs::client::PendingNode<'a>,
     flags: u32,
-}
-
-enum Request<'a> {
-    File(fs::client::PendingOpen<'a>),
-    Directory(fs::client::PendingDirectory<'a>),
+    _directory: Option<Rc<OpenFileDescription<'a>>>,
 }
 
 pub(in crate::syscall) fn openat<'a>(
@@ -66,46 +60,32 @@ pub(in crate::syscall) fn openat<'a>(
             | 0x100000
             | 0x8000
             | O_DIRECTORY
+            | O_NOFOLLOW
             | O_CLOEXEC;
         if flags & !supported != 0 {
-            // TODO: 接入符号链接查找控制及其余打开选项。
+            // TODO: 接入其余打开选项。
             return Err(EOPNOTSUPP);
         }
-        let path = path(process, address)?;
-        if path[0] != b'/' && directory as i32 != AT_FDCWD {
-            let descriptor = process.files.get(fd(directory)?).ok_or(EBADF)?;
-            return Err(match descriptor.description.as_ref() {
-                // TODO: 由原生目录会话提供相对路径查找。
-                OpenFileDescription::Directory { .. } => EOPNOTSUPP,
-                _ => ENOTDIR,
-            });
-        }
-        let request = if flags & O_DIRECTORY != 0 || path.ends_with(b"/") {
-            Request::Directory(
-                files
-                    .start_open_directory(&path)
-                    .map_err(filesystem_error)?,
+        let lookup = super::path::Lookup::new(process, directory, address)?;
+        let request = files
+            .start_open_at(
+                lookup.directory(),
+                &lookup.name,
+                fs::OpenOptions {
+                    write: flags & 3 != 0,
+                    create: flags & O_CREAT != 0,
+                    exclusive: flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL,
+                    truncate: flags & O_TRUNC != 0,
+                    permissions: mode as u16 & 0o7777 & !process.umask,
+                },
+                flags & O_NOFOLLOW == 0,
+                flags & O_DIRECTORY != 0,
             )
-        } else {
-            Request::File(
-                files
-                    .start_open_with(
-                        &path,
-                        fs::OpenOptions {
-                            write: flags & 3 != 0,
-                            create: flags & O_CREAT != 0,
-                            exclusive: flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL,
-                            truncate: flags & O_TRUNC != 0,
-                            permissions: mode as u16 & 0o7777 & !process.umask,
-                        },
-                    )
-                    .map_err(filesystem_error)?,
-            )
-        };
+            .map_err(filesystem_error)?;
         Ok(Pending::Open(Open {
             request,
-            path,
             flags,
+            _directory: lookup.anchor,
         }))
     })();
     outcome(operation)
@@ -113,58 +93,30 @@ pub(in crate::syscall) fn openat<'a>(
 
 impl<'a> Open<'a> {
     pub fn call(&self) -> &Handle<Call> {
-        match &self.request {
-            Request::File(request) => request.call(),
-            Request::Directory(request) => request.call(),
-        }
+        self.request.call()
     }
 
     pub fn poll(
         &mut self,
         process: &mut Process<'a>,
-        files: &fs::Client<'a>,
+        _files: &fs::Client<'a>,
     ) -> Option<SyscallResult> {
         let flags = self.flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC);
         let close_on_exec = self.flags & O_CLOEXEC != 0;
-        let descriptor = match &mut self.request {
-            Request::File(pending) => match completion(pending.try_complete())? {
-                Ok(file) => {
-                    if file.len() > i64::MAX as usize {
-                        return Some(Err(EOVERFLOW));
-                    }
-                    Descriptor::regular(file, flags, close_on_exec)
+        let descriptor = match completion(self.request.try_complete())? {
+            Ok(fs::client::OpenedNode::File(file)) => {
+                if file.len() > i64::MAX as usize {
+                    return Some(Err(EOVERFLOW));
                 }
-                Err(fs::Error::IsDirectory) => {
-                    if self.flags & (3 | O_CREAT | O_TRUNC) != 0 {
-                        return Some(Err(EISDIR));
-                    }
-                    return match files.start_open_directory(&self.path) {
-                        Ok(pending) => {
-                            self.request = Request::Directory(pending);
-                            None
-                        }
-                        Err(error) => Some(Err(filesystem_error(error))),
-                    };
+                Descriptor::regular(file, flags, close_on_exec)
+            }
+            Ok(fs::client::OpenedNode::Directory(session)) => {
+                if self.flags & (3 | O_CREAT | O_TRUNC) != 0 {
+                    return Some(Err(EISDIR));
                 }
-                Err(error) => return Some(Err(filesystem_error(error))),
-            },
-            Request::Directory(pending) => match completion(pending.try_complete())? {
-                Ok(directory) => {
-                    if self.flags & (3 | O_CREAT | O_TRUNC) != 0 {
-                        return Some(Err(EISDIR));
-                    }
-                    Descriptor {
-                        description: Rc::new(OpenFileDescription::Directory {
-                            session: directory,
-                            flags: Cell::new(flags),
-                            offset: Cell::new(0),
-                            busy: Cell::new(false),
-                        }),
-                        close_on_exec,
-                    }
-                }
-                Err(error) => return Some(Err(filesystem_error(error))),
-            },
+                super::path::directory_descriptor(session, flags, close_on_exec)
+            }
+            Err(error) => return Some(Err(filesystem_error(error))),
         };
         Some(process.files.insert(descriptor, 0).ok_or(EMFILE))
     }
@@ -196,10 +148,6 @@ pub(super) fn path_bytes(process: &Process<'_>, mut address: usize) -> Result<Ve
             for part in path.split(|byte| *byte == b'/') {
                 if part.len() > 255 {
                     return Err(ENAMETOOLONG);
-                }
-                // TODO: 原生路径解析支持符号链接与父目录遍历后接入 ..。
-                if part == b".." {
-                    return Err(EOPNOTSUPP);
                 }
             }
             return Ok(path);

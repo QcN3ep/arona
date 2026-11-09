@@ -40,6 +40,8 @@ pub enum Error {
     AlreadyExists,
     NotEmpty,
     CrossDevice,
+    TooManyLinks,
+    NameTooLong,
     Device(devmgr::Error),
     UnexpectedEof,
     Unavailable,

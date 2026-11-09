@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod path;
 mod pending;
+
+pub use path::{OpenedNode, PendingNode};
 
 pub use pending::{
     Pending, PendingAppend, PendingDirectory, PendingDirectoryPage, PendingMetadata, PendingOpen,
@@ -22,6 +25,7 @@ const READ_TIMEOUT_NS: u64 = 10_000_000_000;
 pub struct Client<'a> {
     task: &'a Handle<Task>,
     channel: Handle<Channel>,
+    identity: Arc<()>,
 }
 
 pub struct File<'a> {
@@ -32,11 +36,17 @@ pub struct File<'a> {
 
 pub struct Directory<'a> {
     file: File<'a>,
+    id: u64,
+    owner: Arc<()>,
 }
 
 impl<'a> Client<'a> {
     pub fn from_channel(task: &'a Handle<Task>, channel: Handle<Channel>) -> Self {
-        Self { task, channel }
+        Self {
+            task,
+            channel,
+            identity: Arc::new(()),
+        }
     }
 
     pub fn channel(&self) -> &Handle<Channel> {
@@ -64,9 +74,8 @@ impl<'a> Client<'a> {
     }
 
     pub fn open_directory(&self, path: &[u8], deadline: u64) -> Result<Directory<'a>, Error> {
-        Ok(Directory {
-            file: self.open_request(protocol::OPEN_DIRECTORY, path, deadline)?,
-        })
+        self.start_open_directory(path)?
+            .wait(runtime::ipc::WaitMode::Until(deadline))
     }
 
     pub fn metadata(&self, path: &[u8], deadline: u64) -> Result<crate::Metadata, Error> {

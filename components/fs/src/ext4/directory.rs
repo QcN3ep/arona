@@ -12,6 +12,36 @@ use crate::{Error, block::BLOCK_SIZE};
 use alloc::{collections::BTreeSet, rc::Rc, vec::Vec};
 
 impl Volume {
+    pub fn directory_path(&mut self, mut number: u32) -> Result<Vec<u8>, Error> {
+        let mut parts = Vec::new();
+        let mut visited = BTreeSet::new();
+        while number != 2 {
+            if !visited.insert(number) {
+                return Err(Error::InvalidData);
+            }
+            let inode = self.inode(number)?;
+            if !inode.directory() {
+                return Err(Error::NotDirectory);
+            }
+            let parent = self
+                .entries(&inode)?
+                .into_iter()
+                .find(|entry| entry.name == b"..")
+                .ok_or(Error::InvalidData)?
+                .inode;
+            let parent_inode = self.inode(parent)?;
+            let entry = self
+                .entries(&parent_inode)?
+                .into_iter()
+                .find(|entry| entry.inode == number && entry.name != b"." && entry.name != b"..")
+                .ok_or(Error::NotFound)?;
+            parts.push(entry.name);
+            number = parent;
+        }
+        parts.reverse();
+        Ok(parts.join(&b'/'))
+    }
+
     pub fn lookup(&mut self, path: &[u8]) -> Result<Inode, Error> {
         let mut inode = self.inode(2)?;
         for name in components(path)? {

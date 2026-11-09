@@ -27,6 +27,7 @@ pub(crate) struct Process<'a> {
     pub address_space: AddressSpace,
     pub threads: Vec<Thread<'a>>,
     pub files: FileTable<'a>,
+    pub cwd: Option<alloc::rc::Rc<crate::file::OpenFileDescription<'a>>>,
     pub machine: Machine,
     pub umask: u16,
     status: ExitStatus,
@@ -63,6 +64,7 @@ impl<'a> Process<'a> {
                 pending: None
             }],
             files,
+            cwd: None,
             machine,
             umask: 0o022,
             status: ExitStatus { code: 0, signal: 0 },

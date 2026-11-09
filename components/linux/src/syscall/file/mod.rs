@@ -7,6 +7,7 @@ mod directory;
 mod io;
 mod metadata;
 mod open;
+mod path;
 
 use super::{
     Outcome, abi,
@@ -29,6 +30,7 @@ pub(super) const O_CLOEXEC: u32 = 0x80000;
 
 pub(super) enum Pending<'a> {
     Open(open::Open<'a>),
+    Path(path::PathOperation<'a>),
     Read(io::Read<'a>),
     Write(io::Write<'a>),
     Seek(io::Seek<'a>),
@@ -54,6 +56,9 @@ pub(super) fn dispatch<'a>(
     number: usize,
     arguments: [usize; 6],
 ) -> Option<Outcome<'a>> {
+    if let Some(outcome) = path::dispatch(process, files, number, arguments) {
+        return Some(outcome);
+    }
     Some(match number {
         abi::DUP => Outcome::Complete(duplicate(process, arguments[0], 0, false)),
         abi::DUP3 => Outcome::Complete(dup3(process, arguments[0], arguments[1], arguments[2])),
@@ -208,6 +213,7 @@ impl<'a> Pending<'a> {
     pub fn call(&self) -> Option<&Handle<Call>> {
         match self {
             Self::Open(open) => Some(open.call()),
+            Self::Path(path) => Some(path.call()),
             Self::Read(read) => read.call(),
             Self::Write(write) => write.call(),
             Self::Seek(seek) => seek.call(),
@@ -226,6 +232,7 @@ impl<'a> Pending<'a> {
     ) -> Option<SyscallResult> {
         match self {
             Self::Open(open) => open.poll(process, files),
+            Self::Path(path) => path.poll(process),
             Self::Read(read) => read.poll(process),
             Self::Write(write) => write.poll(),
             Self::Seek(seek) => seek.poll(),
@@ -269,6 +276,11 @@ fn filesystem_error(error: fs::Error) -> Errno {
         fs::Error::AlreadyExists => EEXIST,
         fs::Error::FileTooLarge => EFBIG,
         fs::Error::InvalidRequest => EINVAL,
+        fs::Error::TooManyLinks => super::abi::ELOOP,
+        fs::Error::NameTooLong => super::abi::ENAMETOOLONG,
+        fs::Error::Busy => super::abi::EBUSY,
+        fs::Error::NotEmpty => super::abi::ENOTEMPTY,
+        fs::Error::CrossDevice => super::abi::EXDEV,
         fs::Error::Unsupported => EOPNOTSUPP,
         fs::Error::Runtime(runtime::Error::Kernel(runtime::KernelError::NoMemory)) => ENOMEM,
         _ => EIO,

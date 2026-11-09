@@ -15,7 +15,8 @@ use crate::{
 
 pub type Pending<T, S = ()> = runtime::ipc::PendingCall<T, S, Error>;
 pub type PendingOpen<'a> = Pending<File<'a>, (&'a Handle<Task>, Handle<Channel>)>;
-pub type PendingDirectory<'a> = Pending<Directory<'a>, (&'a Handle<Task>, Handle<Channel>)>;
+pub type PendingDirectory<'a> =
+    Pending<Directory<'a>, (&'a Handle<Task>, Handle<Channel>, Arc<()>)>;
 pub type PendingRead = Pending<Vec<u8>, (Handle<FrameAllocation>, usize)>;
 pub type PendingMetadata = Pending<Metadata, Handle<FrameAllocation>>;
 pub type PendingWrite = Pending<usize, (Arc<AtomicUsize>, usize)>;
@@ -54,12 +55,8 @@ impl<'a> Client<'a> {
         let (call, channel) = self.open_call(protocol::OPEN_DIRECTORY, path)?;
         Ok(Pending::new(
             call,
-            (self.task, channel),
-            |state, response| {
-                Ok(Directory {
-                    file: complete_open(state, response)?,
-                })
-            },
+            (self.task, channel, Arc::clone(&self.identity)),
+            complete_directory,
         ))
     }
 
@@ -316,7 +313,7 @@ impl Directory<'_> {
     }
 }
 
-fn complete_open<'a>(
+pub(super) fn complete_open<'a>(
     (task, channel): (&'a Handle<Task>, Handle<Channel>),
     response: ReceivedMessage,
 ) -> Result<File<'a>, Error> {
@@ -335,7 +332,7 @@ fn response_size(response: ReceivedMessage) -> Result<usize, Error> {
     usize::try_from(size).map_err(|_| Error::InvalidData)
 }
 
-fn complete_read(
+pub(super) fn complete_read(
     (frames, limit): (Handle<FrameAllocation>, usize),
     response: ReceivedMessage,
 ) -> Result<Vec<u8>, Error> {
@@ -348,7 +345,10 @@ fn complete_read(
     Ok(bytes)
 }
 
-fn empty_call(channel: &Handle<Channel>, mut request: Message) -> Result<Pending<()>, Error> {
+pub(super) fn empty_call(
+    channel: &Handle<Channel>,
+    mut request: Message,
+) -> Result<Pending<()>, Error> {
     Ok(Pending::new(
         channel.start_call(&mut request)?,
         (),
@@ -362,14 +362,20 @@ fn empty_call(channel: &Handle<Channel>, mut request: Message) -> Result<Pending
     ))
 }
 
-fn output_buffer(task: &Handle<Task>, length: usize) -> Result<Handle<FrameAllocation>, Error> {
+pub(super) fn output_buffer(
+    task: &Handle<Task>,
+    length: usize,
+) -> Result<Handle<FrameAllocation>, Error> {
     Ok(task.allocate(
         length.div_ceil(PAGE_SIZE).max(1) as u64,
         Rights::READ_WRITE | Rights::TRANSFER | Rights::DUPLICATE,
     )?)
 }
 
-fn input_buffer(task: &Handle<Task>, bytes: &[u8]) -> Result<Handle<FrameAllocation>, Error> {
+pub(super) fn input_buffer(
+    task: &Handle<Task>,
+    bytes: &[u8],
+) -> Result<Handle<FrameAllocation>, Error> {
     let mut frames = task.allocate(
         bytes.len().div_ceil(PAGE_SIZE).max(1) as u64,
         Rights::READ_WRITE | Rights::TRANSFER,
@@ -378,7 +384,7 @@ fn input_buffer(task: &Handle<Task>, bytes: &[u8]) -> Result<Handle<FrameAllocat
     Ok(frames)
 }
 
-fn metadata_call(
+pub(super) fn metadata_call(
     task: &Handle<Task>,
     channel: &Handle<Channel>,
     mut request: Message,
@@ -447,4 +453,26 @@ pub(super) fn directory_entries(bytes: &[u8], count: usize) -> Result<Vec<crate:
         return Err(Error::InvalidData);
     }
     Ok(entries)
+}
+
+pub(super) fn complete_directory<'a>(
+    (task, channel, owner): (&'a Handle<Task>, Handle<Channel>, Arc<()>),
+    response: ReceivedMessage,
+) -> Result<Directory<'a>, Error> {
+    let response = response_result(response)?;
+    let [0, id] = *response.words() else {
+        return Err(Error::InvalidData);
+    };
+    if id == 0 {
+        return Err(Error::InvalidData);
+    }
+    Ok(Directory {
+        file: File {
+            task,
+            channel,
+            length: Arc::new(AtomicUsize::new(0)),
+        },
+        id,
+        owner,
+    })
 }

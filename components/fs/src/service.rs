@@ -2,6 +2,8 @@
 
 //! 挂载管理、文件会话与请求分发。
 
+mod path;
+
 use crate::{
     Error, ReadAt,
     archive::Archive,
@@ -24,7 +26,7 @@ struct FileSession {
 
 enum Node {
     File(File),
-    Directory(Directory),
+    Directory(Rc<Directory>),
 }
 
 pub fn run(task: &Handle<runtime::Task>, control: Handle<Channel>) -> Result<(), Error> {
@@ -63,7 +65,7 @@ pub fn serve(
     let mut clients = Vec::new();
     let mut files = Vec::new();
     loop {
-        poll_files(&mut files)?;
+        poll_files(namespace, &mut files)?;
         match control.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
@@ -110,13 +112,19 @@ pub fn serve(
     }
 }
 
-fn poll_files(files: &mut Vec<FileSession>) -> Result<(), Error> {
+fn poll_files(namespace: &Namespace, files: &mut Vec<FileSession>) -> Result<(), Error> {
     let mut index = 0;
     while index < files.len() {
         match files[index].channel.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
-                    protocol::respond(reply, node_request(&files[index].node, request))?;
+                    let response = if let Node::Directory(directory) = &files[index].node {
+                        let directory = Rc::clone(directory);
+                        path::directory(namespace, &directory, request)
+                    } else {
+                        node_request(&files[index].node, request)
+                    };
+                    protocol::respond(reply, response)?;
                 }
                 index += 1;
             }
@@ -162,17 +170,17 @@ fn client(
     files: &mut Vec<FileSession>,
     request: ReceivedMessage,
 ) -> Result<Message, Error> {
+    if request.tag == protocol::RELATIVE {
+        return path::relative(namespace, files, request);
+    }
     if matches!(
         request.tag,
         protocol::OPEN | protocol::CREATE | protocol::OPEN_DIRECTORY
     ) {
         let session = open(namespace, request)?;
-        let length = match &session.node {
-            Node::File(file) => file.len(),
-            Node::Directory(_) => 0,
-        };
+        let response = session_response(&session.node)?;
         files.push(session);
-        return Ok(Message::new(protocol::SUCCESS, &[length as u64])?);
+        return Ok(response);
     }
     directory(namespace, request)
 }
@@ -368,7 +376,7 @@ fn open(namespace: &Namespace, mut request: ReceivedMessage) -> Result<FileSessi
         channel,
         node: match request.tag {
             protocol::CREATE => Node::File(namespace.create(&path)?),
-            protocol::OPEN_DIRECTORY => Node::Directory(namespace.open_directory(&path)?),
+            protocol::OPEN_DIRECTORY => Node::Directory(Rc::new(namespace.open_directory(&path)?)),
             protocol::OPEN if options.is_some() => {
                 Node::File(namespace.open_with(&path, options.unwrap())?)
             }
@@ -448,4 +456,11 @@ fn take_channel(request: &mut ReceivedMessage, rights: Rights) -> Result<Handle<
         return Err(Error::InvalidRequest);
     }
     Ok(channel)
+}
+
+fn session_response(node: &Node) -> Result<Message, Error> {
+    Ok(match node {
+        Node::File(file) => Message::new(protocol::SUCCESS, &[file.len() as u64])?,
+        Node::Directory(directory) => Message::new(protocol::SUCCESS, &[0, directory.id])?,
+    })
 }
