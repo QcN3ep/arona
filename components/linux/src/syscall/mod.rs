@@ -2,6 +2,8 @@
 
 //! Linux 系统调用的分发与异步完成。
 
+// TODO: 支持 epoll、eventfd、timerfd 与 signalfd。
+
 pub(crate) mod abi;
 mod file;
 mod memory;

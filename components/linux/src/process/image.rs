@@ -2,6 +2,8 @@
 
 //! 可执行文件的异步读取与启动熵。
 
+// TODO: 解析脚本解释器并构造解释器启动参数。
+
 use crate::{Error, Services, elf::PAGE_SIZE};
 use alloc::vec::Vec;
 use fs::ReadAt;

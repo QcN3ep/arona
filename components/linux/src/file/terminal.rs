@@ -2,6 +2,8 @@
 
 //! 终端会话、行规程与输入缓存。
 
+// TODO: 支持伪终端与多个独立终端会话。
+
 use alloc::{collections::VecDeque, vec::Vec};
 use core::cell::{Cell, Ref, RefCell};
 use runtime::{Call, Handle};

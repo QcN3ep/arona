@@ -2,6 +2,8 @@
 
 //! 固定 QEMU 平台的可信一致性 DMA。
 
+// TODO: 实现 IOMMU 隔离并按实际 RAM 与设备拓扑确定 DMA 寻址范围。
+
 use kernel::{
     HardwareDeviceInfo, HardwareDeviceLocation,
     hardware::dma::{Dma, DmaProfile},

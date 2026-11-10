@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+// TODO: 支持 msync 与 mremap。
+
 use core::ops::Range;
 use runtime::memory::Permissions;
 
@@ -68,6 +70,7 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
         return Ok(Pending::Complete(Some(result)));
     }
     if flags & 3 != MAP_PRIVATE {
+        // TODO: 支持文件 MAP_SHARED 并与文件服务同步数据。
         return Err(EOPNOTSUPP);
     }
     let description = Rc::clone(

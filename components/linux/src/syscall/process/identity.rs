@@ -13,7 +13,7 @@ pub(super) fn dispatch(
     args: [usize; 6],
 ) -> Option<SyscallResult> {
     Some(match number {
-        // TODO: 支持 Linux 凭据变更及其继承。
+        // TODO: 支持 Linux 凭据变更、继承与访问权限检查。
         abi::GETUID | abi::GETEUID | abi::GETGID | abi::GETEGID => Ok(0),
         abi::GETRESUID | abi::GETRESGID => credentials(process, args),
         abi::GETGROUPS => {

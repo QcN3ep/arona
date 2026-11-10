@@ -2,6 +2,8 @@
 
 //! 设备资源授权、用户映射与中断投递。
 
+// TODO: 支持设备热插拔及对应的设备目录更新与授权回收。
+
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::{Mutex, Once};

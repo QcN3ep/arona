@@ -2,6 +2,9 @@
 
 //! Linux 文件系统调用与异步完成。
 
+// TODO: 接入 /dev、/proc、/sys 及 null、zero、random 等虚拟设备。
+// TODO: 支持 statfs 与文件变更通知。
+
 mod buffer;
 mod directory;
 mod io;

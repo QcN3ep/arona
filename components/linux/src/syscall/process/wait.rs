@@ -64,7 +64,7 @@ pub(super) fn start<'a>(process: &Process<'a>, number: usize, args: [usize; 6]) 
             return Err(EINVAL);
         }
         if usage != 0 {
-            // TODO: 接入进程资源用量统计。
+            // TODO: 接入进程 CPU 时间与资源用量统计。
             return Err(EOPNOTSUPP);
         }
         Ok(Pending {

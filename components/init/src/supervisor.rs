@@ -2,6 +2,9 @@
 
 //! 配置程序的启动、退出与重启监督。
 
+// TODO: 支持配置重载及服务依赖管理。
+// TODO: 按依赖顺序停止服务并完成刷盘、卸载与关机或重启。
+
 use crate::{
     InitError,
     config::{Config, Executor, Program, Restart, Terminal},
@@ -71,6 +74,7 @@ pub fn run(
             .min();
         match ipc::wait_many(&items, next.map_or(WaitMode::Forever, WaitMode::Until)) {
             Ok(ready) if ready.index < services.len() => {
+                // TODO: 重启基础服务并重建依赖会话。
                 return Ok(services[ready.index].wait()?.max(1));
             }
             Ok(_) | Err(Error::Kernel(KernelError::TimedOut)) => {}

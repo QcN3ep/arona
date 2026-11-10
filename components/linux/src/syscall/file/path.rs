@@ -2,6 +2,8 @@
 
 //! Linux 工作目录、链接与命名操作。
 
+// TODO: 支持 chmod、chown、access 及其相对目录操作。
+
 use alloc::{rc::Rc, vec::Vec};
 use core::cell::Cell;
 use runtime::{Call, Handle};

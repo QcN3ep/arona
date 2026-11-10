@@ -7,6 +7,8 @@
 
 extern crate alloc;
 
+// TODO: 接入网络服务并提供 Linux socket 接口与 Unix 域 socket。
+
 mod client;
 pub mod elf;
 mod file;

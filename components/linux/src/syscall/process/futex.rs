@@ -2,6 +2,8 @@
 
 //! Linux 非 PI futex 等待与唤醒。
 
+// TODO: 补齐其余 futex 操作。
+
 use crate::{
     process::{Process, futex::Registration},
     syscall::{

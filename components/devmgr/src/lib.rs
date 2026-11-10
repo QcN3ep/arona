@@ -9,6 +9,7 @@ extern crate alloc;
 
 // TODO: 实现 VirtIO 网络设备的收发与链路状态管理。
 // TODO: 实现 CFI Flash 的总线宽度适配、读取、编程与擦除。
+// TODO: 支持平台关机与重启设备。
 
 pub mod block;
 pub mod device;

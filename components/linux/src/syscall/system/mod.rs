@@ -58,7 +58,7 @@ fn uname(process: &Process<'_>, address: usize) -> SyscallResult {
     for (field, value) in bytes.as_chunks_mut::<65>().0.iter_mut().zip([
         b"Linux".as_slice(),
         b"arona",
-        b"0.1",
+        env!("CARGO_PKG_VERSION").as_bytes(),
         b"Arona",
         machine,
         b"(none)",

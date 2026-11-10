@@ -2,6 +2,8 @@
 
 //! Linux 线程创建与线程标识。
 
+// TODO: 接入 robust futex 登记与线程退出清理。
+
 use crate::{
     process::{Process, Thread},
     syscall::{

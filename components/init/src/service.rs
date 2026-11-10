@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+// TODO: 接入提供协议栈、地址配置与 DNS 的网络服务。
+
 use runtime::{
     Channel, DeviceSet, Error, Handle, KernelLog, Rights, Task,
     ipc::{self, CallError, Message, Transfer, WaitItem},

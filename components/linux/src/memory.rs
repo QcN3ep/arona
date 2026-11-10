@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+// TODO: 支持按需分页、页回收与换页。
+
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::{cell::RefCell, ops::Range};
 use runtime::{
@@ -433,6 +435,7 @@ impl AddressSpace {
 }
 
 impl AddressSpace {
+    // TODO: 通过写时复制共享私有页，替代逐页复制。
     pub fn fork(
         &self,
         parent: &Handle<Task>,

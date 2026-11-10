@@ -2,6 +2,8 @@
 
 //! 启动程序配置。
 
+// TODO: 配置应用的文件、设备与服务访问授权。
+
 use alloc::{
     collections::{BTreeMap, BTreeSet},
     string::String,

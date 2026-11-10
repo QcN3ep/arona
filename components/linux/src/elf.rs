@@ -2,6 +2,8 @@
 
 //! 静态 ELF64 的布局校验与机器标识。
 
+// TODO: 支持动态 ELF、解释器交接与 PIE。
+
 use alloc::vec::Vec;
 use core::ops::Range;
 use runtime::memory::Permissions;
