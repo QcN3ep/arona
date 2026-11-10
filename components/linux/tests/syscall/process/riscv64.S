@@ -49,11 +49,46 @@ threads:
     lw t0, 0(s2)
     bne a0, t0, thread_failure
     mv s3, a0
+    addi s5, s1, -2048
+requeue_child:
+    addi a0, s2, 24
+    li a1, 132
+    li a2, 0
+    li a3, 1
+    mv a4, s5
+    li a5, 0
+    invoke 98
+    bnez a0, wake_requeued
+    invoke 124
+    expect 0
+    j requeue_child
+wake_requeued:
+    expect 1
+    mv a0, s5
+    li a1, 138
+    li a2, 1
+    li a3, 0
+    li a4, 0
+    li a5, 2
+    invoke 98
+    expect 0
+    mv a0, s5
+    li a1, 138
+    li a5, 4
+    invoke 98
+    expect 1
 wait_child:
     lw t0, 4(s2)
     beqz t0, child_finished
-    invoke 124
-    expect 0
+    addi a0, s2, 4
+    li a1, 0
+    mv a2, t0
+    li a3, 0
+    li a4, 0
+    li a5, 0
+    invoke 98
+    beqz a0, wait_child
+    expect -11
     j wait_child
 child_finished:
     ld t0, 8(s2)
@@ -76,6 +111,14 @@ child:
     srli t0, t0, 32
     bne a0, t0, thread_failure
     sd a0, 8(s2)
+    addi a0, s2, 24
+    li a1, 137
+    li a2, 0
+    li a3, 0
+    li a4, 0
+    li a5, 4
+    invoke 98
+    expect 0
     li a0, 0
     invoke 93
 thread_failure:

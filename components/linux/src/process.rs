@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+pub(crate) mod futex;
 pub(crate) mod namespace;
 
 use alloc::{rc::Rc, vec::Vec};
@@ -140,8 +141,11 @@ impl<'a> Process<'a> {
             if self.threads[index].native.state()?.0 == ThreadState::Dead {
                 let status = self.threads[index].native.wait(0)?;
                 let clear_tid = self.threads[index].clear_tid;
-                if clear_tid != 0 {
-                    let _ = self.address_space.write(clear_tid, &[0; 4]);
+                if clear_tid != 0
+                    && self.address_space.write(clear_tid, &[0; 4]).is_ok()
+                    && let Ok((key, _)) = self.address_space.futex_key(self.pid, clear_tid, false)
+                {
+                    self.namespace.futexes.wake(key, 1, u32::MAX);
                 }
                 self.status = if status == usize::MAX {
                     ExitStatus { code: 0, signal: 9 }

@@ -49,11 +49,46 @@ threads:
     ld.w $t0, $s2, 0
     bne $a0, $t0, thread_failure
     move $s3, $a0
+    addi.d $s5, $s1, -2048
+requeue_child:
+    addi.d $a0, $s2, 24
+    li.d $a1, 132
+    li.d $a2, 0
+    li.d $a3, 1
+    move $a4, $s5
+    li.d $a5, 0
+    invoke 98
+    bnez $a0, wake_requeued
+    invoke 124
+    expect 0
+    b requeue_child
+wake_requeued:
+    expect 1
+    move $a0, $s5
+    li.d $a1, 138
+    li.d $a2, 1
+    li.d $a3, 0
+    li.d $a4, 0
+    li.d $a5, 2
+    invoke 98
+    expect 0
+    move $a0, $s5
+    li.d $a1, 138
+    li.d $a5, 4
+    invoke 98
+    expect 1
 wait_child:
     ld.w $t0, $s2, 4
     beqz $t0, child_finished
-    invoke 124
-    expect 0
+    addi.d $a0, $s2, 4
+    li.d $a1, 0
+    move $a2, $t0
+    li.d $a3, 0
+    li.d $a4, 0
+    li.d $a5, 0
+    invoke 98
+    beqz $a0, wait_child
+    expect -11
     b wait_child
 child_finished:
     ld.d $t0, $s2, 8
@@ -76,6 +111,14 @@ child:
     srli.d $t0, $t0, 32
     bne $a0, $t0, thread_failure
     st.d $a0, $s2, 8
+    addi.d $a0, $s2, 24
+    li.d $a1, 137
+    li.d $a2, 0
+    li.d $a3, 0
+    li.d $a4, 0
+    li.d $a5, 4
+    invoke 98
+    expect 0
     li.d $a0, 0
     invoke 93
 thread_failure:

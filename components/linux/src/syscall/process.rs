@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+pub(super) mod futex;
 mod thread;
 
 use super::{
@@ -14,6 +15,9 @@ pub(super) fn dispatch<'a>(
     number: usize,
     args: [usize; 6],
 ) -> Option<Outcome<'a>> {
+    if number == abi::FUTEX {
+        return Some(futex::start(process, args));
+    }
     let result = match number {
         abi::GETPID => Ok(process.pid),
         abi::GETPPID => Ok(process.parent),

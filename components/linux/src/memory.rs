@@ -402,3 +402,32 @@ impl AddressSpace {
             .is_some_and(|permissions| access <= 2 && permissions as u64 & (1 << access) != 0)
     }
 }
+
+impl AddressSpace {
+    pub fn futex_key(
+        &self,
+        pid: usize,
+        address: usize,
+        private: bool,
+    ) -> Result<(crate::process::futex::Key, Rc<Handle<FrameAllocation>>), crate::syscall::abi::Errno>
+    {
+        use crate::syscall::abi::{EFAULT, EINVAL};
+        if address & 3 != 0 {
+            return Err(EINVAL);
+        }
+        let mut value = [0; 4];
+        self.read(address, &mut value).map_err(|_| EFAULT)?;
+        let pages = self.pages.borrow();
+        let page = pages.get(&(address & !(PAGE_SIZE - 1))).ok_or(EFAULT)?;
+        let key = if private {
+            (pid, address, 0)
+        } else {
+            (
+                0,
+                Rc::as_ptr(&page.frames) as usize,
+                page.offset as usize * PAGE_SIZE + address % PAGE_SIZE,
+            )
+        };
+        Ok((key, Rc::clone(&page.frames)))
+    }
+}

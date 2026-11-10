@@ -121,6 +121,7 @@ fn writable(
         b"Readiness",
         b"System",
         b"HardwareThreads",
+        b"Join",
         b"writable",
         b"vector",
     ] {
