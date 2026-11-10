@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 pub(crate) mod futex;
+pub(crate) mod image;
 pub(crate) mod namespace;
 
 use alloc::{rc::Rc, vec::Vec};
@@ -137,7 +138,11 @@ impl<'a> Process<'a> {
         }
     }
 
-    pub fn poll(&mut self, files: &fs::Client<'a>) -> Result<bool, Error> {
+    pub fn poll(
+        &mut self,
+        files: &fs::Client<'a>,
+        services: &crate::Services<'_>,
+    ) -> Result<bool, Error> {
         let mut progress = self.terminal.poll();
         let mut index = 0;
         while index < self.threads.len() {
@@ -159,7 +164,7 @@ impl<'a> Process<'a> {
                 progress = true;
                 continue;
             }
-            progress |= syscall::poll(self, index, files)?;
+            progress |= syscall::poll(self, index, files, services)?;
             index += 1;
         }
         Ok(progress)

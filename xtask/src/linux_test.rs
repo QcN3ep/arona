@@ -16,6 +16,7 @@ pub(super) fn append(
     let (executable, compact) = build_guest(options, root, target_directory)?;
     let image = fs::read(executable).map_err(|error| error.to_string())?;
     append_entry(bytes, "bin/linux-test", 0o100755, &image)?;
+    append_entry(bytes, "bin/linux-noexec", 0o100644, &image)?;
     let mut compact = fs::read(compact).map_err(|error| error.to_string())?;
     append_entry(bytes, "bin/linux-compact", 0o100755, &compact)?;
     let headers = u64::from_le_bytes(compact[32..40].try_into().unwrap()) as usize;
@@ -127,6 +128,7 @@ fn build_guest(
         ("syscall/process", "process"),
         ("syscall/process/futex", "futex"),
         ("syscall/process/child", "child"),
+        ("syscall/process/exec", "exec"),
         ("memory", "memory"),
         ("syscall/file", "file"),
         ("syscall/file/io", "file-io"),

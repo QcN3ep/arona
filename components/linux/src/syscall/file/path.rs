@@ -16,7 +16,7 @@ use crate::{
     process::Process,
 };
 
-pub(super) struct Lookup<'a> {
+pub(in crate::syscall) struct Lookup<'a> {
     pub name: Vec<u8>,
     pub anchor: Option<Rc<OpenFileDescription<'a>>>,
 }

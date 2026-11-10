@@ -33,6 +33,7 @@ enum Outcome<'a> {
 }
 
 enum Operation<'a> {
+    Exec(process::exec::Pending<'a>),
     WaitChild(process::wait::Pending),
     Futex(process::futex::Pending),
     File(file::Pending<'a>),
@@ -43,6 +44,11 @@ enum Operation<'a> {
 impl<'a> Operation<'a> {
     fn waits<'b>(&'b self, items: &mut alloc::vec::Vec<runtime::ipc::WaitItem<'b>>) {
         match self {
+            Self::Exec(operation) => {
+                if let Some(call) = operation.call() {
+                    items.push(runtime::ipc::WaitItem::new(call, runtime::ipc::READABLE));
+                }
+            }
             Self::WaitChild(_) => {}
             Self::Futex(operation) => operation.waits(items),
             Self::File(operation) => operation.waits(items),
@@ -56,6 +62,7 @@ impl<'a> Operation<'a> {
     }
     fn poll(&mut self, process: &mut Process<'a>, files: &fs::Client<'a>) -> Option<SyscallResult> {
         match self {
+            Self::Exec(_) => unreachable!(),
             Self::WaitChild(operation) => operation.poll(process),
             Self::Futex(operation) => operation.poll(),
             Self::File(operation) => operation.poll(process, files),
@@ -86,6 +93,7 @@ pub(crate) fn dispatch<'a>(
         outcome
     } else {
         match number {
+            abi::EXECVE => process::exec::start(process, files, arguments),
             abi::EXIT => process::exit(process, index, arguments[0])?,
             abi::EXIT_GROUP => process::exit_group(process, arguments[0])?,
             abi::BRK => Outcome::Complete(Ok(process.address_space.brk(arguments[0])?)),
@@ -119,10 +127,22 @@ pub(crate) fn poll<'a>(
     process: &mut Process<'a>,
     index: usize,
     files: &fs::Client<'a>,
+    services: &crate::Services<'_>,
 ) -> Result<bool, Error> {
     let Some(mut pending) = process.threads[index].pending.take() else {
         return Ok(false);
     };
+    if let Operation::Exec(exec) = &mut pending.operation {
+        match exec.poll(process, index, services) {
+            None => {
+                process.threads[index].pending = Some(pending);
+                return Ok(false);
+            }
+            Some(Err(error)) => pending.context.complete(Err(error))?,
+            Some(Ok(())) => {}
+        }
+        return Ok(true);
+    }
     let Some(result) = pending.operation.poll(process, files) else {
         process.threads[index].pending = Some(pending);
         return Ok(false);

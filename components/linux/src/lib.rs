@@ -23,6 +23,7 @@ pub use client::{Control, Program, Services};
 pub enum Error {
     InvalidRequest,
     InvalidExecutable,
+    PermissionDenied,
     NoMemory,
     Filesystem(fs::Error),
     Device(devmgr::Error),

@@ -86,6 +86,10 @@ auxv_done:
     beq $s3, $t1, files_write
     li.d $t1, 118
     beq $s3, $t1, files_vector
+    li.d $t1, 69
+    beq $s3, $t1, exec_process
+    li.d $t1, 90
+    beq $s3, $t1, exec_replaced
     li.d $t1, 75
     beq $s3, $t1, fork_process
     li.d $t1, 74

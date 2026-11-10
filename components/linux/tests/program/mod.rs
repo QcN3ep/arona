@@ -123,6 +123,7 @@ fn writable(
         b"HardwareThreads",
         b"Join",
         b"Kin",
+        b"Exec",
         b"writable",
         b"vector",
     ] {

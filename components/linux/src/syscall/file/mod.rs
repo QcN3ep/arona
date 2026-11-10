@@ -7,7 +7,7 @@ mod directory;
 mod io;
 mod metadata;
 mod open;
-mod path;
+pub(in crate::syscall) mod path;
 mod pipe;
 mod poll;
 mod terminal;

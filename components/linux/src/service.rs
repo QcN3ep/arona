@@ -53,7 +53,7 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
             &services,
             &namespace,
         )?;
-        progress |= poll_running(&mut running, &files)?;
+        progress |= poll_running(&mut running, &files, &services)?;
         match port.receive(WaitMode::Poll) {
             Ok(trap) => {
                 if let Some(owner) = running.iter_mut().find(|running| {
@@ -179,11 +179,15 @@ fn poll_loading<'a>(
     Ok(progress)
 }
 
-fn poll_running<'a>(running: &mut Vec<Running<'a>>, files: &fs::Client<'a>) -> Result<bool, Error> {
+fn poll_running<'a>(
+    running: &mut Vec<Running<'a>>,
+    files: &fs::Client<'a>,
+    services: &Services<'_>,
+) -> Result<bool, Error> {
     let mut progress = false;
     let mut index = 0;
     while index < running.len() {
-        progress |= running[index].process.poll(files)?;
+        progress |= running[index].process.poll(files, services)?;
         let children = core::mem::take(&mut running[index].process.children);
         for process in children {
             running.push(Running {

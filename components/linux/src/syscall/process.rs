@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod child;
+pub(super) mod exec;
 pub(super) mod futex;
 mod thread;
 pub(super) mod wait;

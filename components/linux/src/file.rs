@@ -216,3 +216,10 @@ impl FileTable<'_> {
         }
     }
 }
+
+impl FileTable<'_> {
+    pub fn close_on_exec(&mut self) {
+        self.entries
+            .retain(|_, descriptor| !descriptor.close_on_exec);
+    }
+}

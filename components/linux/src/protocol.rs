@@ -85,6 +85,7 @@ pub(crate) fn response(response: ReceivedMessage) -> Result<ReceivedMessage, Err
         3 => Err(Error::NoMemory),
         4 => Err(Error::Filesystem(fs::Error::NotFound)),
         5 => Err(Error::Filesystem(fs::Error::Io)),
+        6 => Err(Error::PermissionDenied),
         _ => Err(runtime::Error::Protocol.into()),
     }
 }
@@ -93,6 +94,7 @@ pub(crate) fn error(error: Error) -> u64 {
     match error {
         Error::InvalidRequest => 1,
         Error::InvalidExecutable => 2,
+        Error::PermissionDenied => 6,
         Error::NoMemory
         | Error::Runtime(runtime::Error::Kernel(runtime::KernelError::NoMemory)) => 3,
         Error::Filesystem(fs::Error::NotFound) => 4,
