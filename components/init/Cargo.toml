@@ -26,3 +26,6 @@ devmgr = { package = "arona-devmgr", path = "../devmgr" }
 logger = { package = "arona-logger", path = "../logger" }
 fs = { package = "arona-fs", path = "../fs" }
 linux = { package = "arona-linux", path = "../linux" }
+
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }

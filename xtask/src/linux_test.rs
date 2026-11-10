@@ -8,7 +8,7 @@ use std::{
 };
 
 pub(super) fn append(
-    options: BuildOptions,
+    options: &BuildOptions,
     root: &Path,
     target_directory: &Path,
     bytes: &mut Vec<u8>,
@@ -108,7 +108,7 @@ fn build_runner(mut command: Command) -> Result<PathBuf, String> {
 }
 
 fn build_guest(
-    options: BuildOptions,
+    options: &BuildOptions,
     root: &Path,
     target: &Path,
 ) -> Result<(PathBuf, PathBuf), String> {

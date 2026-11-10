@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod linux_test;
+mod rootfs;
 
 use std::{
     env,
@@ -62,8 +63,8 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
     match command.as_str() {
         "build" => build(arguments, false),
         "run" => build(arguments, true),
-        "package-init" => package_init(BuildOptions::parse(arguments)?, false).map(|_| ()),
-        "package-linux-test" => package_init(BuildOptions::parse(arguments)?, true).map(|_| ()),
+        "package-init" => package_init(&BuildOptions::parse(arguments)?, false).map(|_| ()),
+        "package-linux-test" => package_init(&BuildOptions::parse(arguments)?, true).map(|_| ()),
         "help" | "--help" | "-h" => {
             println!("{}", usage());
             Ok(())
@@ -74,8 +75,8 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
 
 fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), String> {
     let options = BuildOptions::parse(arguments)?;
-    let archive = package_init(options, false)?;
-    run_cargo_build(options, &archive)?;
+    let archive = package_init(&options, false)?;
+    run_cargo_build(&options, &archive)?;
     if run {
         let root = workspace_root()?;
         let isa = match options.target {
@@ -116,7 +117,7 @@ fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), Str
     Ok(())
 }
 
-fn package_init(options: BuildOptions, linux_test: bool) -> Result<PathBuf, String> {
+fn package_init(options: &BuildOptions, linux_test: bool) -> Result<PathBuf, String> {
     let root = workspace_root()?;
     let profile = options.profile();
     let target_directory = target_directory(&root);
@@ -145,6 +146,26 @@ fn package_init(options: BuildOptions, linux_test: bool) -> Result<PathBuf, Stri
     if linux_test {
         linux_test::append(options, &root, &target_directory, &mut bytes)?;
     }
+    let mut reserved = vec![
+        "bin/init",
+        "bin/devmgr",
+        "bin/logger",
+        "bin/fs",
+        "bin/linux",
+    ];
+    if linux_test {
+        reserved.extend([
+            "bin/linux-test",
+            "bin/linux-noexec",
+            "bin/linux-compact",
+            "bin/linux-separate-headers",
+            "bin/linux-truncated",
+            "bin/linux-foreign",
+            "bin/linux-writable-code",
+            "etc/linux-data",
+        ]);
+    }
+    rootfs::append(&mut bytes, options.rootfs.as_deref(), &reserved)?;
     append_entry(&mut bytes, "TRAILER!!!", 0, &[])?;
     fs::write(&archive, bytes)
         .map_err(|error| format!("failed to write {}: {error}", archive.display()))?;
@@ -152,11 +173,11 @@ fn package_init(options: BuildOptions, linux_test: bool) -> Result<PathBuf, Stri
     Ok(archive)
 }
 
-#[derive(Clone, Copy)]
 struct BuildOptions {
     target: Target,
     release: bool,
     initramfs: Initramfs,
+    rootfs: Option<PathBuf>,
 }
 
 impl BuildOptions {
@@ -164,12 +185,16 @@ impl BuildOptions {
         let mut target = None;
         let mut release = false;
         let mut initramfs = Initramfs::Embedded;
+        let mut rootfs = None;
         while let Some(argument) = arguments.next() {
             let argument = argument
                 .into_string()
                 .map_err(|_| "arguments must be valid UTF-8".to_owned())?;
             match argument.as_str() {
                 "--release" if !release => release = true,
+                "--rootfs" if rootfs.is_none() => {
+                    rootfs = Some(PathBuf::from(arguments.next().ok_or_else(usage)?));
+                }
                 "--initramfs" => {
                     initramfs = match arguments.next().as_deref().and_then(|value| value.to_str()) {
                         Some("embedded") => Initramfs::Embedded,
@@ -187,15 +212,16 @@ impl BuildOptions {
             target: target.ok_or_else(usage)?,
             release,
             initramfs,
+            rootfs,
         })
     }
 
-    fn profile(self) -> &'static str {
+    fn profile(&self) -> &'static str {
         if self.release { "release" } else { "debug" }
     }
 }
 
-fn run_cargo_build(options: BuildOptions, archive: &Path) -> Result<(), String> {
+fn run_cargo_build(options: &BuildOptions, archive: &Path) -> Result<(), String> {
     let root = workspace_root()?;
     let mut command = cargo_command(root);
     command.args([
@@ -275,8 +301,9 @@ fn target_directory(root: &Path) -> PathBuf {
 fn append_entry(archive: &mut Vec<u8>, name: &str, mode: u32, data: &[u8]) -> Result<(), String> {
     let name_size = u32::try_from(name.len() + 1).map_err(|_| "CPIO name is too long")?;
     let file_size = u32::try_from(data.len()).map_err(|_| "CPIO file is too large")?;
+    let inode = u32::try_from(archive.len()).map_err(|_| "CPIO archive is too large")?;
     archive.extend_from_slice(b"070701");
-    for field in [1, mode, 0, 0, 1, 0, file_size, 0, 0, 0, 0, name_size, 0] {
+    for field in [inode, mode, 0, 0, 1, 0, file_size, 0, 0, 0, 0, name_size, 0] {
         write!(archive, "{field:08x}").map_err(|error| error.to_string())?;
     }
     archive.extend_from_slice(name.as_bytes());
@@ -309,5 +336,5 @@ fn execute(mut command: Command) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|package-init|package-linux-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external]".to_owned()
+    "usage: cargo xtask <build|run|package-init|package-linux-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH]".to_owned()
 }

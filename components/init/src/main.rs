@@ -5,10 +5,12 @@
 
 extern crate alloc;
 
+mod config;
 mod program;
 mod service;
+mod supervisor;
 
-use fs::{FileSystem, archive::Archive};
+use fs::{FileSystem, ReadAt, archive::Archive};
 use runtime::{DeviceSet, Error, KernelLog, ipc::WaitMode, process};
 
 enum InitError {
@@ -17,6 +19,7 @@ enum InitError {
     Logger(logger::Error),
     Filesystem(fs::Error),
     Linux(linux::Error),
+    Config(config::Error),
 }
 
 impl core::fmt::Debug for InitError {
@@ -27,6 +30,7 @@ impl core::fmt::Debug for InitError {
             Self::Logger(error) => output.debug_tuple("Logger").field(error).finish(),
             Self::Filesystem(error) => output.debug_tuple("Filesystem").field(error).finish(),
             Self::Linux(error) => output.debug_tuple("Linux").field(error).finish(),
+            Self::Config(error) => write!(output, "{error}"),
         }
     }
 }
@@ -43,7 +47,8 @@ init_errors!(
     Device(devmgr::Error),
     Logger(logger::Error),
     Filesystem(fs::Error),
-    Linux(linux::Error)
+    Linux(linux::Error),
+    Config(config::Error)
 );
 
 fn main() -> Result<usize, InitError> {
@@ -96,11 +101,33 @@ fn main() -> Result<usize, InitError> {
         persistent_log,
     )?;
     logger::init(client, logger::log::LevelFilter::Info).map_err(|_| Error::Protocol)?;
-    let (linux, _linux_control) = service::start_linux(&loader, &files, &mounts, &device_control)?;
+    let (linux, linux_control) = service::start_linux(&loader, &files, &mounts, &device_control)?;
     if mounted {
         logger::log::info!(target: "init", "Mounted block device at /var");
     }
     logger::log::info!(target: "init", "System services ready");
     logger::log::logger().flush();
-    Ok(service::wait(&[&filesystem, &devmgr, &logger, &linux])?.max(1))
+    let config = read_config(&files).inspect_err(|error| {
+        logger::log::error!(target: "init", "Failed to load /etc/init.toml: {error:?}");
+        logger::log::logger().flush();
+    })?;
+    supervisor::run(
+        &[&filesystem, &devmgr, &logger, &linux],
+        config,
+        &linux_control,
+        &device_control,
+        service::console(&devices)?,
+    )
+}
+
+fn read_config(files: &fs::Client<'_>) -> Result<config::Config, InitError> {
+    let file = match files.open("/etc/init.toml", service::deadline()?) {
+        Ok(file) => file,
+        Err(fs::Error::NotFound) => return Ok(config::Config::default()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut bytes = alloc::vec![0; file.len()];
+    file.read_exact_at(0, &mut bytes)?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| Error::Protocol)?;
+    Ok(config::Config::parse(text)?)
 }

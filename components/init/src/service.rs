@@ -2,7 +2,7 @@
 
 use runtime::{
     Channel, DeviceSet, Error, Handle, KernelLog, Rights, Task,
-    ipc::{self, CallError, Message, Transfer, WaitItem, WaitMode},
+    ipc::{self, CallError, Message, Transfer, WaitItem},
     process::{self, ProcessStart},
     thread,
 };
@@ -73,14 +73,7 @@ pub fn start_logger(
     kernel_log: &Handle<KernelLog>,
     persistent_log: Option<fs::File<'static>>,
 ) -> Result<(Service, logger::Control<'static>, logger::Client<'static>), crate::InitError> {
-    let mut cursor = 0;
-    let console = loop {
-        let id = devices.next(cursor)?.ok_or(Error::Protocol)?;
-        if devices.describe(id)?.console {
-            break id;
-        }
-        cursor = id;
-    };
+    let console = console(devices)?;
     let output = devmgr::uart::Session::open(
         process::task(),
         devmgr,
@@ -142,13 +135,24 @@ pub fn start_linux(
     Ok((service, control))
 }
 
-pub fn wait(services: &[&Service]) -> Result<usize, Error> {
-    let items: alloc::vec::Vec<_> = services
-        .iter()
-        .map(|service| WaitItem::new(&service.task, ipc::EXITED))
-        .collect();
-    let ready = ipc::wait_many(&items, WaitMode::Forever)?;
-    services[ready.index].task.wait(0)
+impl Service {
+    pub fn wait_item(&self) -> WaitItem<'_> {
+        WaitItem::new(&self.task, ipc::EXITED)
+    }
+    pub fn wait(&self) -> Result<usize, Error> {
+        self.task.wait(0)
+    }
+}
+
+pub fn console(devices: &Handle<DeviceSet>) -> Result<u32, Error> {
+    let mut cursor = 0;
+    loop {
+        let id = devices.next(cursor)?.ok_or(Error::Protocol)?;
+        if devices.describe(id)?.console {
+            return Ok(id);
+        }
+        cursor = id;
+    }
 }
 
 fn launch(

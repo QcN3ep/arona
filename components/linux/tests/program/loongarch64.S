@@ -104,6 +104,8 @@ auxv_done:
     beq $s3, $t1, signals
     li.d $t1, 83
     beq $s3, $t1, system_basics
+    li.d $t1, 79
+    beq $s3, $t1, configured_exit
     li.d $t1, 67
     beq $s3, $t1, process_terminal
     li.d $t1, 84
@@ -321,6 +323,11 @@ heap_reused_zero:
     bne $a0, $t0, failure
     jr $ra
 
+configured_exit:
+    li.d $a0, 0
+    li.d $a7, 94
+    syscall 0
+    b configured_exit
 .section .rodata
 message:
     .ascii "Linux ABI guest write\nLinux partial write: "

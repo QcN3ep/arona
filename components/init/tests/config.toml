@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MPL-2.0
+
+[[program]]
+name = "terminal"
+executor = "linux"
+path = "/bin/linux-test"
+args = ["Terminal"]
+env = { ARONA_TEST = "yes" }
+terminal = "console"
+restart = "never"
+
+[[program]]
+name = "retry"
+executor = "linux"
+path = "/bin/not-installed"
+restart = "on-failure"
+
+[[program]]
+name = "once"
+executor = "linux"
+path = "/bin/entry"
+args = ["Once"]
+env = { ARONA_TEST = "yes" }
+restart = "on-failure"
+
+[[program]]
+name = "always"
+executor = "linux"
+path = "/bin/linux-test"
+args = ["Once"]
+env = { ARONA_TEST = "yes" }
+restart = "always"
