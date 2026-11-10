@@ -11,12 +11,14 @@ use kernel::trap::{Trap, TrapOrigin, TrapOutcome};
 
 mod device;
 mod ipc;
+mod memory;
 mod syscall;
 mod task;
 mod thread;
 mod trap;
 
 pub use device::{run as run_devices, run_dma_failure};
+pub use memory::{run as run_memory, validate_regions as validate_memory_regions};
 pub use syscall::{handle_program, run_device_program, run_init_program, run_linux_program};
 
 pub trait Platform {
@@ -31,6 +33,7 @@ pub trait Platform {
 
 pub fn run<P: Platform>() {
     thread::run::<P>();
+    memory::concurrent();
     task::run();
     ipc::run();
     syscall::run(P::syscall_code());

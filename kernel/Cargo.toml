@@ -17,10 +17,6 @@ name = "hardware"
 path = "tests/hardware/mod.rs"
 
 [[test]]
-name = "memory"
-path = "tests/memory/mod.rs"
-
-[[test]]
 name = "logger"
 path = "tests/logger/mod.rs"
 
