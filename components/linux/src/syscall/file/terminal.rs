@@ -19,6 +19,15 @@ pub(in crate::syscall) struct Read<'a> {
     description: Rc<OpenFileDescription<'a>>,
     buffers: IoVectors,
     tid: usize,
+    deadline: Option<super::super::wait::Deadline>,
+    mode: Option<ReadMode>,
+    received: u64,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ReadMode {
+    Canonical,
+    Raw { minimum: u8, time: u8 },
 }
 
 pub(super) fn read<'a>(
@@ -36,6 +45,9 @@ pub(super) fn read<'a>(
             description,
             buffers: buffer.import(process)?,
             tid: process.threads[index].tid,
+            deadline: None,
+            mode: None,
+            received: 0,
         }))
     })())
 }
@@ -90,15 +102,39 @@ impl Read<'_> {
         let OpenFileDescription::Terminal { terminal, .. } = self.description.as_ref() else {
             unreachable!()
         };
+        let terminal = Rc::clone(terminal);
         match process
             .namespace
-            .terminal_access(process.pid, self.tid, terminal, Access::Read)
+            .terminal_access(process.pid, self.tid, &terminal, Access::Read)
         {
             Ok(true) => {}
             Ok(false) => return None,
             Err(error) => return Some(Err(error)),
         }
-        if terminal.readable() {
+        let nonblocking = self.description.flags() & O_NONBLOCK != 0;
+        let settings = terminal.termios();
+        let mode = if settings[12] & 2 != 0 {
+            ReadMode::Canonical
+        } else {
+            ReadMode::Raw {
+                minimum: settings[23],
+                time: settings[22],
+            }
+        };
+        if self.mode != Some(mode) {
+            self.mode = Some(mode);
+            self.deadline = None;
+        }
+        let available = terminal.available();
+        let ready = if mode == ReadMode::Canonical {
+            terminal.readable()
+        } else {
+            match self.raw_ready(process, &terminal, available, nonblocking) {
+                Ok(ready) => ready,
+                Err(error) => return Some(Err(error)),
+            }
+        };
+        if ready || terminal.failed() && available != 0 {
             let mut bytes = terminal.snapshot(self.buffers.length());
             return Some(
                 self.buffers
@@ -107,15 +143,82 @@ impl Read<'_> {
             );
         }
         if terminal.failed() {
-            return Some(Err(EIO));
+            return Some(Ok(0));
         }
-        let nonblocking = self.description.flags() & O_NONBLOCK != 0;
-        let settings = terminal.termios();
-        let immediate = nonblocking || settings[12] & 2 == 0 && settings[23] == 0;
-        if immediate {
-            return Some(if nonblocking { Err(EAGAIN) } else { Ok(0) });
+        if nonblocking {
+            return Some(Err(EAGAIN));
         }
+
         None
+    }
+    pub fn interrupt(&self, process: &Process<'_>) -> (bool, SyscallResult) {
+        let OpenFileDescription::Terminal { terminal, .. } = self.description.as_ref() else {
+            unreachable!()
+        };
+        let foreground = process
+            .namespace
+            .foreground(process.pid, terminal)
+            .map_or(true, |(_, group)| {
+                group == process.namespace.group(process.pid)
+            });
+        if foreground && terminal.termios()[12] & 2 == 0 && terminal.available() != 0 {
+            let mut bytes = terminal.snapshot(self.buffers.length());
+            return (
+                false,
+                self.buffers
+                    .scatter(process, &mut bytes)
+                    .inspect(|&count| terminal.consume(count)),
+            );
+        }
+        (true, Err(super::super::abi::EINTR))
+    }
+
+    fn raw_ready(
+        &mut self,
+        process: &Process<'_>,
+        terminal: &Terminal,
+        available: usize,
+        nonblocking: bool,
+    ) -> Result<bool, Errno> {
+        if nonblocking {
+            return Ok(available != 0);
+        }
+        let Some(ReadMode::Raw { minimum, time }) = self.mode else {
+            unreachable!()
+        };
+        let minimum = usize::from(minimum).min(self.buffers.length());
+        if time == 0 {
+            return Ok(available >= minimum);
+        }
+        if available != 0 && (minimum == 0 || available >= minimum) {
+            return Ok(true);
+        }
+        let received = terminal.received();
+        if minimum != 0 && available == 0 {
+            self.deadline = None;
+            self.received = received;
+            return Ok(false);
+        }
+        if minimum == 0 && self.deadline.is_none()
+            || minimum != 0
+                && available != 0
+                && (self.deadline.is_none() || self.received != received)
+        {
+            self.deadline = Some(super::super::wait::Deadline::new(
+                process.supervisor,
+                Some(u64::from(time) * 100_000_000),
+            )?);
+        }
+        self.received = received;
+        self.deadline
+            .as_ref()
+            .map_or(Ok(false), |deadline| deadline.expired())
+    }
+
+    pub fn waits<'a>(&'a self, items: &mut alloc::vec::Vec<runtime::ipc::WaitItem<'a>>) {
+        if let Some(deadline) = &self.deadline {
+            deadline.waits(items);
+        }
     }
 }
 
@@ -192,9 +295,6 @@ fn settings(process: &Process<'_>, address: usize) -> Result<[u8; 36], Errno> {
         .address_space
         .read(address, &mut value)
         .map_err(|_| EFAULT)?;
-    if value[22] != 0 || value[23] > 1 {
-        return Err(EOPNOTSUPP);
-    }
     Ok(value)
 }
 

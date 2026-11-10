@@ -175,8 +175,11 @@ fn append_records(
     let mut first = run(b"A");
     let mut second = run(b"B");
     for guest in [&mut first, &mut second] {
+        let result = guest.wait(WaitMode::Until(
+            runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
+        ));
         assert_eq!(
-            guest.wait(until()).unwrap(),
+            result.unwrap(),
             ExitStatus {
                 code: 42,
                 signal: 0
@@ -428,6 +431,18 @@ fn terminal(
             runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
         ))
         .unwrap();
+    if status
+        != (ExitStatus {
+            code: 42,
+            signal: 0,
+        })
+    {
+        let output = output();
+        output
+            .write_all(alloc::format!("Linux terminal status: {status:?}\n").as_bytes())
+            .unwrap();
+        output.flush().unwrap();
+    }
     assert_eq!(
         status,
         ExitStatus {

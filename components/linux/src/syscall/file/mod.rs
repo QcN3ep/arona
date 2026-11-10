@@ -220,7 +220,8 @@ fn outcome<'a>(operation: Result<Pending<'a>, Errno>) -> Outcome<'a> {
 impl<'a> Pending<'a> {
     pub fn interrupt(&self, process: &Process<'_>) -> Option<(bool, SyscallResult)> {
         match self {
-            Self::Terminal(_) | Self::Pipe(_) => Some((true, Err(abi::EINTR))),
+            Self::Terminal(read) => Some(read.interrupt(process)),
+            Self::Pipe(_) => Some((true, Err(abi::EINTR))),
             Self::Poll(poll) => Some((false, poll.interrupt(process))),
             _ => None,
         }
@@ -230,8 +231,10 @@ impl<'a> Pending<'a> {
         if let Some(call) = self.call() {
             items.push(runtime::ipc::WaitItem::new(call, runtime::ipc::READABLE));
         }
-        if let Self::Poll(poll) = self {
-            poll.waits(items);
+        match self {
+            Self::Poll(poll) => poll.waits(items),
+            Self::Terminal(read) => read.waits(items),
+            _ => {}
         }
     }
 

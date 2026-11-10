@@ -20,6 +20,9 @@ struct State {
     ready: VecDeque<VecDeque<u8>>,
     line: Vec<u8>,
     failed: bool,
+    signals: VecDeque<u8>,
+    received: u64,
+    literal: bool,
 }
 
 pub(crate) struct Input {
@@ -39,8 +42,9 @@ impl Terminal {
         termios[..4].copy_from_slice(&0x500u32.to_le_bytes());
         termios[4..8].copy_from_slice(&5u32.to_le_bytes());
         termios[8..12].copy_from_slice(&0xbfu32.to_le_bytes());
-        termios[12..16].copy_from_slice(&0x803bu32.to_le_bytes());
-        termios[17..27].copy_from_slice(&[3, 28, 127, 21, 4, 0, 1, 0, 17, 19]);
+        termios[12..16].copy_from_slice(&0x823bu32.to_le_bytes());
+        termios[17..34]
+            .copy_from_slice(&[3, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22, 0]);
         let window = [24, 0, 80, 0, 0, 0, 0, 0];
         Self {
             output,
@@ -53,6 +57,9 @@ impl Terminal {
                 ready: VecDeque::new(),
                 line: Vec::new(),
                 failed: false,
+                signals: VecDeque::new(),
+                received: 0,
+                literal: false,
             }),
         }
     }
@@ -79,6 +86,9 @@ impl Terminal {
     pub fn set_termios(&self, value: [u8; 36], flush: bool) {
         let mut state = self.state.borrow_mut();
         state.termios = value;
+        if flush || value[12] & 2 == 0 {
+            state.literal = false;
+        }
         if value[12] & 2 == 0 && !state.line.is_empty() && !flush {
             let line = core::mem::take(&mut state.line);
             state.ready.push_back(line.into());
@@ -92,27 +102,61 @@ impl Terminal {
         self.state.borrow().window
     }
     pub fn set_window(&self, value: [u8; 8]) {
-        self.state.borrow_mut().window = value;
+        let mut state = self.state.borrow_mut();
+        if state.window != value {
+            state.window = value;
+            state.signals.push_back(28);
+        }
     }
     pub fn available(&self) -> usize {
         self.state.borrow().ready.iter().map(VecDeque::len).sum()
     }
+    pub fn received(&self) -> u64 {
+        self.state.borrow().received
+    }
+    pub fn take_signal(&self) -> Option<u8> {
+        self.state.borrow_mut().signals.pop_front()
+    }
     pub fn readable(&self) -> bool {
-        !self.state.borrow().ready.is_empty()
+        let state = self.state.borrow();
+        if state.termios[12] & 2 != 0 {
+            !state.ready.is_empty()
+        } else {
+            let minimum = if state.termios[22] == 0 {
+                usize::from(state.termios[23]).max(1)
+            } else {
+                1
+            };
+            state.ready.iter().map(VecDeque::len).sum::<usize>() >= minimum
+        }
     }
     pub fn snapshot(&self, length: usize) -> Vec<u8> {
-        self.state
-            .borrow()
+        let state = self.state.borrow();
+        let lines = if state.termios[12] & 2 != 0 {
+            1
+        } else {
+            usize::MAX
+        };
+        state
             .ready
-            .front()
-            .map_or_else(Vec::new, |line| line.iter().copied().take(length).collect())
+            .iter()
+            .take(lines)
+            .flatten()
+            .copied()
+            .take(length)
+            .collect()
     }
-    pub fn consume(&self, length: usize) {
+    pub fn consume(&self, mut length: usize) {
         let mut state = self.state.borrow_mut();
-        if let Some(line) = state.ready.front_mut() {
-            line.drain(..length);
+        while let Some(line) = state.ready.front_mut() {
+            let count = length.min(line.len());
+            line.drain(..count);
+            length -= count;
             if line.is_empty() {
                 state.ready.pop_front();
+            }
+            if length == 0 {
+                break;
             }
         }
     }
@@ -165,12 +209,16 @@ impl Terminal {
         (output, count)
     }
 
+    // TODO: 支持软件流控、输入重打印和 UTF-8 擦除。
     fn receive(&self, bytes: Vec<u8>) -> Vec<u8> {
         let mut echo = Vec::new();
         let mut state = self.state.borrow_mut();
         let input_flags = u32::from_le_bytes(state.termios[..4].try_into().unwrap());
         let local = u32::from_le_bytes(state.termios[12..16].try_into().unwrap());
         for mut byte in bytes {
+            if input_flags & 0x20 != 0 {
+                byte &= 0x7f;
+            }
             if byte == b'\r' {
                 if input_flags & 0x80 != 0 {
                     continue;
@@ -181,57 +229,115 @@ impl Terminal {
             } else if byte == b'\n' && input_flags & 0x40 != 0 {
                 byte = b'\r';
             }
-            if input_flags & 0x20 != 0 {
-                byte &= 0x7f;
+            if !state.literal && state.control(byte, local, &mut echo) {
+                continue;
             }
-            if local & 8 != 0
-                && byte != state.termios[21]
-                && byte != state.termios[19]
-                && byte != state.termios[20]
-                || local & 0x40 != 0 && byte == b'\n'
-            {
-                if byte == b'\n' {
-                    echo.push(b'\r');
-                }
-                echo.push(byte);
+            let literal = core::mem::take(&mut state.literal);
+            if local & 8 != 0 || local & 0x40 != 0 && byte == b'\n' {
+                echo_byte(byte, local, &mut echo);
             }
+            state.received = state.received.wrapping_add(1);
             if local & 2 != 0 {
-                if byte == state.termios[19] {
-                    if state.line.pop().is_some() && local & 8 != 0 {
-                        if local & 0x10 != 0 {
-                            echo.extend_from_slice(b"\x08 \x08");
-                        } else {
-                            echo.push(byte);
-                        }
-                    }
-                    continue;
-                }
-                if byte == state.termios[20] {
-                    state.line.clear();
-                    if local & 8 != 0 && local & 0x20 != 0 {
-                        echo.extend_from_slice(b"\r\n");
-                    }
-                    continue;
-                }
-                if byte == state.termios[21] {
-                    let line = core::mem::take(&mut state.line);
-                    state.ready.push_back(line.into());
-                    continue;
-                }
                 state.line.push(byte);
-                if byte == b'\n' || state.termios[28] != 0 && byte == state.termios[28] {
+                if !literal
+                    && (byte == b'\n'
+                        || state.matches(11, byte)
+                        || local & 0x8000 != 0 && state.matches(16, byte))
+                {
                     let line = core::mem::take(&mut state.line);
                     state.ready.push_back(line.into());
                 }
+            } else if let Some(line) = state.ready.back_mut() {
+                line.push_back(byte);
             } else {
-                if let Some(line) = state.ready.back_mut() {
-                    line.push_back(byte);
-                } else {
-                    state.ready.push_back(alloc::vec![byte].into());
-                }
+                state.ready.push_back(alloc::vec![byte].into());
             }
         }
         echo
+    }
+}
+
+impl State {
+    fn matches(&self, index: usize, byte: u8) -> bool {
+        byte != 0 && self.termios[17 + index] == byte
+    }
+
+    fn control(&mut self, byte: u8, local: u32, echo: &mut Vec<u8>) -> bool {
+        if local & 1 != 0 {
+            let signal = [(0, 2), (1, 3), (10, 20)]
+                .into_iter()
+                .find_map(|(index, number)| self.matches(index, byte).then_some(number));
+            if let Some(signal) = signal {
+                if local & 0x80 == 0 {
+                    self.line.clear();
+                    self.ready.clear();
+                    echo.clear();
+                }
+                self.signals.push_back(signal);
+                if local & 8 != 0 {
+                    echo_byte(byte, local, echo);
+                }
+                return true;
+            }
+        }
+        if local & 2 == 0 {
+            return false;
+        }
+        if local & 0x8000 != 0 && self.matches(15, byte) {
+            self.literal = true;
+            return true;
+        }
+        if self.matches(2, byte) {
+            self.erase(local, echo);
+        } else if self.matches(3, byte) {
+            self.line.clear();
+            if local & 0x28 == 0x28 {
+                echo.extend_from_slice(b"\r\n");
+            }
+        } else if self.matches(4, byte) {
+            let line = core::mem::take(&mut self.line);
+            self.ready.push_back(line.into());
+        } else if local & 0x8000 != 0 && self.matches(14, byte) {
+            while self.line.last().is_some_and(u8::is_ascii_whitespace) {
+                self.erase(local, echo);
+            }
+            while self
+                .line
+                .last()
+                .is_some_and(|byte| !byte.is_ascii_whitespace())
+            {
+                self.erase(local, echo);
+            }
+        } else {
+            return false;
+        }
+        true
+    }
+
+    fn erase(&mut self, local: u32, echo: &mut Vec<u8>) {
+        if let Some(byte) = self.line.pop()
+            && local & 8 != 0
+        {
+            if local & 0x10 != 0 {
+                echo.extend_from_slice(b"\x08 \x08");
+                if local & 0x200 != 0 && byte.is_ascii_control() && byte != b'\t' {
+                    echo.extend_from_slice(b"\x08 \x08");
+                }
+            } else {
+                echo_byte(self.termios[19], local, echo);
+            }
+        }
+    }
+}
+
+fn echo_byte(byte: u8, local: u32, echo: &mut Vec<u8>) {
+    if local & 0x200 != 0 && byte.is_ascii_control() && !matches!(byte, b'\n' | b'\t') {
+        echo.extend_from_slice(&[b'^', byte ^ 0x40]);
+    } else {
+        if byte == b'\n' {
+            echo.push(b'\r');
+        }
+        echo.push(byte);
     }
 }
 

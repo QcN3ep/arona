@@ -132,8 +132,15 @@ pub(crate) fn dispatch<'a>(
     };
     match outcome {
         Outcome::Complete(result) => context.complete(process, index, result),
-        Outcome::Restored | Outcome::Restart => {
-            crate::process::signal::delivery::resume(process, index, context)
+        Outcome::Restored => crate::process::signal::delivery::resume(process, index, context),
+        Outcome::Restart => {
+            if crate::process::signal::delivery::next(process, index).is_some_and(|(_, action)| {
+                action.handler != 0 && action.flags & crate::process::signal::RESTART == 0
+            }) {
+                context.complete(process, index, Err(abi::EINTR))
+            } else {
+                crate::process::signal::delivery::resume(process, index, context)
+            }
         }
         Outcome::Pending(operation) => {
             process.threads[index].pending = Some(Pending { context, operation });

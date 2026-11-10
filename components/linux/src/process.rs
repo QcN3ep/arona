@@ -169,6 +169,12 @@ impl<'a> Process<'a> {
         if self.terminal.failed() {
             progress |= self.namespace.hangup_terminal(&self.terminal);
         }
+        while let Some(number) = self.terminal.take_signal() {
+            if let Some((session, group)) = self.terminal.control() {
+                self.namespace.signal_group(session, group, number);
+            }
+            progress = true;
+        }
         let mut index = 0;
         while index < self.threads.len() {
             if self.threads[index].native.state()?.0 == ThreadState::Dead {
