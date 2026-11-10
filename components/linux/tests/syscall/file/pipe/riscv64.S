@@ -14,6 +14,16 @@
 .global files_pipe
 files_pipe:
     addi sp, sp, -512
+    li t0, 1
+    sd t0, 128(sp)
+    sd zero, 136(sp)
+    sd zero, 144(sp)
+    li a0, 13
+    addi a1, sp, 128
+    li a2, 0
+    li a3, 8
+    invoke 134
+    expect 0
     mv a0, sp
     li a1, 0x80800
     invoke 59

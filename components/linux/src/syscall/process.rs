@@ -32,8 +32,8 @@ pub(super) fn dispatch<'a>(
             process.threads[index].clear_tid = args[0];
             Ok(process.threads[index].tid)
         }
-        abi::CLONE if args[0] & 0x10000 == 0 => child::fork(process, context, args),
-        abi::CLONE => thread::clone(process, context, args),
+        abi::CLONE if args[0] & 0x10000 == 0 => child::fork(process, index, context, args),
+        abi::CLONE => thread::clone(process, index, context, args),
         abi::SCHED_YIELD => runtime::thread::yield_now().map(|()| 0).map_err(error),
         _ => return None,
     };

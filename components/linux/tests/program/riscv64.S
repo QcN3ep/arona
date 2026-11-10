@@ -97,6 +97,8 @@ auxv_done:
     beq s3, t1, futex_basics
     li t1, 72
     beq s3, t1, threads
+    li t1, 78
+    beq s3, t1, signals
     li t1, 83
     beq s3, t1, system_basics
     li t1, 84

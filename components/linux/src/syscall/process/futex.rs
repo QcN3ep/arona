@@ -109,6 +109,13 @@ fn read(process: &Process<'_>, address: usize) -> Result<u32, Errno> {
 }
 
 impl Pending {
+    pub fn restartable(&self) -> bool {
+        // TODO: 通过 restart_syscall 保留有期限 futex 等待的绝对截止时间。
+        self.deadline
+            .remaining()
+            .is_ok_and(|remaining| remaining.is_none())
+    }
+
     pub fn waits<'a>(&'a self, items: &mut alloc::vec::Vec<WaitItem<'a>>) {
         self.deadline.waits(items);
     }

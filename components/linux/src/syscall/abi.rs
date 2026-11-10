@@ -1,8 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use crate::elf::Machine;
 use runtime::trap::UserState;
 
-use crate::elf::Machine;
+pub(super) const SIGALTSTACK: usize = 132;
+pub(super) const RT_SIGSUSPEND: usize = 133;
+pub(super) const RT_SIGACTION: usize = 134;
+pub(super) const RT_SIGPROCMASK: usize = 135;
+pub(super) const RT_SIGPENDING: usize = 136;
+pub(super) const RT_SIGTIMEDWAIT: usize = 137;
+pub(super) const RT_SIGRETURN: usize = 139;
+pub(super) const KILL: usize = 129;
+pub(super) const TKILL: usize = 130;
+pub(super) const TGKILL: usize = 131;
+pub(super) const EINTR: Errno = Errno(4);
+pub(crate) const ESRCH: Errno = Errno(3);
+pub(super) const EPERM: Errno = Errno(1);
 
 // REFERENCE: https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h
 pub(super) const UNAME: usize = 160;
@@ -73,12 +86,13 @@ pub(super) const MADVISE: usize = 233;
 pub(super) const ENODEV: Errno = Errno(19);
 pub(super) const MPROTECT: usize = 226;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct Errno(isize);
 
 pub(super) const ENOENT: Errno = Errno(2);
 pub(super) const EIO: Errno = Errno(5);
 pub(super) const EBADF: Errno = Errno(9);
-pub(super) const ENOMEM: Errno = Errno(12);
+pub(crate) const ENOMEM: Errno = Errno(12);
 pub(super) const EACCES: Errno = Errno(13);
 pub(crate) const EFAULT: Errno = Errno(14);
 pub(super) const EEXIST: Errno = Errno(17);

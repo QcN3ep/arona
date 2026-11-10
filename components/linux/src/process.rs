@@ -3,8 +3,10 @@
 pub(crate) mod futex;
 pub(crate) mod image;
 pub(crate) mod namespace;
+pub(crate) mod signal;
 
 use alloc::{rc::Rc, vec::Vec};
+use core::cell::RefCell;
 use namespace::PidNamespace;
 use runtime::{
     Handle, Rights, Task, TrapPort,
@@ -12,6 +14,7 @@ use runtime::{
     thread::{ThreadState, UserEntry},
     trap::{Trap, TrapInfo},
 };
+use signal::{Signals, ThreadSignals, delivery};
 
 use crate::{
     Error, ExitStatus,
@@ -28,11 +31,16 @@ pub(crate) struct Thread<'a> {
     pub native: Handle<runtime::Thread>,
     pub native_id: u64,
     pub pending: Option<Pending<'a>>,
+    pub signals: Rc<RefCell<ThreadSignals>>,
+    pub held: Option<syscall::Context>,
+    pub interrupt_requested: bool,
 }
 
 pub(crate) struct Process<'a> {
     pub namespace: Rc<PidNamespace>,
     pub pid: usize,
+    pub signals: Rc<RefCell<Signals>>,
+    pub signal_return: Option<usize>,
     pub children: Vec<Process<'a>>,
     pub port: Rc<Handle<TrapPort>>,
     pub supervisor: &'a Handle<Task>,
@@ -66,16 +74,25 @@ impl<'a> Process<'a> {
                 thread_pointer: 0,
                 argument: 0,
             },
-            Rights::WAIT | Rights::START | Rights::SET_STATE | Rights::TERMINATE,
+            Rights::WAIT
+                | Rights::START
+                | Rights::SET_STATE
+                | Rights::TERMINATE
+                | Rights::INTERRUPT,
         )?;
         native.set_user_state(&machine.initial(image.entry, stack))?;
         let id = native.id()?;
         let files = FileTable::new(alloc::rc::Rc::clone(&terminal));
         native.start()?;
-        namespace.register(pid, 0, pid);
+        let signals = Rc::default();
+        let thread_signals = Rc::default();
+        namespace.register(pid, 0, pid, &signals);
+        namespace.register_thread(pid, pid, &thread_signals);
         Ok(Self {
             namespace,
             pid,
+            signals,
+            signal_return: None,
             children: Vec::new(),
             port: Rc::clone(port),
             supervisor: parent,
@@ -85,7 +102,10 @@ impl<'a> Process<'a> {
                 clear_tid: 0,
                 native,
                 native_id: id,
-                pending: None
+                pending: None,
+                signals: thread_signals,
+                held: None,
+                interrupt_requested: false,
             }],
             files,
             terminal,
@@ -112,28 +132,24 @@ impl<'a> Process<'a> {
         if self.threads[index].native.state()?.0 == ThreadState::Dead {
             return Ok(());
         }
+        self.threads[index].interrupt_requested = false;
         match trap.info.kind {
             TrapInfo::SYSCALL => syscall::dispatch(self, index, trap, files, services),
             TrapInfo::INTERRUPTED => {
                 let state = trap.state()?;
-                trap.resume(&state).map_err(|(error, _)| error.into())
+                delivery::resume(
+                    self,
+                    index,
+                    syscall::Context::new(self.machine, trap, state),
+                )
             }
             _ => {
-                let signal = if trap.info.kind == TrapInfo::PAGE_FAULT
-                    && self
-                        .address_space
-                        .bus_fault(trap.info.address as usize, trap.info.detail)
-                {
-                    7
-                } else if trap.info.kind == TrapInfo::ILLEGAL_INSTRUCTION {
-                    4
-                } else {
-                    11
-                };
-                self.threads[index]
-                    .native
-                    .terminate(ExitStatus { code: 0, signal }.encode())?;
-                Ok(())
+                let state = trap.state()?;
+                delivery::fault(
+                    self,
+                    index,
+                    syscall::Context::new(self.machine, trap, state),
+                )
             }
         }
     }
@@ -160,11 +176,17 @@ impl<'a> Process<'a> {
                 } else {
                     ExitStatus::decode(status)
                 };
+                self.namespace.remove_thread(self.threads[index].tid);
                 self.threads.swap_remove(index);
                 progress = true;
                 continue;
             }
-            progress |= syscall::poll(self, index, files, services)?;
+            progress |= delivery::poll(self, index)?;
+            if !self.signals.borrow().stopped
+                && self.threads[index].native.state()?.0 != ThreadState::Dead
+            {
+                progress |= syscall::poll(self, index, files, services)?;
+            }
             index += 1;
         }
         Ok(progress)
@@ -173,7 +195,9 @@ impl<'a> Process<'a> {
     pub fn waits<'b>(&'b self, items: &mut Vec<WaitItem<'b>>) {
         for thread in &self.threads {
             items.push(WaitItem::new(&thread.native, EXITED));
-            if let Some(pending) = &thread.pending {
+            if !self.signals.borrow().stopped
+                && let Some(pending) = &thread.pending
+            {
                 pending.waits(items);
             }
         }

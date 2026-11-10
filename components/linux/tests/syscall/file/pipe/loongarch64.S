@@ -13,6 +13,16 @@
 .global files_pipe
 files_pipe:
     addi.d $sp, $sp, -512
+    li.d $t0, 1
+    st.d $t0, $sp, 128
+    st.d $zero, $sp, 136
+    st.d $zero, $sp, 144
+    li.d $a0, 13
+    addi.d $a1, $sp, 128
+    li.d $a2, 0
+    li.d $a3, 8
+    invoke 134
+    expect 0
     move $a0, $sp
     li.d $a1, 0x80800
     invoke 59

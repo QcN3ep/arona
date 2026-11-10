@@ -214,6 +214,14 @@ fn outcome<'a>(operation: Result<Pending<'a>, Errno>) -> Outcome<'a> {
 }
 
 impl<'a> Pending<'a> {
+    pub fn interrupt(&self, process: &Process<'_>) -> Option<(bool, SyscallResult)> {
+        match self {
+            Self::Terminal(_) | Self::Pipe(_) => Some((true, Err(abi::EINTR))),
+            Self::Poll(poll) => Some((false, poll.interrupt(process))),
+            _ => None,
+        }
+    }
+
     pub fn waits<'b>(&'b self, items: &mut alloc::vec::Vec<runtime::ipc::WaitItem<'b>>) {
         if let Some(call) = self.call() {
             items.push(runtime::ipc::WaitItem::new(call, runtime::ipc::READABLE));

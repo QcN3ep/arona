@@ -125,6 +125,7 @@ fn build_guest(
     for (module, name) in [
         ("program", "program"),
         ("syscall/system", "system"),
+        ("syscall/signal", "signal"),
         ("syscall/process", "process"),
         ("syscall/process/futex", "futex"),
         ("syscall/process/child", "child"),

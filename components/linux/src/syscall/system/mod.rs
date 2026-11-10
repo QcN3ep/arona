@@ -16,7 +16,10 @@ use runtime::ipc::WaitItem;
 
 pub(super) enum Pending {
     Clock(clock::Pending),
-    Sleep(Deadline),
+    Sleep {
+        deadline: Deadline,
+        remaining: usize,
+    },
     Random(random::Pending),
 }
 
@@ -70,20 +73,40 @@ fn uname(process: &Process<'_>, address: usize) -> SyscallResult {
 }
 
 impl Pending {
+    pub fn interrupt(&self, process: &Process<'_>) -> Option<SyscallResult> {
+        match self {
+            Self::Sleep {
+                deadline,
+                remaining,
+            } => Some((|| {
+                if *remaining != 0 {
+                    super::wait::write_duration(
+                        process,
+                        *remaining,
+                        deadline.remaining()?.unwrap(),
+                    )?;
+                }
+                Err(abi::EINTR)
+            })()),
+            Self::Clock(clock) if clock.sleeping() => Some(Err(abi::EINTR)),
+            _ => None,
+        }
+    }
+
     pub fn waits<'a>(&'a self, items: &mut Vec<WaitItem<'a>>) {
         match self {
             Self::Clock(clock) => clock.waits(items),
             Self::Random(random) => {
                 items.push(WaitItem::new(random.call(), runtime::ipc::READABLE))
             }
-            Self::Sleep(deadline) => deadline.waits(items),
+            Self::Sleep { deadline, .. } => deadline.waits(items),
         }
     }
     pub fn poll(&mut self, process: &Process<'_>) -> Option<SyscallResult> {
         match self {
             Self::Clock(clock) => clock.poll(process),
             Self::Random(random) => random.poll(process),
-            Self::Sleep(deadline) => match deadline.expired() {
+            Self::Sleep { deadline, .. } => match deadline.expired() {
                 Ok(true) => Some(Ok(0)),
                 Ok(false) => None,
                 Err(error) => Some(Err(error)),

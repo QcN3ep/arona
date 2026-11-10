@@ -6,6 +6,7 @@ pub(crate) mod abi;
 mod file;
 mod memory;
 mod process;
+mod signal;
 mod system;
 mod wait;
 
@@ -15,10 +16,10 @@ use crate::{Error, elf::Machine, process::Process};
 
 use abi::{ENOSYS, SyscallResult};
 
-struct Context {
+pub(crate) struct Context {
     machine: Machine,
-    trap: Trap,
-    state: UserState,
+    pub(crate) trap: Trap,
+    pub(crate) state: UserState,
 }
 
 pub(crate) struct Pending<'a> {
@@ -30,12 +31,14 @@ enum Outcome<'a> {
     Complete(SyscallResult),
     Pending(Operation<'a>),
     Terminated,
+    Restored,
 }
 
 enum Operation<'a> {
     Exec(process::exec::Pending<'a>),
     WaitChild(process::wait::Pending),
     Futex(process::futex::Pending),
+    Signal(signal::Pending),
     File(file::Pending<'a>),
     Memory(memory::Pending<'a>),
     System(system::Pending),
@@ -50,6 +53,7 @@ impl<'a> Operation<'a> {
                 }
             }
             Self::WaitChild(_) => {}
+            Self::Signal(operation) => operation.waits(items),
             Self::Futex(operation) => operation.waits(items),
             Self::File(operation) => operation.waits(items),
             Self::System(operation) => operation.waits(items),
@@ -60,10 +64,16 @@ impl<'a> Operation<'a> {
             }
         }
     }
-    fn poll(&mut self, process: &mut Process<'a>, files: &fs::Client<'a>) -> Option<SyscallResult> {
+    fn poll(
+        &mut self,
+        process: &mut Process<'a>,
+        index: usize,
+        files: &fs::Client<'a>,
+    ) -> Option<SyscallResult> {
         match self {
             Self::Exec(_) => unreachable!(),
             Self::WaitChild(operation) => operation.poll(process),
+            Self::Signal(operation) => operation.poll(process, index),
             Self::Futex(operation) => operation.poll(),
             Self::File(operation) => operation.poll(process, files),
             Self::System(operation) => operation.poll(process),
@@ -79,13 +89,19 @@ pub(crate) fn dispatch<'a>(
     files: &fs::Client<'a>,
     services: &crate::Services<'_>,
 ) -> Result<(), Error> {
-    let context = Context {
+    let mut context = Context {
         machine: process.machine,
         state: trap.state()?,
         trap,
     };
     let (number, arguments) = context.machine.syscall(&context.state);
-    let outcome = if let Some(outcome) = file::dispatch(process, files, number, arguments) {
+    let mask = signal::temporary_mask(process, index, number, arguments);
+    let outcome = if let Err(error) = mask {
+        Outcome::Complete(Err(error))
+    } else if let Some(outcome) = signal::dispatch(process, index, &mut context, number, arguments)
+    {
+        outcome
+    } else if let Some(outcome) = file::dispatch(process, files, number, arguments) {
         outcome
     } else if let Some(outcome) = system::dispatch(process, services, number, arguments) {
         outcome
@@ -114,7 +130,8 @@ pub(crate) fn dispatch<'a>(
         }
     };
     match outcome {
-        Outcome::Complete(result) => context.complete(result),
+        Outcome::Complete(result) => context.complete(process, index, result),
+        Outcome::Restored => crate::process::signal::delivery::resume(process, index, context),
         Outcome::Pending(operation) => {
             process.threads[index].pending = Some(Pending { context, operation });
             Ok(())
@@ -132,22 +149,34 @@ pub(crate) fn poll<'a>(
     let Some(mut pending) = process.threads[index].pending.take() else {
         return Ok(false);
     };
+    if let Some((_, action)) = crate::process::signal::delivery::next(process, index)
+        && let Some((restartable, result)) = pending.operation.interrupt(process)
+    {
+        let context = pending.context;
+        drop(pending.operation);
+        if restartable && action.flags & crate::process::signal::RESTART != 0 {
+            crate::process::signal::delivery::resume(process, index, context)?;
+        } else {
+            context.complete(process, index, result)?;
+        }
+        return Ok(true);
+    }
     if let Operation::Exec(exec) = &mut pending.operation {
         match exec.poll(process, index, services) {
             None => {
                 process.threads[index].pending = Some(pending);
                 return Ok(false);
             }
-            Some(Err(error)) => pending.context.complete(Err(error))?,
+            Some(Err(error)) => pending.context.complete(process, index, Err(error))?,
             Some(Ok(())) => {}
         }
         return Ok(true);
     }
-    let Some(result) = pending.operation.poll(process, files) else {
+    let Some(result) = pending.operation.poll(process, index, files) else {
         process.threads[index].pending = Some(pending);
         return Ok(false);
     };
-    pending.context.complete(result)?;
+    pending.context.complete(process, index, result)?;
     Ok(true)
 }
 
@@ -158,11 +187,50 @@ impl Pending<'_> {
 }
 
 impl Context {
-    fn complete(mut self, result: SyscallResult) -> Result<(), Error> {
+    pub(crate) fn new(machine: Machine, trap: Trap, state: UserState) -> Self {
+        Self {
+            machine,
+            trap,
+            state,
+        }
+    }
+
+    fn complete(
+        mut self,
+        process: &mut Process<'_>,
+        index: usize,
+        result: SyscallResult,
+    ) -> Result<(), Error> {
+        if matches!(result, Err(error) if error == abi::EPIPE) {
+            process.threads[index]
+                .signals
+                .borrow_mut()
+                .pending
+                .push(crate::process::signal::Info {
+                    number: 13,
+                    code: 0,
+                    sender: process.pid,
+                    address: 0,
+                    value: 0,
+                })
+                .map_err(|_| Error::NoMemory)?;
+        }
         self.machine
             .complete(&mut self.state, self.trap.info.successor as usize, result);
-        self.trap
-            .resume(&self.state)
-            .map_err(|(error, _)| error.into())
+        crate::process::signal::delivery::resume(process, index, self)
+    }
+}
+
+impl Operation<'_> {
+    fn interrupt(&mut self, process: &Process<'_>) -> Option<(bool, SyscallResult)> {
+        let result = match self {
+            Self::WaitChild(_) => return Some((true, Err(abi::EINTR))),
+            Self::Futex(futex) => return Some((futex.restartable(), Err(abi::EINTR))),
+            Self::Exec(_) | Self::Signal(_) => return Some((false, Err(abi::EINTR))),
+            Self::File(file) => return file.interrupt(process),
+            Self::System(system) => system.interrupt(process)?,
+            Self::Memory(_) => return None,
+        };
+        Some((false, result))
     }
 }

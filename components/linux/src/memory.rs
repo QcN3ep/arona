@@ -479,3 +479,29 @@ impl AddressSpace {
         Ok(child)
     }
 }
+
+impl AddressSpace {
+    pub fn map_code(&self, bytes: &[u8]) -> Result<usize, runtime::Error> {
+        let count = bytes.len().div_ceil(PAGE_SIZE) as u64;
+        let mut frames = self
+            .native
+            .task()
+            .allocate(count, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
+        frames.write(0, bytes)?;
+        let mut reservation =
+            self.native
+                .task()
+                .reserve(count as usize * PAGE_SIZE, PAGE_SIZE, None)?;
+        let address = reservation.range().ok_or(runtime::Error::Protocol)?.start;
+        reservation.release()?;
+        self.map_frames(
+            Rc::new(frames),
+            0,
+            count,
+            address,
+            Permissions::ReadExecute,
+            PageBacking::File,
+        )?;
+        Ok(address)
+    }
+}

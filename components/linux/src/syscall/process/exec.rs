@@ -100,7 +100,7 @@ impl<'a> Pending<'a> {
     pub fn poll(
         &mut self,
         process: &mut Process<'a>,
-        _index: usize,
+        index: usize,
         services: &Services<'_>,
     ) -> Option<Result<(), Errno>> {
         let loaded = match self.executable.poll(services) {
@@ -139,7 +139,21 @@ impl<'a> Pending<'a> {
                 .map_err(super::error)?;
             let native_id = native.id().map_err(super::error)?;
             native.start().map_err(super::error)?;
+            let thread_signals = Rc::clone(&process.threads[index].signals);
+            for thread in &process.threads {
+                process.namespace.remove_thread(thread.tid);
+            }
             process.threads.clear();
+            process.signals.borrow_mut().exec();
+            process.signal_return = None;
+            {
+                let mut signals = thread_signals.borrow_mut();
+                signals.altstack = Default::default();
+                signals.suspended_mask = None;
+            }
+            process
+                .namespace
+                .register_thread(process.pid, process.pid, &thread_signals);
             process.address_space = space;
             process.threads.push(Thread {
                 native,
@@ -147,6 +161,9 @@ impl<'a> Pending<'a> {
                 tid: process.pid,
                 clear_tid: 0,
                 pending: None,
+                signals: thread_signals,
+                held: None,
+                interrupt_requested: false,
             });
             process.files.close_on_exec();
             Ok(())

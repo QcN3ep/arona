@@ -120,6 +120,7 @@ fn writable(
         b"Pipe",
         b"Readiness",
         b"System",
+        b"Notifications",
         b"HardwareThreads",
         b"Join",
         b"Kin",

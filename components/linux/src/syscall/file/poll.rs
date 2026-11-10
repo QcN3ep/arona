@@ -8,7 +8,7 @@ use crate::{
     process::Process,
     syscall::{
         Outcome,
-        abi::{EBADF, EINVAL, EOPNOTSUPP, Errno, SyscallResult},
+        abi::{EBADF, EINVAL, Errno, SyscallResult},
         wait::{self, Deadline},
     },
 };
@@ -52,13 +52,9 @@ enum Output {
 pub(super) fn start<'a>(process: &Process<'a>, args: [usize; 6], select: bool) -> Outcome<'a> {
     outcome((|| {
         let (entries, output, timeout) = if select {
-            select_mask(process, args[5])?;
             let (entries, output) = select_entries(process, args)?;
             (entries, output, args[4])
         } else {
-            if args[3] != 0 {
-                return Err(if args[4] != 8 { EINVAL } else { EOPNOTSUPP });
-            }
             let (entries, output) = poll_entries(process, args[0], args[1])?;
             (entries, output, args[2])
         };
@@ -70,21 +66,6 @@ pub(super) fn start<'a>(process: &Process<'a>, args: [usize; 6], select: bool) -
             timeout,
         }))
     })())
-}
-
-fn select_mask(process: &Process<'_>, address: usize) -> Result<(), Errno> {
-    if address == 0 {
-        return Ok(());
-    }
-    let bytes = wait::read_bytes(process, address, 16)?;
-    if u64::from_le_bytes(bytes[..8].try_into().unwrap()) != 0 {
-        return Err(if u64::from_le_bytes(bytes[8..].try_into().unwrap()) != 8 {
-            EINVAL
-        } else {
-            EOPNOTSUPP
-        });
-    }
-    Ok(())
 }
 
 fn poll_entries<'a>(
@@ -184,6 +165,13 @@ fn readiness(description: &OpenFileDescription<'_>) -> u16 {
 }
 
 impl Poll<'_> {
+    pub fn interrupt(&self, process: &Process<'_>) -> SyscallResult {
+        if self.timeout != 0 {
+            wait::write_duration(process, self.timeout, self.deadline.remaining()?.unwrap())?;
+        }
+        Err(crate::syscall::abi::EINTR)
+    }
+
     pub fn waits<'a>(&'a self, items: &mut Vec<WaitItem<'a>>) {
         self.deadline.waits(items);
     }

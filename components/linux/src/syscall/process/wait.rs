@@ -3,7 +3,7 @@
 //! 子进程退出等待与回收。
 
 use crate::{
-    process::Process,
+    process::{Process, namespace::ChildChange},
     syscall::{
         Operation, Outcome,
         abi::{self, ECHILD, EFAULT, EINVAL, EOPNOTSUPP, SyscallResult},
@@ -15,6 +15,13 @@ pub(in crate::syscall) struct Pending {
     output: usize,
     options: u32,
     info: bool,
+}
+
+#[derive(Clone, Copy)]
+enum Event {
+    Exit(crate::ExitStatus),
+    Change(ChildChange),
+    None,
 }
 
 enum Selector {
@@ -97,50 +104,64 @@ impl Pending {
                 continue;
             }
             child = true;
-            if let Some(status) = record.status
-                && (!self.info || self.options & 4 != 0)
-            {
-                dead = Some((pid, status));
+            let event = if let Some(status) = record.status {
+                (!self.info || self.options & 4 != 0).then_some(Event::Exit(status))
+            } else {
+                record.change.and_then(|change| {
+                    let selected = match change {
+                        ChildChange::Stopped(_) => self.options & 2 != 0,
+                        ChildChange::Continued => self.options & 8 != 0,
+                    };
+                    selected.then_some(Event::Change(change))
+                })
+            };
+            if let Some(event) = event {
+                dead = Some((pid, event));
                 break;
             }
         }
         drop(records);
-        if let Some((pid, status)) = dead {
-            let result = self.finish(process, pid, status);
+        if let Some((pid, event)) = dead {
+            let result = self.finish(process, pid, event);
             if result.is_ok() && self.options & 0x1000000 == 0 {
-                process.namespace.processes.borrow_mut().remove(&pid);
+                if matches!(event, Event::Exit(_)) {
+                    process.namespace.processes.borrow_mut().remove(&pid);
+                } else if let Some(record) = process.namespace.processes.borrow_mut().get_mut(&pid)
+                {
+                    record.change = None;
+                }
             }
             Some(result)
         } else if !child {
             Some(Err(ECHILD))
         } else if self.options & 1 != 0 {
-            Some(self.finish(process, 0, crate::ExitStatus { code: 0, signal: 0 }))
+            Some(self.finish(process, 0, Event::None))
         } else {
             None
         }
     }
 
-    fn finish(
-        &self,
-        process: &Process<'_>,
-        pid: usize,
-        status: crate::ExitStatus,
-    ) -> SyscallResult {
+    fn finish(&self, process: &Process<'_>, pid: usize, event: Event) -> SyscallResult {
         if self.info {
             let mut bytes = [0; 128];
             if pid != 0 {
                 bytes[..4].copy_from_slice(&17u32.to_le_bytes());
-                bytes[8..12]
-                    .copy_from_slice(&(if status.signal == 0 { 1u32 } else { 2 }).to_le_bytes());
+                let (code, status) = match event {
+                    Event::Exit(status) => (
+                        if status.signal == 0 { 1u32 } else { 2 },
+                        if status.signal == 0 {
+                            status.code
+                        } else {
+                            status.signal
+                        },
+                    ),
+                    Event::Change(ChildChange::Stopped(signal)) => (5, signal),
+                    Event::Change(ChildChange::Continued) => (6, 18),
+                    Event::None => unreachable!(),
+                };
+                bytes[8..12].copy_from_slice(&code.to_le_bytes());
                 bytes[16..20].copy_from_slice(&(pid as u32).to_le_bytes());
-                bytes[24..28].copy_from_slice(
-                    &u32::from(if status.signal == 0 {
-                        status.code
-                    } else {
-                        status.signal
-                    })
-                    .to_le_bytes(),
-                );
+                bytes[24..28].copy_from_slice(&u32::from(status).to_le_bytes());
             }
             process
                 .address_space
@@ -149,9 +170,15 @@ impl Pending {
             Ok(0)
         } else {
             if self.output != 0 && pid != 0 {
+                let status = match event {
+                    Event::Exit(status) => status.encode() as u32,
+                    Event::Change(ChildChange::Stopped(signal)) => (u32::from(signal) << 8) | 0x7f,
+                    Event::Change(ChildChange::Continued) => 0xffff,
+                    Event::None => 0,
+                };
                 process
                     .address_space
-                    .write(self.output, &(status.encode() as u32).to_le_bytes())
+                    .write(self.output, &status.to_le_bytes())
                     .map_err(|_| EFAULT)?;
             }
             Ok(pid)

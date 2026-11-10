@@ -132,11 +132,23 @@ fn sleep<'a>(
                     }),
                 )
             })
-            .map(Operation::Sleep),
+            .map(|deadline| Operation::Sleep {
+                deadline,
+                remaining: if flags == 1 {
+                    0
+                } else if number == abi::NANOSLEEP {
+                    args[1]
+                } else {
+                    args[3]
+                },
+            }),
     )
 }
 
 impl Pending {
+    pub fn sleeping(&self) -> bool {
+        matches!(self.output, Output::Sleep { .. })
+    }
     pub fn call(&self) -> &Handle<Call> {
         self.request.call()
     }
