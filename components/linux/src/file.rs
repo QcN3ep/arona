@@ -204,3 +204,15 @@ impl Drop for FilePosition<'_> {
         busy.set(false);
     }
 }
+
+impl FileTable<'_> {
+    pub fn fork(&self) -> Self {
+        Self {
+            entries: self
+                .entries
+                .iter()
+                .map(|(&fd, entry)| (fd, entry.duplicate(entry.close_on_exec)))
+                .collect(),
+        }
+    }
+}

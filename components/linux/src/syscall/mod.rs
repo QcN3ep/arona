@@ -33,6 +33,7 @@ enum Outcome<'a> {
 }
 
 enum Operation<'a> {
+    WaitChild(process::wait::Pending),
     Futex(process::futex::Pending),
     File(file::Pending<'a>),
     Memory(memory::Pending<'a>),
@@ -42,6 +43,7 @@ enum Operation<'a> {
 impl<'a> Operation<'a> {
     fn waits<'b>(&'b self, items: &mut alloc::vec::Vec<runtime::ipc::WaitItem<'b>>) {
         match self {
+            Self::WaitChild(_) => {}
             Self::Futex(operation) => operation.waits(items),
             Self::File(operation) => operation.waits(items),
             Self::System(operation) => operation.waits(items),
@@ -54,6 +56,7 @@ impl<'a> Operation<'a> {
     }
     fn poll(&mut self, process: &mut Process<'a>, files: &fs::Client<'a>) -> Option<SyscallResult> {
         match self {
+            Self::WaitChild(operation) => operation.poll(process),
             Self::Futex(operation) => operation.poll(),
             Self::File(operation) => operation.poll(process, files),
             Self::System(operation) => operation.poll(process),

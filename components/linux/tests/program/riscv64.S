@@ -87,6 +87,8 @@ auxv_done:
     beq s3, t1, files_write
     li t1, 118
     beq s3, t1, files_vector
+    li t1, 75
+    beq s3, t1, fork_process
     li t1, 74
     beq s3, t1, futex_basics
     li t1, 72

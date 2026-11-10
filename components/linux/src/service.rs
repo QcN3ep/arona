@@ -24,7 +24,7 @@ pub const REQUIRED_RIGHTS: Rights = runtime::process::ProcessStart::REQUIRED_RIG
 
 struct Running<'a> {
     process: Process<'a>,
-    reply: Handle<Reply>,
+    reply: Option<Handle<Reply>>,
 }
 
 pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
@@ -39,7 +39,7 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
         }
     };
     let namespace = alloc::rc::Rc::new(crate::process::namespace::PidNamespace::new());
-    let port = task.trap_port(Rights::READ | Rights::WAIT)?;
+    let port = alloc::rc::Rc::new(task.trap_port(Rights::READ | Rights::WAIT)?);
     reply.send(&mut Message::new(0, &[])?)?;
     let mut loading: Vec<Loading<'_>> = Vec::new();
     let mut running: Vec<Running<'_>> = Vec::new();
@@ -149,7 +149,7 @@ fn poll_loading<'a>(
     loading: &mut Vec<Loading<'a>>,
     running: &mut Vec<Running<'a>>,
     task: &'a Handle<Task>,
-    port: &Handle<runtime::TrapPort>,
+    port: &alloc::rc::Rc<Handle<runtime::TrapPort>>,
     machine: Machine,
     services: &Services<'_>,
     namespace: &alloc::rc::Rc<crate::process::namespace::PidNamespace>,
@@ -162,7 +162,7 @@ fn poll_loading<'a>(
                 let pending = loading.swap_remove(index);
                 running.push(Running {
                     process,
-                    reply: pending.reply,
+                    reply: Some(pending.reply),
                 });
             }
             Ok(None) => {
@@ -184,13 +184,25 @@ fn poll_running<'a>(running: &mut Vec<Running<'a>>, files: &fs::Client<'a>) -> R
     let mut index = 0;
     while index < running.len() {
         progress |= running[index].process.poll(files)?;
+        let children = core::mem::take(&mut running[index].process.children);
+        for process in children {
+            running.push(Running {
+                process,
+                reply: None,
+            });
+            progress = true;
+        }
         if running[index].process.threads.is_empty() {
             let finished = running.swap_remove(index);
             let status = finished.process.status();
+            finished
+                .process
+                .namespace
+                .exit(finished.process.pid, status);
             drop(finished.process);
-            let _ = finished
-                .reply
-                .send(&mut Message::new(0, &[status.encode() as u64])?);
+            if let Some(reply) = finished.reply {
+                let _ = reply.send(&mut Message::new(0, &[status.encode() as u64])?);
+            }
             progress = true;
         } else {
             index += 1;

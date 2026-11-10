@@ -105,7 +105,7 @@ impl<'a> Loading<'a> {
     pub fn poll(
         &mut self,
         task: &'a Handle<Task>,
-        port: &Handle<TrapPort>,
+        port: &Rc<Handle<TrapPort>>,
         machine: Machine,
         services: &Services<'_>,
         namespace: &Rc<crate::process::namespace::PidNamespace>,

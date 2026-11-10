@@ -32,7 +32,8 @@ pub(crate) struct Thread<'a> {
 pub(crate) struct Process<'a> {
     pub namespace: Rc<PidNamespace>,
     pub pid: usize,
-    pub parent: usize,
+    pub children: Vec<Process<'a>>,
+    pub port: Rc<Handle<TrapPort>>,
     pub supervisor: &'a Handle<Task>,
     pub address_space: AddressSpace,
     pub threads: Vec<Thread<'a>>,
@@ -41,13 +42,13 @@ pub(crate) struct Process<'a> {
     pub cwd: Option<alloc::rc::Rc<crate::file::OpenFileDescription<'a>>>,
     pub machine: Machine,
     pub umask: u16,
-    status: ExitStatus,
+    pub status: ExitStatus,
 }
 
 impl<'a> Process<'a> {
     pub fn start(
         parent: &'a Handle<Task>,
-        port: &Handle<TrapPort>,
+        port: &Rc<Handle<TrapPort>>,
         image: &Image<'_>,
         arguments: &Arguments,
         terminal: alloc::rc::Rc<crate::file::terminal::Terminal>,
@@ -70,10 +71,12 @@ impl<'a> Process<'a> {
         let id = native.id()?;
         let files = FileTable::new(alloc::rc::Rc::clone(&terminal));
         native.start()?;
+        namespace.register(pid, 0, pid);
         Ok(Self {
             namespace,
             pid,
-            parent: 0,
+            children: Vec::new(),
+            port: Rc::clone(port),
             supervisor: parent,
             address_space,
             threads: alloc::vec![Thread {

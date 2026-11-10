@@ -431,3 +431,51 @@ impl AddressSpace {
         Ok((key, Rc::clone(&page.frames)))
     }
 }
+
+impl AddressSpace {
+    pub fn fork(
+        &self,
+        parent: &Handle<Task>,
+        port: &Handle<TrapPort>,
+    ) -> Result<Self, runtime::Error> {
+        let child = Self {
+            native: SupervisedTask::new(parent, port)?,
+            heap: self.heap.clone(),
+            pages: RefCell::new(BTreeMap::new()),
+        };
+        let bounds = self.native.task().address_range()?;
+        let mut cursor = bounds.start;
+        while cursor < bounds.end {
+            let Some(info) = self.native.task().query_next(cursor)? else {
+                break;
+            };
+            cursor = info.range.end;
+            if info.permissions.is_none() {
+                child
+                    .native
+                    .reserve(info.range.len(), PAGE_SIZE, Some(info.range.start))?;
+            }
+        }
+        for (&address, page) in self.pages.borrow().iter() {
+            let permissions = self
+                .native
+                .task()
+                .query(address)?
+                .and_then(|info| info.permissions)
+                .ok_or(runtime::Error::Protocol)?;
+            let (frames, offset) = if matches!(page.backing, PageBacking::Shared) {
+                (Rc::clone(&page.frames), page.offset)
+            } else {
+                let mut bytes = [0; PAGE_SIZE];
+                page.frames
+                    .read(page.offset as usize * PAGE_SIZE, &mut bytes)?;
+                let mut frames =
+                    parent.allocate(1, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
+                frames.write(0, &bytes)?;
+                (Rc::new(frames), 0)
+            };
+            child.map_frames(frames, offset, 1, address, permissions, page.backing)?;
+        }
+        Ok(child)
+    }
+}

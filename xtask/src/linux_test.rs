@@ -126,6 +126,7 @@ fn build_guest(
         ("syscall/system", "system"),
         ("syscall/process", "process"),
         ("syscall/process/futex", "futex"),
+        ("syscall/process/child", "child"),
         ("memory", "memory"),
         ("syscall/file", "file"),
         ("syscall/file/io", "file-io"),

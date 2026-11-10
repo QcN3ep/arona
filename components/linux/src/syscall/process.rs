@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod child;
 pub(super) mod futex;
 mod thread;
+pub(super) mod wait;
 
 use super::{
     Context, Outcome,
@@ -18,14 +20,18 @@ pub(super) fn dispatch<'a>(
     if number == abi::FUTEX {
         return Some(futex::start(process, args));
     }
+    if matches!(number, abi::WAIT4 | abi::WAITID) {
+        return Some(wait::start(process, number, args));
+    }
     let result = match number {
         abi::GETPID => Ok(process.pid),
-        abi::GETPPID => Ok(process.parent),
+        abi::GETPPID => Ok(process.namespace.parent(process.pid)),
         abi::GETTID => Ok(process.threads[index].tid),
         abi::SET_TID_ADDRESS => {
             process.threads[index].clear_tid = args[0];
             Ok(process.threads[index].tid)
         }
+        abi::CLONE if args[0] & 0x10000 == 0 => child::fork(process, context, args),
         abi::CLONE => thread::clone(process, context, args),
         abi::SCHED_YIELD => runtime::thread::yield_now().map(|()| 0).map_err(error),
         _ => return None,

@@ -122,20 +122,25 @@ fn writable(
         b"System",
         b"HardwareThreads",
         b"Join",
+        b"Kin",
         b"writable",
         b"vector",
     ] {
-        assert_eq!(
-            run(mode)
-                .wait(WaitMode::Until(
-                    runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS
-                ))
-                .unwrap(),
-            ExitStatus {
-                code: 42,
-                signal: 0
-            }
-        );
+        let result = run(mode).wait(WaitMode::Until(
+            runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
+        ));
+        let expected = ExitStatus {
+            code: 42,
+            signal: 0,
+        };
+        if result != Ok(expected) {
+            let output = output();
+            output
+                .write_all(alloc::format!("Linux scenario {mode:?}: {result:?}\n").as_bytes())
+                .unwrap();
+            output.flush().unwrap();
+        }
+        assert_eq!(result.unwrap(), expected);
     }
     assert_eq!(
         run(b"MappingBus")
