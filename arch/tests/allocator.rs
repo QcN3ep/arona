@@ -81,14 +81,26 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
 
 fn initialize() -> &'static MemoryManager {
     arch::hardware::bind();
-    memory::initialize(&[MemoryRegion {
+    let regions = [
+        (0, 1, MemoryRegionState::Available),
+        (1, 3, MemoryRegionState::BootReserved),
+        (3, 4, MemoryRegionState::Reserved),
+        (4, 5, MemoryRegionState::NoMap),
+        (
+            6,
+            64 * 1024 * 1024 / PAGE_SIZE,
+            MemoryRegionState::Available,
+        ),
+    ]
+    .map(|(start, end, state)| MemoryRegion {
         range: PhysRange {
-            start: RAM,
-            end: RAM + 64 * 1024 * 1024,
+            start: RAM + (start * PAGE_SIZE) as u64,
+            end: RAM + (end * PAGE_SIZE) as u64,
         },
-        state: MemoryRegionState::Available,
-    }])
-    .unwrap();
+        state,
+    });
+    kernel_tests::validate_memory_regions(&regions);
+    memory::initialize(&regions).unwrap();
     let manager = memory::manager();
     manager.initialize_kernel_address_space().unwrap();
     let space = manager.kernel_address_space();
@@ -110,7 +122,7 @@ fn initialize() -> &'static MemoryManager {
     mmu.write_entry(space.root(), slot, layout.levels - 1, entry)
         .unwrap();
     manager.initialize_direct_map().unwrap();
-    space.activate().unwrap();
+    kernel_tests::run_memory(&regions);
     manager
 }
 

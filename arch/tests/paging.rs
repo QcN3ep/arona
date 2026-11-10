@@ -3,6 +3,9 @@
 #![no_std]
 #![no_main]
 
+#[path = "device/uart.rs"]
+mod uart_tests;
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use arch::device::uart::Uart;
@@ -110,6 +113,7 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     let uart = unsafe { Uart::new(UART) };
     uart.init().unwrap();
     uart.write(format_args!("MMU tests started\n")).unwrap();
+    uart_tests::run(&uart);
     arch::hardware::bind();
     let mmu = kernel::hardware::mmu();
     let base = physical(core::ptr::addr_of!(TABLES) as usize);
