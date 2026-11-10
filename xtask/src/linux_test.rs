@@ -124,6 +124,7 @@ fn build_guest(
     for (module, name) in [
         ("program", "program"),
         ("syscall/system", "system"),
+        ("syscall/process", "process"),
         ("memory", "memory"),
         ("syscall/file", "file"),
         ("syscall/file/io", "file-io"),

@@ -38,13 +38,21 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
             return Err(error);
         }
     };
+    let namespace = alloc::rc::Rc::new(crate::process::namespace::PidNamespace::new());
     let port = task.trap_port(Rights::READ | Rights::WAIT)?;
     reply.send(&mut Message::new(0, &[])?)?;
     let mut loading: Vec<Loading<'_>> = Vec::new();
     let mut running: Vec<Running<'_>> = Vec::new();
     loop {
-        let mut progress =
-            poll_loading(&mut loading, &mut running, task, &port, machine, &services)?;
+        let mut progress = poll_loading(
+            &mut loading,
+            &mut running,
+            task,
+            &port,
+            machine,
+            &services,
+            &namespace,
+        )?;
         progress |= poll_running(&mut running, &files)?;
         match port.receive(WaitMode::Poll) {
             Ok(trap) => {
@@ -144,11 +152,12 @@ fn poll_loading<'a>(
     port: &Handle<runtime::TrapPort>,
     machine: Machine,
     services: &Services<'_>,
+    namespace: &alloc::rc::Rc<crate::process::namespace::PidNamespace>,
 ) -> Result<bool, Error> {
     let mut progress = false;
     let mut index = 0;
     while index < loading.len() {
-        match loading[index].poll(task, port, machine, services) {
+        match loading[index].poll(task, port, machine, services, namespace) {
             Ok(Some(process)) => {
                 let pending = loading.swap_remove(index);
                 running.push(Running {

@@ -108,6 +108,7 @@ impl<'a> Loading<'a> {
         port: &Handle<TrapPort>,
         machine: Machine,
         services: &Services<'_>,
+        namespace: &Rc<crate::process::namespace::PidNamespace>,
     ) -> Result<Option<Process<'a>>, Error> {
         match &mut self.stage {
             Stage::Open(pending) => match pending.try_complete() {
@@ -151,11 +152,11 @@ impl<'a> Loading<'a> {
             return Process::start(
                 task,
                 port,
-                machine,
                 &image,
                 &self.arguments,
                 Rc::clone(&self.terminal),
                 random.as_ref(),
+                Rc::clone(namespace),
             )
             .map(Some);
         }

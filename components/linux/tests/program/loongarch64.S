@@ -86,6 +86,8 @@ auxv_done:
     beq $s3, $t1, files_write
     li.d $t1, 118
     beq $s3, $t1, files_vector
+    li.d $t1, 72
+    beq $s3, $t1, threads
     li.d $t1, 83
     beq $s3, $t1, system_basics
     li.d $t1, 84

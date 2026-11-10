@@ -120,6 +120,7 @@ fn writable(
         b"Pipe",
         b"Readiness",
         b"System",
+        b"HardwareThreads",
         b"writable",
         b"vector",
     ] {

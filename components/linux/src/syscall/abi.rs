@@ -19,6 +19,12 @@ pub(super) const PPOLL: usize = 73;
 pub(super) const PSELECT6: usize = 72;
 pub(super) const EAGAIN: Errno = Errno(11);
 pub(super) const EPIPE: Errno = Errno(32);
+pub(super) const GETPID: usize = 172;
+pub(super) const GETPPID: usize = 173;
+pub(super) const GETTID: usize = 178;
+pub(super) const SET_TID_ADDRESS: usize = 96;
+pub(super) const CLONE: usize = 220;
+pub(super) const SCHED_YIELD: usize = 124;
 pub(super) const GETCWD: usize = 17;
 pub(super) const MKDIRAT: usize = 34;
 pub(super) const UNLINKAT: usize = 35;
@@ -100,6 +106,19 @@ impl Machine {
             Self::LoongArch64 => 3,
         }] = stack;
         state
+    }
+
+    pub(super) fn thread_state(self, state: &mut UserState, stack: usize, tls: Option<usize>) {
+        state.registers[match self {
+            Self::Riscv64 => 2,
+            Self::LoongArch64 => 3,
+        }] = stack;
+        if let Some(tls) = tls {
+            state.registers[match self {
+                Self::Riscv64 => 4,
+                Self::LoongArch64 => 2,
+            }] = tls;
+        }
     }
 
     pub(super) fn syscall(self, state: &UserState) -> (usize, [usize; 6]) {

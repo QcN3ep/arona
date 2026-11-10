@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::vec::Vec;
+pub(crate) mod namespace;
+
+use alloc::{rc::Rc, vec::Vec};
+use namespace::PidNamespace;
 use runtime::{
     Handle, Rights, Task, TrapPort,
     ipc::{EXITED, WaitItem},
@@ -18,12 +21,17 @@ use crate::{
 };
 
 pub(crate) struct Thread<'a> {
+    pub tid: usize,
+    pub clear_tid: usize,
     pub native: Handle<runtime::Thread>,
     pub native_id: u64,
     pub pending: Option<Pending<'a>>,
 }
 
 pub(crate) struct Process<'a> {
+    pub namespace: Rc<PidNamespace>,
+    pub pid: usize,
+    pub parent: usize,
     pub supervisor: &'a Handle<Task>,
     pub address_space: AddressSpace,
     pub threads: Vec<Thread<'a>>,
@@ -39,12 +47,14 @@ impl<'a> Process<'a> {
     pub fn start(
         parent: &'a Handle<Task>,
         port: &Handle<TrapPort>,
-        machine: Machine,
         image: &Image<'_>,
         arguments: &Arguments,
         terminal: alloc::rc::Rc<crate::file::terminal::Terminal>,
         random: Option<&[u8; 16]>,
+        namespace: Rc<PidNamespace>,
     ) -> Result<Self, Error> {
+        let pid = namespace.allocate().ok_or(Error::NoMemory)?;
+        let machine = image.machine;
         let (address_space, stack) = AddressSpace::load(parent, port, image, arguments, random)?;
         let native = address_space.native.create_thread(
             UserEntry {
@@ -60,9 +70,14 @@ impl<'a> Process<'a> {
         let files = FileTable::new(alloc::rc::Rc::clone(&terminal));
         native.start()?;
         Ok(Self {
+            namespace,
+            pid,
+            parent: 0,
             supervisor: parent,
             address_space,
             threads: alloc::vec![Thread {
+                tid: pid,
+                clear_tid: 0,
                 native,
                 native_id: id,
                 pending: None
@@ -124,6 +139,10 @@ impl<'a> Process<'a> {
         while index < self.threads.len() {
             if self.threads[index].native.state()?.0 == ThreadState::Dead {
                 let status = self.threads[index].native.wait(0)?;
+                let clear_tid = self.threads[index].clear_tid;
+                if clear_tid != 0 {
+                    let _ = self.address_space.write(clear_tid, &[0; 4]);
+                }
                 self.status = if status == usize::MAX {
                     ExitStatus { code: 0, signal: 9 }
                 } else {

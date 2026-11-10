@@ -76,6 +76,8 @@ pub(crate) fn dispatch<'a>(
         outcome
     } else if let Some(outcome) = system::dispatch(process, services, number, arguments) {
         outcome
+    } else if let Some(outcome) = process::dispatch(process, index, &context, number, arguments) {
+        outcome
     } else {
         match number {
             abi::EXIT => process::exit(process, index, arguments[0])?,

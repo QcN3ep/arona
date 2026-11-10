@@ -17,6 +17,7 @@ pub enum Machine {
 }
 
 pub struct Image<'a> {
+    pub machine: Machine,
     pub entry: usize,
     pub segments: Vec<Segment<'a>>,
     pub headers: &'a [u8],
@@ -94,6 +95,7 @@ impl<'a> Image<'a> {
             return Err(Error::InvalidExecutable);
         }
         Ok(Self {
+            machine,
             entry,
             segments,
             headers,
