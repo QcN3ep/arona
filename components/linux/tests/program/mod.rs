@@ -125,6 +125,7 @@ fn writable(
         b"Join",
         b"Kin",
         b"Identity",
+        b"Control",
         b"Exec",
         b"writable",
         b"vector",

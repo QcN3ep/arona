@@ -17,14 +17,15 @@ use core::cell::{Cell, RefCell};
 pub(crate) struct PidNamespace {
     next: Cell<usize>,
     pub processes: RefCell<BTreeMap<usize, ProcessRecord>>,
-    threads: RefCell<BTreeMap<usize, ThreadRecord>>,
+    pub(super) threads: RefCell<BTreeMap<usize, ThreadRecord>>,
     pub futexes: Rc<super::futex::Futexes>,
 }
 
 pub(crate) struct ProcessRecord {
     pub parent: usize,
     pub group: usize,
-    session: usize,
+    pub(super) session: usize,
+    pub(super) terminal: Option<Rc<crate::file::terminal::Terminal>>,
     executed: bool,
     pub status: Option<ExitStatus>,
     pub change: Option<ChildChange>,
@@ -37,9 +38,9 @@ pub(crate) enum ChildChange {
     Continued,
 }
 
-struct ThreadRecord {
+pub(super) struct ThreadRecord {
     pid: usize,
-    signals: Weak<RefCell<ThreadSignals>>,
+    pub(super) signals: Weak<RefCell<ThreadSignals>>,
 }
 
 impl PidNamespace {
@@ -67,12 +68,18 @@ impl PidNamespace {
         session: usize,
         signals: &Rc<RefCell<Signals>>,
     ) {
+        let terminal = self
+            .processes
+            .borrow()
+            .get(&parent)
+            .and_then(|record| record.terminal.clone());
         self.processes.borrow_mut().insert(
             pid,
             ProcessRecord {
                 parent,
                 group,
                 session,
+                terminal,
                 executed: false,
                 status: None,
                 change: None,
@@ -161,6 +168,7 @@ impl PidNamespace {
         }
         record.group = pid;
         record.session = pid;
+        record.terminal = None;
         Ok(pid)
     }
 
@@ -328,6 +336,7 @@ impl PidNamespace {
     }
 
     pub fn exit(&self, pid: usize, status: ExitStatus) {
+        self.release_terminal(pid);
         let connected = self.connected_groups();
         let parent = self.parent(pid);
         let autoreap = self.processes.borrow().get(&parent).is_some_and(|record| {

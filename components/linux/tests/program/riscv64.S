@@ -105,6 +105,8 @@ auxv_done:
     beq s3, t1, signals
     li t1, 83
     beq s3, t1, system_basics
+    li t1, 67
+    beq s3, t1, process_terminal
     li t1, 84
     beq s3, t1, files_terminal
     li t1, 80

@@ -3,7 +3,7 @@
 //! 终端会话、行规程与输入缓存。
 
 use alloc::{collections::VecDeque, vec::Vec};
-use core::cell::{Ref, RefCell};
+use core::cell::{Cell, Ref, RefCell};
 use runtime::{Call, Handle};
 
 pub(crate) struct Terminal {
@@ -11,6 +11,7 @@ pub(crate) struct Terminal {
     source: Option<devmgr::uart::Session>,
     input: RefCell<Option<Input>>,
     state: RefCell<State>,
+    control: Cell<Option<(usize, usize)>>,
 }
 
 struct State {
@@ -43,6 +44,7 @@ impl Terminal {
         let window = [24, 0, 80, 0, 0, 0, 0, 0];
         Self {
             output,
+            control: Cell::new(None),
             source: input,
             input: RefCell::new(None),
             state: RefCell::new(State {
@@ -57,6 +59,12 @@ impl Terminal {
 
     pub fn failed(&self) -> bool {
         self.state.borrow().failed
+    }
+    pub fn control(&self) -> Option<(usize, usize)> {
+        self.control.get()
+    }
+    pub fn set_control(&self, control: Option<(usize, usize)>) {
+        self.control.set(control);
     }
     pub fn disconnect(&self) {
         self.state.borrow_mut().failed = true;

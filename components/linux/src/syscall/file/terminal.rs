@@ -5,10 +5,12 @@
 use super::{Buffer, Pending, buffer::IoVectors, fd, outcome};
 use crate::{
     file::{O_NONBLOCK, OpenFileDescription, terminal::Terminal},
-    process::Process,
+    process::{Process, terminal::Access},
     syscall::{
         Outcome,
-        abi::{EAGAIN, EBADF, EFAULT, EINVAL, EIO, ENOTTY, EOPNOTSUPP, Errno, SyscallResult},
+        abi::{
+            EAGAIN, EBADF, EFAULT, EINVAL, EIO, ENOTTY, EOPNOTSUPP, ESPIPE, Errno, SyscallResult,
+        },
     },
 };
 use alloc::rc::Rc;
@@ -16,9 +18,15 @@ use alloc::rc::Rc;
 pub(in crate::syscall) struct Read<'a> {
     description: Rc<OpenFileDescription<'a>>,
     buffers: IoVectors,
+    tid: usize,
 }
 
-pub(super) fn read<'a>(process: &Process<'a>, raw: usize, buffer: Buffer) -> Outcome<'a> {
+pub(super) fn read<'a>(
+    process: &Process<'a>,
+    index: usize,
+    raw: usize,
+    buffer: Buffer,
+) -> Outcome<'a> {
     outcome((|| {
         let description = Rc::clone(&process.files.get(fd(raw)?).ok_or(EBADF)?.description);
         if description.flags() & 3 == 1 {
@@ -27,8 +35,51 @@ pub(super) fn read<'a>(process: &Process<'a>, raw: usize, buffer: Buffer) -> Out
         Ok(Pending::Terminal(Read {
             description,
             buffers: buffer.import(process)?,
+            tid: process.threads[index].tid,
         }))
     })())
+}
+
+pub(super) fn write_output<'a>(
+    process: &Process<'a>,
+    index: usize,
+    raw: usize,
+    buffer: Buffer,
+    offset: Option<usize>,
+) -> Outcome<'a> {
+    let operation = (|| {
+        let description = Rc::clone(&process.files.get(fd(raw)?).ok_or(EBADF)?.description);
+        if description.flags() & 3 == 0 {
+            return Err(EBADF);
+        }
+        if offset.is_some() {
+            return Err(ESPIPE);
+        }
+        let OpenFileDescription::Terminal { terminal, .. } = description.as_ref() else {
+            unreachable!()
+        };
+        if !process.namespace.terminal_access(
+            process.pid,
+            process.threads[index].tid,
+            terminal,
+            Access::Write,
+        )? {
+            return Ok(Outcome::Restart);
+        }
+        let input = buffer
+            .import(process)?
+            .gather(process, devmgr::uart::MAX_BYTES)?;
+        if input.is_empty() {
+            return Ok(Outcome::Complete(Ok(0)));
+        }
+        let (bytes, consumed) = terminal.output(&input);
+        Ok(outcome(Ok(Pending::Output {
+            request: terminal.output.start_write(&bytes).map_err(|_| EIO)?,
+            consumed,
+            _description: description,
+        })))
+    })();
+    operation.unwrap_or_else(|error| Outcome::Complete(Err(error)))
 }
 
 impl Read<'_> {
@@ -39,6 +90,14 @@ impl Read<'_> {
         let OpenFileDescription::Terminal { terminal, .. } = self.description.as_ref() else {
             unreachable!()
         };
+        match process
+            .namespace
+            .terminal_access(process.pid, self.tid, terminal, Access::Read)
+        {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(error) => return Some(Err(error)),
+        }
         if terminal.readable() {
             let mut bytes = terminal.snapshot(self.buffers.length());
             return Some(
@@ -88,10 +147,26 @@ impl Change {
 
 pub(super) fn start<'a>(
     process: &Process<'a>,
+    index: usize,
     raw: usize,
     command: usize,
     address: usize,
 ) -> Outcome<'a> {
+    if matches!(command as u32, 0x5402..=0x5404 | 0x540b | 0x5410)
+        && let Some(descriptor) = process.files.get(raw as i32 as usize)
+        && let OpenFileDescription::Terminal { terminal, .. } = descriptor.description.as_ref()
+    {
+        match process.namespace.terminal_access(
+            process.pid,
+            process.threads[index].tid,
+            terminal,
+            Access::Change,
+        ) {
+            Ok(true) => {}
+            Ok(false) => return Outcome::Restart,
+            Err(error) => return Outcome::Complete(Err(error)),
+        }
+    }
     if !matches!(command as u32, 0x5403 | 0x5404) {
         return Outcome::Complete(ioctl(process, raw, command, address));
     }
@@ -164,11 +239,42 @@ pub(super) fn ioctl(
 
 fn terminal_ioctl(
     process: &Process<'_>,
-    terminal: &Terminal,
+    terminal: &Rc<Terminal>,
     command: u32,
     address: usize,
 ) -> SyscallResult {
     match command {
+        0x540e => process
+            .namespace
+            .attach_terminal(process.pid, terminal)
+            .map(|()| 0),
+        0x540f => {
+            let (_, group) = process.namespace.foreground(process.pid, terminal)?;
+            write(process, address, &(group as u32).to_le_bytes())
+        }
+        0x5410 => {
+            let mut bytes = [0; 4];
+            process
+                .address_space
+                .read(address, &mut bytes)
+                .map_err(|_| EFAULT)?;
+            let group = i32::from_le_bytes(bytes);
+            if group < 0 {
+                return Err(EINVAL);
+            }
+            process
+                .namespace
+                .set_foreground(process.pid, terminal, group as usize)
+                .map(|()| 0)
+        }
+        0x5422 => process
+            .namespace
+            .detach_terminal(process.pid, terminal)
+            .map(|()| 0),
+        0x5429 => {
+            let (session, _) = process.namespace.foreground(process.pid, terminal)?;
+            write(process, address, &(session as u32).to_le_bytes())
+        }
         0x5401 => write(process, address, &terminal.termios()),
         0x5402 => {
             terminal.set_termios(settings(process, address)?, false);
@@ -192,7 +298,7 @@ fn terminal_ioctl(
             1 | 2 => Err(EOPNOTSUPP),
             _ => Err(EINVAL),
         },
-        // TODO: 接入会话、前台进程组与终端信号。
+        // TODO: 接入其余终端控制操作。
         _ => Err(ENOTTY),
     }
 }

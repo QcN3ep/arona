@@ -122,6 +122,15 @@ impl<'a> FileTable<'a> {
 }
 
 impl<'a> Descriptor<'a> {
+    pub fn terminal(terminal: Rc<terminal::Terminal>, flags: u32, close_on_exec: bool) -> Self {
+        Self {
+            description: Rc::new(OpenFileDescription::Terminal {
+                terminal,
+                flags: Cell::new(flags),
+            }),
+            close_on_exec,
+        }
+    }
     pub fn regular(file: fs::File<'a>, flags: u32, close_on_exec: bool) -> Self {
         Self {
             description: Rc::new(OpenFileDescription::Regular {

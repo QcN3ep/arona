@@ -57,6 +57,7 @@ pub(super) enum Pending<'a> {
 
 pub(super) fn dispatch<'a>(
     process: &mut Process<'a>,
+    index: usize,
     files: &fs::Client<'a>,
     number: usize,
     arguments: [usize; 6],
@@ -65,7 +66,7 @@ pub(super) fn dispatch<'a>(
         return Some(outcome);
     }
     Some(match number {
-        abi::IOCTL => terminal::start(process, arguments[0], arguments[1], arguments[2]),
+        abi::IOCTL => terminal::start(process, index, arguments[0], arguments[1], arguments[2]),
         abi::PIPE2 => Outcome::Complete(pipe::create(process, arguments[0], arguments[1])),
         abi::PPOLL => poll::start(process, arguments, false),
         abi::PSELECT6 => poll::start(process, arguments, true),
@@ -95,12 +96,14 @@ pub(super) fn dispatch<'a>(
         abi::LSEEK => seek(process, arguments[0], arguments[1], arguments[2]),
         abi::READ | abi::PREAD64 | abi::READV | abi::PREADV => read(
             process,
+            index,
             arguments[0],
             io_buffer(number, &arguments),
             matches!(number, abi::PREAD64 | abi::PREADV).then_some(arguments[3]),
         ),
         abi::WRITE | abi::PWRITE64 | abi::WRITEV | abi::PWRITEV => write(
             process,
+            index,
             arguments[0],
             io_buffer(number, &arguments),
             matches!(number, abi::PWRITE64 | abi::PWRITEV).then_some(arguments[3]),

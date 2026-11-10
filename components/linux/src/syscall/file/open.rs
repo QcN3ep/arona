@@ -9,8 +9,8 @@ use runtime::{Call, Handle};
 use super::super::{
     Outcome,
     abi::{
-        EFAULT, EINVAL, EISDIR, EMFILE, ENAMETOOLONG, ENOENT, EOPNOTSUPP, EOVERFLOW, Errno,
-        SyscallResult,
+        EFAULT, EINVAL, EISDIR, EMFILE, ENAMETOOLONG, ENOENT, ENOTDIR, EOPNOTSUPP, EOVERFLOW,
+        Errno, SyscallResult,
     },
 };
 use super::{O_CLOEXEC, Pending, completion, filesystem_error, outcome};
@@ -35,7 +35,7 @@ pub(in crate::syscall) struct Open<'a> {
 }
 
 pub(in crate::syscall) fn openat<'a>(
-    process: &Process<'a>,
+    process: &mut Process<'a>,
     files: &fs::Client<'a>,
     directory: usize,
     address: usize,
@@ -53,6 +53,7 @@ pub(in crate::syscall) fn openat<'a>(
         let supported = 3
             | O_CREAT
             | O_EXCL
+            | 0x100
             | O_TRUNC
             | O_APPEND
             | O_NONBLOCK
@@ -66,7 +67,11 @@ pub(in crate::syscall) fn openat<'a>(
             // TODO: 接入其余打开选项。
             return Err(EOPNOTSUPP);
         }
-        let lookup = super::path::Lookup::new(process, directory, address)?;
+        let name = path(process, address)?;
+        if name == b"/dev/tty" {
+            return open_terminal(process, flags).map(|fd| Outcome::Complete(Ok(fd)));
+        }
+        let lookup = super::path::Lookup::from_name(process, directory, name)?;
         let request = files
             .start_open_at(
                 lookup.directory(),
@@ -82,13 +87,27 @@ pub(in crate::syscall) fn openat<'a>(
                 flags & O_DIRECTORY != 0,
             )
             .map_err(filesystem_error)?;
-        Ok(Pending::Open(Open {
+        Ok(outcome(Ok(Pending::Open(Open {
             request,
             flags,
             _directory: lookup.anchor,
-        }))
+        }))))
     })();
-    outcome(operation)
+    operation.unwrap_or_else(|error| Outcome::Complete(Err(error)))
+}
+
+fn open_terminal(process: &mut Process<'_>, flags: u32) -> Result<usize, Errno> {
+    if flags & O_DIRECTORY != 0 {
+        return Err(ENOTDIR);
+    }
+    let terminal = process.namespace.controlling_terminal(process.pid)?;
+    process
+        .files
+        .insert(
+            Descriptor::terminal(terminal, flags & (3 | O_NONBLOCK), flags & O_CLOEXEC != 0),
+            0,
+        )
+        .ok_or(EMFILE)
 }
 
 impl<'a> Open<'a> {

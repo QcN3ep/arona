@@ -104,6 +104,8 @@ auxv_done:
     beq $s3, $t1, signals
     li.d $t1, 83
     beq $s3, $t1, system_basics
+    li.d $t1, 67
+    beq $s3, $t1, process_terminal
     li.d $t1, 84
     beq $s3, $t1, files_terminal
     li.d $t1, 80

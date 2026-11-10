@@ -32,6 +32,7 @@ enum Outcome<'a> {
     Pending(Operation<'a>),
     Terminated,
     Restored,
+    Restart,
 }
 
 enum Operation<'a> {
@@ -101,7 +102,7 @@ pub(crate) fn dispatch<'a>(
     } else if let Some(outcome) = signal::dispatch(process, index, &mut context, number, arguments)
     {
         outcome
-    } else if let Some(outcome) = file::dispatch(process, files, number, arguments) {
+    } else if let Some(outcome) = file::dispatch(process, index, files, number, arguments) {
         outcome
     } else if let Some(outcome) = system::dispatch(process, services, number, arguments) {
         outcome
@@ -131,7 +132,9 @@ pub(crate) fn dispatch<'a>(
     };
     match outcome {
         Outcome::Complete(result) => context.complete(process, index, result),
-        Outcome::Restored => crate::process::signal::delivery::resume(process, index, context),
+        Outcome::Restored | Outcome::Restart => {
+            crate::process::signal::delivery::resume(process, index, context)
+        }
         Outcome::Pending(operation) => {
             process.threads[index].pending = Some(Pending { context, operation });
             Ok(())
@@ -149,7 +152,8 @@ pub(crate) fn poll<'a>(
     let Some(mut pending) = process.threads[index].pending.take() else {
         return Ok(false);
     };
-    if let Some((_, action)) = crate::process::signal::delivery::next(process, index)
+    let selected = crate::process::signal::delivery::next(process, index);
+    if let Some((_, action)) = selected
         && let Some((restartable, result)) = pending.operation.interrupt(process)
     {
         let context = pending.context;
@@ -173,8 +177,10 @@ pub(crate) fn poll<'a>(
         return Ok(true);
     }
     let Some(result) = pending.operation.poll(process, index, files) else {
+        let progress =
+            selected.is_none() && crate::process::signal::delivery::next(process, index).is_some();
         process.threads[index].pending = Some(pending);
-        return Ok(false);
+        return Ok(progress);
     };
     pending.context.complete(process, index, result)?;
     Ok(true)

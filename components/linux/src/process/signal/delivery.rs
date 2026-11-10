@@ -87,6 +87,7 @@ pub fn poll(process: &mut Process<'_>, index: usize) -> Result<bool, Error> {
         if action.handler == 0 && matches!(info.number, STOP | 20 | 21 | 22) {
             take(process, index, info.number);
             stop(process, info.number);
+            return Ok(true);
         }
     }
     let stopped = process.signals.borrow().stopped;

@@ -4,6 +4,7 @@ pub(crate) mod futex;
 pub(crate) mod image;
 pub(crate) mod namespace;
 pub(crate) mod signal;
+pub(crate) mod terminal;
 
 use alloc::{rc::Rc, vec::Vec};
 use core::cell::RefCell;
@@ -88,6 +89,11 @@ impl<'a> Process<'a> {
         let thread_signals = Rc::default();
         namespace.register(pid, 0, pid, pid, &signals);
         namespace.register_thread(pid, pid, &thread_signals);
+        if terminal.has_input() {
+            namespace
+                .attach_terminal(pid, &terminal)
+                .map_err(|_| Error::InvalidRequest)?;
+        }
         Ok(Self {
             namespace,
             pid,
@@ -160,6 +166,9 @@ impl<'a> Process<'a> {
         services: &crate::Services<'_>,
     ) -> Result<bool, Error> {
         let mut progress = self.terminal.poll();
+        if self.terminal.failed() {
+            progress |= self.namespace.hangup_terminal(&self.terminal);
+        }
         let mut index = 0;
         while index < self.threads.len() {
             if self.threads[index].native.state()?.0 == ThreadState::Dead {

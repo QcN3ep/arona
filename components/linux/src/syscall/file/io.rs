@@ -4,7 +4,7 @@
 
 use super::super::{
     Outcome,
-    abi::{EBADF, EFBIG, EINVAL, EIO, EISDIR, EOVERFLOW, ESPIPE, SyscallResult},
+    abi::{EBADF, EFBIG, EINVAL, EISDIR, EOVERFLOW, ESPIPE, SyscallResult},
 };
 use super::{Buffer, Pending, buffer::IoVectors, completion, fd, filesystem_error, outcome};
 use crate::{
@@ -49,6 +49,7 @@ enum WriteRequest {
 
 pub(in crate::syscall) fn read<'a>(
     process: &Process<'a>,
+    index: usize,
     fd_raw: usize,
     buffer: Buffer,
     offset: Option<usize>,
@@ -78,7 +79,7 @@ pub(in crate::syscall) fn read<'a>(
         if offset.is_some() {
             return Outcome::Complete(Err(ESPIPE));
         }
-        return super::terminal::read(process, fd_raw, buffer);
+        return super::terminal::read(process, index, fd_raw, buffer);
     }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
@@ -108,10 +109,23 @@ pub(in crate::syscall) fn read<'a>(
 
 pub(in crate::syscall) fn write<'a>(
     process: &Process<'a>,
+    index: usize,
     fd_raw: usize,
     buffer: Buffer,
     offset: Option<usize>,
 ) -> Outcome<'a> {
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| {
+            matches!(
+                descriptor.description.as_ref(),
+                OpenFileDescription::Terminal { .. }
+            )
+        })
+    {
+        return super::terminal::write_output(process, index, fd_raw, buffer, offset);
+    }
     if process
         .files
         .get(fd_raw as i32 as usize)
@@ -129,40 +143,17 @@ pub(in crate::syscall) fn write<'a>(
         if descriptor.description.flags() & 3 == 0 {
             return Err(EBADF);
         }
-        if offset.is_some()
-            && matches!(
-                descriptor.description.as_ref(),
-                OpenFileDescription::Terminal { .. }
-            )
-        {
-            return Err(ESPIPE);
-        }
         if offset.is_some_and(|offset| offset > i64::MAX as usize) {
             return Err(EINVAL);
         }
         let buffers = buffer.import(process)?;
-        let limit = if matches!(
-            descriptor.description.as_ref(),
-            OpenFileDescription::Terminal { .. }
-        ) {
-            devmgr::uart::MAX_BYTES
-        } else {
-            buffers.length()
-        };
-        let input = buffers.gather(process, limit)?;
+        let input = buffers.gather(process, buffers.length())?;
         if input.is_empty() {
             return Ok(None);
         }
         let description = Rc::clone(&descriptor.description);
         Ok(Some(match description.as_ref() {
-            OpenFileDescription::Terminal { terminal, .. } => {
-                let (bytes, consumed) = terminal.output(&input);
-                Pending::Output {
-                    request: terminal.output.start_write(&bytes).map_err(|_| EIO)?,
-                    consumed,
-                    _description: description,
-                }
-            }
+            OpenFileDescription::Terminal { .. } => unreachable!(),
             OpenFileDescription::Regular { .. } => Pending::Write(Write {
                 description,
                 input,

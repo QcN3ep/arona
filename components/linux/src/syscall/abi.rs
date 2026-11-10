@@ -26,7 +26,7 @@ pub(super) const NANOSLEEP: usize = 101;
 pub(super) const CLOCK_NANOSLEEP: usize = 115;
 pub(super) const GETRANDOM: usize = 278;
 pub(super) const IOCTL: usize = 29;
-pub(super) const ENOTTY: Errno = Errno(25);
+pub(crate) const ENOTTY: Errno = Errno(25);
 pub(super) const PIPE2: usize = 59;
 pub(super) const PPOLL: usize = 73;
 pub(super) const PSELECT6: usize = 72;
@@ -102,7 +102,8 @@ pub(super) const MPROTECT: usize = 226;
 pub(crate) struct Errno(isize);
 
 pub(super) const ENOENT: Errno = Errno(2);
-pub(super) const EIO: Errno = Errno(5);
+pub(crate) const EIO: Errno = Errno(5);
+pub(crate) const ENXIO: Errno = Errno(6);
 pub(super) const EBADF: Errno = Errno(9);
 pub(crate) const ENOMEM: Errno = Errno(12);
 pub(crate) const EACCES: Errno = Errno(13);

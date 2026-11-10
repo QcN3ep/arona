@@ -124,6 +124,7 @@ fn build_guest(
     let mut objects = Vec::new();
     for (module, name) in [
         ("program", "program"),
+        ("process/terminal", "process-terminal"),
         ("syscall/system", "system"),
         ("syscall/signal", "signal"),
         ("syscall/process", "process"),
