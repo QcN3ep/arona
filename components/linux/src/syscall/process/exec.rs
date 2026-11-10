@@ -166,6 +166,7 @@ impl<'a> Pending<'a> {
                 interrupt_requested: false,
             });
             process.files.close_on_exec();
+            process.namespace.exec(process.pid);
             Ok(())
         })())
     }

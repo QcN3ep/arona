@@ -86,7 +86,7 @@ impl<'a> Process<'a> {
         native.start()?;
         let signals = Rc::default();
         let thread_signals = Rc::default();
-        namespace.register(pid, 0, pid, &signals);
+        namespace.register(pid, 0, pid, pid, &signals);
         namespace.register_thread(pid, pid, &thread_signals);
         Ok(Self {
             namespace,

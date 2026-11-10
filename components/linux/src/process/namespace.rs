@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 进程、线程标识及父子状态。
+//! Linux 进程、线程标识、会话及父子状态。
 
 use super::signal::{self, Info, Signals, ThreadSignals};
 use crate::{
     ExitStatus,
-    syscall::abi::{ESRCH, Errno},
+    syscall::abi::{EACCES, EINVAL, EPERM, ESRCH, Errno},
 };
 use alloc::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     rc::{Rc, Weak},
+    vec::Vec,
 };
 use core::cell::{Cell, RefCell};
 
@@ -23,6 +24,8 @@ pub(crate) struct PidNamespace {
 pub(crate) struct ProcessRecord {
     pub parent: usize,
     pub group: usize,
+    session: usize,
+    executed: bool,
     pub status: Option<ExitStatus>,
     pub change: Option<ChildChange>,
     pub signals: Rc<RefCell<Signals>>,
@@ -61,6 +64,7 @@ impl PidNamespace {
         pid: usize,
         parent: usize,
         group: usize,
+        session: usize,
         signals: &Rc<RefCell<Signals>>,
     ) {
         self.processes.borrow_mut().insert(
@@ -68,6 +72,8 @@ impl PidNamespace {
             ProcessRecord {
                 parent,
                 group,
+                session,
+                executed: false,
                 status: None,
                 change: None,
                 signals: Rc::clone(signals),
@@ -97,6 +103,120 @@ impl PidNamespace {
             .borrow()
             .get(&pid)
             .map_or(pid, |record| record.group)
+    }
+
+    pub fn identity(&self, id: usize) -> Result<(usize, usize), Errno> {
+        let pid = self
+            .threads
+            .borrow()
+            .get(&id)
+            .map_or(id, |thread| thread.pid);
+        let records = self.processes.borrow();
+        let record = records.get(&pid).ok_or(ESRCH)?;
+        Ok((record.group, record.session))
+    }
+
+    // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/kernel/sys.c?h=v6.12
+    pub fn set_group(&self, caller: usize, pid: usize, group: usize) -> Result<(), Errno> {
+        let mut records = self.processes.borrow_mut();
+        let session = records.get(&caller).ok_or(ESRCH)?.session;
+        let record = records.get(&pid).ok_or_else(|| {
+            if self.threads.borrow().contains_key(&pid) {
+                EINVAL
+            } else {
+                ESRCH
+            }
+        })?;
+        if pid != caller {
+            if record.parent != caller {
+                return Err(ESRCH);
+            }
+            if record.session != session {
+                return Err(EPERM);
+            }
+            if record.executed {
+                return Err(EACCES);
+            }
+        }
+        if record.session == pid
+            || group != pid
+                && !records
+                    .values()
+                    .any(|record| record.group == group && record.session == session)
+        {
+            return Err(EPERM);
+        }
+        records.get_mut(&pid).unwrap().group = group;
+        Ok(())
+    }
+
+    pub fn new_session(&self, pid: usize) -> Result<usize, Errno> {
+        let mut records = self.processes.borrow_mut();
+        if records.values().any(|record| record.group == pid) {
+            return Err(EPERM);
+        }
+        let record = records.get_mut(&pid).ok_or(ESRCH)?;
+        if record.session == pid {
+            return Err(EPERM);
+        }
+        record.group = pid;
+        record.session = pid;
+        Ok(pid)
+    }
+
+    pub fn exec(&self, pid: usize) {
+        if let Some(record) = self.processes.borrow_mut().get_mut(&pid) {
+            record.executed = true;
+        }
+    }
+
+    pub fn orphaned(&self, group: usize) -> bool {
+        let records = self.processes.borrow();
+        !records
+            .values()
+            .any(|record| record.group == group && record.connected(&records))
+    }
+
+    fn connected_groups(&self) -> BTreeSet<usize> {
+        let records = self.processes.borrow();
+        records
+            .values()
+            .filter_map(|record| record.connected(&records).then_some(record.group))
+            .collect()
+    }
+
+    // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/kernel/exit.c?h=v6.12
+    fn orphan_groups(&self, mut connected: BTreeSet<usize>) {
+        let remaining = self.connected_groups();
+        connected.retain(|group| !remaining.contains(group));
+        let mut groups = BTreeMap::<usize, Vec<(usize, bool)>>::new();
+        for (&pid, record) in self.processes.borrow().iter() {
+            if record.status.is_none() && connected.contains(&record.group) {
+                groups
+                    .entry(record.group)
+                    .or_default()
+                    .push((pid, record.signals.borrow().stopped));
+            }
+        }
+        for members in groups.values() {
+            if !members.iter().any(|(_, stopped)| *stopped) {
+                continue;
+            }
+            for number in [1, signal::CONT] {
+                for &(pid, _) in members {
+                    let _ = self.signal_process(
+                        pid,
+                        Info {
+                            number,
+                            code: 128,
+                            sender: 0,
+                            address: 0,
+                            value: 0,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     pub fn signal_thread(&self, tid: usize, pid: Option<usize>, info: Info) -> Result<(), Errno> {
@@ -208,6 +328,7 @@ impl PidNamespace {
     }
 
     pub fn exit(&self, pid: usize, status: ExitStatus) {
+        let connected = self.connected_groups();
         let parent = self.parent(pid);
         let autoreap = self.processes.borrow().get(&parent).is_some_and(|record| {
             let action = record.signals.borrow().actions[16];
@@ -226,6 +347,7 @@ impl PidNamespace {
         }
         processes.retain(|_, record| record.parent != 0 || record.status.is_none());
         drop(processes);
+        self.orphan_groups(connected);
         self.child_signal(
             parent,
             Info {
@@ -241,5 +363,16 @@ impl PidNamespace {
             },
             false,
         );
+    }
+}
+
+impl ProcessRecord {
+    fn connected(&self, records: &BTreeMap<usize, Self>) -> bool {
+        self.status.is_none()
+            && records.get(&self.parent).is_some_and(|parent| {
+                parent.status.is_none()
+                    && parent.group != self.group
+                    && parent.session == self.session
+            })
     }
 }

@@ -49,6 +49,16 @@ threads:
     ld.w $t0, $s2, 0
     bne $a0, $t0, thread_failure
     move $s3, $a0
+    move $a0, $s3
+    invoke 155
+    bne $a0, $s0, thread_failure
+    move $a0, $s3
+    invoke 156
+    bne $a0, $s0, thread_failure
+    move $a0, $s3
+    li.d $a1, 0
+    invoke 154
+    expect -22
     addi.d $s5, $s1, -2048
 requeue_child:
     addi.d $a0, $s2, 24

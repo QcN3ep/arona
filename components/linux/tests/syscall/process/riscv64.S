@@ -49,6 +49,16 @@ threads:
     lw t0, 0(s2)
     bne a0, t0, thread_failure
     mv s3, a0
+    mv a0, s3
+    invoke 155
+    bne a0, s0, thread_failure
+    mv a0, s3
+    invoke 156
+    bne a0, s0, thread_failure
+    mv a0, s3
+    li a1, 0
+    invoke 154
+    expect -22
     addi s5, s1, -2048
 requeue_child:
     addi a0, s2, 24

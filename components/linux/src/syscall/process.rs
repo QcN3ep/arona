@@ -3,6 +3,7 @@
 mod child;
 pub(super) mod exec;
 pub(super) mod futex;
+mod identity;
 mod thread;
 pub(super) mod wait;
 
@@ -35,7 +36,7 @@ pub(super) fn dispatch<'a>(
         abi::CLONE if args[0] & 0x10000 == 0 => child::fork(process, index, context, args),
         abi::CLONE => thread::clone(process, index, context, args),
         abi::SCHED_YIELD => runtime::thread::yield_now().map(|()| 0).map_err(error),
-        _ => return None,
+        _ => identity::dispatch(process, number, args)?,
     };
     Some(Outcome::Complete(result))
 }

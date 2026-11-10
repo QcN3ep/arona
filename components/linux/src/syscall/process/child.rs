@@ -23,6 +23,7 @@ pub(super) fn fork(
         // TODO: 支持 vfork 的共享地址空间与父线程暂停。
         return Err(EOPNOTSUPP);
     }
+    let (group, session) = process.namespace.identity(process.pid)?;
     process.children.try_reserve(1).map_err(|_| ENOMEM)?;
     let pid = process.namespace.allocate().ok_or(ENOMEM)?;
     let address_space = process
@@ -52,12 +53,6 @@ pub(super) fn fork(
         pid,
         (flags & 0x100000 != 0).then_some(parent_tid),
     )?;
-    let group = process
-        .namespace
-        .processes
-        .borrow()
-        .get(&process.pid)
-        .map_or(process.pid, |record| record.group);
     let signals = Rc::new(core::cell::RefCell::new(process.signals.borrow().fork()));
     let thread_signals = Rc::new(core::cell::RefCell::new(
         crate::process::signal::ThreadSignals {
@@ -68,7 +63,7 @@ pub(super) fn fork(
     ));
     process
         .namespace
-        .register(pid, process.pid, group, &signals);
+        .register(pid, process.pid, group, session, &signals);
     process.namespace.register_thread(pid, pid, &thread_signals);
     process.children.push(Process {
         namespace: Rc::clone(&process.namespace),

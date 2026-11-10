@@ -124,6 +124,7 @@ fn writable(
         b"HardwareThreads",
         b"Join",
         b"Kin",
+        b"Identity",
         b"Exec",
         b"writable",
         b"vector",

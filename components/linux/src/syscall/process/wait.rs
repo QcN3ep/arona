@@ -39,7 +39,7 @@ pub(super) fn start<'a>(process: &Process<'a>, number: usize, args: [usize; 6]) 
                 0 => Selector::All,
                 1 if args[1] != 0 => Selector::Pid(args[1] as u32 as usize),
                 2 => Selector::Group(if args[1] == 0 {
-                    group(process)
+                    process.namespace.group(process.pid)
                 } else {
                     args[1] as u32 as usize
                 }),
@@ -49,7 +49,7 @@ pub(super) fn start<'a>(process: &Process<'a>, number: usize, args: [usize; 6]) 
         } else {
             let selector = match args[0] as i32 {
                 -1 => Selector::All,
-                0 => Selector::Group(group(process)),
+                0 => Selector::Group(process.namespace.group(process.pid)),
                 pid if pid > 0 => Selector::Pid(pid as usize),
                 group => Selector::Group(group.unsigned_abs() as usize),
             };
@@ -78,15 +78,6 @@ pub(super) fn start<'a>(process: &Process<'a>, number: usize, args: [usize; 6]) 
         Ok(pending) => Outcome::Pending(Operation::WaitChild(pending)),
         Err(error) => Outcome::Complete(Err(error)),
     }
-}
-
-fn group(process: &Process<'_>) -> usize {
-    process
-        .namespace
-        .processes
-        .borrow()
-        .get(&process.pid)
-        .map_or(process.pid, |record| record.group)
 }
 
 impl Pending {

@@ -31,7 +31,13 @@ pub fn next(process: &Process<'_>, index: usize) -> Option<(Info, Action)> {
         let action = signals.actions[usize::from(info.number) - 1];
         drop(signals);
         drop(thread);
-        if ignored(info.number, action) {
+        if ignored(info.number, action)
+            || action.handler == 0
+                && matches!(info.number, 20..=22)
+                && process
+                    .namespace
+                    .orphaned(process.namespace.group(process.pid))
+        {
             take(process, index, info.number);
         } else {
             return Some((info, action));

@@ -91,6 +91,10 @@ auxv_done:
     beq s3, t1, exec_process
     li t1, 90
     beq s3, t1, exec_replaced
+    li t1, 73
+    beq s3, t1, process_identity
+    li t1, 85
+    beq s3, t1, identity_replaced
     li t1, 75
     beq s3, t1, fork_process
     li t1, 74
