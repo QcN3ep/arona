@@ -5,3 +5,9 @@ path = ["**.md", "**.txt", "**.json", "**.yml", "**.yaml", "**.toml", "**.dtb", 
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 The Arona Authors"
 SPDX-License-Identifier = "MPL-2.0"
+
+[[annotations]]
+path = ["book/mdbook-admonish.css"]
+precedence = "override"
+SPDX-FileCopyrightText = "2022 Tom Milligan"
+SPDX-License-Identifier = "MIT"

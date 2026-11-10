@@ -66,6 +66,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
     match command.as_str() {
         "build" => build(arguments, false),
         "run" => build(arguments, true),
+        "book" => book(arguments),
         "package-init" => package_init(&BuildOptions::parse(arguments)?, false).map(|_| ()),
         "package-linux-test" => package_init(&BuildOptions::parse(arguments)?, true).map(|_| ()),
         "help" | "--help" | "-h" => {
@@ -74,6 +75,20 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
         }
         _ => Err(usage()),
     }
+}
+
+fn book(mut arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
+    let action = arguments.next().unwrap_or_else(|| "build".into());
+    if !matches!(action.to_str(), Some("build" | "serve")) {
+        return Err(usage());
+    }
+    let mut command = Command::new("mdbook");
+    command
+        .current_dir(workspace_root()?)
+        .arg(action)
+        .arg("book")
+        .args(arguments);
+    execute(command)
 }
 
 fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), String> {
@@ -339,5 +354,5 @@ fn execute(mut command: Command) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|package-init|package-linux-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH]".to_owned()
+    "usage: cargo xtask <build|run|package-init|package-linux-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH]\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
 }
