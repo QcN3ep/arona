@@ -123,6 +123,7 @@ fn build_guest(
     let mut objects = Vec::new();
     for (module, name) in [
         ("program", "program"),
+        ("syscall/system", "system"),
         ("memory", "memory"),
         ("syscall/file", "file"),
         ("syscall/file/io", "file-io"),

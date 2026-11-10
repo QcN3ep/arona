@@ -11,7 +11,7 @@ use runtime::{
     ipc::{self, Message, PEER_CLOSED, READABLE, ReceivedMessage, WaitItem, WaitMode},
 };
 
-use crate::{Error, elf::Machine, process::Process, protocol};
+use crate::{Error, Services, elf::Machine, process::Process, protocol};
 use loading::Loading;
 
 pub const REQUIRED_RIGHTS: Rights = runtime::process::ProcessStart::REQUIRED_RIGHTS
@@ -31,7 +31,7 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
     let mut startup = control.receive(WaitMode::Forever)?;
     let reply = startup.take_reply().ok_or(Error::InvalidRequest)?;
     let files = bootstrap(task, startup);
-    let (files, machine) = match files {
+    let (files, machine, services) = match files {
         Ok(files) => files,
         Err(error) => {
             reply_error(reply, error)?;
@@ -43,7 +43,8 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
     let mut loading: Vec<Loading<'_>> = Vec::new();
     let mut running: Vec<Running<'_>> = Vec::new();
     loop {
-        let mut progress = poll_loading(&mut loading, &mut running, task, &port, machine)?;
+        let mut progress =
+            poll_loading(&mut loading, &mut running, task, &port, machine, &services)?;
         progress |= poll_running(&mut running, &files)?;
         match port.receive(WaitMode::Poll) {
             Ok(trap) => {
@@ -54,7 +55,7 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
                         .iter()
                         .any(|thread| thread.native_id == trap.info.thread)
                 }) {
-                    owner.process.trap(trap, &files)?;
+                    owner.process.trap(trap, &files, &services)?;
                 }
                 progress = true;
             }
@@ -86,8 +87,12 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
 fn bootstrap(
     task: &Handle<Task>,
     mut startup: ReceivedMessage,
-) -> Result<(fs::Client<'_>, Machine), Error> {
-    if startup.tag != protocol::START || !startup.words().is_empty() || startup.handles().len() != 1
+) -> Result<(fs::Client<'_>, Machine, Services<'_>), Error> {
+    let flags = match startup.words() {
+        [flags] if flags & !3 == 0 => *flags,
+        _ => return Err(Error::InvalidRequest),
+    };
+    if startup.tag != protocol::START || startup.handles().len() != 1 + flags.count_ones() as usize
     {
         return Err(Error::InvalidRequest);
     }
@@ -104,7 +109,27 @@ fn bootstrap(
     let mut header = [0; 64];
     native.read_exact_at(0, &mut header)?;
     let machine = Machine::from_header(&header)?;
-    Ok((files, machine))
+    let mut services = Services::default();
+    if flags & 1 != 0 {
+        services.clock = Some(devmgr::rtc::Session::from_channel(
+            startup
+                .take_handle(0)
+                .unwrap()
+                .downcast()
+                .map_err(|_| Error::InvalidRequest)?,
+        )?);
+    }
+    if flags & 2 != 0 {
+        services.entropy = Some(devmgr::rng::Session::from_channel(
+            task,
+            startup
+                .take_handle(0)
+                .unwrap()
+                .downcast()
+                .map_err(|_| Error::InvalidRequest)?,
+        )?);
+    }
+    Ok((files, machine, services))
 }
 
 fn reply_error(reply: Handle<Reply>, error: Error) -> Result<(), Error> {
@@ -118,11 +143,12 @@ fn poll_loading<'a>(
     task: &'a Handle<Task>,
     port: &Handle<runtime::TrapPort>,
     machine: Machine,
+    services: &Services<'_>,
 ) -> Result<bool, Error> {
     let mut progress = false;
     let mut index = 0;
     while index < loading.len() {
-        match loading[index].poll(task, port, machine) {
+        match loading[index].poll(task, port, machine, services) {
             Ok(Some(process)) => {
                 let pending = loading.swap_remove(index);
                 running.push(Running {

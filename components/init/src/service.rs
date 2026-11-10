@@ -118,16 +118,25 @@ pub fn start_linux(
     loader: &Loader,
     files: &fs::Client<'_>,
     filesystem: &fs::Control<'static>,
+    devices: &Handle<Channel>,
 ) -> Result<(Service, linux::Control<'static>), InitError> {
     let (service, channel) = launch(
         loader,
         files.open("/bin/linux", deadline()?)?,
         linux::service::REQUIRED_RIGHTS,
     )?;
-    let control = linux::Control::start(
+    let until = deadline()?;
+    let clock = devmgr::device::next(devices, devmgr::device::DriverKind::Rtc, 0, deadline()?)?
+        .map(|id| devmgr::rtc::Session::open(process::task(), devices, id, until))
+        .transpose()?;
+    let entropy = devmgr::device::next(devices, devmgr::device::DriverKind::Rng, 0, deadline()?)?
+        .map(|id| devmgr::rng::Session::open(process::task(), devices, id, until))
+        .transpose()?;
+    let control = linux::Control::start_with_services(
         process::task(),
         channel,
         filesystem.connect(deadline()?)?,
+        linux::Services { clock, entropy },
         deadline()?,
     )?;
     Ok((service, control))

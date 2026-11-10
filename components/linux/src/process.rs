@@ -43,8 +43,9 @@ impl<'a> Process<'a> {
         image: &Image<'_>,
         arguments: &Arguments,
         terminal: alloc::rc::Rc<crate::file::terminal::Terminal>,
+        random: Option<&[u8; 16]>,
     ) -> Result<Self, Error> {
-        let (address_space, stack) = AddressSpace::load(parent, port, image, arguments)?;
+        let (address_space, stack) = AddressSpace::load(parent, port, image, arguments, random)?;
         let native = address_space.native.create_thread(
             UserEntry {
                 pc: image.entry as u64,
@@ -75,7 +76,12 @@ impl<'a> Process<'a> {
         })
     }
 
-    pub fn trap(&mut self, trap: Trap, files: &fs::Client<'a>) -> Result<(), Error> {
+    pub fn trap(
+        &mut self,
+        trap: Trap,
+        files: &fs::Client<'a>,
+        services: &crate::Services<'_>,
+    ) -> Result<(), Error> {
         let Some(index) = self
             .threads
             .iter()
@@ -87,7 +93,7 @@ impl<'a> Process<'a> {
             return Ok(());
         }
         match trap.info.kind {
-            TrapInfo::SYSCALL => syscall::dispatch(self, index, trap, files),
+            TrapInfo::SYSCALL => syscall::dispatch(self, index, trap, files, services),
             TrapInfo::INTERRUPTED => {
                 let state = trap.state()?;
                 trap.resume(&state).map_err(|(error, _)| error.into())

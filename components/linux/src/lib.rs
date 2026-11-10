@@ -17,7 +17,7 @@ pub mod service;
 mod stack;
 mod syscall;
 
-pub use client::{Control, Program};
+pub use client::{Control, Program, Services};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {

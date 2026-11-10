@@ -16,6 +16,12 @@ pub struct Program<'a> {
     pub environment: &'a [&'a [u8]],
 }
 
+#[derive(Default)]
+pub struct Services<'a> {
+    pub clock: Option<devmgr::rtc::Session>,
+    pub entropy: Option<devmgr::rng::Session<'a>>,
+}
+
 pub struct Control<'a> {
     task: &'a Handle<Task>,
     channel: Handle<Channel>,
@@ -28,8 +34,26 @@ impl<'a> Control<'a> {
         files: fs::Client<'_>,
         deadline: u64,
     ) -> Result<Self, Error> {
-        let mut request = Message::new(protocol::START, &[])?;
+        Self::start_with_services(task, channel, files, Services::default(), deadline)
+    }
+
+    pub fn start_with_services(
+        task: &'a Handle<Task>,
+        channel: Handle<Channel>,
+        files: fs::Client<'_>,
+        services: Services<'_>,
+        deadline: u64,
+    ) -> Result<Self, Error> {
+        let flags =
+            u64::from(services.clock.is_some()) | (u64::from(services.entropy.is_some()) << 1);
+        let mut request = Message::new(protocol::START, &[flags])?;
         transfer(&mut request, files.into_channel(), CHANNEL_RIGHTS)?;
+        if let Some(clock) = services.clock {
+            transfer(&mut request, clock.into_channel(), CHANNEL_RIGHTS)?;
+        }
+        if let Some(entropy) = services.entropy {
+            transfer(&mut request, entropy.into_channel(), CHANNEL_RIGHTS)?;
+        }
         let response = channel
             .call(&mut request, Some(deadline))
             .map_err(|error| match error {

@@ -18,31 +18,26 @@ pub(crate) fn build(
     space: &AddressSpace,
     image: &Image<'_>,
     arguments: &Arguments,
+    random: Option<&[u8; 16]>,
 ) -> Result<usize, Error> {
     let task = &space.native;
     let (phdr, top) = load_headers(space, image)?;
     let auxv = auxiliary(image, phdr);
-    // TODO: 接入熵源后提供 AT_RANDOM。
     let strings = core::iter::once(&arguments.path)
         .chain(&arguments.argv)
         .chain(&arguments.envp);
-    let string_size = strings
-        .clone()
-        .try_fold(0usize, |size, string| {
-            size.checked_add(string.len())?.checked_add(1)
-        })
-        .ok_or(Error::InvalidRequest)?;
+    let string_size = string_size(strings.clone())?;
     let words = arguments
         .argv
         .len()
         .checked_add(arguments.envp.len())
-        .and_then(|size| size.checked_add(3 + (auxv.len() + 2) * 2))
+        .and_then(|size| size.checked_add(3 + (auxv.len() + 3) * 2))
         .and_then(|size| size.checked_mul(8))
         .ok_or(Error::InvalidRequest)?;
     let length = STACK_SIZE
         .checked_add(string_size)
         .and_then(|size| size.checked_add(words))
-        .and_then(|size| size.checked_add(15))
+        .and_then(|size| size.checked_add(31))
         .and_then(|size| size.checked_next_multiple_of(PAGE_SIZE))
         .ok_or(Error::InvalidRequest)?;
     let reserved = length.checked_add(PAGE_SIZE).ok_or(Error::InvalidRequest)?;
@@ -58,6 +53,13 @@ pub(crate) fn build(
         .map_err(|_| Error::NoMemory)?;
     bytes.resize(length, 0);
     let mut cursor = length;
+    let random_address = if let Some(random) = random {
+        cursor -= 16;
+        bytes[cursor..cursor + 16].copy_from_slice(random);
+        Some(base + cursor)
+    } else {
+        None
+    };
     let pointers: Vec<_> = strings
         .map(|string| {
             cursor -= string.len() + 1;
@@ -73,6 +75,9 @@ pub(crate) fn build(
     values.push(0);
     for (kind, value) in auxv {
         values.extend_from_slice(&[kind, value]);
+    }
+    if let Some(address) = random_address {
+        values.extend_from_slice(&[25, address]);
     }
     values.extend_from_slice(&[31, pointers[0], 0, 0]);
     let stack = (cursor - values.len() * 8) & !15;
@@ -131,4 +136,12 @@ fn auxiliary(image: &Image<'_>, phdr: usize) -> [(usize, usize); 7] {
         (8, 0),
         (9, image.entry),
     ]
+}
+
+fn string_size<'a>(mut strings: impl Iterator<Item = &'a Vec<u8>>) -> Result<usize, Error> {
+    strings
+        .try_fold(0usize, |size, string| {
+            size.checked_add(string.len())?.checked_add(1)
+        })
+        .ok_or(Error::InvalidRequest)
 }

@@ -39,10 +39,12 @@ fn main() {
     let (_filesystem, mounts, files) = service::filesystem(archive, &fs, machine);
     service::mount(&mounts, &device_service);
     let (_linux, channel) = service::launch(&native, machine, linux::service::REQUIRED_RIGHTS);
-    let linux = Control::start(
+    let services = service::resources(&device_service);
+    let linux = Control::start_with_services(
         process::task(),
         channel,
         mounts.connect(service::deadline()).unwrap(),
+        services,
         service::deadline(),
     )
     .unwrap();
@@ -117,6 +119,7 @@ fn writable(
         b"FileMappings",
         b"Pipe",
         b"Readiness",
+        b"System",
         b"writable",
         b"vector",
     ] {

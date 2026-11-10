@@ -19,6 +19,17 @@ pub struct Session {
 }
 
 impl Session {
+    pub fn from_channel(channel: Handle<Channel>) -> Result<Self, Error> {
+        if !channel.info()?.rights.contains(CHANNEL_RIGHTS) {
+            return Err(runtime::Error::Kernel(runtime::KernelError::Denied).into());
+        }
+        Ok(Self { channel })
+    }
+
+    pub fn into_channel(self) -> Handle<Channel> {
+        self.channel
+    }
+
     pub fn channel(&self) -> &Handle<Channel> {
         &self.channel
     }

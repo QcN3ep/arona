@@ -6,6 +6,7 @@ mod abi;
 mod file;
 mod memory;
 mod process;
+mod system;
 mod wait;
 
 use runtime::trap::{Trap, UserState};
@@ -34,12 +35,14 @@ enum Outcome<'a> {
 enum Operation<'a> {
     File(file::Pending<'a>),
     Memory(memory::Pending<'a>),
+    System(system::Pending),
 }
 
 impl<'a> Operation<'a> {
     fn waits<'b>(&'b self, items: &mut alloc::vec::Vec<runtime::ipc::WaitItem<'b>>) {
         match self {
             Self::File(operation) => operation.waits(items),
+            Self::System(operation) => operation.waits(items),
             Self::Memory(operation) => {
                 if let Some(call) = operation.call() {
                     items.push(runtime::ipc::WaitItem::new(call, runtime::ipc::READABLE));
@@ -50,6 +53,7 @@ impl<'a> Operation<'a> {
     fn poll(&mut self, process: &mut Process<'a>, files: &fs::Client<'a>) -> Option<SyscallResult> {
         match self {
             Self::File(operation) => operation.poll(process, files),
+            Self::System(operation) => operation.poll(process),
             Self::Memory(operation) => operation.poll(process),
         }
     }
@@ -60,6 +64,7 @@ pub(crate) fn dispatch<'a>(
     index: usize,
     trap: Trap,
     files: &fs::Client<'a>,
+    services: &crate::Services<'_>,
 ) -> Result<(), Error> {
     let context = Context {
         machine: process.machine,
@@ -68,6 +73,8 @@ pub(crate) fn dispatch<'a>(
     };
     let (number, arguments) = context.machine.syscall(&context.state);
     let outcome = if let Some(outcome) = file::dispatch(process, files, number, arguments) {
+        outcome
+    } else if let Some(outcome) = system::dispatch(process, services, number, arguments) {
         outcome
     } else {
         match number {

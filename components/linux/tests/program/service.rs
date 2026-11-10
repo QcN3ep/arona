@@ -120,3 +120,36 @@ pub fn mount(control: &fs::Control<'_>, service: &Handle<Channel>) {
 pub fn deadline() -> u64 {
     runtime::thread::now_ns().unwrap() + 30_000_000_000
 }
+
+pub fn resources(service: &Handle<Channel>) -> linux::Services<'static> {
+    let until = deadline();
+    let device = |kind| {
+        loop {
+            if let Some(id) = devmgr::device::next(service, kind, 0, until).unwrap() {
+                break id;
+            }
+            assert!(runtime::thread::now_ns().unwrap() < until);
+            runtime::thread::yield_now().unwrap();
+        }
+    };
+    linux::Services {
+        clock: Some(
+            devmgr::rtc::Session::open(
+                process::task(),
+                service,
+                device(devmgr::device::DriverKind::Rtc),
+                until,
+            )
+            .unwrap(),
+        ),
+        entropy: Some(
+            devmgr::rng::Session::open(
+                process::task(),
+                service,
+                device(devmgr::device::DriverKind::Rng),
+                until,
+            )
+            .unwrap(),
+        ),
+    }
+}

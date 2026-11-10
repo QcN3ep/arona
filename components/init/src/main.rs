@@ -96,7 +96,7 @@ fn main() -> Result<usize, InitError> {
         persistent_log,
     )?;
     logger::init(client, logger::log::LevelFilter::Info).map_err(|_| Error::Protocol)?;
-    let (linux, _linux_control) = service::start_linux(&loader, &files, &mounts)?;
+    let (linux, _linux_control) = service::start_linux(&loader, &files, &mounts, &device_control)?;
     if mounted {
         logger::log::info!(target: "init", "Mounted block device at /var");
     }

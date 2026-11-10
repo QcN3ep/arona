@@ -39,6 +39,7 @@ impl AddressSpace {
         port: &Handle<TrapPort>,
         image: &Image<'_>,
         arguments: &Arguments,
+        random: Option<&[u8; 16]>,
     ) -> Result<(Self, usize), Error> {
         let start = image
             .segments
@@ -66,7 +67,7 @@ impl AddressSpace {
                 PageBacking::File,
             )?;
         }
-        let stack = crate::stack::build(&address_space, image, arguments)?;
+        let stack = crate::stack::build(&address_space, image, arguments, random)?;
         Ok((address_space, stack))
     }
 

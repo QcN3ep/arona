@@ -5,6 +5,13 @@ use runtime::trap::UserState;
 use crate::elf::Machine;
 
 // REFERENCE: https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h
+pub(super) const UNAME: usize = 160;
+pub(super) const CLOCK_GETTIME: usize = 113;
+pub(super) const CLOCK_GETRES: usize = 114;
+pub(super) const GETTIMEOFDAY: usize = 169;
+pub(super) const NANOSLEEP: usize = 101;
+pub(super) const CLOCK_NANOSLEEP: usize = 115;
+pub(super) const GETRANDOM: usize = 278;
 pub(super) const IOCTL: usize = 29;
 pub(super) const ENOTTY: Errno = Errno(25);
 pub(super) const PIPE2: usize = 59;
