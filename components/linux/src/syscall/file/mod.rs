@@ -91,6 +91,7 @@ pub(super) fn dispatch<'a>(
             arguments[2],
             arguments[3],
         ),
+        abi::STATX => metadata::statx(process, files, arguments),
         abi::LSEEK => seek(process, arguments[0], arguments[1], arguments[2]),
         abi::READ | abi::PREAD64 | abi::READV | abi::PREADV => read(
             process,

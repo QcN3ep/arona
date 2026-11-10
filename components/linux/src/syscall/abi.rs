@@ -76,6 +76,7 @@ pub(super) const FSYNC: usize = 82;
 pub(super) const FDATASYNC: usize = 83;
 pub(super) const NEWFSTATAT: usize = 79;
 pub(super) const FSTAT: usize = 80;
+pub(super) const STATX: usize = 291;
 pub(super) const UMASK: usize = 166;
 pub(super) const EXIT: usize = 93;
 pub(super) const EXIT_GROUP: usize = 94;
