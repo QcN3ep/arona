@@ -86,6 +86,10 @@ auxv_done:
     beq $s3, $t1, files_write
     li.d $t1, 118
     beq $s3, $t1, files_vector
+    li.d $t1, 77
+    beq $s3, $t1, mapping_bus_fault
+    li.d $t1, 70
+    beq $s3, $t1, file_mappings
     li.d $t1, 112
     beq $s3, $t1, files_path
     li.d $t1, 109

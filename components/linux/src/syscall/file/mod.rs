@@ -204,7 +204,7 @@ fn fd(raw: usize) -> Result<usize, Errno> {
 
 fn outcome<'a>(operation: Result<Pending<'a>, Errno>) -> Outcome<'a> {
     match operation {
-        Ok(operation) => Outcome::Pending(operation),
+        Ok(operation) => Outcome::Pending(super::Operation::File(operation)),
         Err(error) => Outcome::Complete(Err(error)),
     }
 }
@@ -258,14 +258,14 @@ impl<'a> Pending<'a> {
     }
 }
 
-fn completion<T>(result: Result<T, fs::Error>) -> Option<Result<T, fs::Error>> {
+pub(super) fn completion<T>(result: Result<T, fs::Error>) -> Option<Result<T, fs::Error>> {
     match result {
         Err(fs::Error::Runtime(runtime::Error::Kernel(runtime::KernelError::WouldBlock))) => None,
         result => Some(result),
     }
 }
 
-fn filesystem_error(error: fs::Error) -> Errno {
+pub(super) fn filesystem_error(error: fs::Error) -> Errno {
     use super::abi::{EEXIST, EFBIG, EISDIR, ENOENT, ENOMEM, ENOSPC, ENOTDIR, EROFS};
     match error {
         fs::Error::NotFound => ENOENT,

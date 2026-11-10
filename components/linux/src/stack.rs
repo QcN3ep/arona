@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use crate::memory::{AddressSpace, PageBacking};
+use alloc::rc::Rc;
 use alloc::vec::Vec;
-use runtime::{Rights, memory::Permissions, process::SupervisedTask};
+use runtime::{Rights, memory::Permissions};
 
 use crate::{
     Error,
@@ -13,20 +15,13 @@ const STACK_SIZE: usize = 64 * 1024;
 
 // REFERENCE: https://refspecs.linuxfoundation.org/elf/gabi4+/ch5.pheader.html
 pub(crate) fn build(
-    task: &SupervisedTask,
+    space: &AddressSpace,
     image: &Image<'_>,
     arguments: &Arguments,
 ) -> Result<usize, Error> {
-    let (phdr, top) = load_headers(task, image)?;
-    let auxv = [
-        (3, phdr),
-        (4, 56),
-        (5, image.headers.len() / 56),
-        (6, PAGE_SIZE),
-        (7, 0),
-        (8, 0),
-        (9, image.entry),
-    ];
+    let task = &space.native;
+    let (phdr, top) = load_headers(space, image)?;
+    let auxv = auxiliary(image, phdr);
     // TODO: 接入熵源后提供 AT_RANDOM。
     let strings = core::iter::once(&arguments.path)
         .chain(&arguments.argv)
@@ -89,11 +84,19 @@ pub(crate) fn build(
         .task()
         .allocate(count, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
     frames.write(stack, &bytes[stack..])?;
-    task.map(&frames, 0, count, Some(base), Permissions::ReadWrite)?;
+    space.map_frames(
+        Rc::new(frames),
+        0,
+        count,
+        base,
+        Permissions::ReadWrite,
+        PageBacking::Anonymous,
+    )?;
     Ok(base + stack)
 }
 
-fn load_headers(task: &SupervisedTask, image: &Image<'_>) -> Result<(usize, usize), Error> {
+fn load_headers(space: &AddressSpace, image: &Image<'_>) -> Result<(usize, usize), Error> {
+    let task = &space.native;
     let top = task.task().address_range()?.end;
     Ok(if let Some(address) = image.phdr {
         (address, top)
@@ -106,7 +109,26 @@ fn load_headers(task: &SupervisedTask, image: &Image<'_>) -> Result<(usize, usiz
             .task()
             .allocate(count, Rights::READ_WRITE | Rights::MAP)?;
         frames.write(0, image.headers)?;
-        task.map(&frames, 0, count, Some(address), Permissions::ReadOnly)?;
+        space.map_frames(
+            Rc::new(frames),
+            0,
+            count,
+            address,
+            Permissions::ReadOnly,
+            PageBacking::File,
+        )?;
         (address, address)
     })
+}
+
+fn auxiliary(image: &Image<'_>, phdr: usize) -> [(usize, usize); 7] {
+    [
+        (3, phdr),
+        (4, 56),
+        (5, image.headers.len() / 56),
+        (6, PAGE_SIZE),
+        (7, 0),
+        (8, 0),
+        (9, image.entry),
+    ]
 }

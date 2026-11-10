@@ -132,7 +132,7 @@ pub(in crate::syscall) fn write<'a>(
         }))
     })();
     match operation {
-        Ok(Some(operation)) => Outcome::Pending(operation),
+        Ok(Some(operation)) => Outcome::Pending(super::super::Operation::File(operation)),
         Ok(None) => Outcome::Complete(Ok(0)),
         Err(error) => Outcome::Complete(Err(error)),
     }

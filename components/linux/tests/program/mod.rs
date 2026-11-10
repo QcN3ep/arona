@@ -113,6 +113,7 @@ fn writable(
         b"metadata".as_slice(),
         b"directory",
         b"path",
+        b"FileMappings",
         b"writable",
         b"vector",
     ] {
@@ -129,6 +130,14 @@ fn writable(
         );
     }
     assert_eq!(
+        run(b"MappingBus")
+            .wait(WaitMode::Until(
+                runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS
+            ))
+            .unwrap(),
+        ExitStatus { code: 0, signal: 7 }
+    );
+    assert_eq!(
         files
             .metadata(b"/var/linux-new", service::deadline())
             .unwrap()
@@ -136,6 +145,13 @@ fn writable(
             & 0o777,
         0o600
     );
+    append_records(files, &run);
+}
+
+fn append_records(
+    files: &fs::Client<'_>,
+    run: &impl Fn(&[u8]) -> runtime::ipc::PendingCall<ExitStatus, (), Error>,
+) {
     let append = files
         .create("/var/linux-append", service::deadline())
         .unwrap();
@@ -163,7 +179,6 @@ fn writable(
     }
     assert_eq!(counts, [8, 8]);
 }
-
 fn metadata_fixture(files: &fs::Client<'_>) {
     let file = files
         .create("/var/linux-stat", service::deadline())

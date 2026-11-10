@@ -42,6 +42,8 @@ pub(super) const EXIT_GROUP: usize = 94;
 pub(super) const BRK: usize = 214;
 pub(super) const MUNMAP: usize = 215;
 pub(super) const MMAP: usize = 222;
+pub(super) const MADVISE: usize = 233;
+pub(super) const ENODEV: Errno = Errno(19);
 pub(super) const MPROTECT: usize = 226;
 
 pub(super) struct Errno(isize);

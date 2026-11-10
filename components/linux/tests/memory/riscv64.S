@@ -203,7 +203,7 @@ mappings:
     li a5, 0
     li a3, 2
     memcall 222
-    result -95
+    result -9
     li a0, 1
     li a1, 4096
     memcall 215

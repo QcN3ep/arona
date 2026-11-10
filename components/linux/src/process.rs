@@ -89,7 +89,13 @@ impl<'a> Process<'a> {
                 trap.resume(&state).map_err(|(error, _)| error.into())
             }
             _ => {
-                let signal = if trap.info.kind == TrapInfo::ILLEGAL_INSTRUCTION {
+                let signal = if trap.info.kind == TrapInfo::PAGE_FAULT
+                    && self
+                        .address_space
+                        .bus_fault(trap.info.address as usize, trap.info.detail)
+                {
+                    7
+                } else if trap.info.kind == TrapInfo::ILLEGAL_INSTRUCTION {
                     4
                 } else {
                     11

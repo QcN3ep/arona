@@ -201,7 +201,7 @@ mappings:
     li.d $a5, 0
     li.d $a3, 2
     memcall 222
-    result -95
+    result -9
     li.d $a0, 1
     li.d $a1, 4096
     memcall 215

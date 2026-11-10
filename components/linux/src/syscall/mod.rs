@@ -24,13 +24,33 @@ struct Context {
 
 pub(crate) struct Pending<'a> {
     context: Context,
-    operation: file::Pending<'a>,
+    operation: Operation<'a>,
 }
 
 enum Outcome<'a> {
     Complete(SyscallResult),
-    Pending(file::Pending<'a>),
+    Pending(Operation<'a>),
     Terminated,
+}
+
+enum Operation<'a> {
+    File(file::Pending<'a>),
+    Memory(memory::Pending<'a>),
+}
+
+impl<'a> Operation<'a> {
+    fn call(&self) -> Option<&Handle<Call>> {
+        match self {
+            Self::File(operation) => operation.call(),
+            Self::Memory(operation) => operation.call(),
+        }
+    }
+    fn poll(&mut self, process: &mut Process<'a>, files: &fs::Client<'a>) -> Option<SyscallResult> {
+        match self {
+            Self::File(operation) => operation.poll(process, files),
+            Self::Memory(operation) => operation.poll(process),
+        }
+    }
 }
 
 pub(crate) fn dispatch<'a>(
@@ -52,7 +72,8 @@ pub(crate) fn dispatch<'a>(
             abi::EXIT => process::exit(process, index, arguments[0])?,
             abi::EXIT_GROUP => process::exit_group(process, arguments[0])?,
             abi::BRK => Outcome::Complete(Ok(process.address_space.brk(arguments[0])?)),
-            abi::MMAP => Outcome::Complete(memory::mmap(&process.address_space, arguments)),
+            abi::MMAP => memory::mmap(process, arguments),
+            abi::MADVISE => Outcome::Complete(memory::madvise(&process.address_space, arguments)),
             abi::MUNMAP => Outcome::Complete(memory::munmap(
                 &process.address_space,
                 arguments[0],
