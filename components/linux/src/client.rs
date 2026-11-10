@@ -47,6 +47,24 @@ impl<'a> Control<'a> {
         program: Program<'_>,
         output: devmgr::uart::Session,
     ) -> Result<PendingCall<ExitStatus, (), Error>, Error> {
+        self.request_run(program, output, None)
+    }
+
+    pub fn start_run_with_input(
+        &self,
+        program: Program<'_>,
+        output: devmgr::uart::Session,
+        input: devmgr::uart::Session,
+    ) -> Result<PendingCall<ExitStatus, (), Error>, Error> {
+        self.request_run(program, output, Some(input))
+    }
+
+    fn request_run(
+        &self,
+        program: Program<'_>,
+        output: devmgr::uart::Session,
+        input: Option<devmgr::uart::Session>,
+    ) -> Result<PendingCall<ExitStatus, (), Error>, Error> {
         if program.path.first() != Some(&b'/') || program.arguments.is_empty() {
             return Err(Error::InvalidRequest);
         }
@@ -79,6 +97,9 @@ impl<'a> Control<'a> {
         )?;
         transfer(&mut request, frames, Rights::READ)?;
         transfer(&mut request, output.into_channel(), CHANNEL_RIGHTS)?;
+        if let Some(input) = input {
+            transfer(&mut request, input.into_channel(), CHANNEL_RIGHTS)?;
+        }
         Ok(PendingCall::new(
             self.channel.start_call(&mut request)?,
             (),

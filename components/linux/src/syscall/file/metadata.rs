@@ -30,7 +30,7 @@ pub(in crate::syscall) fn fstat<'a>(
     let request = match description.as_ref() {
         OpenFileDescription::Regular { file, .. } => file.start_metadata(),
         OpenFileDescription::Directory { session, .. } => session.start_metadata(),
-        OpenFileDescription::Output { .. } => {
+        OpenFileDescription::Terminal { .. } => {
             return Outcome::Complete(write_stat(
                 process,
                 address,

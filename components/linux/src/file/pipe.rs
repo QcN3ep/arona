@@ -70,6 +70,10 @@ impl PipeEnd {
         self.pipe.borrow_mut().bytes.drain(..count);
     }
 
+    pub fn available(&self) -> usize {
+        self.pipe.borrow().bytes.len()
+    }
+
     pub fn free(&self) -> usize {
         CAPACITY - self.pipe.borrow().bytes.len()
     }

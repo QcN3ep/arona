@@ -175,7 +175,11 @@ fn readiness(description: &OpenFileDescription<'_>) -> u16 {
         OpenFileDescription::Regular { .. } | OpenFileDescription::Directory { .. } => {
             INPUT | OUTPUT
         }
-        OpenFileDescription::Output { .. } => OUTPUT,
+        OpenFileDescription::Terminal { terminal, .. } => {
+            OUTPUT
+                | if terminal.readable() { INPUT } else { 0 }
+                | if terminal.failed() { ERROR | HANGUP } else { 0 }
+        }
     }
 }
 

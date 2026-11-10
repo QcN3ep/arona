@@ -17,7 +17,7 @@ use crate::{
 pub(super) struct Loading<'a> {
     pub reply: Handle<Reply>,
     arguments: Arguments,
-    output: Option<devmgr::uart::Session>,
+    terminal: alloc::rc::Rc<crate::file::terminal::Terminal>,
     stage: Stage<'a>,
 }
 
@@ -37,7 +37,7 @@ impl<'a> Loading<'a> {
         reply: Handle<Reply>,
     ) -> Result<Self, (Error, Handle<Reply>)> {
         let decoded = (|| {
-            if request.tag != protocol::RUN || request.handles().len() != 2 {
+            if request.tag != protocol::RUN || !matches!(request.handles().len(), 2 | 3) {
                 return Err(Error::InvalidRequest);
             }
             let [length, argc, envc] = *request.words() else {
@@ -58,14 +58,29 @@ impl<'a> Loading<'a> {
                     .downcast()
                     .map_err(|_| Error::InvalidRequest)?,
             )?;
+            let input = if request.handles().is_empty() {
+                None
+            } else {
+                Some(devmgr::uart::Session::from_channel(
+                    request
+                        .take_handle(0)
+                        .unwrap()
+                        .downcast()
+                        .map_err(|_| Error::InvalidRequest)?,
+                )?)
+            };
             let stage = Stage::Open(files.start_open(&arguments.path)?);
-            Ok((arguments, output, stage))
+            Ok((
+                arguments,
+                alloc::rc::Rc::new(crate::file::terminal::Terminal::new(output, input)),
+                stage,
+            ))
         })();
         match decoded {
-            Ok((arguments, output, stage)) => Ok(Self {
+            Ok((arguments, terminal, stage)) => Ok(Self {
                 reply,
                 arguments,
-                output: Some(output),
+                terminal,
                 stage,
             }),
             Err(error) => Err((error, reply)),
@@ -118,7 +133,7 @@ impl<'a> Loading<'a> {
                             machine,
                             &image,
                             &self.arguments,
-                            self.output.take().unwrap(),
+                            alloc::rc::Rc::clone(&self.terminal),
                         )
                         .map(Some);
                     }

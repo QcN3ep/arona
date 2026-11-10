@@ -60,6 +60,7 @@ fn main() {
     layouts(&linux, &output);
     malformed(&linux, &output);
     writable(&linux, &files, &output);
+    terminal(&linux, &output, &device_service, console);
     mounts.unmount(b"/var", service::deadline()).unwrap();
     let output = output();
     output.write_all(b"Linux program tests passed\n").unwrap();
@@ -378,6 +379,43 @@ fn malformed(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                 until()
             )
             .unwrap(),
+        ExitStatus {
+            code: 42,
+            signal: 0
+        }
+    );
+}
+
+fn terminal(
+    linux: &Control<'_>,
+    output: &impl Fn() -> devmgr::uart::Session,
+    service: &runtime::Handle<runtime::Channel>,
+    console: u32,
+) {
+    let input = devmgr::uart::Session::open(
+        process::task(),
+        service,
+        console,
+        devmgr::uart::Access::InputOutput,
+    )
+    .unwrap();
+    let status = linux
+        .start_run_with_input(
+            Program {
+                path: b"/bin/linux-test",
+                arguments: &[b"/bin/linux-test", b"Terminal"],
+                environment: &[b"ARONA_TEST=yes"],
+            },
+            output(),
+            input,
+        )
+        .unwrap()
+        .wait(WaitMode::Until(
+            runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
+        ))
+        .unwrap();
+    assert_eq!(
+        status,
         ExitStatus {
             code: 42,
             signal: 0

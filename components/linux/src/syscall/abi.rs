@@ -5,6 +5,8 @@ use runtime::trap::UserState;
 use crate::elf::Machine;
 
 // REFERENCE: https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h
+pub(super) const IOCTL: usize = 29;
+pub(super) const ENOTTY: Errno = Errno(25);
 pub(super) const PIPE2: usize = 59;
 pub(super) const PPOLL: usize = 73;
 pub(super) const PSELECT6: usize = 72;

@@ -78,17 +78,7 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
             Err(error) => return Err(error.into()),
         }
         if !progress {
-            let mut items = alloc::vec![
-                WaitItem::new(&control, READABLE | PEER_CLOSED),
-                WaitItem::new(&port, READABLE)
-            ];
-            for pending in &loading {
-                pending.waits(&mut items);
-            }
-            for guest in &running {
-                guest.process.waits(&mut items);
-            }
-            ipc::wait_many(&items, WaitMode::Forever)?;
+            wait(&control, &port, &loading, &running)?;
         }
     }
 }
@@ -173,4 +163,38 @@ fn poll_running<'a>(running: &mut Vec<Running<'a>>, files: &fs::Client<'a>) -> R
     }
 
     Ok(progress)
+}
+
+fn wait(
+    control: &Handle<Channel>,
+    port: &Handle<runtime::TrapPort>,
+    loading: &[Loading<'_>],
+    running: &[Running<'_>],
+) -> Result<(), Error> {
+    let mut items = alloc::vec![
+        WaitItem::new(control, READABLE | PEER_CLOSED),
+        WaitItem::new(port, READABLE)
+    ];
+    let terminals: alloc::collections::BTreeMap<_, _> = running
+        .iter()
+        .map(|guest| {
+            let terminal = &guest.process.terminal;
+            (alloc::rc::Rc::as_ptr(terminal), terminal)
+        })
+        .collect();
+    let inputs: Vec<_> = terminals
+        .values()
+        .filter_map(|terminal| terminal.input())
+        .collect();
+    for input in &inputs {
+        items.push(WaitItem::new(input.call(), READABLE));
+    }
+    for pending in loading {
+        pending.waits(&mut items);
+    }
+    for guest in running {
+        guest.process.waits(&mut items);
+    }
+    ipc::wait_many(&items, WaitMode::Forever)?;
+    Ok(())
 }

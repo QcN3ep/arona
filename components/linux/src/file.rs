@@ -3,6 +3,7 @@
 //! 文件描述符与共享的打开状态。
 
 pub(crate) mod pipe;
+pub(crate) mod terminal;
 
 use alloc::{collections::BTreeMap, rc::Rc};
 use core::cell::Cell;
@@ -25,8 +26,8 @@ pub(crate) enum OpenFileDescription<'a> {
         end: pipe::PipeEnd,
         flags: Cell<u32>,
     },
-    Output {
-        session: devmgr::uart::Session,
+    Terminal {
+        terminal: Rc<terminal::Terminal>,
         flags: Cell<u32>,
     },
     Directory {
@@ -48,12 +49,12 @@ pub(crate) struct FilePosition<'a> {
 }
 
 impl<'a> FileTable<'a> {
-    pub fn new(output: devmgr::uart::Session) -> Self {
-        let description = Rc::new(OpenFileDescription::Output {
-            session: output,
+    pub fn new(terminal: Rc<terminal::Terminal>) -> Self {
+        let description = Rc::new(OpenFileDescription::Terminal {
+            terminal: Rc::clone(&terminal),
             flags: Cell::new(1),
         });
-        Self {
+        let mut table = Self {
             entries: [
                 (
                     1,
@@ -72,7 +73,20 @@ impl<'a> FileTable<'a> {
             ]
             .into_iter()
             .collect(),
+        };
+        if terminal.has_input() {
+            table.entries.insert(
+                0,
+                Descriptor {
+                    description: Rc::new(OpenFileDescription::Terminal {
+                        terminal,
+                        flags: Cell::new(0),
+                    }),
+                    close_on_exec: false,
+                },
+            );
         }
+        table
     }
 
     pub fn get(&self, fd: usize) -> Option<&Descriptor<'a>> {
@@ -132,7 +146,7 @@ impl<'a> OpenFileDescription<'a> {
     pub fn flags(&self) -> u32 {
         match self {
             Self::Pipe { flags, .. }
-            | Self::Output { flags, .. }
+            | Self::Terminal { flags, .. }
             | Self::Directory { flags, .. }
             | Self::Regular { flags, .. } => flags.get(),
         }
@@ -140,7 +154,7 @@ impl<'a> OpenFileDescription<'a> {
 
     pub fn set_flags(&self, value: u32) {
         let (Self::Pipe { flags, .. }
-        | Self::Output { flags, .. }
+        | Self::Terminal { flags, .. }
         | Self::Directory { flags, .. }
         | Self::Regular { flags, .. }) = self;
         flags.set((flags.get() & !(O_APPEND | O_NONBLOCK)) | (value & (O_APPEND | O_NONBLOCK)));

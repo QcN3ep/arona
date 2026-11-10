@@ -10,15 +10,13 @@ mod open;
 mod path;
 mod pipe;
 mod poll;
+mod terminal;
 
 use super::{
     Outcome, abi,
     abi::{EBADF, EINVAL, EIO, EMFILE, EOPNOTSUPP, Errno, SyscallResult},
 };
-use crate::{
-    file::{O_NONBLOCK, OpenFileDescription},
-    process::Process,
-};
+use crate::{file::OpenFileDescription, process::Process};
 use alloc::rc::Rc;
 use runtime::{Call, Handle};
 
@@ -31,6 +29,8 @@ pub(super) use open::openat;
 pub(super) const O_CLOEXEC: u32 = 0x80000;
 
 pub(super) enum Pending<'a> {
+    TerminalChange(terminal::Change),
+    Terminal(terminal::Read<'a>),
     Pipe(pipe::PipeIo<'a>),
     Poll(poll::Poll<'a>),
     Open(open::Open<'a>),
@@ -42,6 +42,7 @@ pub(super) enum Pending<'a> {
     Directory(directory::ReadDirectory<'a>),
     Output {
         request: devmgr::device::Pending<usize, usize>,
+        consumed: usize,
         _description: Rc<OpenFileDescription<'a>>,
     },
     Truncate {
@@ -64,6 +65,7 @@ pub(super) fn dispatch<'a>(
         return Some(outcome);
     }
     Some(match number {
+        abi::IOCTL => terminal::start(process, arguments[0], arguments[1], arguments[2]),
         abi::PIPE2 => Outcome::Complete(pipe::create(process, arguments[0], arguments[1])),
         abi::PPOLL => poll::start(process, arguments, false),
         abi::PSELECT6 => poll::start(process, arguments, true),
@@ -189,12 +191,7 @@ pub(super) fn fcntl(
         3 => Ok(descriptor.description.flags() as usize),
         4 => {
             let flags = argument as u32;
-            if flags & (0x2000 | 0x4000 | 0x40000) != 0
-                || matches!(
-                    descriptor.description.as_ref(),
-                    OpenFileDescription::Output { .. }
-                ) && flags & O_NONBLOCK != 0
-            {
+            if flags & (0x2000 | 0x4000 | 0x40000) != 0 {
                 return Err(EOPNOTSUPP);
             }
             descriptor.description.set_flags(flags);
@@ -228,6 +225,8 @@ impl<'a> Pending<'a> {
 
     pub fn call(&self) -> Option<&Handle<Call>> {
         match self {
+            Self::Terminal(_) => None,
+            Self::TerminalChange(change) => Some(change.call()),
             Self::Pipe(_) | Self::Poll(_) => None,
             Self::Open(open) => Some(open.call()),
             Self::Path(path) => Some(path.call()),
@@ -248,6 +247,8 @@ impl<'a> Pending<'a> {
         files: &fs::Client<'a>,
     ) -> Option<SyscallResult> {
         match self {
+            Self::Terminal(read) => read.poll(process),
+            Self::TerminalChange(change) => change.poll(),
             Self::Pipe(pipe) => pipe.poll(process),
             Self::Poll(poll) => poll.poll(process),
             Self::Open(open) => open.poll(process, files),
@@ -257,11 +258,13 @@ impl<'a> Pending<'a> {
             Self::Seek(seek) => seek.poll(),
             Self::Stat(stat) => stat.poll(process),
             Self::Directory(directory) => directory.poll(process),
-            Self::Output { request, .. } => match request.try_complete() {
+            Self::Output {
+                request, consumed, ..
+            } => match request.try_complete() {
                 Err(devmgr::Error::Runtime(runtime::Error::Kernel(
                     runtime::KernelError::WouldBlock,
                 ))) => None,
-                result => Some(result.map_err(|_| EIO)),
+                result => Some(result.map(|_| *consumed).map_err(|_| EIO)),
             },
             Self::Truncate { request, .. } => Some(
                 completion(request.try_complete())?

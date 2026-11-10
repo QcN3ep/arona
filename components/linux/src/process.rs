@@ -28,6 +28,7 @@ pub(crate) struct Process<'a> {
     pub address_space: AddressSpace,
     pub threads: Vec<Thread<'a>>,
     pub files: FileTable<'a>,
+    pub terminal: alloc::rc::Rc<crate::file::terminal::Terminal>,
     pub cwd: Option<alloc::rc::Rc<crate::file::OpenFileDescription<'a>>>,
     pub machine: Machine,
     pub umask: u16,
@@ -41,7 +42,7 @@ impl<'a> Process<'a> {
         machine: Machine,
         image: &Image<'_>,
         arguments: &Arguments,
-        output: devmgr::uart::Session,
+        terminal: alloc::rc::Rc<crate::file::terminal::Terminal>,
     ) -> Result<Self, Error> {
         let (address_space, stack) = AddressSpace::load(parent, port, image, arguments)?;
         let native = address_space.native.create_thread(
@@ -55,7 +56,7 @@ impl<'a> Process<'a> {
         )?;
         native.set_user_state(&machine.initial(image.entry, stack))?;
         let id = native.id()?;
-        let files = FileTable::new(output);
+        let files = FileTable::new(alloc::rc::Rc::clone(&terminal));
         native.start()?;
         Ok(Self {
             supervisor: parent,
@@ -66,6 +67,7 @@ impl<'a> Process<'a> {
                 pending: None
             }],
             files,
+            terminal,
             cwd: None,
             machine,
             umask: 0o022,
@@ -111,7 +113,7 @@ impl<'a> Process<'a> {
     }
 
     pub fn poll(&mut self, files: &fs::Client<'a>) -> Result<bool, Error> {
-        let mut progress = false;
+        let mut progress = self.terminal.poll();
         let mut index = 0;
         while index < self.threads.len() {
             if self.threads[index].native.state()?.0 == ThreadState::Dead {
