@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use runtime::{
     Handle, Rights, Task, TrapPort,
-    ipc::{EXITED, READABLE, WaitItem},
+    ipc::{EXITED, WaitItem},
     thread::{ThreadState, UserEntry},
     trap::{Trap, TrapInfo},
 };
@@ -24,6 +24,7 @@ pub(crate) struct Thread<'a> {
 }
 
 pub(crate) struct Process<'a> {
+    pub supervisor: &'a Handle<Task>,
     pub address_space: AddressSpace,
     pub threads: Vec<Thread<'a>>,
     pub files: FileTable<'a>,
@@ -57,6 +58,7 @@ impl<'a> Process<'a> {
         let files = FileTable::new(output);
         native.start()?;
         Ok(Self {
+            supervisor: parent,
             address_space,
             threads: alloc::vec![Thread {
                 native,
@@ -132,8 +134,8 @@ impl<'a> Process<'a> {
     pub fn waits<'b>(&'b self, items: &mut Vec<WaitItem<'b>>) {
         for thread in &self.threads {
             items.push(WaitItem::new(&thread.native, EXITED));
-            if let Some(call) = thread.pending.as_ref().and_then(Pending::call) {
-                items.push(WaitItem::new(call, READABLE));
+            if let Some(pending) = &thread.pending {
+                pending.waits(items);
             }
         }
     }

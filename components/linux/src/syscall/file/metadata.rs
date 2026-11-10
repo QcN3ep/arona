@@ -23,33 +23,49 @@ pub(in crate::syscall) fn fstat<'a>(
     raw: usize,
     address: usize,
 ) -> Outcome<'a> {
-    let operation = (|| {
-        let description = Rc::clone(&process.files.get(fd(raw)?).ok_or(EBADF)?.description);
-        let request = match description.as_ref() {
-            OpenFileDescription::Regular { file, .. } => file.start_metadata(),
-            OpenFileDescription::Directory { session, .. } => session.start_metadata(),
-            OpenFileDescription::Output { .. } => return Ok(None),
+    let description = match fd(raw).ok().and_then(|fd| process.files.get(fd)) {
+        Some(descriptor) => Rc::clone(&descriptor.description),
+        None => return Outcome::Complete(Err(EBADF)),
+    };
+    let request = match description.as_ref() {
+        OpenFileDescription::Regular { file, .. } => file.start_metadata(),
+        OpenFileDescription::Directory { session, .. } => session.start_metadata(),
+        OpenFileDescription::Output { .. } => {
+            return Outcome::Complete(write_stat(
+                process,
+                address,
+                fs::Metadata {
+                    mode: 0o020600,
+                    links: 1,
+                    ..fs::Metadata::default()
+                },
+            ));
         }
-        .map_err(filesystem_error)?;
-        Ok(Some(Pending::Stat(Stat {
-            request,
-            address,
-            _description: Some(description),
-        })))
-    })();
-    match operation {
-        Ok(Some(operation)) => Outcome::Pending(super::super::Operation::File(operation)),
-        Ok(None) => Outcome::Complete(write_stat(
-            process,
-            address,
-            fs::Metadata {
-                mode: 0o020600,
-                links: 1,
-                ..fs::Metadata::default()
-            },
-        )),
-        Err(error) => Outcome::Complete(Err(error)),
-    }
+        OpenFileDescription::Pipe { end, .. } => {
+            return Outcome::Complete(write_stat(
+                process,
+                address,
+                fs::Metadata {
+                    device: 3,
+                    inode: end.inode(),
+                    mode: 0o010600,
+                    links: 1,
+                    ..fs::Metadata::default()
+                },
+            ));
+        }
+    };
+    outcome(
+        request
+            .map(|request| {
+                Pending::Stat(Stat {
+                    request,
+                    address,
+                    _description: Some(description),
+                })
+            })
+            .map_err(filesystem_error),
+    )
 }
 
 pub(in crate::syscall) fn statat<'a>(

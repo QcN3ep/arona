@@ -86,6 +86,10 @@ auxv_done:
     beq $s3, $t1, files_write
     li.d $t1, 118
     beq $s3, $t1, files_vector
+    li.d $t1, 80
+    beq $s3, $t1, files_pipe
+    li.d $t1, 82
+    beq $s3, $t1, files_poll
     li.d $t1, 77
     beq $s3, $t1, mapping_bus_fault
     li.d $t1, 70
@@ -206,7 +210,7 @@ heap:
     add.d $t0, $t0, $t1
     li.d $t1, -4096
     and $t0, $t0, $t1
-    bne $s4, $t0, failure
+    bltu $s4, $t0, failure
     addi.d $a0, $s4, -1
     syscall 0
     bne $a0, $s4, failure

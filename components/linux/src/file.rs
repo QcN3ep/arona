@@ -2,6 +2,8 @@
 
 //! 文件描述符与共享的打开状态。
 
+pub(crate) mod pipe;
+
 use alloc::{collections::BTreeMap, rc::Rc};
 use core::cell::Cell;
 
@@ -19,6 +21,10 @@ pub(crate) struct Descriptor<'a> {
 }
 
 pub(crate) enum OpenFileDescription<'a> {
+    Pipe {
+        end: pipe::PipeEnd,
+        flags: Cell<u32>,
+    },
     Output {
         session: devmgr::uart::Session,
         flags: Cell<u32>,
@@ -125,14 +131,16 @@ impl<'a> Descriptor<'a> {
 impl<'a> OpenFileDescription<'a> {
     pub fn flags(&self) -> u32 {
         match self {
-            Self::Output { flags, .. }
+            Self::Pipe { flags, .. }
+            | Self::Output { flags, .. }
             | Self::Directory { flags, .. }
             | Self::Regular { flags, .. } => flags.get(),
         }
     }
 
     pub fn set_flags(&self, value: u32) {
-        let (Self::Output { flags, .. }
+        let (Self::Pipe { flags, .. }
+        | Self::Output { flags, .. }
         | Self::Directory { flags, .. }
         | Self::Regular { flags, .. }) = self;
         flags.set((flags.get() & !(O_APPEND | O_NONBLOCK)) | (value & (O_APPEND | O_NONBLOCK)));

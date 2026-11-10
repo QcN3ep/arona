@@ -6,11 +6,9 @@ mod abi;
 mod file;
 mod memory;
 mod process;
+mod wait;
 
-use runtime::{
-    Call, Handle,
-    trap::{Trap, UserState},
-};
+use runtime::trap::{Trap, UserState};
 
 use crate::{Error, elf::Machine, process::Process};
 
@@ -39,10 +37,14 @@ enum Operation<'a> {
 }
 
 impl<'a> Operation<'a> {
-    fn call(&self) -> Option<&Handle<Call>> {
+    fn waits<'b>(&'b self, items: &mut alloc::vec::Vec<runtime::ipc::WaitItem<'b>>) {
         match self {
-            Self::File(operation) => operation.call(),
-            Self::Memory(operation) => operation.call(),
+            Self::File(operation) => operation.waits(items),
+            Self::Memory(operation) => {
+                if let Some(call) = operation.call() {
+                    items.push(runtime::ipc::WaitItem::new(call, runtime::ipc::READABLE));
+                }
+            }
         }
     }
     fn poll(&mut self, process: &mut Process<'a>, files: &fs::Client<'a>) -> Option<SyscallResult> {
@@ -115,8 +117,8 @@ pub(crate) fn poll<'a>(
 }
 
 impl Pending<'_> {
-    pub fn call(&self) -> Option<&Handle<Call>> {
-        self.operation.call()
+    pub fn waits<'b>(&'b self, items: &mut alloc::vec::Vec<runtime::ipc::WaitItem<'b>>) {
+        self.operation.waits(items);
     }
 }
 

@@ -8,6 +8,8 @@ mod io;
 mod metadata;
 mod open;
 mod path;
+mod pipe;
+mod poll;
 
 use super::{
     Outcome, abi,
@@ -29,6 +31,8 @@ pub(super) use open::openat;
 pub(super) const O_CLOEXEC: u32 = 0x80000;
 
 pub(super) enum Pending<'a> {
+    Pipe(pipe::PipeIo<'a>),
+    Poll(poll::Poll<'a>),
     Open(open::Open<'a>),
     Path(path::PathOperation<'a>),
     Read(io::Read<'a>),
@@ -60,6 +64,9 @@ pub(super) fn dispatch<'a>(
         return Some(outcome);
     }
     Some(match number {
+        abi::PIPE2 => Outcome::Complete(pipe::create(process, arguments[0], arguments[1])),
+        abi::PPOLL => poll::start(process, arguments, false),
+        abi::PSELECT6 => poll::start(process, arguments, true),
         abi::DUP => Outcome::Complete(duplicate(process, arguments[0], 0, false)),
         abi::DUP3 => Outcome::Complete(dup3(process, arguments[0], arguments[1], arguments[2])),
         abi::FCNTL => Outcome::Complete(fcntl(process, arguments[0], arguments[1], arguments[2])),
@@ -210,8 +217,18 @@ fn outcome<'a>(operation: Result<Pending<'a>, Errno>) -> Outcome<'a> {
 }
 
 impl<'a> Pending<'a> {
+    pub fn waits<'b>(&'b self, items: &mut alloc::vec::Vec<runtime::ipc::WaitItem<'b>>) {
+        if let Some(call) = self.call() {
+            items.push(runtime::ipc::WaitItem::new(call, runtime::ipc::READABLE));
+        }
+        if let Self::Poll(poll) = self {
+            poll.waits(items);
+        }
+    }
+
     pub fn call(&self) -> Option<&Handle<Call>> {
         match self {
+            Self::Pipe(_) | Self::Poll(_) => None,
             Self::Open(open) => Some(open.call()),
             Self::Path(path) => Some(path.call()),
             Self::Read(read) => read.call(),
@@ -231,6 +248,8 @@ impl<'a> Pending<'a> {
         files: &fs::Client<'a>,
     ) -> Option<SyscallResult> {
         match self {
+            Self::Pipe(pipe) => pipe.poll(process),
+            Self::Poll(poll) => poll.poll(process),
             Self::Open(open) => open.poll(process, files),
             Self::Path(path) => path.poll(process),
             Self::Read(read) => read.poll(process),

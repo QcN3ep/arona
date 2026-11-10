@@ -53,9 +53,22 @@ pub(in crate::syscall) fn read<'a>(
     buffer: Buffer,
     offset: Option<usize>,
 ) -> Outcome<'a> {
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| {
+            matches!(
+                descriptor.description.as_ref(),
+                OpenFileDescription::Pipe { .. }
+            )
+        })
+    {
+        return super::pipe::start(process, fd_raw, buffer, offset, false);
+    }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         match descriptor.description.as_ref() {
+            OpenFileDescription::Pipe { .. } => unreachable!(),
             OpenFileDescription::Output { .. } => {
                 return Err(if offset.is_some() { ESPIPE } else { EBADF });
             }
@@ -86,6 +99,18 @@ pub(in crate::syscall) fn write<'a>(
     buffer: Buffer,
     offset: Option<usize>,
 ) -> Outcome<'a> {
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| {
+            matches!(
+                descriptor.description.as_ref(),
+                OpenFileDescription::Pipe { .. }
+            )
+        })
+    {
+        return super::pipe::start(process, fd_raw, buffer, offset, true);
+    }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         if descriptor.description.flags() & 3 == 0 {
@@ -128,6 +153,7 @@ pub(in crate::syscall) fn write<'a>(
                 position: None,
                 request: None,
             }),
+            OpenFileDescription::Pipe { .. } => unreachable!(),
             OpenFileDescription::Directory { .. } => return Err(EBADF),
         }))
     })();
@@ -165,7 +191,9 @@ pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome
         let request = match descriptor.description.as_ref() {
             OpenFileDescription::Regular { file, .. } => file.start_fsync(),
             OpenFileDescription::Directory { session, .. } => session.start_fsync(),
-            OpenFileDescription::Output { .. } => return Err(EINVAL),
+            OpenFileDescription::Output { .. } | OpenFileDescription::Pipe { .. } => {
+                return Err(EINVAL);
+            }
         }
         .map_err(filesystem_error)?;
         Ok(Pending::Sync {
@@ -185,7 +213,9 @@ pub(in crate::syscall) fn seek<'a>(
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         match descriptor.description.as_ref() {
-            OpenFileDescription::Output { .. } => return Err(ESPIPE),
+            OpenFileDescription::Output { .. } | OpenFileDescription::Pipe { .. } => {
+                return Err(ESPIPE);
+            }
             OpenFileDescription::Directory { .. } if whence as u32 == 2 => return Err(EINVAL),
             OpenFileDescription::Directory { .. } => {}
             OpenFileDescription::Regular { .. } => {}

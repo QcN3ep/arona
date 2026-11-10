@@ -114,6 +114,8 @@ fn writable(
         b"directory",
         b"path",
         b"FileMappings",
+        b"Pipe",
+        b"Readiness",
         b"writable",
         b"vector",
     ] {

@@ -18,6 +18,8 @@ pub const REQUIRED_RIGHTS: Rights = runtime::process::ProcessStart::REQUIRED_RIG
     .union(Rights::CREATE_TASK)
     .union(Rights::CREATE_THREAD)
     .union(Rights::CREATE_CHANNEL)
+    .union(Rights::CREATE_EVENT)
+    .union(Rights::CREATE_TIMER)
     .union(Rights::SET_TRAP);
 
 struct Running<'a> {

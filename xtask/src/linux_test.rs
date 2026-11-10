@@ -130,6 +130,8 @@ fn build_guest(
         ("syscall/file/metadata", "file-metadata"),
         ("syscall/file/directory", "file-directory"),
         ("syscall/file/path", "file-path"),
+        ("syscall/file/pipe", "file-pipe"),
+        ("syscall/file/poll", "file-poll"),
         ("syscall/memory", "file-mappings"),
     ] {
         let object = directory.join(format!("{name}.o"));

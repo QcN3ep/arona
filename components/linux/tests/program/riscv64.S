@@ -87,6 +87,10 @@ auxv_done:
     beq s3, t1, files_write
     li t1, 118
     beq s3, t1, files_vector
+    li t1, 80
+    beq s3, t1, files_pipe
+    li t1, 82
+    beq s3, t1, files_poll
     li t1, 77
     beq s3, t1, mapping_bus_fault
     li t1, 70
@@ -206,7 +210,7 @@ heap:
     add t0, t0, t1
     li t1, -4096
     and t0, t0, t1
-    bne s4, t0, failure
+    bltu s4, t0, failure
     addi a0, s4, -1
     ecall
     bne a0, s4, failure

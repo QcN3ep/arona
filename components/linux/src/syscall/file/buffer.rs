@@ -15,7 +15,7 @@ pub(in crate::syscall) enum Buffer {
     Vector { address: usize, count: usize },
 }
 
-pub(super) struct IoVectors {
+pub(in crate::syscall) struct IoVectors {
     vectors: Vec<IoVector>,
 }
 
@@ -31,10 +31,7 @@ impl Buffer {
                 if length > isize::MAX as usize {
                     return Err(EINVAL);
                 }
-                alloc::vec![IoVector {
-                    address,
-                    length: length.min(PAGE_SIZE - address % PAGE_SIZE),
-                }]
+                alloc::vec![IoVector { address, length }]
             }
             Self::Vector { address, count } => {
                 if count > IOV_MAX {
@@ -66,6 +63,10 @@ impl Buffer {
 }
 
 impl IoVectors {
+    pub fn total_length(&self) -> usize {
+        self.vectors.iter().map(|vector| vector.length).sum()
+    }
+
     pub fn length(&self) -> usize {
         self.vectors
             .iter()
