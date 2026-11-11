@@ -15,6 +15,7 @@ pub(super) fn invoke(
 ) -> Result<[u64; 2], Error> {
     match method {
         thread::ID => Ok([target.id(), 0]),
+        thread::CPU_TIME => Ok([target.cpu_time_ns()?, 0]),
         thread::SET_STATE => {
             target.set_user_state(&super::trap::read_state(caller, args[0])?)?;
             Ok([0; 2])

@@ -83,6 +83,8 @@ The PID namespace records PIDs, TIDs, parent-child relationships, process groups
 `clone` distinguishes process duplication from thread creation by flags and establishes the corresponding resource relationships respectively.
 A process clone with `CLONE_VM | CLONE_VFORK` shares the parent's page frames and suspends the calling parent thread until the child executes a new image or exits.
 `wait4` and `waitid` observe child process changes, and thread exits and process group exits are handled along their respective paths.
+When requested, wait calls return the child's recorded thread execution time in the user-time fields of `rusage`.
+The remaining resource counters are zero.
 
 A thread stores the clear-tid address and futex wait state.
 futex combines user word validation, wait registration, wakeup, and timeout into compatibility layer operations.

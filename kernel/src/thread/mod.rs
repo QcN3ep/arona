@@ -108,6 +108,8 @@ struct ThreadData {
     generation: u64,
     trapped: Option<u64>,
     interrupted: bool,
+    cpu_ns: u64,
+    dispatched_ns: Option<u64>,
 }
 
 struct ThreadResources {
@@ -134,6 +136,11 @@ struct ThreadCapacity;
 impl Thread {
     pub fn id(&self) -> u64 {
         self.0.id
+    }
+
+    pub fn cpu_time_ns(&self) -> Result<u64, ThreadError> {
+        let _interrupts = InterruptGuard::new();
+        Ok(self.0.data.lock().cpu_ns)
     }
 
     pub fn new(entry: ThreadEntry, argument: usize) -> Result<Self, ThreadError> {
@@ -195,6 +202,8 @@ impl Thread {
                 generation: 0,
                 trapped: None,
                 interrupted: false,
+                cpu_ns: 0,
+                dispatched_ns: None,
             }),
             _capacity: capacity,
         })?;

@@ -56,6 +56,7 @@ methods!(thread {
     SET_STATE = 25 => SET_STATE;
     INTERRUPT = 26 => INTERRUPT;
     ID = 27 => NONE;
+    CPU_TIME = 28 => NONE;
 });
 
 methods!(trap_port { RECEIVE = 16 => READ; });

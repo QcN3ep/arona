@@ -98,6 +98,9 @@ impl Handle<Thread> {
     pub fn state(&self) -> Result<(ThreadState, usize), Error> {
         self.borrow().state()
     }
+    pub fn cpu_time_ns(&self) -> Result<u64, Error> {
+        Ok(self.borrow().invoke(thread::CPU_TIME, [0; 5])?[0])
+    }
     pub fn terminate(&self, status: usize) -> Result<(), Error> {
         self.borrow()
             .invoke(thread::TERMINATE, [status as u64, 0, 0, 0, 0])

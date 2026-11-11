@@ -202,7 +202,7 @@ fn poll_running<'a>(
             finished
                 .process
                 .namespace
-                .exit(finished.process.pid, status);
+                .exit(finished.process.pid, status, finished.process.cpu_ns);
             drop(finished.process);
             if let Some(reply) = finished.reply {
                 let _ = reply.send(&mut Message::new(0, &[status.encode() as u64])?);

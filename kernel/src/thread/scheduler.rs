@@ -256,6 +256,7 @@ fn dispatch() -> Result<bool, ThreadError> {
             if previous == ThreadState::Ready {
                 data.state = ThreadState::Running;
             }
+            data.dispatched_ns = hardware::timer().now_ns().ok();
             (
                 data.resources.take().expect("missing thread resources"),
                 previous,
@@ -301,6 +302,11 @@ fn complete(thread: Thread, resources: ThreadResources) {
     scheduler.preemption_requested = false;
     scheduler.preemption_deadline = None;
     let mut data = thread.0.data.lock();
+    if let Some(start) = data.dispatched_ns.take()
+        && let Ok(now) = hardware::timer().now_ns()
+    {
+        data.cpu_ns = data.cpu_ns.saturating_add(now.saturating_sub(start));
+    }
     if let ThreadState::Dying(status) = data.state {
         reason = SuspendReason::Exit(status);
     }
