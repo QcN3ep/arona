@@ -64,6 +64,18 @@ fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) ->
                 },
             ));
         }
+        OpenFileDescription::Eventfd { .. } => {
+            return Outcome::Complete(buffer.write(
+                process,
+                fs::Metadata {
+                    device: 0x0103,
+                    inode: 0x10,
+                    mode: 0o600,
+                    links: 1,
+                    ..fs::Metadata::default()
+                },
+            ));
+        }
         OpenFileDescription::Pipe { end, .. } => {
             return Outcome::Complete(buffer.write(
                 process,

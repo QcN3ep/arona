@@ -157,6 +157,13 @@ fn readiness(description: &OpenFileDescription<'_>) -> u16 {
             INPUT | OUTPUT
         }
         OpenFileDescription::VirtualFile { .. } => INPUT,
+        OpenFileDescription::Eventfd { counter, .. } => {
+            (if counter.get() < u64::MAX - 1 {
+                OUTPUT
+            } else {
+                0
+            }) | if counter.get() > 0 { INPUT } else { 0 }
+        }
         OpenFileDescription::Terminal { terminal, .. } => {
             OUTPUT
                 | if terminal.readable() { INPUT } else { 0 }

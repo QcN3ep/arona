@@ -97,12 +97,30 @@ pub(in crate::syscall) fn read<'a>(
     {
         return virtual_read(process, fd_raw, buffer, offset, services);
     }
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| {
+            matches!(
+                descriptor.description.as_ref(),
+                OpenFileDescription::Eventfd { .. }
+            )
+        })
+    {
+        return if offset.is_some() {
+            Outcome::Complete(Err(ESPIPE))
+        } else {
+            super::eventfd::read(process, fd_raw, buffer)
+        };
+    }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         match descriptor.description.as_ref() {
             OpenFileDescription::Pipe { .. } => unreachable!(),
             OpenFileDescription::Terminal { .. } => unreachable!(),
-            OpenFileDescription::Virtual { .. } | OpenFileDescription::VirtualFile { .. } => {
+            OpenFileDescription::Eventfd { .. }
+            | OpenFileDescription::Virtual { .. }
+            | OpenFileDescription::VirtualFile { .. } => {
                 unreachable!()
             }
             OpenFileDescription::Directory { .. } => return Err(EISDIR),
@@ -220,6 +238,22 @@ pub(in crate::syscall) fn write<'a>(
     {
         return virtual_write(process, fd_raw, buffer);
     }
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| {
+            matches!(
+                descriptor.description.as_ref(),
+                OpenFileDescription::Eventfd { .. }
+            )
+        })
+    {
+        return if offset.is_some() {
+            Outcome::Complete(Err(ESPIPE))
+        } else {
+            super::eventfd::write(process, fd_raw, buffer)
+        };
+    }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         if descriptor.description.flags() & 3 == 0 {
@@ -236,7 +270,9 @@ pub(in crate::syscall) fn write<'a>(
         let description = Rc::clone(&descriptor.description);
         Ok(Some(match description.as_ref() {
             OpenFileDescription::Terminal { .. } => unreachable!(),
-            OpenFileDescription::Virtual { .. } | OpenFileDescription::VirtualFile { .. } => {
+            OpenFileDescription::Eventfd { .. }
+            | OpenFileDescription::Virtual { .. }
+            | OpenFileDescription::VirtualFile { .. } => {
                 unreachable!()
             }
             OpenFileDescription::Regular { .. } => Pending::Write(Write {
@@ -286,6 +322,7 @@ pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome
             OpenFileDescription::Directory { session, .. } => session.start_fsync(),
             OpenFileDescription::Terminal { .. }
             | OpenFileDescription::Pipe { .. }
+            | OpenFileDescription::Eventfd { .. }
             | OpenFileDescription::Virtual { .. }
             | OpenFileDescription::VirtualFile { .. } => {
                 return Err(EINVAL);
@@ -306,6 +343,18 @@ pub(in crate::syscall) fn seek<'a>(
     offset: usize,
     whence: usize,
 ) -> Outcome<'a> {
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| {
+            matches!(
+                descriptor.description.as_ref(),
+                OpenFileDescription::Eventfd { .. }
+            )
+        })
+    {
+        return Outcome::Complete(Ok(0));
+    }
     if super::virtual_file::is_virtual(process, fd_raw) {
         return Outcome::Complete(super::virtual_file::seek(process, fd_raw, offset, whence));
     }
@@ -331,7 +380,9 @@ pub(in crate::syscall) fn seek<'a>(
             OpenFileDescription::Terminal { .. } | OpenFileDescription::Pipe { .. } => {
                 return Err(ESPIPE);
             }
-            OpenFileDescription::Virtual { .. } | OpenFileDescription::VirtualFile { .. } => {
+            OpenFileDescription::Eventfd { .. }
+            | OpenFileDescription::Virtual { .. }
+            | OpenFileDescription::VirtualFile { .. } => {
                 unreachable!()
             }
             OpenFileDescription::Directory { .. } if whence as u32 == 2 => return Err(EINVAL),

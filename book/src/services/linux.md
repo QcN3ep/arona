@@ -53,6 +53,9 @@ Arguments, flags, and error conversions of recognized calls are checked by their
 The FileTable maps Linux fds to open file descriptions.
 A description holds a file service File, Directory, pipe end, or terminal, and duplicated fds share the corresponding open state.
 Each fd also stores descriptor attributes such as close-on-exec.
+An eventfd shares a counter across duplicated descriptors and inherited process descriptors.
+Reads wait for a nonzero counter, and writes wait for enough room in the counter.
+Nonblocking operations report `EAGAIN` when they would wait.
 Selected files under `/proc` and `/sys` expose read-only snapshots taken when the descriptor is opened.
 These include process status and arguments, mount information, the release version, and the online CPU list.
 Virtual character descriptions implement `/dev/null` and `/dev/zero`, while `/dev/random` and `/dev/urandom` read from the configured random number session.
@@ -63,7 +66,7 @@ Virtual character descriptions implement `/dev/null` and `/dev/zero`, while `/de
 | Byte I/O | `read`, `write`, `pread64`, `pwrite64`, `readv`, `writev`, `preadv`, `pwritev` |
 | File status | `fstat`, `newfstatat`, `statx`, `lseek`, `ftruncate`, `fsync`, `fdatasync` |
 | Directory and paths | `getdents64`, `chdir`, `fchdir`, `getcwd`, `mkdirat`, `unlinkat`, `readlinkat`, `symlinkat`, `linkat`, `renameat`, `renameat2` |
-| Waiting and pipes | `pipe2`, `ppoll`, `pselect6` |
+| Waiting and pipes | `pipe2`, `eventfd2`, `ppoll`, `pselect6` |
 
 Path operations convert the current directory or dirfd into a file service directory anchor.
 Permission modes, umask, and open flags are interpreted in the compatibility layer, while the actual file content and persistence are handled by the file service.

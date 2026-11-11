@@ -10,6 +10,61 @@
     li.d $t0, \value
     bne $a0, $t0, poll_failure
 .endm
+
+.macro event_io number, length=8
+    move $a0, $s0
+    addi.d $a1, $sp, 96
+    li.d $a2, \length
+    invoke \number
+.endm
+.macro event_poll events
+    st.w $s0, $sp, 16
+    li.d $t0, 5
+    st.h $t0, $sp, 20
+    st.d $zero, $sp, 64
+    st.d $zero, $sp, 72
+    addi.d $a0, $sp, 16
+    li.d $a1, 1
+    addi.d $a2, $sp, 64
+    li.d $a3, 0
+    li.d $a4, 8
+    invoke 73
+    expect 1
+    ld.hu $t0, $sp, 22
+    li.d $t1, \events
+    bne $t0, $t1, poll_failure
+.endm
+.macro event_fork target
+    li.d $a0, 17
+    li.d $a1, 0
+    li.d $a2, 0
+    li.d $a3, 0
+    li.d $a4, 0
+    invoke 220
+    bltz $a0, poll_failure
+    beqz $a0, \target
+    move $s1, $a0
+.endm
+.macro event_reap
+    move $a0, $s1
+    addi.d $a1, $sp, 80
+    li.d $a2, 0
+    li.d $a3, 0
+    invoke 260
+    bne $a0, $s1, poll_failure
+    ld.w $t0, $sp, 80
+    li.d $t1, 0x2a00
+    bne $t0, $t1, poll_failure
+.endm
+.macro event_delay
+    st.d $zero, $sp, 64
+    li.d $t0, 2000000
+    st.d $t0, $sp, 72
+    addi.d $a0, $sp, 64
+    li.d $a1, 0
+    invoke 101
+    expect 0
+.endm
 .global files_poll
 files_poll:
     addi.d $sp, $sp, -512
@@ -114,6 +169,134 @@ files_poll:
     move $a0, $s0
     invoke 57
     expect 0
+    li.d $a0, 2
+    li.d $a1, 0x80801
+    invoke 19
+    bltz $a0, poll_failure
+    move $s0, $a0
+    li.d $a1, 1
+    invoke 25
+    expect 1
+    move $a0, $s0
+    li.d $a1, 3
+    invoke 25
+    expect 0x802
+    event_io 63, 16
+    expect 8
+    ld.d $t0, $sp, 96
+    li.d $t1, 1
+    bne $t0, $t1, poll_failure
+    move $a0, $s0
+    li.d $a1, 0
+    li.d $a2, 8
+    invoke 63
+    expect -14
+    event_io 63
+    expect 8
+    ld.d $t0, $sp, 96
+    li.d $t1, 1
+    bne $t0, $t1, poll_failure
+    event_io 63
+    expect -11
+    move $a0, $s0
+    invoke 57
+    expect 0
+    li.d $a0, 0
+    li.d $a1, 0x800
+    invoke 19
+    bltz $a0, poll_failure
+    move $s0, $a0
+    li.d $t0, -1
+    st.d $t0, $sp, 96
+    event_io 64
+    expect -22
+    event_io 64, 7
+    expect -22
+    li.d $t0, -2
+    st.d $t0, $sp, 96
+    event_io 64, 16
+    expect 8
+    event_poll 1
+    li.d $t0, 1
+    st.d $t0, $sp, 96
+    event_io 64
+    expect -11
+    move $a0, $s0
+    li.d $a1, 99
+    li.d $a2, 0
+    invoke 62
+    expect 0
+    event_io 63
+    expect 8
+    ld.d $t0, $sp, 96
+    li.d $t1, -2
+    bne $t0, $t1, poll_failure
+    event_poll 4
+    li.d $t0, 7
+    st.d $t0, $sp, 96
+    event_io 64
+    expect 8
+    move $a0, $s0
+    invoke 23
+    bltz $a0, poll_failure
+    move $s1, $a0
+    event_io 63
+    expect 8
+    move $a0, $s1
+    addi.d $a1, $sp, 96
+    li.d $a2, 8
+    invoke 63
+    expect -11
+    move $a0, $s1
+    invoke 57
+    expect 0
+    move $a0, $s0
+    li.d $a1, 4
+    li.d $a2, 0
+    invoke 25
+    expect 0
+    li.d $t0, -2
+    st.d $t0, $sp, 96
+    event_io 64
+    expect 8
+    event_fork event_write_child
+    event_delay
+    event_io 63
+    expect 8
+    ld.d $t0, $sp, 96
+    li.d $t1, -2
+    bne $t0, $t1, poll_failure
+    event_reap
+    event_io 63
+    expect 8
+    ld.d $t0, $sp, 96
+    li.d $t1, 1
+    bne $t0, $t1, poll_failure
+    event_fork event_read_child
+    event_delay
+    li.d $t0, 7
+    st.d $t0, $sp, 96
+    event_io 64
+    expect 8
+    event_reap
+    move $a0, $s0
+    invoke 57
+    expect 0
+    li.d $a0, 42
+    invoke 94
+event_write_child:
+    li.d $t0, 1
+    st.d $t0, $sp, 96
+    event_io 64
+    expect 8
+    li.d $a0, 42
+    invoke 94
+event_read_child:
+    event_io 63
+    expect 8
+    ld.d $t0, $sp, 96
+    li.d $t1, 7
+    bne $t0, $t1, poll_failure
     li.d $a0, 42
     invoke 94
 poll_failure:

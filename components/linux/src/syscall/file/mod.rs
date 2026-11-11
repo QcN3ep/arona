@@ -6,6 +6,7 @@
 
 mod buffer;
 mod directory;
+mod eventfd;
 mod io;
 mod metadata;
 mod open;
@@ -38,6 +39,7 @@ pub(super) enum Pending<'a> {
     Poll(poll::Poll<'a>),
     Open(open::Open<'a>),
     Path(path::PathOperation<'a>),
+    Eventfd(eventfd::Pending<'a>),
     Read(io::Read<'a>),
     Write(io::Write<'a>),
     Seek(io::Seek<'a>),
@@ -87,6 +89,9 @@ pub(super) fn dispatch<'a>(
         ),
         abi::CLOSE => Outcome::Complete(close(process, arguments[0])),
         abi::FSTAT => fstat(process, arguments[0], arguments[1]),
+        abi::EVENTFD2 => {
+            Outcome::Complete(eventfd::create(process, arguments[0] as u32, arguments[1]))
+        }
         abi::GETDENTS64 => getdents(process, arguments[0], arguments[1], arguments[2]),
         abi::NEWFSTATAT => statat(
             process,
@@ -226,7 +231,7 @@ impl<'a> Pending<'a> {
     pub fn interrupt(&self, process: &Process<'_>) -> Option<(bool, SyscallResult)> {
         match self {
             Self::Terminal(read) => Some(read.interrupt(process)),
-            Self::Pipe(_) => Some((true, Err(abi::EINTR))),
+            Self::Pipe(_) | Self::Eventfd(_) => Some((true, Err(abi::EINTR))),
             Self::Poll(poll) => Some((false, poll.interrupt(process))),
             _ => None,
         }
@@ -245,7 +250,7 @@ impl<'a> Pending<'a> {
 
     pub fn call(&self) -> Option<&Handle<Call>> {
         match self {
-            Self::Terminal(_) => None,
+            Self::Terminal(_) | Self::Eventfd(_) => None,
             Self::TerminalChange(change) => Some(change.call()),
             Self::Pipe(_) | Self::Poll(_) => None,
             Self::Open(open) => Some(open.call()),
@@ -268,6 +273,7 @@ impl<'a> Pending<'a> {
     ) -> Option<SyscallResult> {
         match self {
             Self::Terminal(read) => read.poll(process),
+            Self::Eventfd(read) => read.poll(process),
             Self::TerminalChange(change) => change.poll(),
             Self::Pipe(pipe) => pipe.poll(process),
             Self::Poll(poll) => poll.poll(process),

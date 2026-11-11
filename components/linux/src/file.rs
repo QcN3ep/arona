@@ -49,6 +49,11 @@ pub(crate) enum OpenFileDescription<'a> {
         offset: Cell<usize>,
         busy: Cell<bool>,
     },
+    Eventfd {
+        counter: Cell<u64>,
+        semaphore: bool,
+        flags: Cell<u32>,
+    },
     Virtual {
         kind: Virtual,
         flags: Cell<u32>,
@@ -148,6 +153,16 @@ impl<'a> Descriptor<'a> {
             close_on_exec,
         }
     }
+    pub fn eventfd(initial: u32, flags: u32, close_on_exec: bool) -> Self {
+        Self {
+            description: Rc::new(OpenFileDescription::Eventfd {
+                counter: Cell::new(u64::from(initial)),
+                semaphore: flags & 1 != 0,
+                flags: Cell::new(2 | (flags & O_NONBLOCK)),
+            }),
+            close_on_exec,
+        }
+    }
     pub fn virtual_file(kind: Virtual, flags: u32, close_on_exec: bool) -> Self {
         Self {
             description: Rc::new(OpenFileDescription::Virtual {
@@ -196,6 +211,7 @@ impl<'a> OpenFileDescription<'a> {
             | Self::Terminal { flags, .. }
             | Self::Directory { flags, .. }
             | Self::Regular { flags, .. }
+            | Self::Eventfd { flags, .. }
             | Self::Virtual { flags, .. }
             | Self::VirtualFile { flags, .. } => flags.get(),
         }
@@ -206,6 +222,7 @@ impl<'a> OpenFileDescription<'a> {
         | Self::Terminal { flags, .. }
         | Self::Directory { flags, .. }
         | Self::Regular { flags, .. }
+        | Self::Eventfd { flags, .. }
         | Self::Virtual { flags, .. }
         | Self::VirtualFile { flags, .. }) = self;
         flags.set((flags.get() & !(O_APPEND | O_NONBLOCK)) | (value & (O_APPEND | O_NONBLOCK)));
