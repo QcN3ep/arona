@@ -139,10 +139,18 @@ impl Ring {
     }
 }
 
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
 impl Write for Text {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         let remaining = self.bytes.capacity() - self.bytes.len();
-        let length = text.floor_char_boundary(remaining.min(text.len()));
+        let length = floor_char_boundary(text, remaining.min(text.len()));
         self.bytes.push_str(&text[..length]);
         if length < text.len() {
             self.truncated = true;

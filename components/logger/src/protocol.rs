@@ -122,10 +122,20 @@ impl Submission {
     }
 }
 
+fn floor_char_boundary(text: &str, index: usize) -> usize {
+    let mut index = index.min(text.len());
+    while !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
 impl Write for Submission {
     fn write_str(&mut self, text: &str) -> fmt::Result {
-        let length =
-            text.floor_char_boundary((self.text.capacity() - self.text.len()).min(text.len()));
+        let length = floor_char_boundary(
+            text,
+            (self.text.capacity() - self.text.len()).min(text.len()),
+        );
         self.text.push_str(&text[..length]);
         if length < text.len() {
             self.truncated = true;

@@ -2,3 +2,7 @@
 
 [alias]
 xtask = "run --package xtask --"
+
+# The pinned toolchain's LoongArch std enables LSX, which QEMU's default CPU lacks.
+[target.loongarch64-unknown-none]
+rustflags = ["-C", "target-feature=-lsx,-lasx"]

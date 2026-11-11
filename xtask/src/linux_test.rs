@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use super::{BuildOptions, Target, append_entry, cargo_command, execute};
+use super::{BuildOptions, Target, append_entry, build_std, cargo_command, execute};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -52,8 +52,8 @@ pub(super) fn append(
     data.push(b'Z');
     append_entry(bytes, "etc/linux-data", 0o100644, &data)?;
     let mut command = cargo_command(root.to_path_buf());
+    build_std(&mut command);
     command.args([
-        "+nightly",
         "rustc",
         "--locked",
         "-p",
