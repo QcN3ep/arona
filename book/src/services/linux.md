@@ -97,8 +97,10 @@ It supports `kill`, `tkill`, `tgkill`, `rt_sigaction`, `rt_sigprocmask`, `rt_sig
 On delivery it constructs the signal frame for the current architecture, and on return it restores the user state.
 Blocking operations return `EINTR` or execute the restart path according to the delivery action.
 
-The identity interfaces provide PID, TID, process group, and session queries.
-UID, EUID, GID, and EGID queries return 0.
+The identity interfaces provide PID, TID, process group, session, and credential queries.
+A process starts with root credentials and passes its real, effective, and saved user and group IDs to its children.
+The `setuid`, `setgid`, `setreuid`, `setregid`, `setresuid`, and `setresgid` calls update these IDs according to the caller's privilege and saved identities.
+Supplementary group lists are currently empty, and `setgroups` accepts an empty list only for root.
 
 ## Terminals and Shell
 
