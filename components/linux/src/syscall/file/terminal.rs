@@ -8,9 +8,7 @@ use crate::{
     process::{Process, terminal::Access},
     syscall::{
         Outcome,
-        abi::{
-            EAGAIN, EBADF, EFAULT, EINVAL, EIO, ENOTTY, EOPNOTSUPP, ESPIPE, Errno, SyscallResult,
-        },
+        abi::{EAGAIN, EBADF, EFAULT, EINVAL, EIO, ENOTTY, ESPIPE, Errno, SyscallResult},
     },
 };
 use alloc::rc::Rc;
@@ -380,6 +378,10 @@ fn terminal_ioctl(
             terminal.set_termios(settings(process, address)?, false);
             Ok(0)
         }
+        0x5403 | 0x5404 => {
+            terminal.set_termios(settings(process, address)?, true);
+            Ok(0)
+        }
         0x5413 => write(process, address, &terminal.window()),
         0x5414 => {
             let mut value = [0; 8];
@@ -391,11 +393,11 @@ fn terminal_ioctl(
             Ok(0)
         }
         0x540b => match address {
-            0 => {
+            0 | 2 => {
                 terminal.set_termios(terminal.termios(), true);
                 Ok(0)
             }
-            1 | 2 => Err(EOPNOTSUPP),
+            1 => Ok(0),
             _ => Err(EINVAL),
         },
         // TODO: Integrate the remaining terminal control operations.
