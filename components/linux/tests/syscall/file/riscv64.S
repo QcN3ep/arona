@@ -492,6 +492,25 @@ files:
     li a2, 1
     invoke 29
     expect 0
+    li a0, -100
+    la a1, data_path
+    li a2, 0x40000
+    invoke 56
+    bltz a0, file_failure
+    invoke 57
+    expect 0
+    li a0, -100
+    la a1, data_path
+    li a2, 0x4000
+    invoke 56
+    bltz a0, file_failure
+    invoke 57
+    expect 0
+    li a0, -100
+    la a1, data_path
+    li a2, 0x200000
+    invoke 56
+    expect -95
     li t0, 8192
     add sp, sp, t0
     ld ra, 0(sp)

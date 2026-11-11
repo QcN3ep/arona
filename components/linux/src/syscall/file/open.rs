@@ -60,6 +60,8 @@ pub(in crate::syscall) fn openat<'a>(
             | O_DSYNC
             | 0x100000
             | 0x8000
+            | 0x40000
+            | 0x4000
             | O_DIRECTORY
             | O_NOFOLLOW
             | O_CLOEXEC;
