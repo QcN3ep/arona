@@ -64,7 +64,7 @@ fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) ->
                 },
             ));
         }
-        OpenFileDescription::Eventfd { .. } => {
+        OpenFileDescription::Eventfd { .. } | OpenFileDescription::Timerfd { .. } => {
             return Outcome::Complete(buffer.write(
                 process,
                 fs::Metadata {

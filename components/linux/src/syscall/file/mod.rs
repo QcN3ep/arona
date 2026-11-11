@@ -15,6 +15,7 @@ mod pipe;
 mod poll;
 mod statistics;
 mod terminal;
+mod timerfd;
 mod virtual_file;
 
 use super::{
@@ -41,6 +42,7 @@ pub(super) enum Pending<'a> {
     Open(open::Open<'a>),
     Path(path::PathOperation<'a>),
     Eventfd(eventfd::Pending<'a>),
+    Timerfd(timerfd::Read<'a>),
     Read(io::Read<'a>),
     Write(io::Write<'a>),
     Seek(io::Seek<'a>),
@@ -98,6 +100,19 @@ pub(super) fn dispatch<'a>(
             arguments[1],
             number == abi::FSTATFS,
         ),
+        abi::TIMERFD_CREATE => {
+            Outcome::Complete(timerfd::create(process, arguments[0], arguments[1]))
+        }
+        abi::TIMERFD_SETTIME => Outcome::Complete(timerfd::settime(
+            process,
+            arguments[0],
+            arguments[1],
+            arguments[2],
+            arguments[3],
+        )),
+        abi::TIMERFD_GETTIME => {
+            Outcome::Complete(timerfd::gettime(process, arguments[0], arguments[1]))
+        }
         abi::EVENTFD2 => {
             Outcome::Complete(eventfd::create(process, arguments[0] as u32, arguments[1]))
         }
@@ -242,7 +257,7 @@ impl<'a> Pending<'a> {
     pub fn interrupt(&self, process: &Process<'_>) -> Option<(bool, SyscallResult)> {
         match self {
             Self::Terminal(read) => Some(read.interrupt(process)),
-            Self::Pipe(_) | Self::Eventfd(_) => Some((true, Err(abi::EINTR))),
+            Self::Pipe(_) | Self::Eventfd(_) | Self::Timerfd(_) => Some((true, Err(abi::EINTR))),
             Self::Poll(poll) => Some((false, poll.interrupt(process))),
             _ => None,
         }
@@ -255,13 +270,14 @@ impl<'a> Pending<'a> {
         match self {
             Self::Poll(poll) => poll.waits(items),
             Self::Terminal(read) => read.waits(items),
+            Self::Timerfd(read) => read.waits(items),
             _ => {}
         }
     }
 
     pub fn call(&self) -> Option<&Handle<Call>> {
         match self {
-            Self::Terminal(_) | Self::Eventfd(_) => None,
+            Self::Terminal(_) | Self::Eventfd(_) | Self::Timerfd(_) => None,
             Self::TerminalChange(change) => Some(change.call()),
             Self::Pipe(_) | Self::Poll(_) => None,
             Self::Open(open) => Some(open.call()),
@@ -286,6 +302,7 @@ impl<'a> Pending<'a> {
         match self {
             Self::Terminal(read) => read.poll(process),
             Self::Eventfd(read) => read.poll(process),
+            Self::Timerfd(read) => read.poll(process),
             Self::TerminalChange(change) => change.poll(),
             Self::Pipe(pipe) => pipe.poll(process),
             Self::Poll(poll) => poll.poll(process),

@@ -298,12 +298,138 @@ event_read_child:
     ld t0, 96(sp)
     li t1, 7
     bne t0, t1, poll_failure
+    li a0, 1
+    li a1, 0x80800
+    invoke 85
+    bltz a0, poll_failure
+    mv s0, a0
+    event_io 63, 16
+    expect -11
+    sd zero, 192(sp)
+    sd zero, 200(sp)
+    sd zero, 208(sp)
+    li t0, 10000000
+    sd t0, 216(sp)
+    mv a0, s0
+    li a1, 0
+    addi a2, sp, 192
+    li a3, 0
+    invoke 86
+    expect 0
+    sw s0, 16(sp)
+    li t0, 1
+    sh t0, 20(sp)
+    addi a0, sp, 16
+    li a1, 1
+    li a2, 0
+    li a3, 0
+    li a4, 8
+    invoke 73
+    expect 1
+    mv a0, s0
+    li a1, 0
+    li a2, 8
+    invoke 63
+    expect -14
+    event_io 63, 16
+    expect 8
+    ld t0, 96(sp)
+    li t1, 1
+    bne t0, t1, poll_failure
+    event_io 63
+    expect -11
+    li t0, 1000000000
+    sd t0, 216(sp)
+    mv a0, s0
+    li a1, 0
+    addi a2, sp, 192
+    li a3, 0
+    invoke 86
+    expect -22
+    li t0, 2000000
+    sd t0, 200(sp)
+    sd t0, 216(sp)
+    mv a0, s0
+    li a1, 0
+    addi a2, sp, 192
+    li a3, 0
+    invoke 86
+    expect 0
+    event_delay
+    event_delay
+    event_io 63
+    expect 8
+    ld t0, 96(sp)
+    beqz t0, poll_failure
+    mv a0, s0
+    addi a1, sp, 224
+    invoke 87
+    expect 0
+    ld t0, 232(sp)
+    li t1, 2000000
+    bne t0, t1, poll_failure
+    ld t0, 248(sp)
+    beqz t0, poll_failure
+    bgtu t0, t1, poll_failure
+    sd zero, 192(sp)
+    sd zero, 200(sp)
+    sd zero, 208(sp)
+    sd zero, 216(sp)
+    mv a0, s0
+    li a1, 0
+    addi a2, sp, 192
+    li a3, 0
+    invoke 86
+    expect 0
+    mv a0, s0
+    invoke 57
+    expect 0
+    li a0, 1
+    li a1, 0
+    invoke 85
+    bltz a0, poll_failure
+    mv s0, a0
+    li t0, 1
+    sd t0, 208(sp)
+    mv a0, s0
+    li a1, 0
+    addi a2, sp, 192
+    li a3, 0
+    invoke 86
+    expect 0
+    event_fork timer_rearm
+    event_io 63
+    expect 8
+    event_reap
+    mv a0, s0
+    invoke 57
+    expect 0
     li a0, 42
     invoke 94
 poll_failure:
     addi a0, s11, 100
     invoke 94
     j poll_failure
+timer_rearm:
+    event_delay
+    sd zero, 208(sp)
+    mv a0, s0
+    li a1, 0
+    addi a2, sp, 192
+    li a3, 0
+    invoke 86
+    expect 0
+    event_delay
+    li t0, 2000000
+    sd t0, 216(sp)
+    mv a0, s0
+    li a1, 0
+    addi a2, sp, 192
+    li a3, 0
+    invoke 86
+    expect 0
+    li a0, 42
+    invoke 94
 .section .rodata
 poll_payload: .ascii "x"
 .section .note.GNU-stack,"",@progbits
