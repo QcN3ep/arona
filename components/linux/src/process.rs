@@ -72,6 +72,7 @@ pub(crate) struct Process<'a> {
     pub signals: Rc<RefCell<Signals>>,
     pub signal_return: Option<usize>,
     pub children: Vec<Process<'a>>,
+    pub cpu_ns: u64,
     pub port: Rc<Handle<TrapPort>>,
     pub supervisor: &'a Handle<Task>,
     pub address_space: AddressSpace,
@@ -130,6 +131,7 @@ impl<'a> Process<'a> {
             signals,
             signal_return: None,
             children: Vec::new(),
+            cpu_ns: 0,
             port: Rc::clone(port),
             supervisor: parent,
             address_space,
@@ -210,6 +212,9 @@ impl<'a> Process<'a> {
         let mut index = 0;
         while index < self.threads.len() {
             if self.threads[index].native.state()?.0 == ThreadState::Dead {
+                self.cpu_ns = self
+                    .cpu_ns
+                    .saturating_add(self.threads[index].native.cpu_time_ns().unwrap_or(0));
                 let status = self.threads[index].native.wait(0)?;
                 let clear_tid = self.threads[index].clear_tid;
                 if clear_tid != 0

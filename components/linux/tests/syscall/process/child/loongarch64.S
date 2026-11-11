@@ -12,7 +12,7 @@
 .endm
 .global fork_process
 fork_process:
-    addi.d $sp, $sp, -64
+    addi.d $sp, $sp, -256
     invoke 172
     move $s0, $a0
     move $a0, $sp
@@ -81,6 +81,40 @@ fork_process:
     li.d $a3, 0
     invoke 260
     expect -10
+    li.d $a0, 17
+    li.d $a1, 0
+    li.d $a2, 0
+    li.d $a3, 0
+    li.d $a4, 0
+    invoke 220
+    beqz $a0, busy_child
+    bltz $a0, child_failure
+    move $s1, $a0
+    move $a0, $s1
+    li.d $a1, 0
+    li.d $a2, 0
+    li.d $a3, 1
+    invoke 260
+    expect -14
+    move $a0, $s1
+    move $a1, $sp
+    li.d $a2, 0
+    addi.d $a3, $sp, 80
+    invoke 260
+    bne $a0, $s1, child_failure
+    ld.d $t0, $sp, 80
+    ld.d $t1, $sp, 88
+    or $t0, $t0, $t1
+    beqz $t0, child_failure
+    b busy_done
+busy_child:
+    li.d $t0, 200000
+1:
+    addi.d $t0, $t0, -1
+    bnez $t0, 1b
+    li.d $a0, 0
+    invoke 93
+busy_done:
     li.d $a0, 42
     invoke 94
 child:

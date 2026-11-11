@@ -6,13 +6,14 @@ use crate::{
     process::{Process, namespace::ChildChange},
     syscall::{
         Operation, Outcome,
-        abi::{self, ECHILD, EFAULT, EINVAL, EOPNOTSUPP, SyscallResult},
+        abi::{self, ECHILD, EFAULT, EINVAL, SyscallResult},
     },
 };
 
 pub(in crate::syscall) struct Pending {
     selector: Selector,
     output: usize,
+    usage: usize,
     options: u32,
     info: bool,
 }
@@ -63,13 +64,10 @@ pub(super) fn start<'a>(process: &Process<'a>, number: usize, args: [usize; 6]) 
         if options & !supported != 0 || info && options & (2 | 4 | 8) == 0 {
             return Err(EINVAL);
         }
-        if usage != 0 {
-            // TODO: Integrate process CPU time and resource usage statistics.
-            return Err(EOPNOTSUPP);
-        }
         Ok(Pending {
             selector,
             output,
+            usage,
             options,
             info,
         })
@@ -133,6 +131,12 @@ impl Pending {
     }
 
     fn finish(&self, process: &Process<'_>, pid: usize, event: Event) -> SyscallResult {
+        if self.usage != 0 && pid != 0 {
+            process
+                .address_space
+                .write(self.usage, &rusage(process, pid))
+                .map_err(|_| EFAULT)?;
+        }
         if self.info {
             let mut bytes = [0; 128];
             if pid != 0 {
@@ -175,4 +179,17 @@ impl Pending {
             Ok(pid)
         }
     }
+}
+
+fn rusage(process: &Process<'_>, pid: usize) -> [u8; 144] {
+    let cpu_ns = process
+        .namespace
+        .processes
+        .borrow()
+        .get(&pid)
+        .map_or(0, |record| record.cpu_ns);
+    let mut bytes = [0; 144];
+    bytes[..8].copy_from_slice(&((cpu_ns / 1_000_000_000) as i64).to_le_bytes());
+    bytes[8..16].copy_from_slice(&(((cpu_ns % 1_000_000_000) / 1000) as i64).to_le_bytes());
+    bytes
 }

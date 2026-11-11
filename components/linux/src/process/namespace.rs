@@ -29,6 +29,7 @@ pub(crate) struct ProcessRecord {
     executed: bool,
     pub status: Option<ExitStatus>,
     pub change: Option<ChildChange>,
+    pub cpu_ns: u64,
     pub signals: Rc<RefCell<Signals>>,
 }
 
@@ -83,6 +84,7 @@ impl PidNamespace {
                 executed: false,
                 status: None,
                 change: None,
+                cpu_ns: 0,
                 signals: Rc::clone(signals),
             },
         );
@@ -335,7 +337,7 @@ impl PidNamespace {
         let _ = signals.pending.push(info);
     }
 
-    pub fn exit(&self, pid: usize, status: ExitStatus) {
+    pub fn exit(&self, pid: usize, status: ExitStatus, cpu_ns: u64) {
         self.release_terminal(pid);
         let connected = self.connected_groups();
         let parent = self.parent(pid);
@@ -350,6 +352,7 @@ impl PidNamespace {
         if let Some(record) = processes.get_mut(&pid) {
             record.status = Some(status);
             record.change = None;
+            record.cpu_ns = cpu_ns;
         }
         if autoreap {
             processes.remove(&pid);
