@@ -68,7 +68,7 @@ pub fn boot_kernel(info: BootInfo<'_>) -> ! {
         .expect("boot information is missing initramfs");
     let devices = crate::device::DeviceSet::initialize(info.hardware)
         .unwrap_or_else(|error| panic!("failed to initialize device resources: {error:?}"));
-    program::start(init, initramfs, devices)
+    program::start(init, initramfs, devices, info.kernel_image.physical)
         .unwrap_or_else(|error| panic!("failed to start init: {error}"));
     console::detach().unwrap_or_else(|error| panic!("failed to detach early console: {error}"));
     log::debug!("Early console detached");

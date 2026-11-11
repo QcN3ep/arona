@@ -87,10 +87,11 @@ pub(super) fn start(
     program: &dyn BootProgram,
     archive: BootData,
     devices: DeviceSet,
+    kernel_image: PhysRange,
 ) -> Result<(), &'static str> {
     let _interrupts = InterruptGuard::new();
     let task = Task::new_root().map_err(|_| "failed to create initial task")?;
-    if let Err(error) = prepare(&task, program, archive, devices) {
+    if let Err(error) = prepare(&task, program, archive, devices, kernel_image) {
         task.terminate(1);
         return Err(error);
     }
@@ -102,6 +103,7 @@ fn prepare(
     program: &dyn BootProgram,
     archive: BootData,
     devices: DeviceSet,
+    kernel_image: PhysRange,
 ) -> Result<(), &'static str> {
     let mut index = 0;
     while let Some(segment) = program.segment(index)? {
@@ -127,7 +129,7 @@ fn prepare(
         .map_err(|_| "failed to map program segment")?;
         index += 1;
     }
-    let bootstrap = bootstrap(task, archive, devices)?;
+    let bootstrap = bootstrap(task, archive, devices, kernel_image)?;
     let task_handle = task
         .insert(
             Object::Task(task.clone()),
@@ -184,13 +186,28 @@ fn bootstrap(
     task: &Task,
     archive: BootData,
     devices: DeviceSet,
+    kernel_image: PhysRange,
 ) -> Result<abi::Handle, &'static str> {
-    // TODO: Reclaim the reserved page frames of the external archive after releasing the boot data reference.
     let length = archive.len()?;
     let frames = task
         .allocate_frames(length.div_ceil(PAGE_SIZE) as u64)
         .map_err(|_| "failed to allocate initial archive")?;
     copy(archive, &frames, 0)?;
+    let range = archive
+        .physical
+        .page_envelope()
+        .map_err(|_| "invalid boot archive range")?;
+    if range.overlaps(kernel_image) {
+        log::debug!("Embedded boot archive remains in the kernel image");
+    } else {
+        match memory::manager().reclaim_reserved(range, memory::FramePool::Kernel) {
+            Ok(()) => log::debug!(
+                "Reclaimed {} boot archive frames",
+                (range.end - range.start) / PAGE_SIZE as u64
+            ),
+            Err(error) => log::debug!("Boot archive frames remain reserved: {error:?}"),
+        }
+    }
     let frames = memory::manager()
         .allocate_arc(frames)
         .map_err(|_| "failed to retain initial archive")?;
