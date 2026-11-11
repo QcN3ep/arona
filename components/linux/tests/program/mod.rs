@@ -313,6 +313,10 @@ fn execution(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         ExitStatus { code: 0, signal: 4 }
     );
     assert_eq!(
+        start(b"exceptions").wait(until()).unwrap(),
+        ExitStatus { code: 0, signal: 5 }
+    );
+    assert_eq!(
         start(b"group").wait(until()).unwrap(),
         ExitStatus {
             code: 43,
