@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Linux filesystem syscalls and asynchronous completion.
+//! Linux filesystem calls and asynchronous completion.
 
-// TODO: Integrate /dev, /proc, /sys, and virtual devices such as null, zero, and random.
+// TODO: Integrate /proc and /sys virtual files.
 // TODO: Support statfs and file change notifications.
 
 mod buffer;
