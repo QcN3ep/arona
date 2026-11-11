@@ -97,6 +97,7 @@ pub(super) const MMAP: usize = 222;
 pub(super) const MADVISE: usize = 233;
 pub(super) const ENODEV: Errno = Errno(19);
 pub(super) const MPROTECT: usize = 226;
+pub(super) const MSYNC: usize = 227;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct Errno(isize);

@@ -317,6 +317,17 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// 校验同步范围已映射；文件共享映射尚未支持，匿名共享映射没有回写目标。
+    pub fn msync(&self, range: Range<usize>) -> Result<(), runtime::Error> {
+        let pages = self.pages.borrow();
+        for address in range.step_by(PAGE_SIZE) {
+            if !pages.contains_key(&address) {
+                return Err(runtime::Error::Kernel(runtime::KernelError::BadAddress));
+            }
+        }
+        Ok(())
+    }
+
     pub fn unmap(&self, range: Range<usize>) -> Result<(), runtime::Error> {
         let bounds = self.native.task().address_range()?;
         if range.end > bounds.end {

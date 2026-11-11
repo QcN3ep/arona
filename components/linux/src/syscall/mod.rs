@@ -131,6 +131,12 @@ pub(crate) fn dispatch<'a>(
                 arguments[1],
                 arguments[2],
             )),
+            abi::MSYNC => Outcome::Complete(memory::msync(
+                &process.address_space,
+                arguments[0],
+                arguments[1],
+                arguments[2],
+            )),
             _ => Outcome::Complete(Err(ENOSYS)),
         }
     };
