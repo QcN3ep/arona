@@ -22,6 +22,7 @@ pub(crate) struct PidNamespace {
 }
 
 pub(crate) struct ProcessRecord {
+    pub uid: u32,
     pub parent: usize,
     pub group: usize,
     pub(super) session: usize,
@@ -74,9 +75,15 @@ impl PidNamespace {
             .borrow()
             .get(&parent)
             .and_then(|record| record.terminal.clone());
+        let uid = self
+            .processes
+            .borrow()
+            .get(&parent)
+            .map_or(0, |record| record.uid);
         self.processes.borrow_mut().insert(
             pid,
             ProcessRecord {
+                uid,
                 parent,
                 group,
                 session,
@@ -220,6 +227,7 @@ impl PidNamespace {
                             number,
                             code: 128,
                             sender: 0,
+                            uid: 0,
                             address: 0,
                             value: 0,
                         },
@@ -309,6 +317,11 @@ impl PidNamespace {
             record.change = Some(change);
             record.parent
         };
+        let uid = self
+            .processes
+            .borrow()
+            .get(&pid)
+            .map_or(0, |record| record.uid);
         let (code, value) = match change {
             ChildChange::Stopped(signal) => (5, signal as u64),
             ChildChange::Continued => (6, signal::CONT as u64),
@@ -319,6 +332,7 @@ impl PidNamespace {
                 number: 17,
                 code,
                 sender: pid,
+                uid,
                 address: 0,
                 value,
             },
@@ -354,6 +368,7 @@ impl PidNamespace {
             record.change = None;
             record.cpu_ns = cpu_ns;
         }
+        let uid = processes.get(&pid).map_or(0, |record| record.uid);
         if autoreap {
             processes.remove(&pid);
         }
@@ -366,6 +381,7 @@ impl PidNamespace {
                 number: 17,
                 code: if status.signal == 0 { 1 } else { 2 },
                 sender: pid,
+                uid,
                 address: 0,
                 value: if status.signal == 0 {
                     status.code as u64

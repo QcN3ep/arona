@@ -77,7 +77,7 @@ impl IoVectors {
 
     pub fn gather(&self, process: &Process<'_>, limit: usize) -> Result<Vec<u8>, Errno> {
         let mut bytes = alloc::vec![0; self.length().min(limit)];
-        let count = self.copy(&mut bytes, |address, output| {
+        let count = self.copy(0, &mut bytes, |address, output| {
             process.address_space.read(address, output)
         })?;
         bytes.truncate(count);
@@ -85,19 +85,32 @@ impl IoVectors {
     }
 
     pub fn scatter(&self, process: &Process<'_>, bytes: &mut [u8]) -> SyscallResult {
-        self.copy(bytes, |address, input| {
+        self.copy(0, bytes, |address, input| {
+            process.address_space.write(address, input)
+        })
+    }
+
+    pub fn scatter_at(
+        &self,
+        process: &Process<'_>,
+        offset: usize,
+        bytes: &mut [u8],
+    ) -> SyscallResult {
+        self.copy(offset, bytes, |address, input| {
             process.address_space.write(address, input)
         })
     }
 
     fn copy(
         &self,
+        mut offset: usize,
         bytes: &mut [u8],
         mut copy: impl FnMut(usize, &mut [u8]) -> Result<(), runtime::Error>,
     ) -> SyscallResult {
         let mut copied = 0;
         for vector in &self.vectors {
-            let mut inside = 0;
+            let mut inside = offset.min(vector.length);
+            offset -= inside;
             while inside < vector.length && copied < bytes.len() {
                 let result = vector
                     .address

@@ -13,6 +13,7 @@ mod open;
 pub(in crate::syscall) mod path;
 mod pipe;
 mod poll;
+mod signalfd;
 mod statistics;
 mod terminal;
 mod timerfd;
@@ -43,6 +44,7 @@ pub(super) enum Pending<'a> {
     Path(path::PathOperation<'a>),
     Eventfd(eventfd::Pending<'a>),
     Timerfd(timerfd::Read<'a>),
+    Signalfd(signalfd::Read<'a>),
     Read(io::Read<'a>),
     Write(io::Write<'a>),
     Seek(io::Seek<'a>),
@@ -100,6 +102,13 @@ pub(super) fn dispatch<'a>(
             arguments[1],
             number == abi::FSTATFS,
         ),
+        abi::SIGNALFD4 => Outcome::Complete(signalfd::create(
+            process,
+            arguments[0],
+            arguments[1],
+            arguments[2],
+            arguments[3],
+        )),
         abi::TIMERFD_CREATE => {
             Outcome::Complete(timerfd::create(process, arguments[0], arguments[1]))
         }
@@ -257,7 +266,9 @@ impl<'a> Pending<'a> {
     pub fn interrupt(&self, process: &Process<'_>) -> Option<(bool, SyscallResult)> {
         match self {
             Self::Terminal(read) => Some(read.interrupt(process)),
-            Self::Pipe(_) | Self::Eventfd(_) | Self::Timerfd(_) => Some((true, Err(abi::EINTR))),
+            Self::Pipe(_) | Self::Eventfd(_) | Self::Timerfd(_) | Self::Signalfd(_) => {
+                Some((true, Err(abi::EINTR)))
+            }
             Self::Poll(poll) => Some((false, poll.interrupt(process))),
             _ => None,
         }
@@ -277,7 +288,7 @@ impl<'a> Pending<'a> {
 
     pub fn call(&self) -> Option<&Handle<Call>> {
         match self {
-            Self::Terminal(_) | Self::Eventfd(_) | Self::Timerfd(_) => None,
+            Self::Terminal(_) | Self::Eventfd(_) | Self::Timerfd(_) | Self::Signalfd(_) => None,
             Self::TerminalChange(change) => Some(change.call()),
             Self::Pipe(_) | Self::Poll(_) => None,
             Self::Open(open) => Some(open.call()),
@@ -297,15 +308,17 @@ impl<'a> Pending<'a> {
     pub fn poll(
         &mut self,
         process: &mut Process<'a>,
+        index: usize,
         files: &fs::Client<'a>,
     ) -> Option<SyscallResult> {
         match self {
             Self::Terminal(read) => read.poll(process),
             Self::Eventfd(read) => read.poll(process),
             Self::Timerfd(read) => read.poll(process),
+            Self::Signalfd(read) => read.poll(process, index),
             Self::TerminalChange(change) => change.poll(),
             Self::Pipe(pipe) => pipe.poll(process),
-            Self::Poll(poll) => poll.poll(process),
+            Self::Poll(poll) => poll.poll(process, index),
             Self::Open(open) => open.poll(process, files),
             Self::Path(path) => path.poll(process),
             Self::Read(read) => read.poll(process),

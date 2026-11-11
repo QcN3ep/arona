@@ -83,6 +83,9 @@ Resizing preserves queued bytes and rejects a capacity below the amount already 
 Monotonic timer descriptors report expiration counts through `read`.
 Their shared timer wakes blocked reads and readiness waits, including after another process rearms or disarms the descriptor.
 
+Signal descriptors expose matching pending signals from the reading thread and its process.
+Each read returns complete `signalfd_siginfo` records, and poll/select use the calling thread when checking readiness.
+
 ## Address Space
 
 The compatibility layer's AddressSpace records program mappings and their backing page frames and operates the native address space through the supervised Task.

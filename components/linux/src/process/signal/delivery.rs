@@ -281,6 +281,7 @@ fn fault_info(space: &crate::memory::AddressSpace, trap: &runtime::trap::TrapInf
         code,
         address,
         sender: 0,
+        uid: 0,
         value: 0,
     }
 }

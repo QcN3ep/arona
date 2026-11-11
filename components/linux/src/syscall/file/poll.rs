@@ -147,7 +147,7 @@ fn select_entries<'a>(
     ))
 }
 
-fn readiness(description: &OpenFileDescription<'_>) -> u16 {
+fn readiness(description: &OpenFileDescription<'_>, process: &Process<'_>, index: usize) -> u16 {
     match description {
         OpenFileDescription::Pipe { end, .. } => {
             let ready = end.readiness();
@@ -157,6 +157,13 @@ fn readiness(description: &OpenFileDescription<'_>) -> u16 {
             INPUT | OUTPUT
         }
         OpenFileDescription::VirtualFile { .. } => INPUT,
+        OpenFileDescription::Signalfd { mask, .. } => {
+            if super::signalfd::ready(process, index, mask.get()) {
+                INPUT
+            } else {
+                0
+            }
+        }
         OpenFileDescription::Timerfd { state, .. } => {
             if state
                 .next
@@ -201,14 +208,14 @@ impl Poll<'_> {
         }
     }
 
-    pub fn poll(&mut self, process: &Process<'_>) -> Option<SyscallResult> {
+    pub fn poll(&mut self, process: &Process<'_>, index: usize) -> Option<SyscallResult> {
         let mut ready = 0;
         for entry in &mut self.entries {
             entry.revents = if entry.negative {
                 0
             } else {
                 entry.description.as_ref().map_or(INVALID, |description| {
-                    readiness(description)
+                    readiness(description, process, index)
                         & (entry.events
                             | if matches!(self.output, Output::Poll { .. }) {
                                 ERROR | HANGUP

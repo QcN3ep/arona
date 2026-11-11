@@ -189,3 +189,5 @@ impl Machine {
 pub(super) const TIMERFD_CREATE: usize = 85;
 pub(super) const TIMERFD_SETTIME: usize = 86;
 pub(super) const TIMERFD_GETTIME: usize = 87;
+
+pub(super) const SIGNALFD4: usize = 74;
