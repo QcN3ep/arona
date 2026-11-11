@@ -1,0 +1,26 @@
+name: Book tools
+description: Install mdBook, its preprocessor, and the PDF renderers
+
+runs:
+  using: composite
+  steps:
+    - name: Install mdBook
+      shell: bash
+      run: |
+        cargo +stable install --locked --version 0.4.51 mdbook
+        cargo +stable install --locked --version 1.20.0 mdbook-admonish
+    - name: Install PDF renderer
+      shell: bash
+      run: cargo +stable install --locked --version 0.1.13 mdbook-pdf
+    - name: Install PDF outline renderer
+      shell: bash
+      run: |
+        python3 -m pip install --user --break-system-packages mdbook-pdf-outline==0.1.6
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+    - name: Ensure Chromium
+      shell: bash
+      run: |
+        command -v chromium >/dev/null 2>&1 || command -v google-chrome >/dev/null 2>&1 || {
+          sudo apt-get update
+          sudo apt-get install -y chromium
+        }
