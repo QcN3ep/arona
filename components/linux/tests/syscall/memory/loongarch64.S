@@ -177,6 +177,120 @@ file_mappings:
     li.d $a1, 8192
     invoke 215
     expect 0
+    li.d $a0, 0
+    li.d $a1, 4096
+    li.d $a2, 3
+    li.d $a3, 34
+    li.d $a4, -1
+    li.d $a5, 0
+    invoke 222
+    bltz $a0, mapping_failure
+    move $s2, $a0
+    li.d $t0, 85
+    st.b $t0, $s2, 0
+    move $a0, $s2
+    li.d $a1, 4096
+    li.d $a2, 3
+    li.d $a3, 50
+    li.d $a4, -1
+    li.d $a5, 0
+    invoke 222
+    bne $a0, $s2, mapping_failure
+    ld.bu $t0, $s2, 0
+    bnez $t0, mapping_failure
+    li.d $a0, 0
+    li.d $a1, 8192
+    li.d $a2, 3
+    li.d $a3, 34
+    li.d $a4, -1
+    li.d $a5, 0
+    invoke 222
+    bltz $a0, mapping_failure
+    move $s3, $a0
+    li.d $t0, 66
+    st.b $t0, $s3, 0
+    li.d $t0, 4096
+    add.d $t0, $s3, $t0
+    li.d $t1, 77
+    st.b $t1, $t0, 0
+    li.d $a0, 4096
+    add.d $a0, $s3, $a0
+    li.d $a1, 4096
+    li.d $a2, 3
+    li.d $a3, 50
+    li.d $a4, -1
+    li.d $a5, 0
+    invoke 222
+    li.d $t0, 4096
+    add.d $t0, $s3, $t0
+    bne $a0, $t0, mapping_failure
+    ld.bu $t0, $s3, 0
+    li.d $t1, 66
+    bne $t0, $t1, mapping_failure
+    li.d $t0, 4096
+    add.d $t0, $s3, $t0
+    ld.bu $t1, $t0, 0
+    bnez $t1, mapping_failure
+    li.d $a0, 16384
+    add.d $a0, $s3, $a0
+    li.d $a1, 4096
+    li.d $a2, 3
+    li.d $a3, 50
+    li.d $a4, -1
+    li.d $a5, 0
+    invoke 222
+    li.d $t0, 16384
+    add.d $t0, $s3, $t0
+    bne $a0, $t0, mapping_failure
+    ld.bu $t0, $a0, 0
+    bnez $t0, mapping_failure
+    move $a0, $s2
+    li.d $a1, 4096
+    li.d $a2, 3
+    li.d $a3, 0x100032
+    li.d $a4, -1
+    li.d $a5, 0
+    invoke 222
+    expect -22
+    addi.d $a0, $s2, 1
+    li.d $a1, 4096
+    li.d $a2, 3
+    li.d $a3, 50
+    li.d $a4, -1
+    li.d $a5, 0
+    invoke 222
+    expect -22
+    li.d $a0, -100
+    la.pcrel $a1, data_path
+    li.d $a2, 0
+    invoke 56
+    expect 0
+    move $s4, $a0
+    li.d $a0, 0
+    li.d $a1, 4096
+    li.d $a2, 1
+    li.d $a3, 2
+    move $a4, $s4
+    li.d $a5, 0
+    invoke 222
+    bltz $a0, mapping_failure
+    move $s5, $a0
+    ld.bu $t0, $s5, 0
+    li.d $t1, 48
+    bne $t0, $t1, mapping_failure
+    move $a0, $s5
+    li.d $a1, 4096
+    li.d $a2, 1
+    li.d $a3, 50
+    li.d $a4, -1
+    li.d $a5, 0
+    invoke 222
+    bne $a0, $s5, mapping_failure
+    ld.bu $t0, $s5, 0
+    bnez $t0, mapping_failure
+    move $a0, $s4
+    invoke 57
+    expect 0
     li.d $a0, 42
     invoke 94
 .global mapping_bus_fault

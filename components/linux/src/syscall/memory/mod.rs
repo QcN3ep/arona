@@ -40,16 +40,16 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
     }
     let permissions = permissions(protection)?;
     if flags & !(3 | MAP_ANONYMOUS | MAP_FIXED | MAP_FIXED_NOREPLACE) != 0
-        || flags & MAP_FIXED != 0 && flags & MAP_FIXED_NOREPLACE == 0
+        || flags & MAP_FIXED != 0 && flags & MAP_FIXED_NOREPLACE != 0
     {
-        // TODO: Support atomic replacement for MAP_FIXED.
-        return Err(EOPNOTSUPP);
+        return Err(EINVAL);
     }
     let length = length
         .checked_next_multiple_of(PAGE_SIZE)
         .filter(|length| *length <= isize::MAX as usize)
         .ok_or(ENOMEM)?;
     let exact = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
+    let replace = flags & MAP_FIXED != 0;
     if exact && !address.is_multiple_of(PAGE_SIZE) {
         return Err(EINVAL);
     }
@@ -64,9 +64,16 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
                 length,
                 permissions,
                 exact,
+                replace,
                 flags & 3 == 1,
             )
-            .map_err(|error| map_error(error, exact));
+            .map_err(|error| {
+                if replace {
+                    mapping_error(error)
+                } else {
+                    map_error(error, exact)
+                }
+            });
         return Ok(Pending::Complete(Some(result)));
     }
     if flags & 3 != MAP_PRIVATE {
@@ -99,6 +106,7 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
         offset,
         permissions,
         exact,
+        replace,
         size: 0,
         pages: Vec::new(),
     }))

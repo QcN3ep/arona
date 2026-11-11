@@ -59,9 +59,16 @@ mappings:
     result -17
     move $a0, $s0
     li.d $a1, 4096
+    li.d $a2, 3
     li.d $a3, 0x32
+    li.d $a4, -1
+    li.d $a5, 0
     memcall 222
-    result -95
+    bne $a0, $s0, memory_failure
+    ld.bu $t0, $s0, 0
+    bnez $t0, memory_failure
+    li.d $t0, 91
+    st.b $t0, $s0, 0
     move $a0, $s0
     li.d $a1, -1
     li.d $a3, 0x22

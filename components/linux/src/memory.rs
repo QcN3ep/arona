@@ -87,8 +87,17 @@ impl AddressSpace {
         length: usize,
         permissions: Permissions,
         exact: bool,
+        replace: bool,
         shared: bool,
     ) -> Result<usize, runtime::Error> {
+        if replace {
+            let address = address.ok_or(runtime::Error::Kernel(
+                runtime::KernelError::InvalidArgument,
+            ))?;
+            let pages = self.zeroed_pages(length, shared)?;
+            self.replace_pages(address, pages, permissions)?;
+            return Ok(address);
+        }
         let reservation = self.native.task().reserve(length, PAGE_SIZE, address);
         let mut reservation = match reservation {
             Err(runtime::Error::Kernel(
@@ -110,7 +119,15 @@ impl AddressSpace {
         pages: Vec<Page>,
         permissions: Permissions,
         exact: bool,
+        replace: bool,
     ) -> Result<usize, runtime::Error> {
+        if replace {
+            let address = address.ok_or(runtime::Error::Kernel(
+                runtime::KernelError::InvalidArgument,
+            ))?;
+            self.replace_pages(address, pages, permissions)?;
+            return Ok(address);
+        }
         let length = pages
             .len()
             .checked_mul(PAGE_SIZE)
@@ -128,6 +145,79 @@ impl AddressSpace {
         reservation.release()?;
         self.install(range.start, pages, permissions)?;
         Ok(range.start)
+    }
+
+    fn zeroed_pages(&self, length: usize, shared: bool) -> Result<Vec<Page>, runtime::Error> {
+        let mut pages = Vec::with_capacity(length / PAGE_SIZE);
+        for _ in (0..length).step_by(PAGE_SIZE) {
+            let frames = self
+                .native
+                .task()
+                .allocate(1, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
+            pages.push(Page {
+                frames: Rc::new(frames),
+                offset: 0,
+                backing: if shared {
+                    PageBacking::Shared
+                } else {
+                    PageBacking::Anonymous
+                },
+            });
+        }
+        Ok(pages)
+    }
+
+    fn replace_pages(
+        &self,
+        start: usize,
+        pages: Vec<Page>,
+        permissions: Permissions,
+    ) -> Result<(), runtime::Error> {
+        let length = pages
+            .len()
+            .checked_mul(PAGE_SIZE)
+            .ok_or(runtime::Error::Kernel(runtime::KernelError::NoMemory))?;
+        let range = start
+            ..start.checked_add(length).ok_or(runtime::Error::Kernel(
+                runtime::KernelError::InvalidArgument,
+            ))?;
+        let saved: Vec<(usize, Page, Permissions)> = {
+            let records = self.pages.borrow();
+            records
+                .range(range.clone())
+                .map(|(address, page)| {
+                    let permissions = self
+                        .native
+                        .task()
+                        .query(*address)
+                        .ok()
+                        .flatten()
+                        .and_then(|info| info.permissions)
+                        .unwrap_or(Permissions::ReadWrite);
+                    (*address, page.clone(), permissions)
+                })
+                .collect()
+        };
+        self.unmap(range)?;
+        if let Err(error) = self.install(start, pages, permissions) {
+            // 新映射安装失败时恢复被替换的旧页，避免调用方丢失原有映射。
+            for (address, page, permissions) in saved {
+                let effective = if matches!(page.backing, PageBacking::BeyondEof(_)) {
+                    Permissions::NoAccess
+                } else {
+                    permissions
+                };
+                if self
+                    .native
+                    .map(&page.frames, page.offset, 1, Some(address), effective)
+                    .is_ok()
+                {
+                    self.pages.borrow_mut().insert(address, page);
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub fn protect(
@@ -322,22 +412,7 @@ impl AddressSpace {
         permissions: Permissions,
         shared: bool,
     ) -> Result<(), runtime::Error> {
-        let mut prepared = Vec::new();
-        for _ in range.clone().step_by(PAGE_SIZE) {
-            let frames = self
-                .native
-                .task()
-                .allocate(1, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
-            prepared.push(Page {
-                frames: Rc::new(frames),
-                offset: 0,
-                backing: if shared {
-                    PageBacking::Shared
-                } else {
-                    PageBacking::Anonymous
-                },
-            });
-        }
+        let prepared = self.zeroed_pages(range.len(), shared)?;
         self.install(range.start, prepared, permissions)
     }
 

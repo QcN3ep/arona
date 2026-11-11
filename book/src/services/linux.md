@@ -67,7 +67,7 @@ For example, for an ordinary file read, the compatibility service submits the of
 
 The compatibility layer's AddressSpace records program mappings and their backing page frames and operates the native address space through the supervised Task.
 `brk` manages the heap range after the data segment.
-`mmap` establishes anonymous or file-private mappings and handles address hints, page alignment, and `MAP_FIXED_NOREPLACE`.
+`mmap` establishes anonymous or file-private mappings and handles address hints, page alignment, `MAP_FIXED` replacement, and `MAP_FIXED_NOREPLACE`.
 Anonymous shared mappings retain a shared backing relationship between the relevant processes.
 
 File-private mappings read content through the file service, allocate and fill the backing page frames, and then map them with the requested permissions.

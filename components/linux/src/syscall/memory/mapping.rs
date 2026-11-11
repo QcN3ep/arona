@@ -30,6 +30,7 @@ pub(in crate::syscall) struct FileMapping<'a> {
     pub(super) offset: usize,
     pub(super) permissions: Permissions,
     pub(super) exact: bool,
+    pub(super) replace: bool,
     pub(super) size: usize,
     pub(super) pages: Vec<Page>,
 }
@@ -113,8 +114,15 @@ impl FileMapping<'_> {
                     core::mem::take(&mut self.pages),
                     self.permissions,
                     self.exact,
+                    self.replace,
                 )
-                .map_err(|error| map_error(error, self.exact)),
+                .map_err(|error| {
+                    if self.replace {
+                        mapping_error(error)
+                    } else {
+                        map_error(error, self.exact)
+                    }
+                }),
         )
     }
 }
