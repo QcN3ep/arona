@@ -1,88 +1,88 @@
-# Trap 与中断
+# Trap and Interrupts
 
-程序执行系统调用、访问故障地址或收到中断时，处理器从当前代码转入 Trap 入口。
-入口先保存被打断的状态，架构代码将硬件原因转换为公共的 `Trap`，内核处理完事件后再决定怎样继续执行。
-这个过程也连接了内核与 Linux 兼容服务：受监督程序的调用经 TrapPort 交给服务处理，完成后恢复原线程。
+When a program executes a system call, accesses a faulting address, or receives an interrupt, the processor transfers from the current code to the Trap entry.
+The entry first saves the interrupted state, architecture code converts the hardware cause into a common `Trap`, and the kernel decides how to continue after handling the event.
+This process also connects the kernel with the Linux compatibility service: calls from a supervised program are handed to the service through a TrapPort, and the original thread is resumed when done.
 
-## 入口与状态保存
+## Entry and State Saving
 
-`hardware::TrapControl` 提供异常入口安装和特权栈更新能力。
-安装时指定栈范围和内核处理函数。
-调度用户线程时，执行路径为该线程准备对应的内核栈与上下文。
+`hardware::TrapControl` provides the ability to install exception entries and update the privileged stack.
+Installation specifies the stack range and the kernel handler function.
+When dispatching a user thread, the execution path prepares the corresponding kernel stack and context for that thread.
 
-RISC-V 和 LoongArch 分别保存通用寄存器、控制状态与标量浮点状态。
-退出时按保存的 frame 恢复浮点使能状态，并清理 LR/SC 预约状态。
-保存后的 frame 留在 Trap 处理路径中，公共内核通过统一事件和用户状态访问其中的信息。
+RISC-V and LoongArch each save general-purpose registers, control state, and scalar floating-point state.
+On exit, the floating-point enable state is restored from the saved frame, and the LR/SC reservation state is cleared.
+The saved frame remains in the Trap handling path, and the common kernel accesses the information in it through unified events and user state.
 
-## 公共事件与处理结果
+## Common Events and Handling Results
 
-`Trap` 包含 `origin`、`pc` 和 `event`。
-来源分为 Kernel 与 User，主要事件如下：
+`Trap` contains `origin`, `pc`, and `event`.
+The origin is either Kernel or User; the main events are as follows:
 
-| 事件 | 附带信息 |
+| Event | Attached information |
 |---|---|
-| `Syscall` | 对象句柄、六个参数字、调用之后的 PC |
-| `PageFault` | 故障地址和读、写、执行类型 |
-| `TimerInterrupt` | 定时中断 |
-| `ExternalInterrupt` | 外部设备中断 |
-| `SoftwareInterrupt`、`OtherInterrupt` | 其他中断分类 |
-| `IllegalInstruction` | 可取得时附带指令字 |
-| `OtherException` | 异常类别及可取得的故障地址 |
+| `Syscall` | Object handle, six argument words, PC after the call |
+| `PageFault` | Faulting address and read, write, or execute type |
+| `TimerInterrupt` | Timer interrupt |
+| `ExternalInterrupt` | External device interrupt |
+| `SoftwareInterrupt`, `OtherInterrupt` | Other interrupt categories |
+| `IllegalInstruction` | Instruction word, when available |
+| `OtherException` | Exception category and faulting address, when available |
 
-处理结果 `TrapOutcome` 有三种：
+There are three kinds of handling results, `TrapOutcome`:
 
-| 结果 | 架构入口的动作 |
+| Result | Action of the architecture entry |
 |---|---|
-| `Resume` | 恢复保存的执行状态 |
-| `Return` | 写入状态码与两个结果字，恢复到 syscall 的后继地址 |
-| `Stop` | 停止该处理路径 |
+| `Resume` | Restore the saved execution state |
+| `Return` | Write the status code and two result words, and resume at the address following the syscall |
+| `Stop` | Stop this handling path |
 
-`Return` 用于系统调用。
-异常的分类由架构层完成，调用语义与设备资源处理由公共内核完成。
+`Return` is used for system calls.
+Exception classification is done by the architecture layer, while call semantics and device resource handling are done by the common kernel.
 
-## 内核分派
+## Kernel Dispatch
 
-内核来源的定时中断进入调度器的时间处理路径。
-外部中断进入设备中断分派。
-其他内核异常记录来源、PC 和事件后返回 `Stop`。
+Kernel-origin timer interrupts enter the scheduler's time handling path.
+External interrupts enter device interrupt dispatch.
+Other kernel exceptions record the origin, PC, and event, then return `Stop`.
 
-用户来源的事件进入当前线程处理路径。
-原生系统调用交给对象方法分派器。
-定时与外部中断使用相同的公共中断处理机制。
-用户异常终止故障线程，其他线程继续由 Task 和调度器管理。
-恢复用户执行前，处理路径检查抢占请求和线程终止状态。
+User-origin events enter the current thread's handling path.
+Native system calls are handed to the object method dispatcher.
+Timer and external interrupts use the same common interrupt handling mechanism.
+A user exception terminates the faulting thread, while other threads continue to be managed by the Task and the scheduler.
+Before resuming user execution, the handling path checks for preemption requests and thread termination state.
 
-## 外部中断的认领与完成
+## Claiming and Completing External Interrupts
 
-`InterruptController` 根据 `HardwareInfo` 初始化路由，并在初始化时屏蔽输入。
-RISC-V 平台使用 PLIC，LoongArch 平台使用对应的外部中断控制器实现。
+`InterruptController` initializes routing according to `HardwareInfo` and masks inputs during initialization.
+RISC-V platforms use the PLIC, and LoongArch platforms use the corresponding external interrupt controller implementation.
 
-中断源由控制器设备标识和 line 共同标识。
-`claim` 返回 `InterruptClaim`，一次认领由其负责完成。
-正常处理调用 `complete`；认领对象直接析构时，会先屏蔽输入再完成认领。
-用户驱动将设备中断绑定到 Event 和位掩码。
-中断到达后，内核记录 pending 状态并通知事件。
-驱动处理设备状态后调用 ACK，设备资源层再开放对应输入。
+An interrupt source is identified by the controller device identity and line together.
+`claim` returns an `InterruptClaim`, and a claim is responsible for its own completion.
+Normal handling calls `complete`; when a claim object is dropped directly, the input is masked first and then the claim is completed.
+A user driver binds a device interrupt to an Event and bitmask.
+When the interrupt arrives, the kernel records the pending state and notifies the event.
+After the driver handles the device state, it calls ACK, and the device resource layer then unmasks the corresponding input.
 
-以 UART 为例，控制器报告中断后，内核通知驱动所等的 Event。
-devmgr 被唤醒，读取 UART 的中断原因和接收数据，再确认这一轮通知。
-处理器入口、中断控制器和设备驱动由这条路径依次衔接。
+Taking UART as an example, after the controller reports an interrupt, the kernel notifies the Event that the driver is waiting on.
+devmgr is woken, reads the UART's interrupt cause and received data, and then acknowledges this round of notification.
+The processor entry, interrupt controller, and device driver are connected in sequence by this path.
 
-## Trap 转发与 continuation
+## Trap Forwarding and continuation
 
-监督者创建 TrapPort，并把目标 Task 绑定到该端口。
-绑定后的系统调用、页故障、非法指令及其他异常形成 `TrapInfo`，原线程暂停。
-服务从端口接收事件和 `TrapContinuation`。
+A supervisor creates a TrapPort and binds a target Task to that port.
+After binding, system calls, page faults, illegal instructions, and other exceptions form a `TrapInfo`, and the original thread is suspended.
+The service receives the event and a `TrapContinuation` from the port.
 
-continuation 对应特定线程的一次暂停，带有 generation。
-处理者读取 `UserState`，修改寄存器、PC 或其他用户状态，再提交恢复。
-内核核对目标状态的地址和执行条件，唤醒对应线程。
-continuation 被放弃时，内核取消对应的暂停处理。
+A continuation corresponds to one suspension of a specific thread and carries a generation.
+The handler reads `UserState`, modifies registers, PC, or other user state, and then commits a resume.
+The kernel verifies the address and execution conditions of the target state and wakes the corresponding thread.
+When a continuation is abandoned, the kernel cancels the corresponding suspension handling.
 
-一次 Linux 系统调用可以跨越多轮服务事件循环。
-兼容服务收到 continuation 后，若正在等文件或设备结果，就把它和待完成操作一起保存；I/O 完成后写入返回值，再恢复线程。
-程序暂停期间，服务继续处理其他线程的事件。
+One Linux system call can span multiple rounds of the service event loop.
+After the compatibility service receives a continuation, if it is waiting for a file or device result, it saves the continuation together with the pending operation; when the I/O completes, it writes the return value and then resumes the thread.
+While the program is suspended, the service continues to handle events from other threads.
 
-线程的 `INTERRUPT` 操作也使用这一机制。
-已就绪的线程可以被暂停并发布通知；当前运行的用户线程在返回路径中处理已登记的中断请求。
-Linux 兼容服务用此通道接管受监督程序的 Linux 系统调用和信号相关执行。
+A thread's `INTERRUPT` operation also uses this mechanism.
+A ready thread can be suspended and a notification published; the currently running user thread handles registered interrupt requests in the return path.
+The Linux compatibility service uses this channel to take over the supervised program's Linux system calls and signal-related execution.

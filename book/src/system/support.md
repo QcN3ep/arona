@@ -1,60 +1,60 @@
-# 支持情况
+# Supported Features
 
-Arona 的两个运行平台使用同一套内核机制和用户态服务。
-架构代码处理启动交接、页表和中断等机器差异，程序通过相同的原生接口访问系统。
+Arona's two runtime platforms share the same set of kernel mechanisms and user-space services.
+Architecture code handles machine differences such as boot handoff, page tables, and interrupts, while programs access the system through the same native interface.
 
-## 运行平台
+## Runtime Platforms
 
-| 平台 | Rust 目标 | 固件交接 | 中断与时间 |
+| Platform | Rust target | Firmware handoff | Interrupts and time |
 |---|---|---|---|
-| QEMU RISC-V 64 `virt` | `riscv64gc-unknown-none-elf` | 默认 BIOS、hart 标识和 DTB | PLIC、time 计数器与 SBI TIME |
-| QEMU LoongArch 64 `virt` | `loongarch64-unknown-none` | `-kernel` 系统表、DTB 与 initrd 描述 | LoongArch 外部中断路由、稳定计数器与定时 CSR |
+| QEMU RISC-V 64 `virt` | `riscv64gc-unknown-none-elf` | Default BIOS, hart ID, and DTB | PLIC, time counter, and SBI TIME |
+| QEMU LoongArch 64 `virt` | `loongarch64-unknown-none` | `-kernel` system table, DTB, and initrd description | LoongArch external interrupt routing, stable counter, and timer CSRs |
 
-xtask 默认启动单处理器、256 MiB RAM 的模拟机器。
-两个平台均使用高半区内核地址、正式页表、用户地址空间和标量浮点上下文保存恢复。
+xtask starts an emulated machine with a single processor and 256 MiB of RAM by default.
+Both platforms use higher-half kernel addresses, final page tables, user address spaces, and scalar floating-point context save and restore.
 
-## 内核机制
+## Kernel Mechanisms
 
-| 类别 | 已有能力 |
+| Category | Available capabilities |
 |---|---|
-| 内存 | 页框分配、引用保活、地址保留、映射、权限变更、查询、direct map、内核堆与栈 |
-| 执行 | Task、用户与内核线程、FIFO 就绪队列、等待唤醒、退出回收、抢占请求和截止时间 |
-| Trap | 统一事件分类、外部中断认领、用户状态、TrapPort 与 continuation |
-| IPC | 消息、句柄转移、同步与异步调用、一次回复、Event、Timer、多对象等待 |
-| 能力 | 类型化对象、逐方法权限、句柄复制与缩减、跨 Task 安装 |
-| 设备 | 设备目录、资源组、用户 MMIO、中断事件、PCI 枚举、DMA 映射与启停 |
-| 日志 | `log` 门面、早期 Sink、环形记录、时间戳和游标读取 |
+| Memory | Page frame allocation, reference keep-alive, address reservation, mapping, permission changes, queries, direct map, kernel heap and stack |
+| Execution | Task, user and kernel threads, FIFO ready queue, wait and wakeup, exit reclamation, preemption requests, and deadlines |
+| Trap | Unified event classification, external interrupt claiming, user state, TrapPort, and continuations |
+| IPC | Messages, handle transfer, synchronous and asynchronous calls, one-shot replies, Event, Timer, and waiting on multiple objects |
+| Capabilities | Typed objects, per-method permissions, handle copy and reduction, cross-Task installation |
+| Devices | Device directory, resource groups, user MMIO, interrupt events, PCI enumeration, DMA mapping and start/stop |
+| Logging | `log` facade, early Sink, ring records, timestamps, and cursor reads |
 
-## 原生 Rust 程序
+## Native Rust Programs
 
-runtime 提供普通 `main` 入口、`core` 与 `alloc` 运行环境、全局用户堆、TLS、闭包线程和 JoinHandle。
-程序通过 runtime 调用内核对象，通过服务客户端访问设备、文件和日志。
+The runtime provides an ordinary `main` entry, `core` and `alloc` runtime environments, a global user heap, TLS, closure threads, and JoinHandle.
+Programs invoke kernel objects through the runtime and access devices, files, and logs through service clients.
 
-五个系统服务都是原生 ELF 程序，随构建打包到 newc 归档。
-归档支持内嵌内核 ELF 和独立 `-initrd` 加载。
-init 负责按 `/etc/init.toml` 启动应用和执行重启策略。
+The five system services are all native ELF programs, packaged into the newc archive during the build.
+The archive supports being embedded in the kernel ELF and standalone `-initrd` loading.
+init starts applications according to `/etc/init.toml` and enforces restart policies.
 
-## 设备与文件
+## Devices and Files
 
-| 类别 | 实现 |
+| Category | Implementation |
 |---|---|
-| 串口 | NS16550 系列 MMIO UART、配置、收发与中断会话 |
-| 块设备 | 现代 VirtIO MMIO 和 PCI block、读写、完成确认与 flush |
-| 随机数 | 现代 VirtIO PCI RNG |
-| RTC | Goldfish 与 Loongson LS7A 时间读取 |
-| 根文件树 | cpio newc 归档中的文件、目录与链接 |
-| 持久化文件 | 4 KiB 块 ext4、extent、目录修改、JBD2 事务与恢复 |
-| 日志文件 | logger 记录追加、历史恢复、尾部处理与 fsync |
+| UART | NS16550-family MMIO UART, configuration, transmit/receive, and interrupt sessions |
+| Block devices | Modern VirtIO MMIO and PCI block, reads and writes, completion confirmation, and flush |
+| Random numbers | Modern VirtIO PCI RNG |
+| RTC | Goldfish and Loongson LS7A time reads |
+| Root file tree | Files, directories, and links in the cpio newc archive |
+| Persistent files | 4 KiB block ext4, extents, directory modification, JBD2 transactions and recovery |
+| Log files | logger record append, history recovery, tail handling, and fsync |
 
-devmgr 从启动硬件描述和 PCI 枚举结果中匹配这些设备，取得资源授权后建立驱动实例。
-ext4 的磁盘布局和事务处理见[文件服务](../services/fs.md)。
+devmgr matches these devices from the boot hardware description and PCI enumeration results, and creates driver instances after obtaining resource authorization.
+For ext4's on-disk layout and transaction handling, see the [File Service](../services/fs.md).
 
-## Linux 程序环境
+## Linux Program Environment
 
-Linux 兼容服务接受当前机器的静态 ELF64 `ET_EXEC`。
-它提供文件、目录、管道、终端、进程与线程、信号、内存映射、时钟、随机数等调用路径。
-调用与输入形式的具体范围见[Linux 兼容服务](../services/linux.md)。
+The Linux compatibility service accepts static ELF64 `ET_EXEC` binaries for the current machine.
+It provides call paths for files, directories, pipes, terminals, processes and threads, signals, memory mapping, clocks, and random numbers.
+For the exact range of calls and input forms, see the [Linux Compatibility Service](../services/linux.md).
 
-交互式终端使用 UART 会话和兼容层行规程。
-Shell 及外部命令由外部根目录打包，init 配置选择执行路径与终端。
-仓库中的集成程序验证各机制，开发环境中的 BusyBox 可通过相同装载路径运行。
+Interactive terminals use UART sessions and the compatibility layer's line discipline.
+The shell and external commands are packaged from an external root directory, and the init configuration selects the execution path and terminal.
+Integration programs in the repository verify these mechanisms, and BusyBox in the development environment can run through the same load path.

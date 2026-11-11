@@ -1,67 +1,67 @@
-# 日志服务
+# Logging Service
 
-用户程序调用 `log!` 后，消息先进入通道，logger 接收后给它分配序号和时间戳，存入内存记录，再输出到 UART。
-init 交付日志文件时，同一条用户记录也追加到文件中。
-logger 还提供 KernelLog 的读取与输出接口，让管理端使用统一记录格式处理内核日志。
+After a user program calls `log!`, the message first enters the channel; after logger receives it, it assigns a sequence number and timestamp, stores it in an in-memory record, and then outputs it to the UART.
+When init delivers a log file, the same user record is also appended to the file.
+logger also provides read and output interfaces for the KernelLog, letting the management side process kernel logs with a unified record format.
 
-## 服务资源与记录来源
+## Service Resources and Record Sources
 
-启动消息交付 UART 输出会话、KernelLog、用户提交通道以及可选的文件会话。
-管理通道保留给 init，用户客户端通过提交通道写入日志和请求 flush。
+The startup message delivers the UART output session, KernelLog, user submission channel, and optional file session.
+The management channel is reserved for init, and user clients write logs and request flush through the submission channel.
 
-内核记录保留在内核 64 KiB 环形缓冲区，用户记录保留在 logger 自己的存储中。
-两类记录使用相同的记录编码，可通过日志服务读取和输出。
-各自的序号与游标属于其来源。
+Kernel records are kept in the kernel's 64 KiB ring buffer, and user records are kept in logger's own storage.
+The two kinds of records use the same record encoding and can be read and output through the logging service.
+Their sequence numbers and cursors belong to their sources.
 
-每条记录含序号、可选单调时间戳、级别、target、消息和截断标记。
-用户记录的时间戳由服务接收时读取。
-串口文本包含时间、级别、来源和 target；早期内核记录显示早期时间标识。
+Each record contains a sequence number, an optional monotonic timestamp, a level, a target, a message, and a truncation flag.
+The timestamp of a user record is read when the service receives it.
+Serial text contains the time, level, source, and target; early kernel records display an early-time marker.
 
-## 三种完成点
+## Three Completion Points
 
-| 接口 | 成功所表达的结果 |
+| Interface | Result expressed by success |
 |---|---|
-| `try_write`、`try_write_fmt` | 请求已进入通道队列 |
-| `write`、`write_fmt` | 日志已进入服务内存记录，返回其序号 |
-| `flush` | 完成先前日志的 UART 输出，并同步已启用的持久化文件 |
+| `try_write`, `try_write_fmt` | the request has entered the channel queue |
+| `write`, `write_fmt` | the log has entered the service's in-memory record, returning its sequence number |
+| `flush` | completes UART output of previous logs and syncs the enabled persistence file |
 
-这三个接口对应同一条记录经过的不同阶段。
-`log` 门面通过轮询发送尝试将消息加入队列，服务接收和处理发生在之后的调度中。
-`log!` 调用中的队列满、通信或编码错误计入 `logger::failures()`，调用者继续执行。
-显式 `write` 等待服务回复记录序号，flush 继续等待 UART 和持久化文件的同步结果。
-门面为 flush 请求设置 10 秒截止时间。
+These three interfaces correspond to different stages through which the same record passes.
+The `log` facade attempts to add the message to the queue through a polling send, and the service's reception and processing happen in a later scheduling.
+Queue-full, communication, or encoding errors in a `log!` call are counted in `logger::failures()`, and the caller continues execution.
+An explicit `write` waits for the service to reply with the record sequence number, and flush continues to wait for the UART and persistence file sync results.
+The facade sets a 10-second deadline for flush requests.
 
-## 内存保留与读取
+## In-Memory Retention and Reading
 
-服务使用 `VecDeque` 保存编码后的用户记录，保留容量为 1 MiB。
-新记录使总量超过容量时，按完整记录从最早处淘汰。
-序号持续递增，读取者维护自己的游标。
+The service uses a `VecDeque` to store encoded user records, with a retention capacity of 1 MiB.
+When a new record makes the total exceed the capacity, whole records are evicted from the earliest position.
+Sequence numbers keep increasing, and readers maintain their own cursors.
 
-Control 的 `read` 查找序号大于或等于游标的首条用户记录，`read_kernel` 从 KernelLog 读取内核记录。
-结果通过调用方提供的页框输出，解码后借用调用方切片。
-`print_kernel` 读取并输出一条内核记录，返回其序号，调用者据此推进游标。
+Control's `read` finds the first user record whose sequence number is greater than or equal to the cursor, and `read_kernel` reads kernel records from the KernelLog.
+The result is output through a page frame provided by the caller, and decoding borrows the caller's slice.
+`print_kernel` reads and outputs one kernel record and returns its sequence number, by which the caller advances the cursor.
 
-## 持久化文件
+## Persistence File
 
-init 将 `/var/log/system.log` 的 File 会话交给 logger。
-文件保存连续编码记录，服务维护当前写入偏移。
-用户提交被收入内存后，沿处理路径追加持久化数据和 UART 输出。
+init hands the File session of `/var/log/system.log` to logger.
+The file stores continuously encoded records, and the service maintains the current write offset.
+After a user submission is collected into memory, the persistence data and UART output are appended along the processing path.
 
-服务启动时顺序读取文件，检查记录长度、编码与递增序号。
-完整记录恢复到内存保留队列，最新序号用于后续写入。
-若一次写入在中途结束，文件尾部可能留下不完整记录。
-恢复过程停在最后一条有效记录处，截断并同步尾部，然后从恢复出的最新序号继续写入。
+At startup, the service reads the file sequentially and checks record lengths, encoding, and increasing sequence numbers.
+Complete records are restored to the in-memory retention queue, and the latest sequence number is used for subsequent writes.
+If a write ends midway, an incomplete record may remain at the end of the file.
+The recovery process stops at the last valid record, truncates and syncs the tail, and then continues writing from the recovered latest sequence number.
 
-文件写入循环处理短写，flush 调用文件服务的 fsync。
-持久化出错后状态记为 Failed，后续 flush 返回 `Unavailable`。
-UART 输出也独立记录可用状态，输出失败后停止向该会话继续写入。
-内存记录仍按提交处理路径维护。
+The file write loop handles short writes, and flush calls the file service's fsync.
+After a persistence error, the state is marked Failed, and subsequent flushes return `Unavailable`.
+UART output also records its availability state independently, and after an output failure it stops writing to that session.
+In-memory records are still maintained along the submission processing path.
 
-## 服务事件循环
+## Service Event Loop
 
-循环轮询管理通道和用户提交通道。
-有用户消息时处理记录；没有进展时，把两个通道的可读与关闭状态加入多对象等待。
-控制端关闭结束服务，用户提交端关闭则从等待列表移除该来源。
+The loop polls the management channel and the user submission channel.
+When there are user messages, it processes records; when there is no progress, it adds the readable and closed states of both channels to a multi-object wait.
+Closure of the control side ends the service, and closure of the user submission side removes that source from the wait list.
 
-协议解析核对请求 tag、数据字、句柄和输出容量。
-普通提交可以没有 Reply；显式写入、读取和 flush 使用请求回复报告结果。
+Protocol parsing checks the request tag, data words, handles, and output capacity.
+Ordinary submissions may have no Reply; explicit writes, reads, and flushes use request replies to report results.

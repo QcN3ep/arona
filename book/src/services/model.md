@@ -1,67 +1,67 @@
-# 服务协作模型
+# Service Collaboration Model
 
-logger 输出一条日志时，将文本写入 devmgr 交付的 UART 会话；启用持久化后，它还通过 fs 的文件会话追加记录。
-这些调用连接着三个独立的 Task，每个服务保存自己的状态，通过通道协作。
-init 负责建立这些连接，将启动资源分配给相应服务，并持有它们的控制通道和 Task 句柄。
+When logger outputs a log, it writes the text to the UART session delivered by devmgr; when persistence is enabled, it also appends the record through fs's file session.
+These calls connect three separate Tasks, each service keeps its own state, and they collaborate through channels.
+init is responsible for establishing these connections, allocating boot resources to the corresponding services, and holding their control channels and Task handles.
 
-## 启动与依赖
+## Startup and Dependencies
 
-| 服务 | 启动时取得的主要资源 | 向其他程序提供的能力 |
+| Service | Main resources obtained at startup | Capabilities provided to other programs |
 |---|---|---|
-| fs | 启动归档、管理通道 | 文件与目录会话、路径操作、挂载管理 |
-| devmgr | DeviceSet、管理通道 | 设备发现与 UART、块设备、RTC、随机数会话 |
-| logger | UART 输出会话、KernelLog、可选日志文件 | 用户日志提交、读取和刷出 |
-| linux | 文件客户端、可选 RTC 与随机数会话 | Linux 程序启动、系统调用与退出状态 |
+| fs | boot archive, management channel | file and directory sessions, path operations, mount management |
+| devmgr | DeviceSet, management channel | device discovery and UART, block device, RTC, random number sessions |
+| logger | UART output session, KernelLog, optional log file | user log submission, reading, and flushing |
+| linux | file client, optional RTC and random number sessions | Linux program startup, system calls, and exit status |
 
-依赖关系决定了启动顺序。
-init 最初从归档读取 fs，再把归档交给 fs 建立文件树。
-此后加载其他服务就使用文件接口。
-devmgr 启动后提供块设备和串口，fs 因而能够挂载磁盘，logger 也能取得输出会话和日志文件。
-最后，linux 带着文件、时间和随机数连接接收应用启动请求。
+The dependency relationships determine the startup order.
+init first reads fs from the archive, then gives the archive to fs to build the file tree.
+After that, loading other services uses the file interface.
+Once devmgr starts, it provides block devices and serial ports, so fs can mount disks and logger can obtain an output session and log file.
+Finally, linux receives application startup requests with file, time, and random number connections.
 
-## 管理通道与会话通道
+## Management Channels and Session Channels
 
-管理接口负责建立客户端、挂载文件系统、发现设备或启动程序。
-会话接口负责一次打开后持续进行的操作，例如读取文件或 UART 数据。
+The management interface is responsible for establishing clients, mounting file systems, discovering devices, or starting programs.
+The session interface is responsible for operations that continue after a single open, such as reading files or UART data.
 
-打开会话通常包含以下步骤：
+Opening a session usually involves the following steps:
 
-1. 客户端建立一对 Channel。
-2. 把服务端端点随打开请求转移给服务。
-3. 服务验证参数与权限，建立会话状态。
-4. 打开成功后，客户端通过保留的端点访问会话。
+1. The client establishes a pair of Channels.
+2. The server endpoint is transferred to the service along with the open request.
+3. The service validates the parameters and permissions and establishes session state.
+4. After a successful open, the client accesses the session through the retained endpoint.
 
-例如，一个打开的文件由专用通道关联服务端节点。
-客户端持有 File，服务端保存 FileSession；客户端关闭端点后，fs 回收该会话的节点引用和待处理状态。
+For example, an opened file is associated with a server node by a dedicated channel.
+The client holds a File, and the server stores a FileSession; after the client closes the endpoint, fs reclaims that session's node references and pending state.
 
-## 消息约定
+## Message Conventions
 
-服务协议使用消息 tag 表示操作或结果，用数据字传递长度、偏移、请求标识等字段。
-路径、文件内容和较大的缓冲区通过 FrameAllocation 交接。
-接收方检查消息形状、句柄数量、对象类型、权限及数据范围。
+Service protocols use message tags to indicate operations or results and use data words to convey fields such as lengths, offsets, and request identities.
+Paths, file contents, and larger buffers are handed over through FrameAllocation.
+The receiver checks the message shape, handle count, object types, permissions, and data ranges.
 
-约定与编码在服务 crate 内维护，例如 `fs/src/protocol.rs` 和 `logger/src/protocol.rs`。
-客户端类型封装这些字段，使调用者通过 Rust 方法表达请求。
-这些消息通过原生 ABI 的通道、页框和等待机制交接。
+Conventions and encodings are maintained within the service crates, such as `fs/src/protocol.rs` and `logger/src/protocol.rs`.
+Client types encapsulate these fields, letting callers express requests through Rust methods.
+These messages are handed over through the native ABI's channels, page frames, and wait mechanisms.
 
-## 阻塞与异步完成
+## Blocking and Asynchronous Completion
 
-CALL 将发起线程留在一次请求的等待中。
-服务同时处理多个来源时，使用 START_CALL 保存待完成对象，再与控制通道、设备事件和退出通知共同等待。
+CALL leaves the initiating thread waiting on a single request.
+When a service handles multiple sources at the same time, it uses START_CALL to save pending objects and then waits together with control channels, device events, and exit notifications.
 
-例如 Linux 服务在某个程序等待文件或终端输入时保存 continuation 和待完成操作，继续处理其他程序的 Trap。
-设备服务在 I/O 完成后回复原请求，init 则同时观察应用运行结果和服务退出。
+For example, when a program waits for file or terminal input, the Linux service saves the continuation and the pending operation and continues handling Traps from other programs.
+Device services reply to the original request after I/O completes, while init observes both application run results and service exits.
 
-一次请求的完成点由相应服务定义。
-例如日志发送成功表示消息已入队，显式写入返回序号表示记录已收入内存，flush 则继续完成串口与文件同步。
-这些完成点对应[日志服务](logger.md)中不同的客户端接口。
+The completion point of a request is defined by the corresponding service.
+For example, a successful log send means the message has been queued, an explicit write returning a sequence number means the record has been collected into memory, and flush continues to complete serial and file synchronization.
+These completion points correspond to the different client interfaces in [Logging Service](logger.md).
 
-## 生命周期
+## Lifetime
 
-init 的 Service 对象持有服务 Task，析构时终止对应服务。
-服务通过管理通道的关闭观察启动方是否仍在持有控制连接。
-devmgr 在自身退出路径中关闭工作线程控制端并等待工作线程回收。
-设备与文件会话各自持有所需的后备资源。
+init's Service object holds the service Task and terminates the corresponding service on destruction.
+A service observes whether the launcher still holds the control connection by the closure of the management channel.
+devmgr closes the worker thread control ends in its own exit path and waits for worker threads to be reclaimed.
+Device and file sessions each hold the backing resources they require.
 
-核心服务退出由 init 监督器观察并返回结束状态。
-配置应用的退出与重启由独立的应用策略管理，见[init](init.md)。
+Exit of a core service is observed by the init supervisor, which returns an ending state.
+Exit and restart of configured applications are managed by an independent application policy, see [init](init.md).

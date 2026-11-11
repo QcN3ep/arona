@@ -1,82 +1,82 @@
-# 设备管理服务
+# Device Management Service
 
-logger 和 Shell 都使用串口，但它们通过 UART 会话提交文本和读取数据，寄存器操作由 devmgr 的驱动完成。
-devmgr 从 DeviceSet 发现设备、选择驱动并建立工作线程，再向客户端交付各类设备会话。
-内核为这些驱动授予寄存器、中断和 DMA 资源。
+Both logger and Shell use the serial port, but they submit text and read data through UART sessions, while register operations are performed by devmgr's drivers.
+devmgr discovers devices from the DeviceSet, selects drivers, and creates worker threads, then delivers various device sessions to clients.
+The kernel grants these drivers register, interrupt, and DMA resources.
 
-## 匹配与实例
+## Matching and Instances
 
-`DeviceDescription` 将设备描述、身份和属性查询组合成驱动可使用的视图。
-驱动的 `probe` 从这些字段识别设备，匹配后生成实例配置。
-设备管理器保存设备实例标识、资源组、驱动配置与运行状态。
+`DeviceDescription` combines the device description, identity, and attribute queries into a view that drivers can use.
+A driver's `probe` identifies the device from these fields and generates an instance configuration after a match.
+The device manager stores the device instance identity, resource group, driver configuration, and runtime state.
 
-| 驱动 | 匹配与 transport | 提供的操作 |
+| Driver | Matching and transport | Operations provided |
 |---|---|---|
-| UART | Device Tree 的 `ns16550`、`ns16550a` | 配置、输入、输出、flush |
-| 块设备 | 现代 VirtIO MMIO 或 PCI block | 容量、读写、flush、请求取消与确认 |
-| 随机数 | 现代 VirtIO PCI RNG | 读取设备随机字节 |
-| RTC | Goldfish RTC、Loongson LS7A RTC | 读取 Unix 时间 |
+| UART | Device Tree `ns16550`, `ns16550a` | configuration, input, output, flush |
+| Block device | modern VirtIO MMIO or PCI block | capacity, read/write, flush, request cancellation and acknowledgment |
+| Random numbers | modern VirtIO PCI RNG | read device random bytes |
+| RTC | Goldfish RTC, Loongson LS7A RTC | read Unix time |
 
-管理器通过设备类型与游标返回已就绪实例。
-同组设备共享资源授权持有者，各实例拥有自己的控制通道、事件及工作线程。
-工作线程用户栈为 64 KiB。
+The manager returns ready instances by device type and cursor.
+Devices in the same group share the resource authorization holder, and each instance has its own control channel, event, and worker thread.
+The worker thread user stack is 64 KiB.
 
-## 打开会话
+## Opening Sessions
 
-客户端指定设备标识，并把新建的会话端点交给管理器。
-管理器找到实例，将请求转发给对应工作线程。
-驱动检查会话权限和设备状态，回复打开结果，随后处理会话通道上的请求。
+The client specifies a device identity and hands the newly created session endpoint to the manager.
+The manager finds the instance and forwards the request to the corresponding worker thread.
+The driver checks the session permission and device state, replies with the open result, and then handles requests on the session channel.
 
-客户端先按类型枚举得到设备标识，再请求打开相应实例。
-异步打开将结果保存在 Call 中，例如 init 在等待控制台会话时继续观察服务退出。
-每个会话在关闭时清理挂起请求和设备访问状态。
+The client first obtains a device identity by enumerating by type, then requests to open the corresponding instance.
+An asynchronous open stores the result in a Call; for example, init keeps observing service exits while waiting for a console session.
+Each session cleans up pending requests and device access state when it closes.
 
-## UART 寄存器与配置
+## UART Registers and Configuration
 
-UART 驱动根据 `reg-shift`、`reg-io-width`、`reg-offset` 与字节序属性计算寄存器位置。
-寄存器访问宽度为 1、2、4 字节，映射和访问范围由 MMIO 封装检查。
-时钟来源可以是 `clock-frequency` 或引用的 fixed-clock。
+The UART driver computes register locations from the `reg-shift`, `reg-io-width`, `reg-offset`, and byte order attributes.
+Register access widths are 1, 2, and 4 bytes, and the mapping and access range are checked by the MMIO wrapper.
+The clock source can be `clock-frequency` or a referenced fixed-clock.
 
-`Settings` 描述波特率、数据位、校验和停止位。
-驱动配置 UART FIFO、接收及发送状态，并绑定设备中断到 Event。
-接收检查行状态，向调用方返回读取结果及错误状态。
+`Settings` describes the baud rate, data bits, parity, and stop bits.
+The driver configures the UART FIFO, receive and transmit state, and binds the device interrupt to an Event.
+Reception checks the line status and returns the read result and error state to the caller.
 
-UART 的输出会话供 logger 等客户端写入，输入输出会话供交互式终端使用。
-客户端写入时，短文本编码进消息字，驱动取出数据后送入发送路径。
-接收中断到达时，驱动读取寄存器，把字符收入缓冲，再回复等待输入的会话。
-服务循环把会话消息、中断通知和待完成操作放在一起处理。
+The UART output session is used by clients such as logger for writing, and the input/output session is used by interactive terminals.
+When a client writes, short text is encoded into the message words; the driver extracts the data and feeds it into the transmit path.
+When a receive interrupt arrives, the driver reads the registers, collects characters into a buffer, and then replies to the session waiting for input.
+The service loop handles session messages, interrupt notifications, and pending operations together.
 
-单次消息的数据量由 `uart::MAX_BYTES` 给出，`write_all` 连续提交长文本。
+The data amount per message is given by `uart::MAX_BYTES`, and `write_all` submits long text continuously.
 
-`flush` 等待待发送数据完成。
-驱动处理寄存器中的中断原因后，再通过 InterruptBinding 确认内核中断通知。
-退出时解除绑定、关闭 UART 中断并回收 MMIO。
+`flush` waits for pending transmit data to complete.
+After handling the interrupt cause in the registers, the driver acknowledges the kernel interrupt notification through the InterruptBinding.
+On exit, it unbinds, disables UART interrupts, and reclaims the MMIO.
 
-## VirtIO 队列与 DMA
+## VirtIO Queues and DMA
 
-现代 VirtIO transport 负责复位、特征协商、队列配置、通知和设备状态检查。
-PCI transport 读取配置能力和 BAR，MMIO transport 使用固件发布的寄存器区域。
-驱动协商 `VIRTIO_F_VERSION_1` 及相应设备特征。
+The modern VirtIO transport handles reset, feature negotiation, queue configuration, notification, and device state checks.
+The PCI transport reads configuration capabilities and BARs, while the MMIO transport uses the register regions published by the firmware.
+The driver negotiates `VIRTIO_F_VERSION_1` and the corresponding device features.
 
-队列使用 split virtqueue。
-提交时，驱动用 descriptor 描述缓冲区，将描述符放入 available 环并通知设备；设备处理完成后写入 used 环，驱动从中收取结果。
-队列页框和数据缓冲经 runtime 的 DMA 接口建立总线地址，提交前后执行同步。
-驱动持有运行中的队列与缓冲，在设备停止和复位完成后解除 DMA 资源。
+Queues use a split virtqueue.
+On submission, the driver describes buffers with descriptors, places the descriptors in the available ring, and notifies the device; after the device finishes processing it writes to the used ring, and the driver collects the results from there.
+Queue page frames and data buffers obtain bus addresses through the runtime's DMA interface, with synchronization performed before and after submission.
+The driver holds the running queues and buffers and releases the DMA resources after the device has stopped and been reset.
 
-块设备一次传输最多 4096 字节，最多维护 16 个请求。
-客户端使用请求标识提交读写，查询或等待完成，再 ACK 以释放对应结果。
-取消接口根据请求是否已交给设备返回结果。
-设备支持 FLUSH 特征时，服务提供对应的持久化边界。
+The block device transfers at most 4096 bytes at a time and maintains at most 16 requests.
+The client submits reads and writes with a request identity, queries or waits for completion, and then ACKs to release the corresponding result.
+The cancel interface returns a result depending on whether the request has already been handed to the device.
+When the device supports the FLUSH feature, the service provides the corresponding persistence boundary.
 
-RNG 驱动提交可写 DMA 缓冲，设备完成后读取随机字节并返回客户端。
-RTC 驱动通过其寄存器读取秒与纳秒，LS7A 路径将日历寄存器转换为 Unix 时间。
+The RNG driver submits a writable DMA buffer; after the device completes, it reads the random bytes and returns them to the client.
+The RTC driver reads seconds and nanoseconds through its registers, and the LS7A path converts the calendar registers into Unix time.
 
-## 失败处理与清理
+## Failure Handling and Cleanup
 
-工作线程正常返回或出错后，管理器 join 线程并记录实例失败状态。
-再次打开该设备时，管理器尝试重新建立实例。
-正在初始化的实例返回 `Busy`，失败实例返回对应错误。
+After a worker thread returns normally or with an error, the manager joins the thread and records the instance's failure state.
+The next time the device is opened, the manager attempts to re-establish the instance.
+An instance that is initializing returns `Busy`, and a failed instance returns the corresponding error.
 
-管理器退出时关闭工作线程的控制通道，并等待线程回收。
-各驱动的退出路径停止 I/O，解除中断与 DMA，释放资源授权引用。
-设备本身的故障结果与通道结束分别反馈给请求方。
+On exit, the manager closes the worker threads' control channels and waits for the threads to be reclaimed.
+Each driver's exit path stops I/O, releases interrupts and DMA, and releases resource authorization references.
+Fault results from the device itself and channel termination are reported separately to the requester.

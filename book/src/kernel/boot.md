@@ -1,87 +1,87 @@
-# 内核启动流程
+# Kernel Boot Process
 
-启动时，内核首先面对的是固件留下的处理器状态、物理地址和硬件描述。
-架构入口建立执行环境，把这些数据整理成 `BootInfo`；`boot_kernel` 再据此初始化内核，最终让 init 的第一条用户线程运行起来。
+At boot, the kernel first faces the processor state, physical addresses, and hardware description left behind by the firmware.
+The architecture entry point establishes the execution environment and organizes this data into `BootInfo`; `boot_kernel` then initializes the kernel from it and ultimately gets init's first user thread running.
 
-## 架构入口与高半区
+## Architecture Entry Points and the Higher Half
 
-两种架构都经 `_start`、`_start_virtual` 进入 `_start_native`。
-前两个入口建立启动映射、栈和高半区执行环境；`_start_native` 使用 Rust 完成交接数据解析。
+Both architectures go through `_start` and `_start_virtual` to enter `_start_native`.
+The first two entry points establish the boot mappings, the stack, and the higher-half execution environment; `_start_native` parses the handoff data in Rust.
 
-| 平台 | 固件输入 | `_start_native` 中的处理 |
+| Platform | Firmware input | Handling in `_start_native` |
 |---|---|---|
-| RISC-V 64 QEMU `virt` | 启动 hart 标识和 DTB 地址 | 读取 DTB 与 chosen 中的 initramfs 范围 |
-| LoongArch 64 QEMU `virt` | QEMU 交接的系统表地址 | 查找配置表中的 DTB 与 initrd 描述，并读取处理器标识 |
+| RISC-V 64 QEMU `virt` | Boot hart ID and DTB address | Reads the DTB and the initramfs range from chosen |
+| LoongArch 64 QEMU `virt` | System table address handed over by QEMU | Looks up the DTB and initrd descriptions in the configuration table and reads the processor ID |
 
-RISC-V 启动代码通过临时页表进入高半区。
-LoongArch 启动代码使用 DMW 建立物理访问环境，再转入内核虚拟地址。
-正式的地址空间由公共内存初始化代码建立。
+RISC-V boot code enters the higher half through a temporary page table.
+LoongArch boot code uses DMW to establish a physical access environment, then switches to kernel virtual addresses.
+The final address space is established by the common memory initialization code.
 
-进入 Rust 启动逻辑后，架构层清理 BSS，初始化早期 UART 和日志门面。
-早期日志直接经 UART 输出，记录从这里开始进入内核缓冲区。
+After entering the Rust boot logic, the architecture layer clears BSS and initializes the early UART and the log facade.
+Early logs go directly to the UART, and from this point records also enter the kernel buffer.
 
-## DTB 与硬件描述
+## DTB and Hardware Description
 
-`Dtb` 提供固件 DTB 的只读视图，使用 `fdt` 库读取节点和属性。
-`Dtb::dump` 将 CPU、内存、设备、寄存器范围、中断拓扑、PCI host 和控制台等信息写入 `HardwareInfo`。
-解析使用固定容量的存储，发生错误时停止启动。
+`Dtb` provides a read-only view of the firmware DTB and uses the `fdt` library to read nodes and properties.
+`Dtb::dump` writes information such as CPUs, memory, devices, register ranges, interrupt topology, PCI hosts, and consoles into `HardwareInfo`.
+Parsing uses fixed-capacity storage and stops the boot on error.
 
-DTB 的节点标识与硬件信息中的设备实例标识用于建立父子关系、中断控制器引用和资源引用。
-内存描述按页处理可用范围与保留范围，固件数据占用的页整体保留。
+DTB node identifiers and device instance identifiers in the hardware information are used to establish parent-child relationships, interrupt controller references, and resource references.
+The memory description handles available and reserved ranges in units of pages, and pages occupied by firmware data are reserved in their entirety.
 
-架构层将 DTB 所在范围标为 `BootReserved`。
-LoongArch 还保留物理地址 `[0, 0x00100000)` 的交接区。
-`prepare_boot_info` 核对启动处理器并保留内核映像范围。
+The architecture layer marks the range containing the DTB as `BootReserved`.
+LoongArch also reserves the handoff area at physical addresses `[0, 0x00100000)`.
+`prepare_boot_info` verifies the boot processor and reserves the kernel image range.
 
-## 启动信息的组成
+## Composition of the Boot Information
 
-完成硬件解析后，架构层通过 `BootInfo` 交出初始化所用的数据：
+After hardware parsing completes, the architecture layer hands over the data used for initialization through `BootInfo`:
 
-| 字段 | 作用 |
+| Field | Purpose |
 |---|---|
-| `boot_cpu_id` | 标识执行初始化的处理器 |
-| `kernel_image` | 内核各段的物理与虚拟布局、启动栈范围 |
-| `early_console` | 早期控制台映射 |
-| `hardware` | 解析后的 `HardwareInfo` |
-| `init` | init 的 `BootProgram` 视图 |
-| `initramfs` | 启动归档的 `BootData` |
+| `boot_cpu_id` | Identifies the processor performing initialization |
+| `kernel_image` | Physical and virtual layout of the kernel sections and the boot stack range |
+| `early_console` | Early console mapping |
+| `hardware` | The parsed `HardwareInfo` |
+| `init` | The `BootProgram` view of init |
+| `initramfs` | The `BootData` of the boot archive |
 
-`BootProgram` 向公共启动代码提供程序段、入口和数据读取能力。
-ELF 格式解析留在架构启动代码中。
-init 来自 initramfs 中的 `bin/init`；内嵌归档与独立归档的选择见[系统映像](../system/images.md)。
+`BootProgram` provides the common boot code with program segments, the entry point, and data reading.
+ELF format parsing remains in the architecture boot code.
+init comes from `bin/init` in the initramfs; for choosing between an embedded and a standalone archive, see [System Images](../system/images.md).
 
-## 公共初始化顺序
+## Common Initialization Order
 
-`boot_kernel` 按以下顺序初始化：
+`boot_kernel` initializes in the following order:
 
-1. 建立物理页框管理、内核地址空间、内核映像和 RAM direct map。
-2. 在启动栈上安装 Trap 入口。
-3. 根据硬件拓扑初始化中断控制器及其 MMIO 映射。
-4. 初始化单调时钟和定时中断，向日志系统注册时间戳来源。
-5. 初始化调度器。
-6. 建立设备资源目录。
-7. 创建并启动 init 的 Task 和初始线程。
-8. 解除早期控制台，进入调度循环。
+1. Set up physical page frame management, the kernel address space, the kernel image, and the RAM direct map.
+2. Install the trap entry point on the boot stack.
+3. Initialize the interrupt controller and its MMIO mappings from the hardware topology.
+4. Initialize the monotonic clock and the timer interrupt, and register the timestamp source with the logging system.
+5. Initialize the scheduler.
+6. Establish the device resource directory.
+7. Create and start init's Task and initial thread.
+8. Release the early console and enter the scheduling loop.
 
-前几步逐渐替换启动环境中的临时设施。
-正式页表承载内核映像和 RAM 访问，Trap 入口承接随后开启的中断，定时器为线程等待和调度提供时间。
-内存、执行和设备资源目录就绪后，启动路径便能使用这些公共机制创建 init。
+The first steps progressively replace the temporary facilities of the boot environment.
+The final page tables cover the kernel image and RAM accesses, the trap entry point handles interrupts once they are enabled, and the timer provides time for thread waits and scheduling.
+Once memory, execution, and the device resource directory are ready, the boot path can use these common mechanisms to create init.
 
-## 首个程序如何运行
+## How the First Program Runs
 
-内核为 init 分配用户页框，按 ELF 段复制文件内容并清零段内剩余空间。
-映射采用程序段的权限，加载器检查入口所在的可执行段。
-内核还建立带保护页的用户栈，写入 `ProcessStart`，创建用户执行上下文并启动线程。
+The kernel allocates user page frames for init, copies the file contents according to the ELF segments, and zeroes the remainder of each segment.
+Mappings use the permissions of the program segments, and the loader checks the executable segment containing the entry point.
+The kernel also establishes a user stack with a guard page, writes `ProcessStart`, creates the user execution context, and starts the thread.
 
-`ProcessStart` 交接当前 Task 句柄和 bootstrap 通道。
-bootstrap 消息的 tag 为 0，数据字给出归档长度，句柄按顺序为：
+`ProcessStart` hands over the current Task handle and the bootstrap channel.
+The bootstrap message has tag 0, its data word gives the archive length, and its handles are, in order:
 
-| 位置 | 对象 | 用途 |
+| Position | Object | Purpose |
 |---|---|---|
-| 0 | `FrameAllocation` | 保存启动归档的页框 |
-| 1 | `DeviceSet` | 设备枚举与资源授予 |
-| 2 | `KernelLog` | 读取内核日志 |
+| 0 | `FrameAllocation` | Page frames holding the boot archive |
+| 1 | `DeviceSet` | Device enumeration and resource granting |
+| 2 | `KernelLog` | Reading kernel logs |
 
-归档被复制到页框分配中，init 通过收到的句柄读取它。
-到这一步，程序执行所用的段、栈和启动资源都有了内核管理的所有权。
-init 的 runtime 接收交接记录并调用 `main`，其后的服务启动进入用户态实现。
+The archive is copied into the frame allocation, and init reads it through the handle it receives.
+By this point, the segments, stack, and boot resources used for program execution all have kernel-managed ownership.
+init's runtime receives the handoff record and calls `main`; service startup from then on is implemented in user mode.

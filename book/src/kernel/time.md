@@ -1,62 +1,62 @@
-# 时间与定时器
+# Time and Timers
 
-线程休眠、等待 IPC 和设备超时都使用单调时间。
-Arona 将它们表示为纳秒和绝对截止时间，由调度器汇总为下一次硬件定时事件。
-一次等待由消息到达或时间到期中的先发生者完成。
+Thread sleep, IPC waits, and device timeouts all use monotonic time.
+Arona represents them as nanoseconds and absolute deadlines, aggregated by the scheduler into the next hardware timer event.
+A wait is completed by whichever comes first: message arrival or time expiry.
 
-## 单调时钟
+## Monotonic Clock
 
-`hardware::Timer` 在初始化时记录计数器基准，`now_ns` 返回从初始化起经过的纳秒数。
-结果保持单调，数值超出表达范围时饱和。
-接口还提供频率查询、绝对截止时间设置、取消和中断确认。
+`hardware::Timer` records a counter base at initialization, and `now_ns` returns the number of nanoseconds elapsed since initialization.
+The result remains monotonic and saturates when the value exceeds the representable range.
+The interface also provides frequency query, absolute deadline setting, cancellation, and interrupt acknowledgement.
 
-| 架构 | 计数与定时方式 |
+| Architecture | Counting and timing method |
 |---|---|
-| RISC-V 64 | 读取 time 计数器，使用 DTB 的 timebase 频率，通过 SBI TIME 编程定时事件 |
-| LoongArch 64 | 读取稳定计数器，根据 CPUCFG 信息求得频率，通过定时器 CSR 编程事件 |
+| RISC-V 64 | Reads the time counter, uses the DTB timebase frequency, and programs timer events through SBI TIME |
+| LoongArch 64 | Reads a stable counter, derives the frequency from CPUCFG information, and programs events through timer CSRs |
 
-公共 `Clock` 实现计数到纳秒的换算、截止时间向硬件 tick 的向上取整和溢出处理。
-计数器及其状态由架构时钟封装管理。
+The common `Clock` implementation handles counter-to-nanosecond conversion, rounding deadlines up to hardware ticks, and overflow handling.
+The counter and its state are managed by the architecture clock wrapper.
 
-`set_deadline` 替换当前绝对截止时间。
-已经到期的时间请求尽快触发；设置失败保留原设置。
-`acknowledge` 清除当前中断并保持停用，随后由调度器重新选择目标。
+`set_deadline` replaces the current absolute deadline.
+An already-expired time request triggers as soon as possible; a failed setting preserves the original setting.
+`acknowledge` clears the current interrupt and keeps it disabled, after which the scheduler selects the next target again.
 
-## 等待截止时间
+## Wait Deadlines
 
-例如，一个程序等待通道响应，截止时间设为当前时间加 100 毫秒。
-响应先到时，线程取得结果并移除定时等待；时间先到时，调度器提交 `TimedOut`。
-内部 `DeadlineQueue` 使用最小堆保存线程等待，并记录每个等待项的位置，支持提前移除。
-通知和超时竞争同一个等待 generation，只有一次结果能提交。
+For example, a program waits for a channel response with a deadline set to the current time plus 100 milliseconds.
+If the response arrives first, the thread obtains the result and removes the timed wait; if the time expires first, the scheduler commits `TimedOut`.
+The internal `DeadlineQueue` uses a min-heap to store thread waits and records the position of each wait item, supporting early removal.
+Notification and timeout race on the same wait generation, and only one result can commit.
 
-定时中断到达后，调度器依次完成：
+After a timer interrupt arrives, the scheduler performs the following in order:
 
-1. 确认硬件中断并读取当前时间。
-2. 触发到期的 IPC Timer。
-3. 从等待队列取出已到期线程，提交 `TimedOut` 并唤醒。
-4. 检查抢占截止时间。
-5. 为下一次事件重新设置硬件定时器。
+1. Acknowledge the hardware interrupt and read the current time.
+2. Trigger expired IPC Timers.
+3. Remove expired threads from the wait queue, commit `TimedOut`, and wake them.
+4. Check preemption deadlines.
+5. Re-arm the hardware timer for the next event.
 
-调度器比较线程等待、IPC Timer 和抢占请求的最早时间。
-没有待处理的时间事件时取消硬件定时中断。
+The scheduler compares the earliest time among thread waits, IPC Timers, and preemption requests.
+When there is no pending time event, it cancels the hardware timer interrupt.
 
 ## IPC Timer
 
-Timer 关联一个 Event 和非零位掩码。
-`ARM` 设置一次绝对截止时间，到期后把对应位合并到 Event 中。
-`CANCEL` 撤销已经设置的定时事件。
-重新 ARM 替换原截止时间。
+A Timer is associated with an Event and a non-zero bitmask.
+`ARM` sets a one-shot absolute deadline, and when it expires, merges the corresponding bit into the Event.
+`CANCEL` revokes an already-set timer event.
+Re-arming replaces the original deadline.
 
-Timer 持有事件引用。
-事件关闭时，相关 Timer 的待触发项被取消。
-程序可以把 Timer 通知的 Event、通道和线程退出放入同一次多对象等待，统一处理时间和 I/O 事件。
+A Timer holds a reference to the event.
+When the event is closed, the pending trigger items of related Timers are cancelled.
+A program can place the Event notified by a Timer, channels, and thread exits into the same multi-object wait, handling time and I/O events together.
 
-## 程序可见的时间
+## Program-Visible Time
 
-原生程序通过当前 Thread 的 `NOW` 获取单调纳秒时间，通过 `SLEEP` 等待截止时间。
-runtime 将这些操作封装为线程接口。
-IPC 的 `WaitMode::Until` 也使用同一绝对时间域。
+Native programs obtain monotonic nanosecond time through the current Thread's `NOW`, and wait until a deadline through `SLEEP`.
+The runtime wraps these operations as thread interfaces.
+IPC's `WaitMode::Until` also uses the same absolute time domain.
 
-墙上时间由设备管理服务的 RTC 接口提供。
-RTC 给出 Unix 时间，用于日历时间查询；等待截止时间使用从内核定时器初始化起计算的单调时间。
-内核日志在定时器初始化后记录单调时间戳；此前的记录保留无时间戳状态。
+Wall clock time is provided by the RTC interface of the device management service.
+The RTC gives Unix time for calendar time queries; wait deadlines use monotonic time counted from kernel timer initialization.
+The kernel log records monotonic timestamps after timer initialization; earlier records remain untimestamped.

@@ -1,79 +1,79 @@
-# IPC 与等待
+# IPC and Waiting
 
-文件读取、日志提交和设备打开都经 IPC 到达系统服务。
-一次请求在通道中携带操作 tag、短数据和对象句柄；文件内容等较大数据放在页框中，通过消息交接其访问能力。
-内核负责消息与资源的交付，服务解释各字段并执行操作。
+File reads, log submissions, and device opens all reach system services through IPC.
+A request carries an operation tag, short data, and object handles in the channel; larger data such as file contents lives in page frames, and the message hands over the ability to access it.
+The kernel delivers messages and resources, and services interpret the fields and perform the operations.
 
-## 消息与通道
+## Messages and Channels
 
-一个 Channel 对象代表双向通道的一个端点。
-消息发送到对端的接收队列，按队列顺序接收。
-通道关闭会改变对端可观察的状态，并唤醒有关等待者。
+A Channel object represents one endpoint of a bidirectional channel.
+Messages are sent to the peer's receive queue and received in queue order.
+Closing a channel changes the state observable by the peer and wakes the relevant waiters.
 
-原生消息包含 tag、最多 8 个 `u64` 数据字，以及最多 8 个句柄描述。
-描述包含句柄、对象类型和转移权限。
-ABI 用显式的小端编码写入固定大小的记录，服务自行约定 tag 和数据字含义。
+A native message contains a tag, at most 8 `u64` data words, and at most 8 handle descriptors.
+A descriptor contains a handle, an object type, and transfer permissions.
+The ABI writes fixed-size records with an explicit little-endian encoding, and services define the meaning of tags and data words themselves.
 
-`SEND` 将消息加入队列。
-`RECEIVE` 取得消息并把转移对象安装到接收方句柄表。
-轮询时无法完成的操作返回 `WouldBlock`；等待可以使用绝对截止时间。
+`SEND` adds a message to the queue.
+`RECEIVE` takes a message and installs the transferred objects into the receiver's handle table.
+In polling mode, an operation that cannot complete returns `WouldBlock`; waits can use an absolute deadline.
 
-## 请求、回复与提交
+## Requests, Replies, and Commit
 
-同步 `CALL` 向服务提交请求，并等待一次响应。
-内核为请求加入 Reply 对象，服务收到后通过这一对象响应对应调用。
-Reply 只能完成一次回复，使用或放弃后按调用状态关闭。
+A synchronous `CALL` submits a request to a service and waits for a single response.
+The kernel adds a Reply object to the request, and the service uses it to respond to the corresponding call once it receives the request.
+A Reply can complete one response only, and after it is used or abandoned it is closed according to the call state.
 
-调用分为请求提交和响应交付两个阶段。
-提交前失败时，转移句柄留在调用者手中；提交后，内核已接管请求和待转移资源，即使等待响应的线程随后超时。
-CALL 的第二个结果字报告提交状态，runtime 将其转换为 `CallError`。
+A call has two stages: request submission and response delivery.
+If it fails before commit, the transferred handles stay with the caller; after commit, the kernel has taken over the request and the resources to be transferred, even if the thread waiting for the response later times out.
+The second result word of CALL reports the commit status, and the runtime converts it into `CallError`.
 
-接收和响应交付使用预留句柄槽位及输出回调：
+Receiving and response delivery use reserved handle slots and output callbacks:
 
-1. 检查并保持用户输出内存可写。
-2. 取得待交付消息，预留接收句柄。
-3. 编码消息和目标句柄描述，写入输出区域。
-4. 提交消息消费和句柄发布。
+1. Check that the user output memory is writable and hold it.
+2. Obtain the message to be delivered and reserve the receiving handles.
+3. Encode the message and the target handle descriptors, and write them into the output area.
+4. Commit message consumption and handle publication.
 
-例如，消息携带一个页框句柄时，接收者取得的输出记录同时包含数据字和本地句柄值。
-内核先完成这份记录的写入，再发布句柄和消费消息；准备阶段出错时释放预留项。
+For example, when a message carries a page frame handle, the output record the receiver obtains contains both the data words and the local handle value.
+The kernel finishes writing this record before publishing handles and consuming the message; if the preparation stage fails, the reserved entries are released.
 
-## 异步调用
+## Asynchronous Calls
 
-`START_CALL` 提交请求并返回 Call 对象。
-服务把 Call 放入多对象等待，继续接收其他请求，待结果就绪后再取出响应。
-`CANCEL` 结束对结果的等待并更新调用状态。
+`START_CALL` submits a request and returns a Call object.
+The service puts the Call into a multi-object wait, continues receiving other requests, and takes the response once the result is ready.
+`CANCEL` ends the wait for the result and updates the call state.
 
-Call 管理结果等待和资源回收，已送到服务的操作沿服务自身的处理路径执行。
-例如，文件服务已执行的写入保留其效果，调用者取消的是对这次结果的等待。
-对端消失、回复者退出和调用者退出也进入相应的完成或关闭路径。
+A Call manages the wait for the result and resource reclamation; an operation already delivered to a service runs along the service's own processing path.
+For example, a write already performed by the file service keeps its effect; what the caller cancels is the wait for this result.
+Peer disappearance, replier exit, and caller exit also enter the corresponding completion or close path.
 
-## Event 与 Timer
+## Event and Timer
 
-Event 保存一个 pending 位集合。
-`SIGNAL(mask)` 将非零掩码合并进去，多次发送相同位会合并为同一个待处理位。
-等待成功时消费本次交付的位，其他 pending 位保留。
+An Event stores a set of pending bits.
+`SIGNAL(mask)` merges a non-zero mask into it, and sending the same bits multiple times coalesces into the same pending bits.
+A successful wait consumes the bits delivered by that wait, and other pending bits remain.
 
-Timer 关联 Event 和掩码，到达设置的单调截止时间时发出通知。
-程序因此可以将超时纳入与通道相同的等待循环。
-Event、Timer 与线程等待的时间关系见[时间与定时器](time.md)。
+A Timer associates an Event with a mask and signals when the configured monotonic deadline is reached.
+Programs can therefore include timeouts in the same wait loop as channels.
+For how Event, Timer, and thread waits relate in time, see [Time and Timers](time.md).
 
-## 多对象等待
+## Multi-Object Waits
 
-`WAIT_MANY` 接收一组句柄与条件，返回就绪项的输入下标及满足的位。
+`WAIT_MANY` takes a set of handles and conditions and returns the input index of a ready entry and the satisfied condition bits.
 
-| 来源 | 条件 |
+| Source | Condition |
 |---|---|
-| Channel | `READABLE`、`WRITABLE`、`PEER_CLOSED` |
-| Event | 调用者指定的 pending 位 |
-| Task、Thread | 退出 |
-| Call | 结果或结束状态可接收 |
+| Channel | `READABLE`, `WRITABLE`, `PEER_CLOSED` |
+| Event | Pending bits specified by the caller |
+| Task, Thread | Exit |
+| Call | A result or an end state is available |
 
-同一个底层来源在一次选择中只能出现一次。
-实现先解析对象引用，以稳定身份排序检查重复，再登记观察者。
-这一步的重复检查复杂度为 `O(n log n)`。
-长列表按批次设置调度检查点，单个对象的临界操作用 `InterruptGuard` 保护。
+The same underlying source may appear only once in a single selection.
+The implementation first resolves object references, checks for duplicates by sorting on stable identity, and then registers observers.
+The duplicate check in this step has `O(n log n)` complexity.
+Long lists set scheduling checkpoints in batches, and critical operations on a single object are protected by `InterruptGuard`.
 
-登记与唤醒通过等待 generation 和单一完成结果衔接。
-结果就绪、截止时间到期、对象关闭或当前线程结束时，等待登记都会沿清理路径移除。
-多个线程等待同一通道时，可以同时观察到可读状态；实际接收按队列状态竞争消息，未取得消息的轮询返回 `WouldBlock`。
+Registration and wakeup are connected through a wait generation and a single completion result.
+When the result is ready, the deadline expires, the object is closed, or the current thread exits, the wait registration is removed along the cleanup path.
+When several threads wait on the same channel, they can all observe the readable state; actual receives compete for messages according to queue state, and a poll that gets no message returns `WouldBlock`.

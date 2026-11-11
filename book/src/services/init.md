@@ -1,67 +1,67 @@
 # init
 
-内核把启动归档、设备目录和内核日志句柄交给 init 后，用户态系统的建立从这里开始。
-init 逐个加载基础服务，交付它们使用的资源，随后根据 `/etc/init.toml` 启动应用。
-进入稳定运行后，它等待应用和服务的状态变化，按配置决定应用是否重启。
+After the kernel hands the boot archive, device directory, and kernel log handle to init, the construction of the user-space system begins here.
+init loads the base services one by one, delivers the resources they use, and then starts applications according to `/etc/init.toml`.
+Once in stable operation, it waits for state changes of applications and services and decides whether to restart applications according to the configuration.
 
-## 接收启动资源
+## Receiving Boot Resources
 
-runtime 把当前 Task 与 bootstrap 通道保存到程序环境。
-init 从通道接收 tag 为 0 的消息，其中包含一个数据字和三个句柄。
-数据字给出归档长度，句柄依次为归档页框、DeviceSet 和 KernelLog。
+runtime stores the current Task and the bootstrap channel in the program environment.
+init receives a message tagged 0 from the channel, which contains one data word and three handles.
+The data word gives the archive length, and the handles are the archive page frame, DeviceSet, and KernelLog in order.
 
-init 核对消息后使用 `Archive::new` 为 newc 归档建立只读索引。
-它读取 `/bin/init` 的 ELF 头以确定当前机器类型，后续原生服务按这一类型校验。
-归档页框随后转交文件服务，init 通过文件客户端读取其余程序。
+After verifying the message, init uses `Archive::new` to build a read-only index for the newc archive.
+It reads the ELF header of `/bin/init` to determine the current machine type, and subsequent native services are validated against this type.
+The archive page frame is then handed to the file service, and init reads the remaining programs through the file client.
 
-## 服务启动顺序
+## Service Startup Order
 
-| 顺序 | 动作 |
+| Order | Action |
 |---|---|
-| 1 | 从归档加载 fs，交接归档并建立文件客户端 |
-| 2 | 从 fs 读取 devmgr，交接 DeviceSet，等待驱动初始化完成 |
-| 3 | 查询首个块设备，存在时将其完整范围作为 ext4 挂载到 `/var` |
-| 4 | 打开 UART 输出会话，启动 logger，交接 KernelLog 与可选持久化文件 |
-| 5 | 建立本地日志门面，启动 linux 并交接文件、RTC 与随机数会话 |
-| 6 | 记录 `System services ready`，读取配置，进入监督循环 |
+| 1 | Load fs from the archive, hand over the archive, and establish the file client |
+| 2 | Read devmgr from fs, hand over the DeviceSet, and wait for driver initialization to complete |
+| 3 | Query the first block device and, if present, mount its full range as ext4 at `/var` |
+| 4 | Open the UART output session, start logger, and hand over the KernelLog and the optional persistence file |
+| 5 | Establish the local log facade, start linux, and hand over the file, RTC, and random number sessions |
+| 6 | Record `System services ready`, read the configuration, and enter the supervision loop |
 
-fs 最先启动，是因为它直接从归档建立文件访问能力；devmgr 随后提供设备会话，让持久化存储和串口输出加入系统。
-init 在 `/var` 挂载成功后创建日志目录，打开或创建 `/var/log/system.log`，再把文件会话交给 logger。
-每个服务回复初始化结果后，init 才继续使用它提供的接口。
+fs starts first because it establishes file access capability directly from the archive; devmgr then provides device sessions, letting persistent storage and serial output join the system.
+After the `/var` mount succeeds, init creates the log directory, opens or creates `/var/log/system.log`, and hands the file session to logger.
+Only after each service replies with its initialization result does init continue to use the interfaces it provides.
 
-## 加载原生服务
+## Loading Native Services
 
-`program::Loader` 通过 `ReadAt` 读取 ELF。
-它检查机器类型、可加载段、页对齐范围与入口，使用 ChildTask 建立隔离地址空间。
-段内容写入新分配的页框，段内零初始化部分保持为零，再按权限映射。
+`program::Loader` reads ELF through `ReadAt`.
+It checks the machine type, loadable segments, page-aligned ranges, and entry, and uses a ChildTask to establish an isolated address space.
+Segment contents are written into newly allocated page frames, zero-initialized parts within a segment remain zero, and the segments are then mapped according to permissions.
 
-加载器通过 ChildTask 建立带保护页的用户栈和 ProcessStart。
-服务使用 64 KiB 初始用户栈。
-init 根据服务职责选择自身 Task 权限，并通过 bootstrap 消息交付其余对象。
+The loader uses a ChildTask to establish a user stack with a guard page and a ProcessStart.
+Services use a 64 KiB initial user stack.
+init selects the permissions on each service's handle to its own Task according to that service's responsibilities and delivers the remaining objects through bootstrap messages.
 
-`Service` 持有返回的 Task 句柄。
-加载途中失败时，ChildTask 回收正在构建的子 Task；启动成功后，Service 接手生命周期管理。
+`Service` holds the returned Task handle.
+If loading fails midway, the ChildTask reclaims the child Task under construction; after successful startup, the Service takes over lifetime management.
 
-## 配置应用
+## Configured Applications
 
-`/etc/init.toml` 中每个 `[[program]]` 声明名称、执行器、路径、参数、环境、终端和重启策略。
-配置中的 Linux 程序由 linux 服务装载，init 保留异步运行请求以观察其退出。
+Each `[[program]]` in `/etc/init.toml` declares a name, executor, path, arguments, environment, terminal, and restart policy.
+Linux programs in the configuration are loaded by the linux service, and init retains the asynchronous run request to observe their exit.
 
-`terminal = "console"` 时，init 打开相应 UART 会话并交给执行服务。
-应用的控制台会话与 logger 的输出会话分别建立，devmgr 按访问模式分配输入与输出权限。
-具体配置语法和 Shell 文件准备方式见[启动配置与使用](../system/configuration.md)。
+When `terminal = "console"`, init opens the corresponding UART session and gives it to the execution service.
+The application's console session and logger's output session are established separately, and devmgr allocates input and output permissions according to the access mode.
+For the specific configuration syntax and how to prepare Shell files, see [Boot Configuration and Usage](../system/configuration.md).
 
-配置文件不存在时使用空程序列表。
-语法或字段错误被记录后结束 init。
+When the configuration file does not exist, an empty program list is used.
+Syntax or field errors are recorded, and then init ends.
 
-## 监督循环
+## Supervision Loop
 
-监督器维护每个程序的启动、运行、停止和重启等待状态。
-设备会话打开和程序运行请求采用异步调用，循环同时观察这些请求、基础服务 Task 的退出及下次重启时间。
+The supervisor maintains the start, run, stop, and restart-wait states of each program.
+Device session opening and program run requests use asynchronous calls, and the loop observes these requests, the exit of base service Tasks, and the next restart time at the same time.
 
-以 `restart = "always"` 的 Shell 为例，第一次启动进入运行状态，用户退出后转为重启等待，到期后重新打开所需会话并再次执行程序。
-短时间反复退出时，重启延迟从 100 毫秒指数增加，最多 30 秒；一次运行达到 30 秒后清零连续重启次数。
-`on-failure` 根据退出码或信号决定是否进入这条路径，`never` 则让已退出应用保持停止。
+Taking a Shell with `restart = "always"` as an example, the first start enters the running state, and after the user exits it switches to restart-wait; when the time arrives it reopens the required sessions and executes the program again.
+When exits repeat within a short time, the restart delay increases exponentially from 100 milliseconds, up to 30 seconds; after a run reaches 30 seconds, the consecutive restart count is reset.
+`on-failure` decides whether to enter this path based on the exit code or signal, while `never` keeps an exited application stopped.
 
-基础服务退出使监督器结束并返回错误状态。
-init 持有的服务对象在退出路径中终止相关 Task，释放控制通道和会话。
+Exit of a base service makes the supervisor end and return an error state.
+The service objects held by init terminate the related Tasks in the exit path and release control channels and sessions.

@@ -1,22 +1,22 @@
-# 快速开始
+# Getting Started
 
-`cargo xtask run` 完成系统服务构建、initramfs 打包和内核构建，随后启动 QEMU。
-第一次运行会编译整个工作区的相关依赖，之后的构建沿用 Cargo 缓存。
+`cargo xtask run` builds the system services, packages the initramfs, and builds the kernel, then starts QEMU.
+The first run compiles the relevant dependencies of the whole workspace; later builds reuse the Cargo cache.
 
-## 开发环境
+## Development Environment
 
-开发环境使用 Linux、Rust 工具链和 QEMU。
-内核由当前 Rust 工具链编译，原生系统服务使用 nightly，以构建 runtime 的程序入口和线程本地存储。
+The development environment uses Linux, the Rust toolchain, and QEMU.
+The kernel is compiled by the current Rust toolchain, while native system services use nightly to build the runtime's program entry and thread-local storage.
 
-| 工具 | 用途 |
+| Tool | Purpose |
 |---|---|
-| Rust、Cargo 与 rustup | 编译内核、系统服务和构建工具 |
-| Rust nightly | 编译使用自定义 Rust 程序入口和 TLS 的原生程序 |
-| `qemu-system-riscv64` | 运行 RISC-V 64 映像 |
-| `qemu-system-loongarch64` | 运行 LoongArch 64 映像 |
-| `clang`、`ld.lld` | 构建兼容性测试程序 |
+| Rust, Cargo, and rustup | Compile the kernel, system services, and build tools |
+| Rust nightly | Compile native programs that use a custom Rust program entry and TLS |
+| `qemu-system-riscv64` | Run RISC-V 64 images |
+| `qemu-system-loongarch64` | Run LoongArch 64 images |
+| `clang`, `ld.lld` | Build compatibility test programs |
 
-安装 Rust 工具链与交叉编译目标：
+Install the Rust toolchain and cross-compilation targets:
 
 ```sh
 rustup toolchain install stable --component rustfmt --component clippy
@@ -25,61 +25,61 @@ rustup target add --toolchain stable riscv64gc-unknown-none-elf loongarch64-unkn
 rustup target add --toolchain nightly riscv64gc-unknown-none-elf loongarch64-unknown-none
 ```
 
-## 构建并启动
+## Build and Run
 
-RISC-V 和 LoongArch 的启动命令分别为：
+The run commands for RISC-V and LoongArch are:
 
 ```sh
 cargo xtask run riscv64 --release
 cargo xtask run loongarch64 --release
 ```
 
-命令依次构建 init、devmgr、logger、fs 和 linux，将它们打包为 cpio newc 格式的 initramfs，再将归档嵌入内核 ELF。
-`--release` 同时选择内核与系统服务的 release 配置，省略时使用 debug。
+The command builds init, devmgr, logger, fs, and linux in order, packages them into an initramfs in cpio newc format, and then embeds the archive into the kernel ELF.
+`--release` selects the release profile for both the kernel and the system services; when omitted, debug is used.
 
-QEMU 使用 `virt` 机器、256 MiB 内存、一个处理器和终端串口输出，并关闭默认网络设备。
-RISC-V 使用 QEMU 的默认 BIOS；LoongArch 使用 QEMU 的 `-kernel` 交接路径。
+QEMU uses the `virt` machine, 256 MiB of memory, one processor, and terminal UART output, with the default network device disabled.
+RISC-V uses QEMU's default BIOS; LoongArch uses QEMU's `-kernel` handoff path.
 
-## 启动后会发生什么
+## What Happens After Boot
 
-串口首先输出架构启动信息，随后出现 `Entering kernel` 和 `Memory initialized`。
-这时内核正在建立地址空间、异常入口、中断控制器和调度器。
-`Started init` 表示 init 的线程已建立；它运行后继续启动用户态服务，最后输出 `System services ready`。
+The UART first prints architecture boot messages, followed by `Entering kernel` and `Memory initialized`.
+At this point the kernel is setting up the address space, exception entry, interrupt controller, and scheduler.
+`Started init` indicates that the init thread has been created; once it runs, it continues to start the user-space services and finally prints `System services ready`.
 
-串口也在这段过程中完成交接：内核启动阶段使用早期控制台，进入调度器前将其分离，用户态 devmgr 随后接管 UART。
-logger 通过 devmgr 的会话输出服务日志。
+The UART is also handed over during this process: the kernel boot stage uses an early console, detaches it before entering the scheduler, and the user-space devmgr then takes over the UART.
+logger outputs service logs through a devmgr session.
 
-默认归档包含五个系统服务，init 使用空的应用列表等待服务事件。
-加入 Shell 时，将 Linux 静态程序和 `/etc/init.toml` 放入外部根目录，再用 `--rootfs` 一起打包。
-[启动配置与使用](configuration.md)给出了交互式 Shell 的配置。
+The default archive contains five system services, and init waits for service events with an empty application list.
+To add a shell, place the Linux static program and `/etc/init.toml` into an external root directory, then package them together with `--rootfs`.
+[Boot Configuration and Usage](configuration.md) shows the configuration for an interactive shell.
 
-## 构建映像
+## Building Images
 
 ```sh
 cargo xtask build riscv64 --release --initramfs embedded
 cargo xtask build loongarch64 --release --initramfs external
 ```
 
-`embedded` 将 initramfs 嵌入内核 ELF，`external` 生成独立归档，启动时由 QEMU 加载。不指定时使用 `embedded`；省略 `--release` 则使用 debug 构建。
+`embedded` embeds the initramfs into the kernel ELF, while `external` produces a standalone archive that QEMU loads at boot. When unspecified, `embedded` is used; omitting `--release` uses a debug build.
 
-产物默认位于对应目标的构建目录：
+Artifacts are placed by default in the build directory of the corresponding target:
 
-| 架构 | 目录 |
+| Architecture | Directory |
 |---|---|
 | RISC-V 64 | `target/riscv64gc-unknown-none-elf/release/` |
 | LoongArch 64 | `target/loongarch64-unknown-none/release/` |
 
-其中 `arch` 是内核 ELF，`initramfs.cpio` 是系统服务归档。
-设置 `CARGO_TARGET_DIR` 可以修改构建目录。
+Here `arch` is the kernel ELF, and `initramfs.cpio` is the system service archive.
+Setting `CARGO_TARGET_DIR` changes the build directory.
 
-映像的组成、外部根目录和手动启动方法见[系统映像](images.md)。
-完整选项见[xtask 命令参考](../tools/xtask.md)。
+For the image layout, external root directories, and manual boot methods, see [System Images](images.md).
+For the full set of options, see the [xtask Command Reference](../tools/xtask.md).
 
-## 构建问题排查
+## Build Troubleshooting
 
-| 现象 | 检查内容 |
+| Symptom | What to check |
 |---|---|
-| 提示找不到交叉编译目标的 `core` | 为实际使用的 stable 或 nightly 工具链安装目标 |
-| 系统服务构建报告不支持所用 feature | 服务使用 nightly，通过 `rustup toolchain install nightly` 安装 |
-| 提示找不到 QEMU | 安装所选架构的 `qemu-system-*` |
-| 已输出 `System services ready`，没有应用输出 | 检查归档中的 `/etc/init.toml` 和应用文件 |
+| The `core` for the cross-compilation target is reported missing | Install the target for the stable or nightly toolchain actually in use |
+| The system service build reports that a used feature is unsupported | The services use nightly; install it with `rustup toolchain install nightly` |
+| QEMU is reported missing | Install `qemu-system-*` for the chosen architecture |
+| `System services ready` is printed but there is no application output | Check `/etc/init.toml` and the application files in the archive |

@@ -2,7 +2,7 @@
 
 [book]
 title = "The Arona Book"
-description = "Arona 的使用、架构与开发指南"
+description = "Arona usage, architecture, and development guide"
 authors = ["The Arona Authors"]
 language = "zh-CN"
 src = "src"
