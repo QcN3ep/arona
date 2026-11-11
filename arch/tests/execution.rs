@@ -401,7 +401,10 @@ fn handle(trap: Trap) -> TrapOutcome {
             if USER_DONE.iter().all(|done| done.load(Ordering::Relaxed)) {
                 CURRENT.store(0, Ordering::Relaxed);
                 RETIRED.store(current, Ordering::Relaxed);
-                context(current).restore(context(0)).unwrap();
+                match context(current).restore(context(0)) {
+                    Ok(never) => match never {},
+                    Err(error) => panic!("failed to restore context: {error:?}"),
+                }
             }
             let next = 5 - current;
             CURRENT.store(next, Ordering::Relaxed);

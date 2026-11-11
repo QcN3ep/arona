@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings --force-warn clippy::too_many_lines
+      - run: cargo test --locked --workspace
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --workspace
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps -p arona-kernel --target riscv64gc-unknown-none-elf
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps -p arona-kernel --target loongarch64-unknown-none
+
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: riscv64
+            triple: riscv64gc-unknown-none-elf
+          - target: loongarch64
+            triple: loongarch64-unknown-none
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+      - name: Install linker
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - run: cargo xtask build ${{ matrix.target }}
+      - name: Clippy bare-metal libraries and binaries
+        env:
+          ARONA_INITRAMFS: ${{ github.workspace }}/target/${{ matrix.triple }}/debug/initramfs.cpio
+        run: >-
+          cargo clippy --locked --workspace --exclude xtask --lib --bins
+          --target ${{ matrix.triple }}
+          --features arona-arch/baremetal,arona-arch/embedded-initramfs,arona-runtime/program,arona-init/baremetal,arona-devmgr/baremetal,arona-logger/baremetal,arona-fs/baremetal,arona-linux/baremetal
+          -Zbuild-std=core,alloc,compiler_builtins
+          -Zbuild-std-features=compiler-builtins-mem
+          -- -D warnings --force-warn clippy::too_many_lines
+      - name: Clippy architecture tests
+        run: >-
+          cargo clippy --locked -p arona-arch --features baremetal
+          --test paging --test allocator --test trap --test execution --test timer --test interrupt
+          --target ${{ matrix.triple }}
+          -Zbuild-std=core,alloc,compiler_builtins
+          -Zbuild-std-features=compiler-builtins-mem
+          -- -D warnings --force-warn clippy::too_many_lines
+      - name: Clippy user-space tests
+        run: >-
+          cargo clippy --locked --tests
+          -p arona-runtime -p arona-devmgr -p arona-logger -p arona-fs -p arona-linux
+          --features arona-runtime/program,arona-devmgr/baremetal,arona-logger/baremetal,arona-fs/baremetal,arona-linux/baremetal
+          --target ${{ matrix.triple }}
+          -Zbuild-std=core,alloc,compiler_builtins
+          -Zbuild-std-features=compiler-builtins-mem
+          -- -D warnings --force-warn clippy::too_many_lines
+      - run: cargo xtask build ${{ matrix.target }} --release
+      - run: cargo xtask package-linux-test ${{ matrix.target }} --release
+
+  book:
+    name: Book
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+      - uses: ./.github/actions/book-tools
+      - run: cargo xtask book

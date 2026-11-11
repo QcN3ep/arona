@@ -93,7 +93,7 @@ impl PageTables {
         self.root.link::<2>(PAGE_TABLE_WINDOW, &self.window_l1);
         let window_table = core::ptr::addr_of!(_boot_tables_window_phys) as usize;
         // SAFETY: Before paging is enabled, the page table region can be written exclusively through physical addresses.
-        unsafe { (&mut *(window_table as *mut PageTable)).clear() };
+        unsafe { (*(window_table as *mut PageTable)).clear() };
         self.window_l1
             .link_address::<1>(PAGE_TABLE_WINDOW, window_table);
         // The boot image is temporarily mapped with a single read-write-execute 2 MiB large page.

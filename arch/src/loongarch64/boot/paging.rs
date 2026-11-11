@@ -118,7 +118,7 @@ impl PageTables {
         self.window_l2.link::<2>(PAGE_TABLE_WINDOW, &self.window_l1);
         let window_table = core::ptr::addr_of!(_boot_tables_window_phys) as usize;
         // SAFETY: Before paging is enabled, the page table region can be exclusively written via physical addresses.
-        unsafe { (&mut *(window_table as *mut PageTable)).clear() };
+        unsafe { (*(window_table as *mut PageTable)).clear() };
         self.window_l1
             .link_address::<1>(PAGE_TABLE_WINDOW, window_table);
         let end = core::ptr::addr_of!(_kernel_phys_end) as usize;
