@@ -4,7 +4,7 @@
 
 use super::pending::{
     complete_directory, complete_open, complete_read, empty_call, input_buffer, metadata_call,
-    output_buffer,
+    output_buffer, statistics_call,
 };
 use super::{Client, Directory, File, PAGE_SIZE, Pending, PendingMetadata, PendingRead};
 use crate::{
@@ -26,6 +26,16 @@ pub type PendingNode<'a> =
     Pending<OpenedNode<'a>, (&'a Handle<Task>, Handle<Channel>, alloc::sync::Arc<()>)>;
 
 impl<'a> Client<'a> {
+    pub fn start_statistics_at(
+        &self,
+        directory: Option<&Directory<'_>>,
+        path: &[u8],
+    ) -> Result<super::PendingStatistics, Error> {
+        let mut request = at(self, protocol::STATFS, directory, 0, &[path.len() as u64])?;
+        transfer(&mut request, path_buffer(self.task, path)?, Rights::READ)?;
+        statistics_call(self.task, &self.channel, request)
+    }
+
     pub fn start_open_at(
         &self,
         directory: Option<&Directory<'_>>,

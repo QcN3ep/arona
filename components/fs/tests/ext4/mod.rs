@@ -196,6 +196,27 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
         .wait(WaitMode::Until(deadline()))
         .unwrap();
     service_reads(&file);
+    let statistics = client.statfs(b"/var/data/message", deadline()).unwrap();
+    assert_eq!(statistics.kind, 0xef53);
+    assert_eq!(statistics.block_size, 4096);
+    assert_eq!(statistics.blocks * statistics.block_size, SLICE);
+    assert!(statistics.available_blocks <= statistics.free_blocks);
+    assert!(statistics.free_blocks < statistics.blocks);
+    assert_eq!(
+        file.start_statistics()
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap(),
+        statistics
+    );
+    assert_ne!(
+        client.statfs(b"/", deadline()).unwrap().device,
+        statistics.device
+    );
+    assert_eq!(
+        client.statfs(b"/var/missing", deadline()),
+        Err(Error::NotFound)
+    );
     let mut bytes = [0; 32];
     assert!(matches!(
         control.unmount(b"/var", deadline()),
@@ -377,10 +398,16 @@ fn write_volume(disk: &Rc<Disk>) {
     directory_operations(&filesystem);
     filesystem.mkdir(b"/work").unwrap();
     filesystem.mkdir(b"/work/child").unwrap();
+    let before = filesystem.statistics().unwrap();
     let file = filesystem.create(b"/work/file").unwrap();
+    assert_eq!(
+        filesystem.statistics().unwrap().free_files + 1,
+        before.free_files
+    );
     let other = filesystem.open("/work/file").unwrap();
     let data: alloc::vec::Vec<u8> = (0..9000).map(|index| (index % 239) as u8).collect();
     assert_eq!(file.write_at(4090, &data).unwrap(), data.len());
+    assert!(filesystem.statistics().unwrap().free_blocks < before.free_blocks);
     assert_eq!(other.len(), 13090);
     let mut bytes = alloc::vec![1; other.len()];
     other.read_exact_at(0, &mut bytes).unwrap();
@@ -400,10 +427,12 @@ fn write_volume(disk: &Rc<Disk>) {
         other.read_exact_at(index * 8192, &mut byte).unwrap();
         assert_eq!(byte, [index as u8 + 1]);
     }
+    let allocated = filesystem.statistics().unwrap();
     assert_eq!(
         file.write_at(0, &alloc::vec![0; SLICE as usize]),
         Err(Error::NoSpace)
     );
+    assert_eq!(filesystem.statistics().unwrap(), allocated);
     filesystem
         .rename(b"/work/file", b"/work/child/moved")
         .unwrap();
@@ -427,6 +456,7 @@ fn write_volume(disk: &Rc<Disk>) {
     assert_eq!(&head, b"open after unlink");
     drop(file);
     drop(other);
+    assert_eq!(filesystem.statistics().unwrap(), before);
     filesystem.unlink(b"/work/child").unwrap();
     filesystem.unlink(b"/work").unwrap();
     let tree = filesystem.open("/data/tree").unwrap();
@@ -586,6 +616,7 @@ fn dirty_volume(disk: &Rc<Disk>) {
 
 fn read_only(disk: &Rc<Disk>) {
     let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    assert_eq!(filesystem.statistics().unwrap().flags & 1, 1);
     let file = filesystem.open("/data/message").unwrap();
     assert_ne!(file.metadata().unwrap().mount, 0);
     assert_eq!(file.write_at(0, b"denied"), Err(Error::ReadOnly));
@@ -648,6 +679,7 @@ fn recover_orphan(disk: &Rc<Disk>) {
 
 fn no_journal(disk: &Rc<Disk>) {
     let filesystem = Ext4::mount(Rc::clone(disk), 9 * SLICE, SLICE).unwrap();
+    assert_eq!(filesystem.statistics().unwrap().flags & 1, 1);
     let file = filesystem.open("/data/message").unwrap();
     assert_eq!(file.len(), 12000);
     assert_eq!(file.write_at(0, b"denied"), Err(Error::ReadOnly));

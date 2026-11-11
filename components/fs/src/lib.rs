@@ -20,11 +20,13 @@ mod open;
 mod path;
 mod protocol;
 pub mod service;
+mod statistics;
 
 pub use client::{Client, Directory, File};
 pub use control::Control;
 pub use metadata::{Attributes, Metadata, Timestamp};
 pub use open::OpenOptions;
+pub use statistics::Statistics;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {

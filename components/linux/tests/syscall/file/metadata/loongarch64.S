@@ -355,6 +355,128 @@ statx_zero:
     li.d $a4, 0
     invoke 291
     expect -14
+    la.pcrel $a0, missing_path
+    move $a1, $sp
+    invoke 43
+    expect -2
+    la.pcrel $a0, data_path
+    move $a1, $sp
+    invoke 43
+    expect 0
+    ld.d $t0, $sp, 0
+    li.d $t1, 0x858458f6
+    bne $t0, $t1, metadata_failure
+    ld.d $s4, $sp, 56
+    beqz $s4, metadata_failure
+    ld.d $t0, $sp, 80
+    andi $t0, $t0, 1
+    beqz $t0, metadata_failure
+    open_file data_path
+    bltz $a0, metadata_failure
+    move $s0, $a0
+    move $a1, $sp
+    invoke 44
+    expect 0
+    ld.d $t0, $sp, 56
+    bne $t0, $s4, metadata_failure
+    move $a0, $s0
+    invoke 57
+    expect 0
+    la.pcrel $a0, directory_path
+    move $a1, $sp
+    invoke 43
+    expect 0
+    ld.d $t0, $sp, 0
+    li.d $t1, 0xef53
+    bne $t0, $t1, metadata_failure
+    ld.d $s5, $sp, 56
+    beq $s5, $s4, metadata_failure
+    ld.d $s6, $sp, 16
+    beqz $s6, metadata_failure
+    ld.d $t0, $sp, 24
+    bltu $s6, $t0, metadata_failure
+    ld.d $t1, $sp, 32
+    bltu $t0, $t1, metadata_failure
+    ld.d $t0, $sp, 40
+    ld.d $t1, $sp, 48
+    bltu $t0, $t1, metadata_failure
+    li.d $a0, -100
+    la.pcrel $a1, directory_path
+    li.d $a2, 0x10000
+    invoke 56
+    bltz $a0, metadata_failure
+    move $s0, $a0
+    move $a1, $sp
+    invoke 44
+    expect 0
+    ld.d $t0, $sp, 56
+    bne $t0, $s5, metadata_failure
+    move $a0, $s0
+    invoke 57
+    expect 0
+    la.pcrel $a0, data_path
+    li.d $a1, -100
+    la.pcrel $a2, statfs_link
+    invoke 36
+    expect 0
+    la.pcrel $a0, statfs_link
+    move $a1, $sp
+    invoke 43
+    expect 0
+    ld.d $t0, $sp, 56
+    bne $t0, $s4, metadata_failure
+    li.d $a0, -100
+    la.pcrel $a1, statfs_link
+    li.d $a2, 0
+    invoke 35
+    expect 0
+    la.pcrel $a0, directory_path
+    invoke 49
+    expect 0
+    la.pcrel $a0, relative_path
+    move $a1, $sp
+    invoke 43
+    expect 0
+    ld.d $t0, $sp, 56
+    bne $t0, $s5, metadata_failure
+    la.pcrel $a0, statfs_root
+    invoke 49
+    expect 0
+    li.d $a0, -100
+    la.pcrel $a1, statfs_path
+    li.d $a2, 0x42
+    li.d $a3, 0600
+    invoke 56
+    bltz $a0, metadata_failure
+    move $s0, $a0
+    li.d $a0, -100
+    la.pcrel $a1, statfs_path
+    li.d $a2, 0
+    invoke 35
+    expect 0
+    move $a0, $s0
+    move $a1, $sp
+    invoke 44
+    expect 0
+    ld.d $t0, $sp, 56
+    bne $t0, $s5, metadata_failure
+    ld.d $t0, $sp, 16
+    bne $t0, $s6, metadata_failure
+    la.pcrel $a0, statfs_path
+    move $a1, $sp
+    invoke 43
+    expect -2
+    move $a0, $s0
+    invoke 57
+    expect 0
+    li.d $a0, 999
+    move $a1, $sp
+    invoke 44
+    expect -9
+    la.pcrel $a0, data_path
+    li.d $a1, 0
+    invoke 43
+    expect -14
     li.d $a0, 42
     invoke 94
 metadata_failure:
@@ -370,4 +492,7 @@ directory_path: .asciz "/var"
 relative_path: .asciz "linux-stat"
 empty_path: .asciz ""
 missing_path: .asciz "/etc/absent"
+statfs_link: .asciz "/var/linux-statfs-link"
+statfs_root: .asciz "/"
+statfs_path: .asciz "/var/linux-statfs"
 .section .note.GNU-stack,"",@progbits

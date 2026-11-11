@@ -21,6 +21,7 @@ pub(super) struct Volume {
     pub(super) closed: bool,
     pub(super) journal: Option<Journal>,
     pub blocks: u32,
+    reserved_blocks: u32,
     pub(super) allocation_hint: u32,
     pub inodes: u32,
     pub blocks_per_group: u32,
@@ -100,6 +101,7 @@ impl Volume {
             closed: false,
             journal: None,
             blocks,
+            reserved_blocks: word(sb, 8),
             allocation_hint: 0,
             inodes,
             blocks_per_group,
@@ -161,6 +163,29 @@ impl Volume {
             self.groups.push(group);
         }
         Ok(())
+    }
+
+    pub fn statistics(&mut self) -> Result<crate::Statistics, Error> {
+        let mut free_blocks = 0;
+        let mut free_files = 0;
+        for index in 0..self.groups.len() {
+            let bitmap = self.block(self.groups[index].block_bitmap)?;
+            free_blocks += count_free(&bitmap[..], index, self.blocks_per_group, self.blocks);
+            let bitmap = self.block(self.groups[index].inode_bitmap)?;
+            free_files += count_free(&bitmap[..], index, self.inodes_per_group, self.inodes);
+        }
+        Ok(crate::Statistics {
+            kind: 0xef53,
+            device: self.device,
+            block_size: BLOCK_SIZE as u64,
+            blocks: u64::from(self.blocks),
+            free_blocks,
+            available_blocks: free_blocks.saturating_sub(u64::from(self.reserved_blocks)),
+            files: u64::from(self.inodes),
+            free_files,
+            name_length: 255,
+            flags: u64::from(self.disk.read_only() || self.journal.is_none()),
+        })
     }
 
     pub fn block(&mut self, number: u32) -> Result<Rc<[u8; BLOCK_SIZE]>, Error> {
@@ -270,4 +295,12 @@ impl Drop for Volume {
             self.disk.release(self.start);
         }
     }
+}
+
+fn count_free(bitmap: &[u8], index: usize, per_group: u32, total: u32) -> u64 {
+    let start = (index as u64 * u64::from(per_group)).min(u64::from(total));
+    let count = (u64::from(total) - start).min(u64::from(per_group));
+    (0..count)
+        .filter(|bit| bitmap[*bit as usize / 8] >> (*bit as usize % 8) & 1 == 0)
+        .count() as u64
 }

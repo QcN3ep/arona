@@ -68,6 +68,13 @@ pub(super) fn relative(
         return Err(Error::InvalidRequest);
     };
     match (*method, rest) {
+        (protocol::STATFS, [length]) if request.handles().len() == 2 && *flags == 0 => {
+            let name = path(&mut request, *length)?;
+            let name = resolve(namespace, files, *anchor, &name, true, false)?;
+            let mut output = take_frames(&mut request, Rights::WRITE)?;
+            output.write(0, &namespace.statistics(&name)?.encode())?;
+            Ok(Message::new(protocol::SUCCESS, &[])?)
+        }
         (protocol::OPEN | protocol::OPEN_DIRECTORY, _) => {
             open_at(namespace, files, *method, *anchor, *flags, rest, request)
         }

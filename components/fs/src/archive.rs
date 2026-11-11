@@ -38,6 +38,10 @@ pub struct Directory {
 }
 
 impl Directory {
+    pub fn statistics(&self) -> Result<crate::Statistics, Error> {
+        statistics(&self._frames, self.metadata.device)
+    }
+
     pub fn metadata(&self) -> crate::Metadata {
         self.metadata
     }
@@ -51,6 +55,10 @@ impl Directory {
 }
 
 impl Archive {
+    pub fn statistics(&self) -> Result<crate::Statistics, Error> {
+        statistics(&self.frames, self.device)
+    }
+
     pub fn new(frames: Handle<FrameAllocation>, length: usize) -> Result<Self, Error> {
         let capacity = frames
             .frames()?
@@ -357,7 +365,23 @@ fn field(header: &[u8; HEADER_SIZE], offset: usize) -> Result<usize, Error> {
 }
 
 impl File {
+    pub fn statistics(&self) -> Result<crate::Statistics, Error> {
+        statistics(&self.frames, self.metadata.device)
+    }
+
     pub fn metadata(&self) -> crate::Metadata {
         self.metadata
     }
+}
+
+fn statistics(frames: &Handle<FrameAllocation>, device: u64) -> Result<crate::Statistics, Error> {
+    Ok(crate::Statistics {
+        kind: 0x8584_58f6,
+        device,
+        block_size: PAGE_SIZE as u64,
+        blocks: frames.frames()?,
+        name_length: 255,
+        flags: 1,
+        ..crate::Statistics::default()
+    })
 }

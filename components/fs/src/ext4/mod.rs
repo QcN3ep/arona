@@ -34,6 +34,10 @@ pub(super) struct FileIdentity {
 }
 
 impl Ext4 {
+    pub fn statistics(&self) -> Result<crate::Statistics, Error> {
+        self.volume.borrow_mut().statistics()
+    }
+
     pub fn mount(disk: Rc<Disk>, start: u64, length: u64) -> Result<Self, Error> {
         let volume = Volume::mount(disk, start, length)?;
         Ok(Self {
@@ -163,6 +167,10 @@ impl ReadAt for File {
 }
 
 impl File {
+    pub fn statistics(&self) -> Result<crate::Statistics, Error> {
+        self.volume.borrow_mut().statistics()
+    }
+
     pub fn path(&self) -> Result<Vec<u8>, Error> {
         self.volume
             .borrow_mut()

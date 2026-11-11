@@ -64,13 +64,17 @@ Virtual character descriptions implement `/dev/null` and `/dev/zero`, while `/de
 |---|---|
 | Open and descriptors | `openat`, `close`, `dup`, `dup3`, `fcntl` |
 | Byte I/O | `read`, `write`, `pread64`, `pwrite64`, `readv`, `writev`, `preadv`, `pwritev` |
-| File status | `fstat`, `newfstatat`, `statx`, `lseek`, `ftruncate`, `fsync`, `fdatasync` |
+| File status | `fstat`, `newfstatat`, `statx`, `statfs`, `fstatfs`, `lseek`, `ftruncate`, `fsync`, `fdatasync` |
 | Directory and paths | `getdents64`, `chdir`, `fchdir`, `getcwd`, `mkdirat`, `unlinkat`, `readlinkat`, `symlinkat`, `linkat`, `renameat`, `renameat2` |
 | Waiting and pipes | `pipe2`, `eventfd2`, `ppoll`, `pselect6` |
 
 Path operations convert the current directory or dirfd into a file service directory anchor.
 Permission modes, umask, and open flags are interpreted in the compatibility layer, while the actual file content and persistence are handled by the file service.
 `statx` also reports the filesystem mount identity and the creation timestamp when the stored inode provides it.
+`statfs` resolves the path and reports its filesystem's capacity and identity.
+`fstatfs` uses the filesystem held by an open regular file or directory, so renaming or unlinking the file does not change the result.
+Statistics distinguish the read-only boot archive from mounted ext4 volumes and account for ext4 blocks reserved for the administrator.
+Virtual device descriptors do not yet provide filesystem statistics.
 For example, for an ordinary file read, the compatibility service submits the offset and output buffer to fs, writes the data to the target Task after obtaining the result, and updates the open file's offset according to the actual completed length.
 
 ## Address Space

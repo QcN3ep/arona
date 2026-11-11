@@ -5,6 +5,7 @@ mod pending;
 
 pub use path::{OpenedNode, PendingNode};
 
+pub use pending::PendingStatistics;
 pub use pending::{
     Pending, PendingAppend, PendingDirectory, PendingDirectoryPage, PendingMetadata, PendingOpen,
     PendingRead, PendingSize, PendingTruncate, PendingWrite,
@@ -41,6 +42,11 @@ pub struct Directory<'a> {
 }
 
 impl<'a> Client<'a> {
+    pub fn statfs(&self, path: &[u8], deadline: u64) -> Result<crate::Statistics, Error> {
+        self.start_statistics_at(None, path)?
+            .wait(runtime::ipc::WaitMode::Until(deadline))
+    }
+
     pub fn from_channel(task: &'a Handle<Task>, channel: Handle<Channel>) -> Self {
         Self {
             task,
