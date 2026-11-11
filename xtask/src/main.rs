@@ -242,6 +242,7 @@ impl BuildOptions {
 fn run_cargo_build(options: &BuildOptions, archive: &Path) -> Result<(), String> {
     let root = workspace_root()?;
     let mut command = cargo_command(root);
+    build_std(&mut command);
     command.args([
         "build",
         "--locked",
@@ -268,8 +269,8 @@ fn run_cargo_build(options: &BuildOptions, archive: &Path) -> Result<(), String>
 fn build_component(target: Target, release: bool, component: &str) -> Result<(), String> {
     let root = workspace_root()?;
     let mut command = cargo_command(root);
+    build_std(&mut command);
     command.args([
-        "+nightly",
         "rustc",
         "--locked",
         "-p",
@@ -292,6 +293,14 @@ fn build_component(target: Target, release: bool, component: &str) -> Result<(),
         "link-arg=-zmax-page-size=4096",
     ]);
     execute(command)
+}
+
+/// Rebuilds std so target codegen settings also apply to it.
+fn build_std(command: &mut Command) {
+    command.args([
+        "-Zbuild-std=core,alloc,compiler_builtins",
+        "-Zbuild-std-features=compiler-builtins-mem",
+    ]);
 }
 
 fn cargo_command(root: PathBuf) -> Command {

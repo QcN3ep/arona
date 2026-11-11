@@ -68,7 +68,7 @@ It defines `_start`, organizes text, read-only data, and writable data into page
 The program's virtual layout starts at `0x100000`.
 
 The `build.rs` of existing services passes this script to the linker when the target system is `none`.
-xtask uses nightly Rust for services, specifying the target architecture, the `baremetal` feature, symbol stripping, and a maximum segment alignment of 4096 bytes.
+xtask builds services with the pinned Rust toolchain, specifying the target architecture, the `baremetal` feature, symbol stripping, and a maximum segment alignment of 4096 bytes.
 See [Build and Run Workflow](../tools/workflow.md) for the build process.
 
 ## Boot Handoff and Service Requests

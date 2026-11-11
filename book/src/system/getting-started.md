@@ -5,24 +5,21 @@ The first run compiles the relevant dependencies of the whole workspace; later b
 
 ## Development Environment
 
-The development environment uses Linux, the Rust toolchain, and QEMU.
-The kernel is compiled by the current Rust toolchain, while native system services use nightly to build the runtime's program entry and thread-local storage.
+The development environment uses Linux, QEMU, and the Rust toolchain pinned in `rust-toolchain.toml`; the same toolchain builds the kernel, the native system services, and the build tools.
 
 | Tool | Purpose |
 |---|---|
 | Rust, Cargo, and rustup | Compile the kernel, system services, and build tools |
-| Rust nightly | Compile native programs that use a custom Rust program entry and TLS |
 | `qemu-system-riscv64` | Run RISC-V 64 images |
 | `qemu-system-loongarch64` | Run LoongArch 64 images |
 | `clang`, `ld.lld` | Build compatibility test programs |
 
-Install the Rust toolchain and cross-compilation targets:
+`rustup` installs the pinned toolchain from `rust-toolchain.toml` on first use.
+To pre-install it:
 
 ```sh
-rustup toolchain install stable --component rustfmt --component clippy
-rustup toolchain install nightly --component rustfmt --component clippy
-rustup target add --toolchain stable riscv64gc-unknown-none-elf loongarch64-unknown-none
-rustup target add --toolchain nightly riscv64gc-unknown-none-elf loongarch64-unknown-none
+rustup toolchain install nightly-2025-05-20 --component rustfmt --component clippy --component rust-src
+rustup target add --toolchain nightly-2025-05-20 riscv64gc-unknown-none-elf loongarch64-unknown-none
 ```
 
 ## Build and Run
@@ -79,7 +76,7 @@ For the full set of options, see the [xtask Command Reference](../tools/xtask.md
 
 | Symptom | What to check |
 |---|---|
-| The `core` for the cross-compilation target is reported missing | Install the target for the stable or nightly toolchain actually in use |
-| The system service build reports that a used feature is unsupported | The services use nightly; install it with `rustup toolchain install nightly` |
+| The `core` for the cross-compilation target is reported missing | Install the target for the pinned toolchain: `rustup target add --toolchain nightly-2025-05-20 riscv64gc-unknown-none-elf loongarch64-unknown-none` |
+| The system service build reports that a used feature is unsupported | The build is not using the pinned toolchain; run `rustup show` to confirm `rust-toolchain.toml` is selected |
 | QEMU is reported missing | Install `qemu-system-*` for the chosen architecture |
 | `System services ready` is printed but there is no application output | Check `/etc/init.toml` and the application files in the archive |

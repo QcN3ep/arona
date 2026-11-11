@@ -238,10 +238,10 @@ impl Drop for Wait {
     fn drop(&mut self) {
         scheduler::with_scheduler(|scheduler| {
             let data = self.thread.0.data.lock();
-            if !data
+            if data
                 .wait
                 .as_ref()
-                .is_some_and(|wait| wait.generation == self.generation)
+                .is_none_or(|wait| wait.generation != self.generation)
             {
                 return;
             }

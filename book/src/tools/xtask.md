@@ -56,7 +56,7 @@ xtask invokes `mdbook`, which reads `book/book.toml`; for tool installation and 
 
 ## Toolchain and Environment Variables
 
-System services are built with `cargo +nightly rustc`, and the kernel uses the current Cargo toolchain.
+All artifacts are built with the toolchain pinned in `rust-toolchain.toml`; system services use `cargo rustc` and the kernel uses `cargo build`.
 Internal Cargo builds use `--locked` and follow the dependency resolution pinned by the workspace `Cargo.lock`.
 
 | Environment variable | Purpose |
