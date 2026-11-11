@@ -466,6 +466,78 @@ files:
     expect 0
     invoke 23
     expect 3
+    invoke 174
+    expect 0
+    invoke 175
+    expect 0
+    invoke 176
+    expect 0
+    invoke 177
+    expect 0
+    move $a0, $sp
+    addi.d $a1, $sp, 4
+    addi.d $a2, $sp, 8
+    invoke 148
+    expect 0
+    ld.w $t0, $sp, 0
+    bnez $t0, file_failure
+    ld.w $t0, $sp, 4
+    bnez $t0, file_failure
+    ld.w $t0, $sp, 8
+    bnez $t0, file_failure
+    li.d $a0, -1
+    li.d $a1, 1234
+    invoke 145
+    expect 0
+    invoke 175
+    expect 1234
+    li.d $a0, 0
+    li.d $a1, 0
+    invoke 145
+    expect 0
+    invoke 175
+    expect 0
+    li.d $a0, 5
+    li.d $a1, 0
+    li.d $a2, 7
+    invoke 147
+    expect 0
+    move $a0, $sp
+    addi.d $a1, $sp, 4
+    addi.d $a2, $sp, 8
+    invoke 148
+    expect 0
+    ld.w $t0, $sp, 0
+    li.d $t1, 5
+    bne $t0, $t1, file_failure
+    ld.w $t0, $sp, 4
+    bnez $t0, file_failure
+    ld.w $t0, $sp, 8
+    li.d $t1, 7
+    bne $t0, $t1, file_failure
+    li.d $a0, 0
+    li.d $a1, 0
+    li.d $a2, 0
+    invoke 147
+    expect 0
+    li.d $a0, 2000
+    invoke 144
+    expect 0
+    invoke 176
+    expect 2000
+    li.d $a0, 1000
+    invoke 146
+    expect 0
+    invoke 174
+    expect 1000
+    invoke 175
+    expect 1000
+    li.d $a0, 0
+    invoke 146
+    expect -1
+    li.d $a0, 0
+    invoke 144
+    expect -1
     li.d $t0, 8192
     add.d $sp, $sp, $t0
     ld.d $ra, $sp, 0

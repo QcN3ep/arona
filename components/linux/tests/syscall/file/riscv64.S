@@ -467,6 +467,78 @@ files:
     expect 0
     invoke 23
     expect 3
+    invoke 174
+    expect 0
+    invoke 175
+    expect 0
+    invoke 176
+    expect 0
+    invoke 177
+    expect 0
+    mv a0, sp
+    addi a1, sp, 4
+    addi a2, sp, 8
+    invoke 148
+    expect 0
+    lw t0, 0(sp)
+    bnez t0, file_failure
+    lw t0, 4(sp)
+    bnez t0, file_failure
+    lw t0, 8(sp)
+    bnez t0, file_failure
+    li a0, -1
+    li a1, 1234
+    invoke 145
+    expect 0
+    invoke 175
+    expect 1234
+    li a0, 0
+    li a1, 0
+    invoke 145
+    expect 0
+    invoke 175
+    expect 0
+    li a0, 5
+    li a1, 0
+    li a2, 7
+    invoke 147
+    expect 0
+    mv a0, sp
+    addi a1, sp, 4
+    addi a2, sp, 8
+    invoke 148
+    expect 0
+    lw t0, 0(sp)
+    li t1, 5
+    bne t0, t1, file_failure
+    lw t0, 4(sp)
+    bnez t0, file_failure
+    lw t0, 8(sp)
+    li t1, 7
+    bne t0, t1, file_failure
+    li a0, 0
+    li a1, 0
+    li a2, 0
+    invoke 147
+    expect 0
+    li a0, 2000
+    invoke 144
+    expect 0
+    invoke 176
+    expect 2000
+    li a0, 1000
+    invoke 146
+    expect 0
+    invoke 174
+    expect 1000
+    invoke 175
+    expect 1000
+    li a0, 0
+    invoke 146
+    expect -1
+    li a0, 0
+    invoke 144
+    expect -1
     li t0, 8192
     add sp, sp, t0
     ld ra, 0(sp)

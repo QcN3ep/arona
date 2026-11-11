@@ -53,6 +53,17 @@ pub(crate) struct Process<'a> {
     pub machine: Machine,
     pub umask: u16,
     pub status: ExitStatus,
+    pub credentials: Credentials,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Credentials {
+    pub uid: u32,
+    pub euid: u32,
+    pub suid: u32,
+    pub gid: u32,
+    pub egid: u32,
+    pub sgid: u32,
 }
 
 impl<'a> Process<'a> {
@@ -118,6 +129,7 @@ impl<'a> Process<'a> {
             cwd: None,
             machine,
             umask: 0o022,
+            credentials: Credentials::default(),
             status: ExitStatus { code: 0, signal: 0 },
         })
     }

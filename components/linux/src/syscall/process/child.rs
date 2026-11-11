@@ -90,6 +90,7 @@ pub(super) fn fork(
         machine: process.machine,
         umask: process.umask,
         status: crate::ExitStatus { code: 0, signal: 0 },
+        credentials: process.credentials,
     });
     Ok(pid)
 }
