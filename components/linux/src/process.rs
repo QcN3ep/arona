@@ -86,6 +86,18 @@ pub(crate) struct Process<'a> {
     pub vfork: Option<Rc<Vfork>>,
     pub umask: u16,
     pub status: ExitStatus,
+    pub credentials: Credentials,
+}
+
+/// Real, effective, and saved user and group identities inherited by child processes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Credentials {
+    pub uid: u32,
+    pub euid: u32,
+    pub suid: u32,
+    pub gid: u32,
+    pub egid: u32,
+    pub sgid: u32,
 }
 
 impl<'a> Process<'a> {
@@ -156,6 +168,7 @@ impl<'a> Process<'a> {
             machine,
             vfork: None,
             umask: 0o022,
+            credentials: Credentials::default(),
             status: ExitStatus { code: 0, signal: 0 },
         })
     }

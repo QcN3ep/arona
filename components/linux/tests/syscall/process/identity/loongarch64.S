@@ -231,6 +231,103 @@ identity_done:
     li.d $a3, 0
     invoke 260
     expect -10
+    fork_child credential_drop
+    reap $s6, 0, 0x2a00
+    fork_child credential_saved
+    reap $s6, 0, 0x2a00
+    li.d $a0, 42
+    invoke 94
+credential_drop:
+    li.d $a0, 1000
+    li.d $a1, 1000
+    invoke 143
+    expect 0
+    li.d $a0, 1000
+    li.d $a1, 1000
+    invoke 145
+    expect 0
+    li.d $a0, -1
+    li.d $a1, 0
+    invoke 145
+    expect -1
+    li.d $a0, -1
+    li.d $a1, 0
+    invoke 143
+    expect -1
+    li.d $a0, 0
+    invoke 146
+    expect -1
+    addi.d $a0, $sp, 24
+    addi.d $a1, $sp, 28
+    addi.d $a2, $sp, 32
+    invoke 148
+    expect 0
+    ld.w $t0, $sp, 24
+    li.d $t1, 1000
+    bne $t0, $t1, identity_failure
+    ld.w $t0, $sp, 28
+    bne $t0, $t1, identity_failure
+    ld.w $t0, $sp, 32
+    bne $t0, $t1, identity_failure
+    fork_child credential_inherited
+    reap $s6, 0, 0x2a00
+    li.d $a0, 42
+    invoke 94
+credential_inherited:
+    invoke 174
+    expect 1000
+    invoke 175
+    expect 1000
+    invoke 176
+    expect 1000
+    invoke 177
+    expect 1000
+    li.d $a0, 42
+    invoke 94
+credential_saved:
+    li.d $a0, 1000
+    li.d $a1, 1000
+    li.d $a2, 2000
+    invoke 149
+    expect 0
+    li.d $a0, 1000
+    li.d $a1, 1000
+    li.d $a2, 2000
+    invoke 147
+    expect 0
+    li.d $a0, 2000
+    li.d $a1, -1
+    invoke 145
+    expect -1
+    li.d $a0, 2000
+    li.d $a1, -1
+    invoke 143
+    expect -1
+    addi.d $a0, $sp, 24
+    addi.d $a1, $sp, 28
+    addi.d $a2, $sp, 32
+    invoke 148
+    expect 0
+    ld.w $t0, $sp, 24
+    li.d $t1, 1000
+    bne $t0, $t1, identity_failure
+    ld.w $t0, $sp, 28
+    bne $t0, $t1, identity_failure
+    ld.w $t0, $sp, 32
+    li.d $t1, 2000
+    bne $t0, $t1, identity_failure
+    li.d $a0, -1
+    li.d $a1, 2000
+    invoke 145
+    expect 0
+    invoke 175
+    expect 2000
+    li.d $a0, -1
+    li.d $a1, 2000
+    invoke 143
+    expect 0
+    invoke 177
+    expect 2000
     li.d $a0, 42
     invoke 94
 session_child:

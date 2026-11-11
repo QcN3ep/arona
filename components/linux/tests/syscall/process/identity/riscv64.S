@@ -232,6 +232,103 @@ identity_done:
     li a3, 0
     invoke 260
     expect -10
+    fork_child credential_drop
+    reap s6, 0, 0x2a00
+    fork_child credential_saved
+    reap s6, 0, 0x2a00
+    li a0, 42
+    invoke 94
+credential_drop:
+    li a0, 1000
+    li a1, 1000
+    invoke 143
+    expect 0
+    li a0, 1000
+    li a1, 1000
+    invoke 145
+    expect 0
+    li a0, -1
+    li a1, 0
+    invoke 145
+    expect -1
+    li a0, -1
+    li a1, 0
+    invoke 143
+    expect -1
+    li a0, 0
+    invoke 146
+    expect -1
+    addi a0, sp, 24
+    addi a1, sp, 28
+    addi a2, sp, 32
+    invoke 148
+    expect 0
+    lw t0, 24(sp)
+    li t1, 1000
+    bne t0, t1, identity_failure
+    lw t0, 28(sp)
+    bne t0, t1, identity_failure
+    lw t0, 32(sp)
+    bne t0, t1, identity_failure
+    fork_child credential_inherited
+    reap s6, 0, 0x2a00
+    li a0, 42
+    invoke 94
+credential_inherited:
+    invoke 174
+    expect 1000
+    invoke 175
+    expect 1000
+    invoke 176
+    expect 1000
+    invoke 177
+    expect 1000
+    li a0, 42
+    invoke 94
+credential_saved:
+    li a0, 1000
+    li a1, 1000
+    li a2, 2000
+    invoke 149
+    expect 0
+    li a0, 1000
+    li a1, 1000
+    li a2, 2000
+    invoke 147
+    expect 0
+    li a0, 2000
+    li a1, -1
+    invoke 145
+    expect -1
+    li a0, 2000
+    li a1, -1
+    invoke 143
+    expect -1
+    addi a0, sp, 24
+    addi a1, sp, 28
+    addi a2, sp, 32
+    invoke 148
+    expect 0
+    lw t0, 24(sp)
+    li t1, 1000
+    bne t0, t1, identity_failure
+    lw t0, 28(sp)
+    bne t0, t1, identity_failure
+    lw t0, 32(sp)
+    li t1, 2000
+    bne t0, t1, identity_failure
+    li a0, -1
+    li a1, 2000
+    invoke 145
+    expect 0
+    invoke 175
+    expect 2000
+    li a0, -1
+    li a1, 2000
+    invoke 143
+    expect 0
+    invoke 177
+    expect 2000
     li a0, 42
     invoke 94
 session_child:
