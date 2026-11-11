@@ -61,9 +61,16 @@ mappings:
     result -17
     mv a0, s0
     li a1, 4096
+    li a2, 3
     li a3, 0x32
+    li a4, -1
+    li a5, 0
     memcall 222
-    result -95
+    bne a0, s0, memory_failure
+    lbu t0, 0(s0)
+    bnez t0, memory_failure
+    li t0, 91
+    sb t0, 0(s0)
     mv a0, s0
     li a1, -1
     li a3, 0x22
