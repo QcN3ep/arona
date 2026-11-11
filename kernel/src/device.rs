@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 设备资源授权、用户映射与中断投递。
+//! Device resource granting, user mappings, and interrupt delivery.
 
-// TODO: 支持设备热插拔及对应的设备目录更新与授权回收。
+// TODO: Support device hot-plugging with the corresponding device directory updates and grant reclamation.
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -59,18 +59,18 @@ impl From<InterruptError> for DeviceError {
 
 /// # Safety
 ///
-/// 操作须在中断控制器所属处理器执行并保留内核映射。
+/// Operations must run on the processor that owns the interrupt controller and must retain kernel mappings.
 #[derive(Clone)]
 pub struct DeviceSet(());
 
 /// # Safety
 ///
-/// 操作及析构须在中断控制器所属处理器执行并保留内核映射。
+/// Operations and drop must run on the processor that owns the interrupt controller and must retain kernel mappings.
 pub struct Device {
     reference: DeviceReference,
 }
 
-/// 不计入开放句柄，最后一个 Device 析构时撤销授权。
+/// Not counted as an open handle; the grant is revoked when the last Device is dropped.
 #[derive(Clone)]
 pub struct DeviceReference(HeapArc<GrantToken>);
 
@@ -123,7 +123,7 @@ struct IrqRoute {
 impl DeviceSet {
     /// # Safety
     ///
-    /// 初始化及设备操作须在中断控制器所属处理器执行并保留内核映射。
+    /// Initialization and device operations must run on the processor that owns the interrupt controller and must retain kernel mappings.
     pub fn initialize(hardware: &HardwareInfo) -> Result<Self, DeviceError> {
         let _interrupts = InterruptGuard::new();
         let mut initialized = false;
@@ -359,7 +359,7 @@ impl Registry {
         for device in devices.iter_mut() {
             device.group = Some(device.hardware.instance_id.0);
         }
-        // 共享 MMIO 页或 IRQ 的设备属于同一授权组。
+        // Devices sharing an MMIO page or IRQ belong to the same grant group.
         for left in 0..devices.len() {
             for right in 0..left {
                 if shares_resources(&devices[left], &devices[right])? {

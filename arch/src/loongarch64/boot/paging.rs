@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 临时启动页表、处理器映射配置与高半区切换。
+//! Temporary boot page tables, processor mapping configuration, and higher-half switchover.
 
 use crate::{loongarch64::paging::refill, paging::PAGE_TABLE_WINDOW};
 
@@ -50,18 +50,18 @@ unsafe extern "C" {
 
 /// # Safety
 ///
-/// 处理器须关闭中断并在物理地址执行，页表与启动栈须可独占读写。
+/// The processor must have interrupts disabled and be executing at a physical address; the page tables and boot stack must be exclusively readable and writable.
 #[unsafe(link_section = ".text.entry.rust")]
 pub(super) unsafe extern "C" fn enter(system_table: usize) -> ! {
     let start = core::ptr::addr_of!(_kernel_phys_start) as usize;
 
-    // SAFETY: 链接脚本定义的页表区域须按页对齐且可独占写入。
+    // SAFETY: The page table region defined by the linker script must be page-aligned and exclusively writable.
     let tables = unsafe { &mut *core::ptr::addr_of_mut!(_boot_tables_phys) };
     tables.init(start);
 
     let entry: usize;
     let trap: usize;
-    // SAFETY: 目标符号须是链接脚本提供的高半区入口。
+    // SAFETY: The target symbol must be the higher-half entry provided by the linker script.
     unsafe {
         core::arch::asm!(
             "la.abs {entry}, {virtual_entry}",
@@ -74,7 +74,7 @@ pub(super) unsafe extern "C" fn enter(system_table: usize) -> ! {
         );
     }
 
-    // SAFETY: 处理器须关闭中断，页表与物理 refill 入口须可用。
+    // SAFETY: The processor must have interrupts disabled, and the page tables and physical refill entry must be available.
     unsafe {
         write_csr::<0x1a>(&raw const tables.root as usize); // PGDH
         write_csr::<0x19>(0); // PGDL
@@ -85,7 +85,7 @@ pub(super) unsafe extern "C" fn enter(system_table: usize) -> ! {
         write_csr::<0x8e>(12); // TLBREHI.PS
         write_csr::<0x88>(refill as *const () as usize); // TLBRENTRY
         write_csr::<0xc>(trap); // EENTRY
-        write_csr::<0x180>(0x11); // 低地址 DMW 维持切换期间的取指。
+        write_csr::<0x180>(0x11); // Low-address DMW keeps instruction fetch working during the switchover.
         write_csr::<0x181>(MMIO_BASE | 1);
         write_csr::<0x182>(FIRMWARE_BASE | 0x11);
         write_csr::<0x183>(0);
@@ -95,7 +95,7 @@ pub(super) unsafe extern "C" fn enter(system_table: usize) -> ! {
             "dbar 0",
             "csrwr $t0, 0x0",
             "jirl $zero, $t1, 0",
-            in("$t0") 0xb0usize, // PG=1，DA=0，IE=0，缓存属性为 CC。
+            in("$t0") 0xb0usize, // PG=1, DA=0, IE=0, cache attribute is CC.
             in("$t1") entry,
             in("$a0") system_table,
             options(noreturn),
@@ -117,7 +117,7 @@ impl PageTables {
         self.root.link::<3>(PAGE_TABLE_WINDOW, &self.window_l2);
         self.window_l2.link::<2>(PAGE_TABLE_WINDOW, &self.window_l1);
         let window_table = core::ptr::addr_of!(_boot_tables_window_phys) as usize;
-        // SAFETY: 分页启用前，页表区可经物理地址独占写入。
+        // SAFETY: Before paging is enabled, the page table region can be exclusively written via physical addresses.
         unsafe { (&mut *(window_table as *mut PageTable)).clear() };
         self.window_l1
             .link_address::<1>(PAGE_TABLE_WINDOW, window_table);
@@ -173,7 +173,7 @@ impl PageTable {
     #[inline(always)]
     fn write(&mut self, index: usize, value: usize) {
         let entry = self.entries.as_mut_ptr().wrapping_add(index & 511);
-        // SAFETY: entry 位于独占页表内；内联存储避免分页前调用高地址的 core 调试检查。
+        // SAFETY: The entry lies in an exclusively owned page table; the inline assembly store avoids calling high-address core debug checks before paging is enabled.
         unsafe {
             core::arch::asm!(
                 "st.d {value}, {entry}, 0",
@@ -187,10 +187,10 @@ impl PageTable {
 
 /// # Safety
 ///
-/// 处理器须允许访问 CSR，value 须符合该寄存器的配置约束。
+/// The processor must be allowed to access the CSR, and `value` must satisfy the register's configuration constraints.
 #[inline(always)]
 unsafe fn write_csr<const CSR: u32>(value: usize) {
-    // SAFETY: CSR 须可写，value 须合法。
+    // SAFETY: The CSR must be writable, and `value` must be valid.
     unsafe {
         core::arch::asm!(
             "csrwr {value}, {csr}",

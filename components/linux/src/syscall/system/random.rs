@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 熵源读取与用户缓冲区复制。
+//! Entropy source reads and userspace buffer copying.
 
 use super::{Pending as Operation, outcome};
 use crate::{

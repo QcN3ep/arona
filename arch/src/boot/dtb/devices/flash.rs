@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 按需解释 CFI Flash 的总线宽度。
+//! Interpret the CFI Flash bus width on demand.
 
 use super::{super::Result, attribute};
 use kernel::{HardwareDeviceInfo, HardwareInfo};

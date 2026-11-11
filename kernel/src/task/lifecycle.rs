@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Task 的创建归属、运行资源回收与退出等待。
+//! Task creation ownership, runtime resource reclamation, and exit waiting.
 
 use alloc::vec::Vec;
 use arrayvec::ArrayVec;
@@ -108,7 +108,7 @@ impl From<ThreadError> for TaskError {
 
 /// # Safety
 ///
-/// 须在调度器所属处理器操作并保留内核映射，控制引用析构时须关闭本地中断。
+/// Must operate on the processor that owns the scheduler and must retain kernel mappings; local interrupts must be disabled when the control reference is dropped.
 #[derive(Clone)]
 pub struct Task(HeapArc<TaskRecord>);
 
@@ -848,7 +848,7 @@ impl Drop for ReservedHandles {
 
 impl TaskRegistry {
     fn create(&mut self, creator: Option<Creator>) -> Result<Task, TaskError> {
-        // 子 Task 排在创建者之后，使终止可按祖先顺序单次遍历。
+        // Child Tasks are ordered after their creator so that termination can process Tasks in ancestor-first order in a single pass.
         let position = match &creator {
             None | Some(Creator::Thread(_)) => &mut self.first,
             Some(Creator::Task(parent)) => {

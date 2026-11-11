@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 读取启动归档并定位 init 映像。
+//! Read the boot archive and locate the init image.
 
 mod elf;
 

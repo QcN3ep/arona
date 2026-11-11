@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 文件访问接口与文件服务。
+//! File access interface and file service.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
-// TODO: 接入 RAM 文件系统与 FAT32。
+// TODO: Integrate a RAM filesystem and FAT32.
 
 pub mod archive;
 pub mod block;

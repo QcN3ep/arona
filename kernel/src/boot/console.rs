@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 启动控制台映射与日志 Sink 的交接。
+//! Handoff of the boot console mapping and log Sink.
 
 use crate::logger::{LOGGER, Sink, SinkError, SinkHandle};
 use spin::Mutex;

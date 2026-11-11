@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 时钟、熵源与系统信息。
+//! Clocks, entropy sources, and system information.
 
 mod clock;
 mod random;

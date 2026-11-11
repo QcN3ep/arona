@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 本地计数器状态与纳秒换算。
+//! Local counter state and nanosecond conversion.
 
 use kernel::hardware::{self, cpu::InterruptState, timer::TimerError};
 use spin::{Mutex, MutexGuard};

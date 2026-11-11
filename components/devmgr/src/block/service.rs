@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 块设备会话分发、队列背压与完成交付。
+//! Block device session dispatch, queue backpressure, and completion delivery.
 
 use alloc::vec::Vec;
 use runtime::{

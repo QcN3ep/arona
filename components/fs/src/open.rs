@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 文件打开、创建与截断选项。
+//! File open, create, and truncate options.
 
 use crate::Error;
 

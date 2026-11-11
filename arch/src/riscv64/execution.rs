@@ -73,13 +73,13 @@ impl Execution for RiscvExecution {
     fn user_state(&self, storage: &ContextStorage) -> Result<UserState, ExecutionError> {
         check_environment()?;
         let context = user_context(storage)?;
-        // SAFETY: 上下文须由当前处理器在关中断时独占。
+        // SAFETY: The context must be exclusively held by the current processor with interrupts disabled.
         let frame = unsafe { &(*context).frame };
         Ok(UserState {
             pc: frame.pc,
             registers: frame.registers,
             floating: if frame.status & FS != 0 {
-                // SAFETY: FS 非零时入口须已保存全部浮点寄存器。
+                // SAFETY: When FS is non-zero, the entry must have saved all floating-point registers.
                 unsafe { frame.floating.assume_init() }
             } else {
                 [0; 32]
@@ -97,7 +97,7 @@ impl Execution for RiscvExecution {
         check_environment()?;
         self.user_entry(state)?;
         let context = user_context(storage)?;
-        // SAFETY: 上下文须由当前处理器在关中断时独占。
+        // SAFETY: The context must be exclusively held by the current processor with interrupts disabled.
         let frame = unsafe { &mut (*context).frame };
         frame.pc = state.pc;
         frame.registers = state.registers;
@@ -114,14 +114,14 @@ impl Execution for RiscvExecution {
     ) -> Result<(), ExecutionError> {
         check_environment()?;
         let destination = pointer::<Context>(storage)?;
-        // SAFETY: 入口状态须由当前处理器在关中断时独占。
+        // SAFETY: The entry state must be exclusively held by the current processor with interrupts disabled.
         let state = unsafe { &mut *core::ptr::addr_of_mut!(trap::STATE) };
         if matches!(start, ContextStart::Current) && !state.context.is_null() {
             return Err(ExecutionError::InvalidState);
         }
         let entry = EntryContext::initial(start, size_of::<TrapFrame>(), 2)?;
         let (status, gp, tp): (usize, usize, usize);
-        // SAFETY: 当前处理器须允许读取特权状态和内核 ABI 寄存器。
+        // SAFETY: The current processor must allow reading the privileged status and kernel ABI registers.
         unsafe {
             asm!(
                 "csrr {status}, sstatus",
@@ -171,7 +171,7 @@ impl Execution for RiscvExecution {
                 frame.registers[10] = entry.argument;
             }
         }
-        // SAFETY: destination 须为该上下文独占且按声明布局分配的稳定存储。
+        // SAFETY: destination must be stable storage exclusively owned by this context and allocated according to the declared layout.
         unsafe {
             destination.write(Context {
                 frame,
@@ -194,7 +194,7 @@ impl Execution for RiscvExecution {
         check_environment()?;
         let current = pointer::<Context>(current)?;
         let next = pointer::<Context>(next)?;
-        // SAFETY: 两份上下文须独占且已初始化，入口状态不得并发访问。
+        // SAFETY: Both contexts must be exclusive and initialized, and the entry state must not be accessed concurrently.
         unsafe {
             activate(
                 current,
@@ -210,7 +210,7 @@ impl Execution for RiscvExecution {
     fn switch_current(&self, next: &ContextStorage) -> Result<(), ExecutionError> {
         check_environment()?;
         let next = pointer::<Context>(next)?;
-        // SAFETY: 当前上下文及目标存储须存活，入口状态须由当前处理器独占。
+        // SAFETY: The current context and target storage must be alive, and the entry state must be exclusively held by the current processor.
         unsafe {
             let state = &mut *core::ptr::addr_of_mut!(trap::STATE);
             let current = state.context.cast::<Context>();
@@ -228,7 +228,7 @@ impl Execution for RiscvExecution {
         check_environment()?;
         let current = pointer::<Context>(current)?;
         let next = pointer::<Context>(next)?;
-        // SAFETY: 两份上下文须独占且已初始化，目标现场及其栈须保持存活和映射。
+        // SAFETY: Both contexts must be exclusive and initialized, and the target frame and its stack must remain alive and mapped.
         unsafe {
             activate(
                 current,
@@ -243,7 +243,7 @@ impl Execution for RiscvExecution {
 
 fn user_context(storage: &ContextStorage) -> Result<*mut Context, ExecutionError> {
     let context = pointer::<Context>(storage)?;
-    // SAFETY: 上下文和入口状态须由当前处理器在关中断时独占。
+    // SAFETY: The context and entry state must be exclusively held by the current processor with interrupts disabled.
     unsafe {
         validate_user_access(
             context,
@@ -262,14 +262,14 @@ fn check_environment() -> Result<(), ExecutionError> {
         return Err(ExecutionError::InterruptsEnabled);
     }
     let status: usize;
-    // SAFETY: 当前处理器须允许读取 sstatus。
+    // SAFETY: The current processor must allow reading sstatus.
     unsafe {
         asm!("csrr {}, sstatus", out(reg) status, options(nomem, nostack));
     }
     if status & (FS | VS) != 0 {
         return Err(ExecutionError::ExtensionsEnabled);
     }
-    // SAFETY: 入口状态须由当前处理器独占，访问期间中断须关闭。
+    // SAFETY: The entry state must be exclusively held by the current processor, and interrupts must be disabled during access.
     let state = unsafe { &*core::ptr::addr_of!(trap::STATE) };
     if state.handler.is_none() {
         return Err(ExecutionError::NotInstalled);
@@ -281,13 +281,13 @@ fn check_environment() -> Result<(), ExecutionError> {
 }
 
 pub(super) extern "C" fn capture(frame: *mut TrapFrame) -> *mut TrapFrame {
-    // SAFETY: frame 须为当前入口的完整现场，入口状态和当前上下文须由当前处理器独占。
+    // SAFETY: frame must be the complete frame of the current entry, and the entry state and current context must be exclusively held by the current processor.
     unsafe { capture_frame(frame, &*core::ptr::addr_of!(trap::STATE)) }
 }
 
 /// # Safety
 ///
-/// 两份上下文及其栈须保持存活和映射，中断与浮点须关闭。
+/// Both contexts and their stacks must remain alive and mapped, and interrupts and floating point must be disabled.
 #[unsafe(naked)]
 unsafe extern "C" fn switch(_current: *mut KernelContinuation, _next: *const Context) {
     naked_asm!(
@@ -317,7 +317,7 @@ unsafe extern "C" fn switch(_current: *mut KernelContinuation, _next: *const Con
 
 /// # Safety
 ///
-/// 目标现场及其栈须可访问，入口状态须已匹配目标，中断与浮点须关闭。
+/// The target frame and its stack must be accessible, the entry state must already match the target, and interrupts and floating point must be disabled.
 #[unsafe(naked)]
 unsafe extern "C" fn restore(_next: *const Context) -> ! {
     naked_asm!(
@@ -474,14 +474,14 @@ extern "C" fn restore_floating(_frame: &TrapFrame) {
 
 /// # Safety
 ///
-/// sp 与首参数须指向同一有效现场，入口状态须已匹配目标且中断须关闭。
+/// sp and the first argument must point to the same valid frame, the entry state must already match the target, and interrupts must be disabled.
 #[unsafe(naked)]
 pub(super) unsafe extern "C" fn restore_frame(_frame: &TrapFrame) -> ! {
     naked_asm!(
         ".option push",
         ".option arch, +a",
         "call {restore_floating}",
-        // 清除上一个上下文遗留的 LR/SC 预约，写入的 x0 槽始终为零。
+        // Clear the LR/SC reservation left by the previous context; the written x0 slot is always zero.
         "sc.d zero, zero, (sp)",
         "ld t0, {pc}(sp)",
         "csrw sepc, t0",

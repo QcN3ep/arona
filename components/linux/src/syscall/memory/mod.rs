@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-// TODO: 支持 msync 与 mremap。
+// TODO: Support msync and mremap.
 
 use core::ops::Range;
 use runtime::memory::Permissions;
@@ -42,7 +42,7 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
     if flags & !(3 | MAP_ANONYMOUS | MAP_FIXED | MAP_FIXED_NOREPLACE) != 0
         || flags & MAP_FIXED != 0 && flags & MAP_FIXED_NOREPLACE == 0
     {
-        // TODO: 支持 MAP_FIXED 的原子替换。
+        // TODO: Support atomic replacement for MAP_FIXED.
         return Err(EOPNOTSUPP);
     }
     let length = length
@@ -70,7 +70,7 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
         return Ok(Pending::Complete(Some(result)));
     }
     if flags & 3 != MAP_PRIVATE {
-        // TODO: 支持文件 MAP_SHARED 并与文件服务同步数据。
+        // TODO: Support file MAP_SHARED and synchronize data with the file service.
         return Err(EOPNOTSUPP);
     }
     let description = Rc::clone(

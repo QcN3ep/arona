@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! JBD2 事务提交与恢复。
+//! JBD2 transaction commit and recovery.
 
 // REFERENCE: https://www.kernel.org/doc/html/v6.12/filesystems/ext4/journal.html
 

@@ -13,16 +13,16 @@ use crate::{
 
 /// # Safety
 ///
-/// 操作及析构期间须保留内存管理器所需的内核映射。
+/// Operations and drop must retain the kernel mappings required by the memory manager.
 pub struct Event {
     reference: EventReference,
 }
 
-/// 保持对象存储存活，不计入开放引用。
+/// Keeps the object storage alive; not counted as an open reference.
 ///
 /// # Safety
 ///
-/// 操作及析构期间须保留内存管理器所需的内核映射。
+/// Operations and drop must retain the kernel mappings required by the memory manager.
 #[derive(Clone)]
 pub struct EventReference {
     event: HeapArc<Mutex<EventState>>,

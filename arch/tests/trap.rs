@@ -63,12 +63,12 @@ unsafe extern "C" {
 
 /// # Safety
 ///
-/// 只能由测试启动入口在高半区映射和启动栈有效且本地中断关闭时调用。
+/// May only be called by the test boot entry point when the higher-half mapping and boot stack are valid and local interrupts are disabled.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn __wrap__start_native() -> ! {
     let start = core::ptr::addr_of!(_sbss) as *mut u8;
     let length = core::ptr::addr_of!(_ebss) as usize - start as usize;
-    // SAFETY: 该范围须为启动入口尚未使用的独占可写 BSS。
+    // SAFETY: The range must be exclusive writable BSS not yet used by the boot entry point.
     unsafe { start.write_bytes(0, length) };
     uart().init().unwrap();
     uart()
@@ -277,7 +277,7 @@ fn enter_user() -> ! {
 }
 
 fn uart() -> Uart {
-    // SAFETY: UART 须为当前 ISA 的启动 UART 映射，测试访问须串行执行。
+    // SAFETY: UART must be the boot UART mapping of the current ISA, and test accesses must be serialized.
     unsafe { Uart::new(UART) }
 }
 

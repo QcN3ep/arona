@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 挂载恢复与孤儿 inode 回收。
+//! Mount recovery and orphan inode reclamation.
 
 use super::{half, inode::Inode, journal::Journal, volume::Volume, word};
 use crate::{Error, block::BLOCK_SIZE};

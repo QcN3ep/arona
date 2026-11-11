@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 用户 I/O 缓冲区快照与分散复制。
+//! Userspace I/O buffer snapshots and scattered copying.
 
 use alloc::vec::Vec;
 

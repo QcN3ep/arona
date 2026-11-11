@@ -57,12 +57,12 @@ unsafe extern "C" {
 
 /// # Safety
 ///
-/// 只能由测试入口在启动映射与栈有效且本地中断关闭时调用，参数须为固件交付值。
+/// May only be called by the test entry point when the boot mapping and stack are valid and local interrupts are disabled; the arguments must be the values delivered by the firmware.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
     let start = core::ptr::addr_of!(_sbss) as *mut u8;
     let length = core::ptr::addr_of!(_ebss) as usize - start as usize;
-    // SAFETY: 该范围须为启动入口尚未使用的独占可写 BSS。
+    // SAFETY: The range must be exclusive writable BSS not yet used by the boot entry point.
     unsafe { start.write_bytes(0, length) };
     uart().init().unwrap();
     uart()
@@ -81,7 +81,7 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
         )
         .unwrap();
     let (cpu_id, tree, program) = isa::boot(first, second);
-    // SAFETY: 测试须独占该硬件描述，初始化后只读。
+    // SAFETY: The test must exclusively own this hardware description; it is read-only after initialization.
     let hardware = unsafe { &mut *core::ptr::addr_of_mut!(HARDWARE) };
     tree.dump(hardware).unwrap();
     let image = arch::boot::kernel_image();
@@ -238,7 +238,7 @@ fn select_program() -> &'static str {
     let mut input = [0; 16];
     let mut length = 0;
     loop {
-        // SAFETY: UART 须保持可读的启动映射且由测试独占。
+        // SAFETY: UART must retain a readable boot mapping and be exclusively used by the test.
         let byte = unsafe {
             while ((UART + 5) as *const u8).read_volatile() & 1 == 0 {
                 core::hint::spin_loop();
@@ -473,24 +473,24 @@ fn handle(trap: Trap) -> TrapOutcome {
 }
 
 fn uart_interrupt(enabled: bool) {
-    // SAFETY: 测试须独占启动 UART，访问须符合 16550 寄存器布局。
+    // SAFETY: The test must exclusively own the boot UART, and accesses must follow the 16550 register layout.
     unsafe {
         ((UART + 1) as *mut u8).write_volatile(if enabled { 2 } else { 0 });
     }
     #[cfg(target_arch = "riscv64")]
-    // SAFETY: 执行环境须允许执行 I/O 屏障。
+    // SAFETY: The execution environment must permit executing an I/O barrier.
     unsafe {
         core::arch::asm!("fence iorw, iorw", options(nostack))
     };
     #[cfg(target_arch = "loongarch64")]
-    // SAFETY: 执行环境须允许执行 I/O 屏障。
+    // SAFETY: The execution environment must permit executing an I/O barrier.
     unsafe {
         core::arch::asm!("dbar 0", options(nostack))
     };
 }
 
 fn uart() -> Uart {
-    // SAFETY: UART 须为当前 ISA 的启动映射，测试须独占访问。
+    // SAFETY: UART must be the boot mapping of the current ISA, and the test must have exclusive access.
     unsafe { Uart::new(UART) }
 }
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 系统调用的期限与计时器等待。
+//! Syscall deadlines and timer waiting.
 
 use super::abi::{EFAULT, EINVAL, EIO, ENOMEM, Errno};
 use crate::process::Process;

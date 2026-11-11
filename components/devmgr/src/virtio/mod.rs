@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! VirtIO 现代 transport 的协商、队列配置与复位。
+//! Negotiation, queue configuration, and reset for the VirtIO modern transport.
 
 mod mmio;
 mod pci;

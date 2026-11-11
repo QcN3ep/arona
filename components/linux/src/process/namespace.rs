@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 进程、线程标识、会话及父子状态。
+//! Linux process and thread identifiers, sessions, and parent-child state.
 
 use super::signal::{self, Info, Signals, ThreadSignals};
 use crate::{

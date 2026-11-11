@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! RTC 会话的时间查询与关闭处理。
+//! Time queries and close handling for RTC sessions.
 
 use super::{Rtc, session::NOW};
 use crate::{

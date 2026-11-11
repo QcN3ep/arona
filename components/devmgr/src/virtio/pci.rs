@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! VirtIO PCI capability 校验与现代 memory transport。
+//! VirtIO PCI capability validation and the modern memory transport.
 
 use runtime::{Device, Handle, device::Mmio};
 

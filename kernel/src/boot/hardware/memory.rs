@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 启动内存区域表及保留操作。
+//! Boot memory region table and reservation operations.
 
 use arrayvec::ArrayVec;
 
@@ -8,7 +8,7 @@ use crate::memory::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRan
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MemoryInfo {
-    /// 按地址递增排列、互不重叠并覆盖全部 RAM 的区域表。
+    /// Region table ordered by increasing address, non-overlapping, and covering all RAM.
     pub regions: ArrayVec<MemoryRegion, MAX_MEMORY_REGIONS>,
 }
 
@@ -62,7 +62,7 @@ impl MemoryInfo {
         Ok(())
     }
 
-    /// 检查整个范围是否位于允许映射的 RAM 中。
+    /// Checks whether the entire range lies within mappable RAM.
     pub fn is_mappable(&self, range: PhysRange) -> bool {
         if range.start >= range.end {
             return false;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 解析平台设备的中断输入并关联设备表中的控制器。
+//! Parse platform device interrupt inputs and associate them with controllers in the device table.
 
 use arrayvec::ArrayVec;
 use fdt::properties::values::U32List;

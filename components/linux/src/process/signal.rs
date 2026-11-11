@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 信号处置、待投递队列与线程信号状态。
+//! Signal dispositions, pending delivery queue, and thread signal state.
 
 pub(crate) mod delivery;
 pub(crate) mod frame;

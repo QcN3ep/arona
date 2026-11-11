@@ -71,9 +71,9 @@ impl From<MmuError> for MemoryError {
 
 /// # Safety
 ///
-/// 操作及句柄析构期间须关闭本地中断并保留物理访问窗口。
-/// 启用 direct map 后，当前页表须保留共享内核映射。
-/// 修改映射前须停止其他处理器访问对应范围并清除其 TLB 项。
+/// Local interrupts must be disabled and the physical access window retained during operations and handle drop.
+/// After enabling the direct map, the current page table must retain the shared kernel mapping.
+/// Before modifying mappings, other processors must stop accessing the affected range and clear their TLB entries.
 pub struct MemoryManager {
     allocator: Once<Mutex<FrameAllocator>>,
     kernel_space: Once<AddressSpace>,
@@ -91,7 +91,7 @@ impl MemoryManager {
 
     /// # Safety
     ///
-    /// 初始化期间须停止其他处理器使用内存管理器。
+    /// Other processors must stop using the memory manager during initialization.
     pub fn initialize_direct_map(&self) -> Result<(), MemoryError> {
         let space = self.kernel_space.get().ok_or(MemoryError::NotInitialized)?;
         self.direct_map.initialize(space)
@@ -160,7 +160,7 @@ impl MemoryManager {
         self.heap_allocator.stats()
     }
 
-    /// 回收堆缓存，返回归还的页框数。
+    /// Reclaims the heap cache and returns the number of page frames reclaimed.
     pub fn reclaim_heap(&self) -> usize {
         self.heap_allocator.reclaim()
     }
@@ -195,7 +195,7 @@ impl MemoryManager {
 
     /// # Safety
     ///
-    /// 保留页须已脱离管理器之外的代码与硬件访问。
+    /// Reserved pages must no longer be accessed by code outside the manager or by hardware.
     pub fn reclaim_reserved(&self, range: PhysRange, pool: FramePool) -> Result<(), MemoryError> {
         self.allocator().lock().reclaim_reserved(range, pool)
     }
@@ -279,7 +279,7 @@ pub fn try_manager() -> Option<&'static MemoryManager> {
 
 /// # Safety
 ///
-/// 本地中断须关闭，物理访问窗口须可用，交接 RAM 须已脱离外部使用。
+/// Local interrupts must be disabled, the physical access window must be available, and the handed-over RAM must no longer be in external use.
 pub fn initialize(regions: &[MemoryRegion]) -> Result<(), MemoryError> {
     let mut initialized = false;
     MEMORY_MANAGER

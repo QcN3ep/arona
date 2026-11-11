@@ -15,7 +15,7 @@ pub(crate) fn invoke(
 }
 
 pub(crate) fn invoke_return(handle: abi::Handle, method: u64, arguments: [u64; 5]) -> abi::Return {
-    // SAFETY: 调用方须维持陷入期间的缓冲区有效性与输出独占性。
+    // SAFETY: The caller must maintain buffer validity and output exclusivity during the trap.
     unsafe { raw(handle, method, arguments) }
 }
 
@@ -31,12 +31,12 @@ pub(crate) fn check(result: abi::Return) -> Result<[u64; 2], Error> {
 
 /// # Safety
 ///
-/// 缓冲区须在调用期间保持有效，输出范围须独占且可写。
+/// The buffer must remain valid during the call, and the output range must be exclusive and writable.
 #[cfg(target_arch = "riscv64")]
 unsafe fn raw(handle: abi::Handle, mut method: u64, arguments: [u64; 5]) -> abi::Return {
     let mut first = arguments[0];
     let mut second = arguments[1];
-    // SAFETY: 调用方须满足缓冲区有效性和别名要求，Trap 须保留其余寄存器。
+    // SAFETY: The caller must satisfy the buffer validity and aliasing requirements, and the Trap must preserve the remaining registers.
     unsafe {
         core::arch::asm!("ecall",
             in("a7") handle.raw(), inlateout("a0") method,
@@ -52,12 +52,12 @@ unsafe fn raw(handle: abi::Handle, mut method: u64, arguments: [u64; 5]) -> abi:
 
 /// # Safety
 ///
-/// 缓冲区须在调用期间保持有效，输出范围须独占且可写。
+/// The buffer must remain valid during the call, and the output range must be exclusive and writable.
 #[cfg(target_arch = "loongarch64")]
 unsafe fn raw(handle: abi::Handle, mut method: u64, arguments: [u64; 5]) -> abi::Return {
     let mut first = arguments[0];
     let mut second = arguments[1];
-    // SAFETY: 调用方须满足缓冲区有效性和别名要求，Trap 须保留其余寄存器。
+    // SAFETY: The caller must satisfy the buffer validity and aliasing requirements, and the Trap must preserve the remaining registers.
     unsafe {
         core::arch::asm!("syscall 0",
             in("$a7") handle.raw(), inlateout("$a0") method,
@@ -73,7 +73,7 @@ unsafe fn raw(handle: abi::Handle, mut method: u64, arguments: [u64; 5]) -> abi:
 
 /// # Safety
 ///
-/// 仅用于尚未实现原生陷入入口的构建目标。
+/// Only used for build targets that do not yet implement a native trap entry.
 #[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
 unsafe fn raw(_handle: abi::Handle, _method: u64, _arguments: [u64; 5]) -> abi::Return {
     abi::Return::failure(abi::Error::Unsupported)

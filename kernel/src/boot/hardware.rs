@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 处理器、内存及设备的硬件描述。
+//! Hardware description of processors, memory, and devices.
 
 mod devices;
 mod interrupts;
@@ -63,6 +63,6 @@ impl HardwareInfo {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CpuInfo {
-    /// 固件提供的硬件 ID。
+    /// Hardware ID provided by the firmware.
     pub hardware_id: u64,
 }

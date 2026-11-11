@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 固定 QEMU 平台的可信一致性 DMA。
+//! Trusted coherent DMA for the fixed QEMU platform.
 
-// TODO: 实现 IOMMU 隔离并按实际 RAM 与设备拓扑确定 DMA 寻址范围。
+// TODO: Implement IOMMU isolation and determine the DMA address range from the actual RAM and device topology.
 
 use kernel::{
     HardwareDeviceInfo, HardwareDeviceLocation,

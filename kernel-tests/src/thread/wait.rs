@@ -281,7 +281,7 @@ fn exit_completion_order() {
                 hardware::cpu().idle_until_interrupt();
             }
         } else {
-            // 保持中断关闭，先提交退出再处理已到期的 timer。
+            // Keep interrupts disabled; commit the exit first, then handle the expired timer.
             while hardware::timer().now_ns().unwrap() < deadline {
                 core::hint::spin_loop();
             }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 日志缓冲、持久化与 UART 输出。
+//! Log buffering, persistence, and UART output.
 
 use alloc::{collections::VecDeque, format, vec, vec::Vec};
 use core::fmt::Write;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 身份查询、会话与进程组操作。
+//! Linux identity queries, sessions, and process group operations.
 
 use crate::{
     process::Process,
@@ -13,7 +13,7 @@ pub(super) fn dispatch(
     args: [usize; 6],
 ) -> Option<SyscallResult> {
     Some(match number {
-        // TODO: 支持 Linux 凭据变更、继承与访问权限检查。
+        // TODO: Support Linux credential changes, inheritance, and access permission checks.
         abi::GETUID | abi::GETEUID | abi::GETGID | abi::GETEGID => Ok(0),
         abi::GETRESUID | abi::GETRESGID => credentials(process, args),
         abi::GETGROUPS => {

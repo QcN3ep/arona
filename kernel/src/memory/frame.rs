@@ -8,7 +8,7 @@ use crate::hardware::{
     mmu::{PAGE_SIZE, PagePermissions},
 };
 
-/// 物理页框的地址标识，不保证后备内存存活。
+/// Address identifier of a physical page frame; does not guarantee that the backing memory is alive.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Frame(u64);
 
@@ -93,7 +93,7 @@ pub struct FrameAllocation {
     pub(super) head: u64,
 }
 
-/// 所有者与全部引用释放后，整次分配才归还资源池。
+/// The allocation is returned to the pool only after the owner and all references are released.
 #[must_use]
 pub struct FrameAllocationReference {
     pub(super) head: u64,
@@ -103,7 +103,7 @@ pub struct FrameAllocationReference {
 #[must_use]
 /// # Safety
 ///
-/// DMA 访问须在引用释放前停止并排空。
+/// DMA access must be stopped and drained before the reference is released.
 pub struct FrameAccessReference {
     allocation: FrameAllocationReference,
     frame: Frame,

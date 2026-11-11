@@ -236,7 +236,7 @@ fn receive_deadline() {
             worker.start().unwrap();
         }
         scheduler::run_ready().unwrap();
-        // 有限 deadline 的接收者可能已经超时完成。
+        // A receiver with a finite deadline may have already completed by timing out.
         assert!(
             workers[1..]
                 .iter()

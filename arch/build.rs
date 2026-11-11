@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 配置裸机映像的链接参数。
+//! Configure the link arguments for the bare-metal image.
 
 use std::env;
 

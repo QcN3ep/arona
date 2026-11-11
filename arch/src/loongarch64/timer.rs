@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! LoongArch 稳定计数器与本地定时器。
+//! LoongArch stable counter and local timer.
 
 use core::arch::asm;
 
@@ -61,7 +61,7 @@ impl Timer for LoongArchTimer {
             if delay > max_interval()? {
                 return Err(TimerError::DeadlineOutOfRange);
             }
-            // SAFETY: 当前处理器须独占本地定时器与 ECFG 中的定时中断位。
+            // SAFETY: The current processor must exclusively own the local timer and the timer interrupt bit in ECFG.
             unsafe {
                 asm!(
                     "csrwr $zero, 0x41",
@@ -93,21 +93,21 @@ impl Timer for LoongArchTimer {
 
 fn cpucfg(index: usize) -> u32 {
     let value: usize;
-    // SAFETY: 执行环境须允许读取 CPUCFG。
+    // SAFETY: The execution environment must permit reading CPUCFG.
     unsafe { asm!("cpucfg {}, {}", out(reg) value, in(reg) index, options(nomem, nostack)) };
     value as u32
 }
 
 fn counter() -> u64 {
     let ticks: u64;
-    // SAFETY: 执行环境须允许读取稳定计数器，CNTC 须保持不变。
+    // SAFETY: The execution environment must permit reading the stable counter, and CNTC must remain unchanged.
     unsafe { asm!("rdtime.d {}, $zero", out(reg) ticks, options(nomem, nostack)) };
     ticks
 }
 
 fn max_interval() -> Result<u64, TimerError> {
     let config: usize;
-    // SAFETY: 执行环境须允许读取 PRCFG1。
+    // SAFETY: The execution environment must permit reading PRCFG1.
     unsafe { asm!("csrrd {}, 0x21", out(reg) config, options(nomem, nostack)) };
     let bits = ((config >> 4) & 0xff) + 1;
     if !(3..=64).contains(&bits) {
@@ -117,7 +117,7 @@ fn max_interval() -> Result<u64, TimerError> {
 }
 
 fn disarm() {
-    // SAFETY: 当前处理器须独占本地定时器，访问期间须关闭本地中断。
+    // SAFETY: The current processor must exclusively own the local timer, and local interrupts must be disabled during access.
     unsafe {
         asm!(
             "csrxchg $zero, {mask}, 0x4",

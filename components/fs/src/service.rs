@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 挂载管理、文件会话与请求分发。
+//! Mount management, file sessions, and request dispatch.
 
 mod path;
 

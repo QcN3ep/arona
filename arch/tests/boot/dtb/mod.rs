@@ -47,40 +47,40 @@ fn count_allocation() {
     });
 }
 
-// SAFETY: 分配结果须满足布局，释放须归还原分配器，且所有方法均不得展开栈。
+// SAFETY: Allocation results must satisfy the layout, deallocation must return memory to the original allocator, and no method may unwind the stack.
 unsafe impl GlobalAlloc for CountingAllocator {
     /// # Safety
     ///
-    /// `layout.size()` 须大于零。
+    /// `layout.size()` must be greater than zero.
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         count_allocation();
-        // SAFETY: layout.size() 须大于零。
+        // SAFETY: layout.size() must be greater than zero.
         unsafe { System.alloc(layout) }
     }
 
     /// # Safety
     ///
-    /// `layout.size()` 须大于零。
+    /// `layout.size()` must be greater than zero.
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         count_allocation();
-        // SAFETY: layout.size() 须大于零。
+        // SAFETY: layout.size() must be greater than zero.
         unsafe { System.alloc_zeroed(layout) }
     }
 
     /// # Safety
     ///
-    /// `ptr` 须为此分配器尚未释放的分配结果，`layout` 须与分配时一致。
+    /// `ptr` must be an allocation result not yet deallocated by this allocator, and `layout` must match the one used at allocation.
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: ptr 须为 System 尚未释放的分配结果，layout 须与分配时一致。
+        // SAFETY: ptr must be an allocation result not yet deallocated by System, and layout must match the one used at allocation.
         unsafe { System.dealloc(ptr, layout) }
     }
 
     /// # Safety
     ///
-    /// `ptr` 和 `layout` 须对应此分配器的有效分配，`new_size` 须非零且满足原对齐下的 `Layout` 限制。
+    /// `ptr` and `layout` must refer to a valid allocation of this allocator, and `new_size` must be non-zero and satisfy the `Layout` constraints for the original alignment.
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         count_allocation();
-        // SAFETY: ptr 和 layout 须对应 System 的有效分配，new_size 须非零且满足原对齐下的 Layout 限制。
+        // SAFETY: ptr and layout must refer to a valid allocation of System, and new_size must be non-zero and satisfy the Layout constraints for the original alignment.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -204,7 +204,7 @@ fn pointer_and_slice_inputs_produce_the_same_hardware() {
     let blob = AlignedDtb(DTB.try_into().unwrap());
     let from_slice = Dtb::from_bytes(&blob.0).unwrap();
     assert_eq!(from_slice.total_size(), DTB.len());
-    // SAFETY: blob 须覆盖完整 DTB，并在 from_ptr 存续期间保持可读且不变。
+    // SAFETY: blob must cover the complete DTB and remain readable and unchanged while from_ptr is alive.
     let from_ptr = unsafe { Dtb::new(blob.0.as_ptr()) }.unwrap();
     let mut expected = Box::new(const { HardwareInfo::new() });
     let mut actual = Box::new(const { HardwareInfo::new() });
@@ -279,7 +279,7 @@ fn device_ids_follow_full_paths_and_preserve_compatible_order() {
     let [bus, uart, virtio] = hardware.devices.as_slice() else {
         panic!("expected bus, UART and Virtio devices");
     };
-    // `/bus-aux@10002000` 排在 `/bus/device@10001000` 前，与深度优先遍历的次序不同。
+    // `/bus-aux@10002000` is ordered before `/bus/device@10001000`, differing from the depth-first traversal order.
     assert!(uart.has_identity("devicetree", "ns16550a"));
     assert_eq!(uart.instance_id, HardwareDeviceInstanceId(2));
     assert!(virtio.has_identity("devicetree", "virtio,mmio"));

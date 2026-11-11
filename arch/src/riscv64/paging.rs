@@ -22,12 +22,12 @@ const EXECUTE: u64 = 1 << 3;
 const USER: u64 = 1 << 4;
 const ACCESSED: u64 = 1 << 6;
 const DIRTY: u64 = 1 << 7;
-// 用 RSW 标记保留后备页框的无效叶子项。
+// Use RSW to mark invalid leaf entries that retain their backing page frames.
 const NO_ACCESS: u64 = 1 << 8;
 const PPN: u64 = ((1 << 44) - 1) << 10;
 
 fn invalidate_address(address: usize) {
-    // SAFETY: address 须为当前地址空间中的规范虚拟地址。
+    // SAFETY: address must be a canonical virtual address in the current address space.
     unsafe { asm!("sfence.vma {address}, zero", address = in(reg) address, options(nostack)) };
 }
 
@@ -121,7 +121,7 @@ impl Format for Sv39 {
             },
         })?;
         let table = core::ptr::addr_of_mut!(PAGE_TABLE_WINDOW_TABLE);
-        // SAFETY: 须持有物理访问窗口锁。
+        // SAFETY: The physical access window lock must be held.
         unsafe {
             if (*table).read(WINDOW_INDEX) != 0 {
                 return Err(MmuError::InvalidTable);
@@ -130,7 +130,7 @@ impl Format for Sv39 {
         }
         invalidate_address(PAGE_TABLE_WINDOW);
         let result = operation(PAGE_TABLE_WINDOW);
-        // SAFETY: 须持有物理访问窗口锁。
+        // SAFETY: The physical access window lock must be held.
         unsafe { (*table).write(WINDOW_INDEX, 0) };
         invalidate_address(PAGE_TABLE_WINDOW);
         Ok(result)
@@ -178,7 +178,7 @@ impl Mmu for Sv39 {
         let root = root.address();
         paging::validate_physical::<Self>(root)?;
         let satp = (8usize << 60) | (root as usize >> 12);
-        // SAFETY: 新页表须覆盖当前代码、栈和活动数据，中断须关闭且后备页须持续有效。
+        // SAFETY: The new page table must cover the current code, stack, and active data; interrupts must be disabled and the backing pages must remain valid.
         unsafe {
             asm!(
                 "sfence.vma",
@@ -240,14 +240,14 @@ impl Mmu for Sv39 {
     }
 
     fn invalidate_all(&self) {
-        // SAFETY: 处理器须允许执行 S 模式地址翻译同步指令。
+        // SAFETY: The processor must allow executing the S-mode address translation synchronization instruction.
         unsafe { asm!("sfence.vma", options(nostack)) };
     }
 
     fn synchronize_code(&self, range: Range<usize>) -> Result<(), MmuError> {
         paging::validate_code_range(&range, 39)?;
         if !range.is_empty() {
-            // SAFETY: 范围须为有效普通内存映射，且此前写入须已完成。
+            // SAFETY: The range must be a valid normal memory mapping, and prior writes must have completed.
             unsafe { asm!("fence.i", options(nostack)) };
         }
         Ok(())
@@ -255,7 +255,7 @@ impl Mmu for Sv39 {
 
     fn synchronize_frame(&self, frame: Frame) -> Result<(), MmuError> {
         paging::validate_physical::<Self>(frame.address())?;
-        // SAFETY: 此前页框写入须已完成，处理器须允许执行指令缓存同步。
+        // SAFETY: Prior page frame writes must have completed, and the processor must allow executing the instruction cache synchronization.
         unsafe { asm!("fence.i", options(nostack)) };
         Ok(())
     }

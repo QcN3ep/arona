@@ -26,7 +26,7 @@ const PWCL: usize = 12 | (9 << 5) | (21 << 10) | (9 << 15) | (30 << 20) | (9 << 
 const PWCH: usize = 39 | (9 << 6);
 
 fn invalidate_address(address: usize) {
-    // SAFETY: address 须为当前地址空间中的规范虚拟地址。
+    // SAFETY: `address` must be a canonical virtual address in the current address space.
     unsafe {
         asm!(
             "dbar 0",
@@ -136,7 +136,7 @@ impl Format for LoongArchMmu {
             },
         })?;
         let table = core::ptr::addr_of_mut!(PAGE_TABLE_WINDOW_TABLE);
-        // SAFETY: 须持有物理访问窗口锁。
+        // SAFETY: The physical access window lock must be held.
         unsafe {
             if (*table).read(WINDOW_INDEX) != 0 {
                 return Err(MmuError::InvalidTable);
@@ -145,7 +145,7 @@ impl Format for LoongArchMmu {
         }
         invalidate_address(PAGE_TABLE_WINDOW);
         let result = operation(PAGE_TABLE_WINDOW);
-        // SAFETY: 须持有物理访问窗口锁。
+        // SAFETY: The physical access window lock must be held.
         unsafe { (*table).write(WINDOW_INDEX, 0) };
         invalidate_address(PAGE_TABLE_WINDOW);
         Ok(result)
@@ -195,7 +195,7 @@ impl Mmu for LoongArchMmu {
         if root == 0 {
             return Err(MmuError::InvalidTable);
         }
-        // SAFETY: 新页表须覆盖当前代码、栈和活动数据，中断须关闭且后备页须持续有效。
+        // SAFETY: The new page table must cover the current code, stack, and active data; interrupts must be disabled and the backing pages must remain valid.
         unsafe {
             asm!(
                 "dbar 0",
@@ -277,7 +277,7 @@ impl Mmu for LoongArchMmu {
     }
 
     fn invalidate_all(&self) {
-        // SAFETY: 处理器须允许执行本地 TLB 失效指令。
+        // SAFETY: The processor must be allowed to execute local TLB invalidation instructions.
         unsafe {
             asm!(
                 "dbar 0",
@@ -305,13 +305,13 @@ impl Mmu for LoongArchMmu {
 
 fn synchronize_instructions() {
     // REFERENCE: https://github.com/torvalds/linux/blob/master/arch/loongarch/include/asm/cacheflush.h
-    // SAFETY: 此前代码写入须已完成，处理器须允许执行内存与取指同步。
+    // SAFETY: Prior code writes must have completed, and the processor must be allowed to perform memory and instruction fetch synchronization.
     unsafe { asm!("dbar 0", "ibar 0", options(nostack)) };
 }
 
 /// # Safety
 ///
-/// 只能作为物理 refill 入口执行，页表根和遍历参数须有效且持续可读。
+/// Can only be executed as the physical refill entry; the page table root and walk parameters must be valid and persistently readable.
 #[unsafe(naked)]
 #[unsafe(link_section = ".text.entry.refill")]
 pub(super) extern "C" fn refill() -> ! {
@@ -329,7 +329,7 @@ pub(super) extern "C" fn refill() -> ! {
         "ldpte $t0, 1",
         "b 3f",
         "2:",
-        // 填入 4 KiB 无效项，重试后由硬件报告 PIL/PIS/PIF。
+        // Fill in a 4 KiB invalid entry; after retry, the hardware reports PIL/PIS/PIF.
         "csrwr $zero, 0x8c",
         "csrwr $zero, 0x8d",
         "csrrd $t0, 0x8e",

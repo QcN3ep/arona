@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! ext4 路径、目录项与命名操作。
+//! ext4 paths, directory entries, and naming operations.
 
 use super::{
     components,

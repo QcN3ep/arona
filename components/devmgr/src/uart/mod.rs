@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 16550 UART 的配置、收发与中断处理。
+//! 16550 UART configuration, transmission, reception, and interrupt handling.
 
 pub mod service;
 mod session;
@@ -56,7 +56,7 @@ pub enum StopBits {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Settings {
-    /// None 保留当前分频。
+    /// None retains the current divisor.
     pub baud_rate: Option<u32>,
     pub data_bits: DataBits,
     pub parity: Parity,
@@ -284,7 +284,7 @@ impl<'a> Uart<'a> {
         self.enable_interrupts(interrupts)
     }
 
-    /// 接收数据处理完毕后重新使能中断。
+    /// Re-enable interrupts after received data is processed.
     pub fn acknowledge_interrupt(&mut self) -> Result<(), Error> {
         if self.line_status()? & DATA_READY != 0 && self.enabled_interrupts & RECEIVE_INTERRUPT != 0
         {

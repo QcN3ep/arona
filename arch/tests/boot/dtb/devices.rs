@@ -222,7 +222,7 @@ fn rejects_invalid_device_properties() {
             .windows(16)
             .position(|bytes| bytes == b"clock-frequency\0")
             .unwrap();
-    // 复用已有属性的名字，为 UART 注入会溢出绝对地址的偏移。
+    // Reuse the name of an existing property to inject into the UART an offset that overflows the absolute address.
     blob[name..name + 11].copy_from_slice(b"reg-offset\0");
     for (index, value) in [u32::MAX, u32::MAX - 3, 0, 3].into_iter().enumerate() {
         blob[offset + index * 4..offset + index * 4 + 4].copy_from_slice(&value.to_be_bytes());

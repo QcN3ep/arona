@@ -11,15 +11,15 @@ pub struct MemoryRegion {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum MemoryRegionState {
     Available,
-    /// 启动期间保留，确认不再使用后可回收。
+    /// Reserved during boot; reclaimable once confirmed unused.
     BootReserved,
-    /// 始终保留。
+    /// Always reserved.
     Reserved,
-    /// 始终保留，且不得建立映射。
+    /// Always reserved and must never be mapped.
     NoMap,
 }
 
-/// 物理字节地址的区间 `[start, end)`，有效区间应当满足 `start < end`。
+/// Interval `[start, end)` of physical byte addresses; a valid interval must satisfy `start < end`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PhysRange {
     pub start: u64,
@@ -43,7 +43,7 @@ impl VirtRange {
 }
 
 impl PhysRange {
-    /// 返回覆盖整个范围的 4 KiB 页包络。
+    /// Returns the 4 KiB page envelope covering the entire range.
     pub fn page_envelope(self) -> Result<Self, &'static str> {
         if self.start >= self.end {
             return Err("physical range is empty");

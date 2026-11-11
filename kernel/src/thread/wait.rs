@@ -70,7 +70,7 @@ impl Thread {
         Ok(ExitTarget::Thread(self.clone()).wait(None)?.unwrap())
     }
 
-    /// 等待退出，超时返回 None。
+    /// Waits for exit; returns None on timeout.
     pub fn wait_until(&self, deadline_ns: u64) -> Result<Option<usize>, ThreadError> {
         ExitTarget::Thread(self.clone()).wait(Some(deadline_ns))
     }

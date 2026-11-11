@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! VirtIO 随机数设备的熵读取与 DMA 生命周期。
+//! Entropy reads and DMA lifecycle for the VirtIO random number device.
 
 pub mod service;
 mod session;
@@ -135,7 +135,7 @@ impl<'a> Rng<'a> {
             return Ok(());
         }
         self.transport.reset()?;
-        // SAFETY: 设备已复位，不能再访问该域中的 DMA 缓冲。
+        // SAFETY: The device has been reset and must no longer access DMA buffers in this domain.
         self.domain.quiesce()?;
         self.running = false;
         self.requested = 0;

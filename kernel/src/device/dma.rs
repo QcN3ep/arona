@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 设备 DMA 授权、页框保活与启停生命周期。
+//! Device DMA granting, page frame keep-alive, and start/stop lifecycle.
 
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -17,7 +17,7 @@ pub use abi::dma::{DmaDirection, DmaProfile, DmaState};
 
 /// # Safety
 ///
-/// 操作及析构须在中断控制器所属处理器执行并保留内核映射。
+/// Operations and drop must run on the processor that owns the interrupt controller and must retain kernel mappings.
 #[derive(Clone)]
 pub struct DmaDomain(HeapArc<DomainToken>);
 
@@ -162,7 +162,7 @@ impl DmaDomain {
 
     /// # Safety
     ///
-    /// 设备队列须已停止，且在途 DMA 已完成。
+    /// Device queues must already be stopped and in-flight DMA completed.
     pub fn quiesce(&self) -> Result<(), DeviceError> {
         let _interrupts = InterruptGuard::new();
         let registry = registry()?;

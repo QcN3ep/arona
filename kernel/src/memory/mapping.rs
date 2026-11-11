@@ -91,7 +91,7 @@ pub(super) struct OwnedMapping {
 }
 
 #[derive(Clone, Copy, Default)]
-// 每条记录预留回滚空间，使解除映射和权限降低无需分配。
+// Each record reserves rollback space so that unmapping and permission downgrades require no allocation.
 pub(super) struct MappingJournal {
     pub tables: [Option<Frame>; 4],
     pub mapping: Option<PageMapping>,

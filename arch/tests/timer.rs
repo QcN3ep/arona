@@ -37,12 +37,12 @@ unsafe extern "C" {
 
 /// # Safety
 ///
-/// 只能由测试入口在高半区映射、启动栈有效且本地中断关闭时调用，参数须为固件交付值。
+/// May only be called by the test entry point when the higher-half mapping and boot stack are valid and local interrupts are disabled; the arguments must be the values delivered by the firmware.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
     let start = core::ptr::addr_of!(_sbss) as *mut u8;
     let length = core::ptr::addr_of!(_ebss) as usize - start as usize;
-    // SAFETY: 该范围须为启动入口尚未使用的独占可写 BSS。
+    // SAFETY: The range must be exclusive writable BSS not yet used by the boot entry point.
     unsafe { start.write_bytes(0, length) };
     uart().init().unwrap();
     uart().write(format_args!("Timer tests started\n")).unwrap();
@@ -146,7 +146,7 @@ fn handle(trap: Trap) -> TrapOutcome {
 }
 
 fn uart() -> Uart {
-    // SAFETY: UART 须为当前 ISA 的启动映射，测试须独占访问。
+    // SAFETY: UART must be the boot mapping of the current ISA, and the test must have exclusive access.
     unsafe { Uart::new(UART) }
 }
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 文件描述符与共享的打开状态。
+//! File descriptors and shared open state.
 
 pub(crate) mod pipe;
 pub(crate) mod terminal;

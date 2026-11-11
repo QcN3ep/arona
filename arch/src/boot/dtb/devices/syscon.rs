@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 按需解释系统控制寄存器及关机、重启操作。
+//! Interpret system controller registers and poweroff/reboot operations on demand.
 
 use kernel::{HardwareDeviceInfo, HardwareInfo};
 
@@ -15,7 +15,7 @@ pub struct SysconInfo {
     pub reboot: Option<RegisterWrite>,
 }
 
-/// 以 `(old & !mask) | (value & mask)` 更新寄存器。
+/// Update a register with `(old & !mask) | (value & mask)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RegisterWrite {
     pub offset: u32,

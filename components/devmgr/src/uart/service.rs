@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! UART 会话、收发缓冲与中断驱动的请求处理。
+//! UART sessions, transmit and receive buffers, and interrupt-driven request handling.
 
 use alloc::{collections::VecDeque, vec::Vec};
 use runtime::{

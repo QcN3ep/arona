@@ -44,18 +44,18 @@ unsafe extern "C" {
 
 /// # Safety
 ///
-/// argument 须指向有效的 ProcessStart 编码，启动方须独占移交其中的句柄及当前进程。
+/// argument must point to a valid ProcessStart encoding, and the launcher must exclusively transfer the handles it contains and the current process.
 unsafe extern "C" fn enter(argument: *const [u8; ProcessStart::SIZE]) -> ! {
-    // SAFETY: argument 须为启动方提供的可读交接记录。
+    // SAFETY: argument must be a readable handover record provided by the launcher.
     let start = ProcessStart::decode(&unsafe { argument.read_unaligned() });
-    // SAFETY: 本入口须是当前进程唯一的初始化执行者。
+    // SAFETY: This entry point must be the sole executor of initialization for the current process.
     if unsafe { process::current::initialize(start) }.is_err() {
         process::exit(1);
     }
     let tls = TlsBlock::new().unwrap_or_else(|_| process::exit(1));
-    // SAFETY: 当前线程尚未访问 TLS，tls 须存活至线程停止访问 TLS。
+    // SAFETY: The current thread has not yet accessed TLS, and tls must remain alive until the thread stops accessing TLS.
     unsafe { tls.activate() };
-    // SAFETY: 编译器生成的 main 须遵循 Rust start 的 C 入口约定。
+    // SAFETY: The compiler-generated main must follow the C entry convention of the Rust start.
     let status = unsafe { main(0, core::ptr::null()) };
     crate::tls::destroy();
     drop(tls);
@@ -64,7 +64,7 @@ unsafe extern "C" fn enter(argument: *const [u8; ProcessStart::SIZE]) -> ! {
 
 /// # Safety
 ///
-/// SP 须指向独占的有效用户栈，a0 须满足 enter 的启动交接约定。
+/// SP must point to an exclusive valid user stack, and a0 must satisfy the startup handover convention of enter.
 #[cfg(target_arch = "riscv64")]
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
@@ -82,7 +82,7 @@ unsafe extern "C" fn _start() -> ! {
 
 /// # Safety
 ///
-/// SP 须指向独占的有效用户栈，a0 须满足 enter 的启动交接约定。
+/// SP must point to an exclusive valid user stack, and a0 must satisfy the startup handover convention of enter.
 #[cfg(target_arch = "loongarch64")]
 #[unsafe(naked)]
 #[unsafe(no_mangle)]

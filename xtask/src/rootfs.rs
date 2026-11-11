@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 外部根目录的 CPIO 打包。
+//! CPIO packaging of an external root directory.
 
 use super::append_entry;
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};

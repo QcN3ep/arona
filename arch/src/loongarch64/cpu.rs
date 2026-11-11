@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! LoongArch 本地中断与等待指令。
+//! LoongArch local interrupts and wait instructions.
 
 use core::arch::asm;
 
@@ -18,7 +18,7 @@ crate::declare_hardware!(
 impl Cpu for LoongArchCpu {
     fn interrupt_state(&self) -> InterruptState {
         let status: usize;
-        // SAFETY: 执行环境须允许读取 CRMD。
+        // SAFETY: The execution environment must permit reading CRMD.
         unsafe { asm!("csrrd {}, 0x0", out(reg) status, options(nomem, nostack)) };
         if status & IE == 0 {
             InterruptState::Disabled
@@ -29,7 +29,7 @@ impl Cpu for LoongArchCpu {
 
     fn disable_interrupts(&self) -> InterruptState {
         let mut status = 0usize;
-        // SAFETY: 执行环境须允许修改 CRMD.IE。
+        // SAFETY: The execution environment must permit modifying CRMD.IE.
         unsafe {
             asm!(
                 "csrxchg {status}, {mask}, 0x0",
@@ -51,7 +51,7 @@ impl Cpu for LoongArchCpu {
         } else {
             0
         };
-        // SAFETY: 执行环境须允许修改 CRMD.IE，开中断时异常入口及其栈须已就绪。
+        // SAFETY: The execution environment must permit modifying CRMD.IE; when enabling interrupts, the exception entry and its stack must already be ready.
         unsafe {
             asm!(
                 "csrxchg {value}, {mask}, 0x0",
@@ -63,8 +63,8 @@ impl Cpu for LoongArchCpu {
     }
 
     fn idle_until_interrupt(&self) {
-        // IDLE 在 IE 关闭时仍响应已使能的中断源，醒来后开放一次中断处理窗口。
-        // SAFETY: 本地中断须关闭，异常入口须可用，执行环境须允许执行 IDLE。
+        // IDLE still responds to enabled interrupt sources while IE is disabled, and opens an interrupt-handling window once it wakes.
+        // SAFETY: Local interrupts must be disabled, the exception entry must be available, and the execution environment must permit executing IDLE.
         unsafe {
             asm!(
                 "idle 0",
@@ -80,7 +80,7 @@ impl Cpu for LoongArchCpu {
     fn halt(&self) -> ! {
         self.disable_interrupts();
         loop {
-            // SAFETY: 执行环境须允许在关中断状态执行 IDLE。
+            // SAFETY: The execution environment must permit executing IDLE with interrupts disabled.
             unsafe { asm!("idle 0", options(nomem, nostack)) };
         }
     }

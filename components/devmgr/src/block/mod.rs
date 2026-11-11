@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! VirtIO 块设备的有界请求池、完成确认与停止流程。
+//! Bounded request pool, completion acknowledgement, and shutdown procedure for VirtIO block devices.
 
 pub mod service;
 mod session;
@@ -244,7 +244,7 @@ impl<'a> Block<'a> {
             .map(|(index, _)| index)
         {
             let request = self.requests[index].as_mut().unwrap();
-            // FLUSH 须等先前提交的请求完成。
+            // A FLUSH must wait for previously submitted requests to complete.
             if matches!(request.kind, Kind::Flush) && self.queue.in_flight() != 0 {
                 break;
             }
@@ -392,7 +392,7 @@ impl<'a> Block<'a> {
 
     pub fn acknowledge_interrupt(&mut self) -> Result<(), Error> {
         if self.transport.interrupt_status()? & 2 != 0 {
-            // 容量变化后由监督者重新建立实例。
+            // The supervisor re-creates the instance after a capacity change.
             return Err(Error::DeviceFault);
         }
         self.interrupt.acknowledge()?;
@@ -436,7 +436,7 @@ impl<'a> Block<'a> {
         }
         let reset = self.transport.reset();
         self.check_result(reset)?;
-        // SAFETY: 队列须已停止，且所有在途 DMA 均已完成。
+        // SAFETY: The queue must be stopped, and all in-flight DMA must have completed.
         self.domain.quiesce()?;
         self.state = DriverState::Stopped;
         self.interrupt.unbind()?;
@@ -446,7 +446,7 @@ impl<'a> Block<'a> {
     fn check_result(&mut self, result: Result<(), Error>) -> Result<(), Error> {
         if result.is_err() {
             self.state = DriverState::Failed;
-            // 无法确认排空时，停止设备并保留活动域中的 DMA 页框。
+            // When draining cannot be confirmed, stop the device and retain the DMA frames in the active domain.
             let _ = self.transport.reset();
         }
         result

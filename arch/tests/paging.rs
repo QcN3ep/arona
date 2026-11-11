@@ -99,17 +99,17 @@ fn mapping(physical_address: u64, permissions: PagePermissions) -> PageTableEntr
 
 /// # Safety
 ///
-/// 仅由测试映像的启动入口在高半区映射和启动栈有效时调用。
+/// May only be called by the boot entry point of the test image when the higher-half mapping and boot stack are valid.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn __wrap__start_native() -> ! {
     let mut cursor = core::ptr::addr_of!(_sbss) as usize;
     let end = core::ptr::addr_of!(_ebss) as usize;
     while cursor < end {
-        // SAFETY: cursor 须位于启动入口尚未使用的 BSS 内。
+        // SAFETY: cursor must lie within BSS not yet used by the boot entry point.
         unsafe { (cursor as *mut u8).write_volatile(0) };
         cursor += 1;
     }
-    // SAFETY: 地址须为当前 ISA 的启动 UART 映射，且仅由测试使用。
+    // SAFETY: The address must be the boot UART mapping of the current ISA and must be used only by the test.
     let uart = unsafe { Uart::new(UART) };
     uart.init().unwrap();
     uart.write(format_args!("MMU tests started\n")).unwrap();
@@ -292,7 +292,7 @@ fn run_frame_access(mmu: &dyn Mmu, address: u64) {
 }
 
 fn read_test() -> u8 {
-    // SAFETY: TEST_ADDRESS 须由当前页表映射到有效数据页。
+    // SAFETY: TEST_ADDRESS must be mapped by the current page table to a valid data page.
     unsafe { (TEST_ADDRESS as *const u8).read_volatile() }
 }
 
@@ -302,7 +302,7 @@ fn publish_code(mmu: &dyn Mmu, tables: &Tables) {
         (answer_42 as *const u8, 42usize),
         (answer_43 as *const u8, 43usize),
     ] {
-        // SAFETY: source 须指向两个指令的测试函数，CODE 须为独占可写页。
+        // SAFETY: source must point to the two-instruction test function, and CODE must be an exclusively writable page.
         unsafe {
             core::ptr::copy_nonoverlapping(source, core::ptr::addr_of_mut!(CODE).cast::<u8>(), 8)
         };
@@ -320,7 +320,7 @@ fn publish_code(mmu: &dyn Mmu, tables: &Tables) {
             )
             .unwrap();
         mmu.invalidate_page(CODE_ADDRESS).unwrap();
-        // SAFETY: CODE_ADDRESS 须包含已同步的无参数 C ABI 测试函数。
+        // SAFETY: CODE_ADDRESS must contain a synchronized parameterless C ABI test function.
         let execute: extern "C" fn() -> usize = unsafe { core::mem::transmute(CODE_ADDRESS) };
         assert_eq!(execute(), expected);
         tables
@@ -362,7 +362,7 @@ fn halt() -> ! {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    // SAFETY: UART 须保持启动映射且仅由测试使用。
+    // SAFETY: UART must keep its boot mapping and must be used only by the test.
     let uart = unsafe { Uart::new(CONSOLE.load(Ordering::Relaxed)) };
     let _ = uart.emergency_write(format_args!("MMU tests failed: {info}\n"));
     halt()

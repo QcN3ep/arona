@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 遍历已启用的节点，保留当前祖先路径并完成总线地址转换。
+//! Traverse enabled nodes, preserving the current ancestor path and completing bus address translation.
 
 use arrayvec::ArrayVec;
 use fdt::{
@@ -154,14 +154,14 @@ pub(super) fn cell_sizes(node: Node<'_>) -> Result<CellSizes> {
         address_cells: address.unwrap_or(2) as usize,
         size_cells: size.unwrap_or(1) as usize,
     };
-    // fdt 0.2 缺少任一声明时会使用整组默认值。
+    // fdt 0.2 uses a whole set of defaults when either declaration is missing.
     if (address.is_none() || size.is_none()) && cells != CellSizes::default() {
         return Err("partial non-default cell size declarations are not supported".into());
     }
     Ok(cells)
 }
 
-/// 缺少 ranges 表示地址不可达；空 ranges 表示恒等映射，返回 None。
+/// A missing ranges property means the address is unreachable; empty ranges means an identity mapping and returns None.
 pub(super) fn ranges(node: Node<'_>) -> Result<Option<Ranges<'_>>> {
     let raw = node
         .raw_property("ranges")?

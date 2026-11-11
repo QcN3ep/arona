@@ -16,13 +16,13 @@ use kernel::{
 
 pub fn floating_enabled() -> bool {
     let extensions: usize;
-    // SAFETY: 执行环境须允许读取 EUEN。
+    // SAFETY: The execution environment must permit reading EUEN.
     unsafe { asm!("csrrd {}, 0x2", out(reg) extensions, options(nomem, nostack)) };
     extensions & 1 != 0
 }
 
 pub fn floating(enabled: bool) {
-    // SAFETY: 测试须独占 EUEN 的浮点扩展配置。
+    // SAFETY: The test must exclusively own the floating-point extension configuration of EUEN.
     unsafe {
         asm!(
             "csrxchg {value}, {mask}, 0x2",
@@ -34,12 +34,12 @@ pub fn floating(enabled: bool) {
 }
 
 pub fn acknowledge() {
-    // SAFETY: 测试须独占本地软件中断。
+    // SAFETY: The test must exclusively own the local software interrupt.
     unsafe { asm!("csrxchg $zero, {mask}, 0x5", mask = in(reg) 1usize, options(nostack)) };
 }
 
 pub fn clobber_floating() {
-    // SAFETY: 浮点扩展须已启用，现场须已由入口保存。
+    // SAFETY: The floating-point extension must already be enabled, and the context must already be saved by the entry point.
     unsafe {
         asm!(
             "movgr2fr.d $f8, $zero",
@@ -197,7 +197,7 @@ pub extern "C" fn bad_stack() -> ! {
 }
 
 pub fn user_root(root: Frame) {
-    // SAFETY: root 须包含有效的用户测试映射，当前映射须继续覆盖内核。
+    // SAFETY: root must contain valid user test mappings, and the current mapping must continue to cover the kernel.
     unsafe { asm!("csrwr {}, 0x19", inout(reg) root.address() => _, options(nostack)) };
 }
 

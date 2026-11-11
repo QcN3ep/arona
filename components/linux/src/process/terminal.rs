@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 控制终端关联、前台进程组与后台访问。
+//! Controlling terminal association, foreground process group, and background access.
 
 use super::{
     namespace::PidNamespace,

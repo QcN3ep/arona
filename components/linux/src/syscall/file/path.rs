@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 工作目录、链接与命名操作。
+//! Linux working directory, links, and naming operations.
 
-// TODO: 支持 chmod、chown、access 及其相对目录操作。
+// TODO: Support chmod, chown, access, and their relative directory operations.
 
 use alloc::{rc::Rc, vec::Vec};
 use core::cell::Cell;

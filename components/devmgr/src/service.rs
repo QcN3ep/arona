@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 设备匹配、驱动实例的生命周期与会话分发。
+//! Device matching, driver instance lifecycle, and session dispatch.
 
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};

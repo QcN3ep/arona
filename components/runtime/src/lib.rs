@@ -9,7 +9,7 @@
 
 extern crate alloc;
 
-// TODO: 提供 Rust std 的平台适配与 I/O、同步、时间及网络支持。
+// TODO: Provide platform adaptation for Rust std and support for I/O, synchronization, time, and networking.
 
 mod call;
 pub mod device;

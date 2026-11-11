@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 将 Rust 全局分配请求转交内核堆。
+//! Route Rust global allocation requests to the kernel heap.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
@@ -12,11 +12,11 @@ static ALLOCATOR: KernelAllocator = KernelAllocator;
 
 struct KernelAllocator;
 
-// SAFETY: 分配句柄随存储保留至释放，返回区域独占且满足请求的尺寸与对齐。
+// SAFETY: The allocation handle is retained with the storage until deallocation; the returned region is exclusive and satisfies the requested size and alignment.
 unsafe impl GlobalAlloc for KernelAllocator {
     /// # Safety
     ///
-    /// 调用期间须满足 MemoryManager 的执行环境要求。
+    /// The MemoryManager execution environment requirements must be met during the call.
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let Ok((storage, offset)) = layout.extend(Layout::new::<HeapAllocation>()) else {
             return ptr::null_mut();
@@ -28,7 +28,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
             return ptr::null_mut();
         };
         let pointer = allocation.address() as *mut u8;
-        // SAFETY: 存储须独占可写，offset 须位于载荷之后并满足 HeapAllocation 的对齐。
+        // SAFETY: The storage must be exclusively writable; offset must lie after the payload and satisfy HeapAllocation's alignment.
         unsafe {
             pointer
                 .add(offset)
@@ -40,12 +40,12 @@ unsafe impl GlobalAlloc for KernelAllocator {
 
     /// # Safety
     ///
-    /// 须满足 GlobalAlloc 的释放契约及 MemoryManager 的执行环境要求。
+    /// The GlobalAlloc deallocation contract and the MemoryManager execution environment requirements must be met.
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
         let (_, offset) = layout
             .extend(Layout::new::<HeapAllocation>())
             .expect("invalid heap allocation layout");
-        // SAFETY: 对象引用须已失效，pointer 与 layout 须属于本分配器的一次未释放分配。
+        // SAFETY: The object reference must have been invalidated; pointer and layout must belong to one unreleased allocation of this allocator.
         let allocation = unsafe { pointer.add(offset).cast::<HeapAllocation>().read() };
         drop(allocation);
     }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! ECAM 配置空间访问。
+//! ECAM configuration space access.
 
 use kernel::{
     hardware::pci::{PciConfigAccess, PciConfigError},
@@ -19,7 +19,7 @@ impl PciConfigAccess for PciConfig {
     fn read16(&self, mapping: &DeviceMapping, offset: usize) -> Result<u16, PciConfigError> {
         let address = address(mapping, offset, 2)?;
         io_fence();
-        // SAFETY: mapping 须覆盖 ECAM 中对齐且可读的 16 位配置项。
+        // SAFETY: The mapping must cover an aligned, readable 16-bit ECAM configuration item.
         let value = unsafe { (address as *const u16).read_volatile() };
         io_fence();
         Ok(u16::from_le(value))
@@ -33,7 +33,7 @@ impl PciConfigAccess for PciConfig {
     ) -> Result<(), PciConfigError> {
         let address = address(mapping, offset, 2)?;
         io_fence();
-        // SAFETY: mapping 须覆盖 ECAM 中对齐且可写的 16 位配置项。
+        // SAFETY: The mapping must cover an aligned, writable 16-bit ECAM configuration item.
         unsafe { (address as *mut u16).write_volatile(value.to_le()) };
         io_fence();
         Ok(())
@@ -42,7 +42,7 @@ impl PciConfigAccess for PciConfig {
     fn read32(&self, mapping: &DeviceMapping, offset: usize) -> Result<u32, PciConfigError> {
         let address = address(mapping, offset, 4)?;
         io_fence();
-        // SAFETY: mapping 须覆盖 ECAM 中对齐且可读的 32 位配置项。
+        // SAFETY: The mapping must cover an aligned, readable 32-bit ECAM configuration item.
         let value = unsafe { (address as *const u32).read_volatile() };
         io_fence();
         Ok(u32::from_le(value))
@@ -56,7 +56,7 @@ impl PciConfigAccess for PciConfig {
     ) -> Result<(), PciConfigError> {
         let address = address(mapping, offset, 4)?;
         io_fence();
-        // SAFETY: mapping 须覆盖 ECAM 中对齐且可写的 32 位配置项。
+        // SAFETY: The mapping must cover an aligned, writable 32-bit ECAM configuration item.
         unsafe { (address as *mut u32).write_volatile(value.to_le()) };
         io_fence();
         Ok(())

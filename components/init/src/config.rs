@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 启动程序配置。
+//! Boot program configuration.
 
-// TODO: 配置应用的文件、设备与服务访问授权。
+// TODO: Configure file, device, and service access authorization for applications.
 
 use alloc::{
     collections::{BTreeMap, BTreeSet},
@@ -38,14 +38,14 @@ pub struct Program {
 #[serde(rename_all = "kebab-case")]
 pub enum Executor {
     Linux,
-    // TODO: 接入原生程序执行服务。
+    // TODO: Integrate the native program execution service.
 }
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Terminal {
     Console,
-    // TODO: 支持指定终端设备与伪终端。
+    // TODO: Support specifying terminal devices and pseudo-terminals.
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 原生对象调用的寄存器约定与共享类型。
+//! Register conventions and shared types for native object calls.
 
 #![no_std]
 #![forbid(unsafe_code)]

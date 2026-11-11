@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! PCI 配置空间访问能力。
+//! PCI configuration space access capability.
 
 use crate::memory::DeviceMapping;
 
@@ -31,10 +31,10 @@ pub trait PciConfigAccess: Sync {
         value: u16,
     ) -> Result<(), PciConfigError>;
 
-    /// 读取映射范围内对齐的 32 位配置寄存器。
+    /// Reads an aligned 32-bit configuration register within the mapping.
     fn read32(&self, mapping: &DeviceMapping, offset: usize) -> Result<u32, PciConfigError>;
 
-    /// 写入映射范围内对齐的 32 位配置寄存器。
+    /// Writes an aligned 32-bit configuration register within the mapping.
     fn write32(
         &self,
         mapping: &DeviceMapping,

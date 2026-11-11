@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 路径与文件打开选项。
+//! Linux path and file open options.
 
 use alloc::{rc::Rc, vec::Vec};
 use fs::ReadAt;
@@ -64,7 +64,7 @@ pub(in crate::syscall) fn openat<'a>(
             | O_NOFOLLOW
             | O_CLOEXEC;
         if flags & !supported != 0 {
-            // TODO: 接入其余打开选项。
+            // TODO: Integrate the remaining open options.
             return Err(EOPNOTSUPP);
         }
         let name = path(process, address)?;

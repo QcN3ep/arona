@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-// TODO: 支持跨处理器 TLB 失效与完成确认。
+// TODO: Support cross-processor TLB invalidation and completion acknowledgment.
 
 use arrayvec::ArrayVec;
 use spin::Mutex;
@@ -15,8 +15,8 @@ const MAX_LEVELS: usize = 4;
 
 /// # Safety
 ///
-/// 操作及析构期间须满足 [`Mmu`](crate::hardware::mmu::Mmu) 的执行环境要求。
-/// 修改前须停止其他处理器使用该页表并清除其 TLB 项，析构前须让所有处理器切离该页表。
+/// Operations and drop must satisfy the execution environment requirements of [`Mmu`](crate::hardware::mmu::Mmu).
+/// Before modification, other processors must stop using the page table and clear their TLB entries; all processors must switch away from the page table before drop.
 pub(super) struct PageTable {
     state: Mutex<PageTableState>,
 }
@@ -78,7 +78,7 @@ impl PageTable {
                 hardware::mmu().write_entry(root, slot, layout.levels - 1, entry)?;
             }
         } else {
-            // 共享分支在用户根创建前全部建立，且不参与运行期剪枝。
+            // Shared branches are all established before the user root is created and do not participate in runtime pruning.
             let mut branches = state.backing.frames().skip(1);
             for slot in first_shared..2 * first_shared {
                 let frame = branches.next().expect("missing shared kernel branch");
@@ -119,7 +119,7 @@ impl PageTable {
 
     /// # Safety
     ///
-    /// 页表存续期间，后备存储须保持有效且不得被回收。
+    /// While the page table exists, backing storage must remain valid and must not be reclaimed.
     pub(super) fn map_permanent(
         &self,
         virtual_address: usize,

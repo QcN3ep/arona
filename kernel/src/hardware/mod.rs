@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 硬件能力绑定槽与取用接口。
+//! Binding slots and access interfaces for hardware capabilities.
 
 use spin::Once;
 

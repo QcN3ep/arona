@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 按需解释 UART 配置与控制台参数。
+//! Interpret UART configuration and console parameters on demand.
 
 use fdt::properties::values::U32List;
 use kernel::{ConsoleInfo, HardwareDeviceInfo, HardwareInfo, memory::PhysRange};

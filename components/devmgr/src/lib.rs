@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 设备描述的查询与用户态驱动。
+//! Device description queries and userspace drivers.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
-// TODO: 实现 VirtIO 网络设备的收发与链路状态管理。
-// TODO: 实现 CFI Flash 的总线宽度适配、读取、编程与擦除。
-// TODO: 支持平台关机与重启设备。
+// TODO: Implement transmission, reception, and link state management for VirtIO network devices.
+// TODO: Implement bus width adaptation, read, program, and erase for CFI Flash.
+// TODO: Support platform shutdown and reboot devices.
 
 pub mod block;
 pub mod device;

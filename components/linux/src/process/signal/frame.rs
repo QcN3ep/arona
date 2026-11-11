@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 信号帧的寄存器保存与恢复。
+//! Register save and restore for Linux signal frames.
 
 use super::{Action, AltStack, Info, ONSTACK};
 use crate::{

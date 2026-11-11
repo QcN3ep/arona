@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 文件状态查询与结构编码。
+//! Linux file status queries and structure encoding.
 
 use alloc::rc::Rc;
 use runtime::{Call, Handle};
@@ -242,7 +242,7 @@ fn write_stat(process: &Process<'_>, address: usize, info: fs::Metadata) -> Resu
 
 // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/linux/stat.h?h=v6.12
 fn write_statx(process: &Process<'_>, address: usize, info: fs::Metadata) -> SyscallResult {
-    // TODO: 补充出生时间与挂载 ID。
+    // TODO: Add birth time and mount ID.
     let mut bytes = [0; 256];
     let major = ((info.device >> 8) & 0xfff | (info.device >> 32) & 0xffff_f000) as u32;
     let minor = (info.device & 0xff | (info.device >> 12) & 0xffff_ff00) as u32;

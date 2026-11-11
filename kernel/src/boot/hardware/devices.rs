@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 设备身份、拓扑、资源及配置属性。
+//! Device identity, topology, resources, and configuration properties.
 
 use super::{MAX_PCI_BARS, PciBar, PciWindow};
 use crate::memory::PhysRange;
@@ -56,7 +56,7 @@ impl HardwareDeviceInfo {
     }
 }
 
-/// 实例编号，1-base。
+/// Instance number, 1-based.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HardwareDeviceInstanceId(pub u32);
 
@@ -79,7 +79,7 @@ impl DeviceIdentity {
     }
 }
 
-/// 保留来源编码的自有属性，不授予资源访问权限。
+/// Device-specific property that retains the source encoding; does not grant resource access.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceProperty {
     pub device: HardwareDeviceInstanceId,
@@ -116,7 +116,7 @@ pub struct ConsoleInfo {
     pub options: ArrayString<64>,
 }
 
-/// 设备资源的内核保留策略。
+/// Kernel reservation policy for device resources.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeviceUsePolicy {
     KernelReserved,
@@ -133,7 +133,7 @@ pub enum DmaCapability {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[expect(
     clippy::large_enum_variant,
-    reason = "启动期禁止动态分配，PCI 窗口必须内联保存"
+    reason = "dynamic allocation is forbidden at boot; the PCI window must be stored inline"
 )]
 pub enum HardwareDeviceLocation {
     Platform,
@@ -157,14 +157,14 @@ pub enum HardwareDeviceLocation {
     },
 }
 
-/// 输入 n 对应父控制器的 base_line + n。
+/// Input n maps to base_line + n of the parent controller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HardwareInterruptRoute {
     pub controller: HardwareDeviceInstanceId,
     pub base_line: u32,
 }
 
-/// 中断控制器命名空间内的输入。
+/// Input within the interrupt controller namespace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HardwareInterruptInfo {
     pub controller: HardwareDeviceInstanceId,
@@ -185,16 +185,16 @@ pub enum InterruptPolarity {
     ActiveLow,
 }
 
-/// 已确认的 DMA 寻址能力；不存在时不得授权 DMA。
+/// Confirmed DMA addressing capability; DMA must not be granted when absent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DmaInfo {
-    /// 有效范围为 1 至 64。
+    /// Valid range is 1 to 64.
     pub address_bits: u8,
     pub coherent: bool,
     pub isolation: Option<DmaIsolationRoute>,
 }
 
-/// IOMMU 实例及其请求源命名空间中的标识。
+/// IOMMU instance and identifier within its requester-source namespace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DmaIsolationRoute {
     pub iommu: HardwareDeviceInstanceId,

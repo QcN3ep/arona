@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 用户线程的 Trap 处理与退出。
+//! Trap handling and exit for user Threads.
 
 use super::{Thread, ThreadError, ThreadState, prepare_wait, scheduler};
 use crate::{
@@ -20,7 +20,7 @@ enum UserAction {
 }
 
 pub(crate) fn handle_trap(trap: Trap) -> TrapOutcome {
-    // 退出不再恢复当前栈，先让 handler 的局部资源正常析构。
+    // Exit does not restore the current stack; let the handler's local resources drop normally first.
     match handle(trap) {
         UserAction::Return(outcome) => outcome,
         UserAction::Exit(status) => scheduler::exit(status),

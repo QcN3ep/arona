@@ -205,7 +205,7 @@ impl Eiointc {
             write_iocsr(COREMAP + word * 4, (1 << self.cpu) * 0x0101_0101);
         }
         self.pic.initialize()?;
-        // SAFETY: 当前处理器须独占 EIOINTC 配置与 ECFG 中对应的外部中断位。
+        // SAFETY: The current processor must exclusively own the EIOINTC configuration and the corresponding external interrupt bit in ECFG.
         unsafe {
             let misc: usize;
             asm!("iocsrrd.d {}, {}", out(reg) misc, in(reg) 0x420usize, options(nostack));
@@ -257,7 +257,7 @@ impl Eiointc {
             }
         }
         write_iocsr(ISR + (vector / 32) as usize * 4, 1 << (vector % 32));
-        // 重新使能时重新采样仍然有效的电平输入。
+        // Re-sample level inputs that are still asserted when re-enabling.
         if read_iocsr(ENABLE + (vector / 32) as usize * 4) & (1 << (vector % 32)) != 0 {
             set_bit(ENABLE, vector, false);
             set_bit(ENABLE, vector, true);
@@ -334,13 +334,13 @@ fn pic_bit(registers: &Mmio, base: u64, line: u32, set: bool) -> Result<(), Inte
 
 fn read_iocsr(address: usize) -> u32 {
     let value: usize;
-    // SAFETY: 地址须为持续可读的 EIOINTC IOCSR 寄存器。
+    // SAFETY: The address must be a persistently readable EIOINTC IOCSR register.
     unsafe { asm!("iocsrrd.w {}, {}", out(reg) value, in(reg) address, options(nostack)) };
     value as u32
 }
 
 fn write_iocsr(address: usize, value: u32) {
-    // SAFETY: 地址须为独占可写的 EIOINTC IOCSR 寄存器。
+    // SAFETY: The address must be an exclusively writable EIOINTC IOCSR register.
     unsafe { asm!("iocsrwr.w {}, {}", in(reg) value as usize, in(reg) address, options(nostack)) };
 }
 

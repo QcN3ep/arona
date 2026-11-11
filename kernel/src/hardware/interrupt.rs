@@ -85,7 +85,7 @@ impl InterruptClaim {
 
 impl Drop for InterruptClaim {
     fn drop(&mut self) {
-        // 未处理或处理失败的输入先屏蔽，再完成认领。
+        // Mask an unhandled or failed input first, then complete the claim.
         if let Some(complete) = self.completion.take()
             && let Err(error) = complete(self.source, self.token, true)
         {
@@ -97,9 +97,9 @@ impl Drop for InterruptClaim {
 
 /// # Safety
 ///
-/// 操作及认领对象析构须在初始化时的处理器且关中断时执行，异常入口及其栈须已就绪。
+/// Operations and drop of claimed objects must run on the initialization processor with interrupts disabled, and the exception entry and its stack must be ready.
 pub trait InterruptController: Sync {
-    /// 初始化路由并屏蔽全部输入；硬件描述须对应当前平台。
+    /// Initializes the routing and masks all inputs; the hardware description must match the current platform.
     fn initialize(
         &self,
         hardware: &HardwareInfo,
@@ -109,9 +109,9 @@ pub trait InterruptController: Sync {
 
     fn mask(&self, source: InterruptSource) -> Result<(), InterruptError>;
 
-    /// 设置触发方式后开放输入；认领期间不得重新配置该输入。
+    /// Unmasks an input after setting its trigger mode; the input must not be reconfigured while it is claimed.
     fn unmask(&self, interrupt: HardwareInterruptInfo) -> Result<(), InterruptError>;
 
-    /// 一次只允许一个未完成的认领，无待处理输入时返回 None。
+    /// At most one claim may be outstanding; returns None when no input is pending.
     fn claim(&self) -> Result<Option<InterruptClaim>, InterruptError>;
 }

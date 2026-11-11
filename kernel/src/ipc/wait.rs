@@ -160,7 +160,7 @@ fn wait_resolved(
 pub(crate) fn notify_observers(mut get: impl FnMut(usize) -> Option<Observer>) {
     let _interrupts = InterruptGuard::new();
     let mut index = 0;
-    // 通知会重新查询对象，取值闭包返回前须释放对象锁。
+    // Notification re-queries the object, so the object lock must be released before the getter closure returns.
     while let Some(observer) = get(index) {
         observer.notify();
         index += 1;
@@ -204,7 +204,7 @@ impl Observer {
             Ok(None) => return,
             Err(error) => Err(error),
         };
-        // 以线程唤醒作为等待结果的提交点。
+        // Thread wakeup is the commit point for the wait result.
         if self.selection.waker.wake() {
             *result = Some(selected.and_then(|selected| {
                 consume(&self.selection.items, selected)?;
@@ -242,7 +242,7 @@ impl Source {
     }
 
     fn identity(&self) -> usize {
-        // 引用保持存储存活，Channel 另以最低位区分端点。
+        // The reference keeps the storage alive; Channel additionally uses the lowest bit to distinguish endpoints.
         match self {
             Self::Call(call) => call.identity(),
             Self::Channel(channel) => channel.identity(),
@@ -349,7 +349,7 @@ fn sift_down(heap: &mut [usize], mut root: usize) {
 }
 
 fn checkpoint(index: usize) -> Result<(), ThreadError> {
-    // Trap 内不能直接开启中断，通过调度栈处理挂起中断。
+    // Interrupts cannot be enabled directly inside a trap; pending interrupts are handled through the scheduling stack.
     if index != 0 && index.is_multiple_of(WAIT_BATCH) && thread::current().is_some() {
         thread::yield_now()?;
     }

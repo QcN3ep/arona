@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 静态 ELF64 的布局校验与机器标识。
+//! Layout validation and machine identification for static ELF64.
 
-// TODO: 支持动态 ELF、解释器交接与 PIE。
+// TODO: Support dynamic ELF, interpreter handoff, and PIE.
 
 use alloc::vec::Vec;
 use core::ops::Range;

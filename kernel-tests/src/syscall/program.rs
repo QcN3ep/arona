@@ -177,7 +177,7 @@ fn run_cases(
     let grants = kernel::device::active_grant_tokens();
     let records = kernel::task::allocated_task_records();
     let task_resources = kernel::task::allocated_task_resources();
-    // 常驻映射的索引页可在节点迁移后继续回收。
+    // The resident mapped index page can continue to be reclaimed after node migration.
     let repeat = repeat_first.then(|| modes[0]);
     super::ACTIVE.store(true, Ordering::Relaxed);
     for (index, mode) in modes.iter().copied().chain(repeat).enumerate() {

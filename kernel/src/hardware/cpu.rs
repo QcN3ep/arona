@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 本地中断控制、处理器等待与停机能力。
+//! Local interrupt control, processor waiting, and halt capability.
 
 use core::marker::PhantomData;
 
@@ -24,7 +24,7 @@ pub enum InterruptState {
 
 /// # Safety
 ///
-/// 创建及析构须在同一处理器且允许控制本地中断；恢复中断前异常入口及其栈须已就绪。
+/// Creation and drop must occur on the same processor with local interrupt control permitted; the exception entry and its stack must be ready before interrupts are restored.
 #[must_use]
 pub(crate) struct InterruptGuard {
     state: InterruptState,
@@ -46,24 +46,24 @@ impl Drop for InterruptGuard {
     }
 }
 
-/// 操作只影响当前处理器，不阻塞于锁或分配内存。
+/// Operations affect only the current processor and neither block on locks nor allocate memory.
 ///
 /// # Safety
 ///
-/// 执行环境须允许控制本地中断与执行等待指令；启用中断前，异常入口及其栈须已就绪。
-/// 调用 idle_until_interrupt 时须已关闭本地中断。
+/// The execution environment must permit local interrupt control and wait instructions; the exception entry and its stack must be ready before interrupts are enabled.
+/// Local interrupts must already be disabled when idle_until_interrupt is called.
 pub trait Cpu: Sync {
     fn interrupt_state(&self) -> InterruptState;
 
-    /// 原子关闭中断并返回原状态；嵌套调用按逆序恢复。
+    /// Atomically disables interrupts and returns the previous state; nested calls restore in reverse order.
     fn disable_interrupts(&self) -> InterruptState;
 
-    /// 只恢复本地中断开关，保留其他处理器状态。
+    /// Restores only the local interrupt enable state, preserving other processor state.
     fn restore_interrupts(&self, state: InterruptState);
 
-    /// 在关中断状态等待并允许处理中断，返回时仍关中断；允许伪唤醒，不丢失已挂起的中断。
+    /// Waits with interrupts disabled while allowing interrupts to be handled, returning with interrupts still disabled; spurious wakeups are permitted and pending interrupts are not lost.
     fn idle_until_interrupt(&self);
 
-    /// 关闭本地中断并永久停止当前控制流。
+    /// Disables local interrupts and permanently stops the current control flow.
     fn halt(&self) -> !;
 }

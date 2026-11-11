@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! ext4 更新暂存与写入失败状态。
+//! ext4 update staging and write failure state.
 
 use super::{inode::Inode, volume::Volume};
 use crate::{Error, block::BLOCK_SIZE};

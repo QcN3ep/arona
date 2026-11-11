@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 将固件 DTB 转换到固定容量的内核硬件描述中。
+//! Convert the firmware DTB into a fixed-capacity kernel hardware description.
 
 mod cpus;
 pub mod devices;
@@ -50,7 +50,7 @@ impl From<&'static str> for Error {
     }
 }
 
-/// 固件 DTB 的只读视图。
+/// Read-only view of the firmware DTB.
 pub struct Dtb<'a> {
     header: FdtHeader,
     root: Node<'a>,
@@ -60,17 +60,17 @@ pub struct Dtb<'a> {
 impl<'a> Dtb<'a> {
     /// # Safety
     ///
-    /// `dtb` 须指向完整 DTB，其内存须在 `'a` 内保持可读且不变。
+    /// `dtb` must point to a complete DTB, and its memory must remain readable and unchanged within `'a`.
     pub unsafe fn new(dtb: *const u8) -> Result<Self> {
         if dtb.is_null() || !(dtb as usize).is_multiple_of(8) {
             return Err("invalid DTB pointer".into());
         }
-        // SAFETY: DTB 头部须可读且按 u32 对齐。
+        // SAFETY: The DTB header must be readable and u32-aligned.
         let size = u32::from_be(unsafe { dtb.add(4).cast::<u32>().read() }) as usize;
         if size > MAX_DTB_SIZE {
             return Err("FDT exceeds 1 MiB".into());
         }
-        // SAFETY: dtb 起的 size 字节须在 'a 内保持可读且不变。
+        // SAFETY: The `size` bytes starting at `dtb` must remain readable and unchanged within `'a`.
         Self::from_bytes(unsafe { core::slice::from_raw_parts(dtb, size) })
     }
 
@@ -87,7 +87,7 @@ impl<'a> Dtb<'a> {
             return Err("FDT exceeds 1 MiB".into());
         }
         let bytes = bytes.get(..size).ok_or("truncated FDT")?;
-        // fdt 构造器用 u32 相加；先限制区块，避免损坏的偏移触发溢出。
+        // The fdt constructor adds with u32; bound the blocks first to avoid overflow from corrupt offsets.
         for (offset, length) in [
             (structure_offset, structure_size),
             (strings_offset, strings_size),
@@ -97,7 +97,7 @@ impl<'a> Dtb<'a> {
                 return Err("FDT block is out of bounds".into());
             }
         }
-        // fdt 的根节点读取需要 BEGIN_NODE 之外至少还有一个 token。
+        // Reading the fdt root node requires at least one token beyond BEGIN_NODE.
         if structure_size < 8 {
             return Err("FDT structure block is too short".into());
         }
@@ -128,7 +128,7 @@ impl<'a> Dtb<'a> {
         }
     }
 
-    /// 将 DTB 转换为硬件描述，失败时结果不可用。
+    /// Convert the DTB into a hardware description; the result is unusable on failure.
     pub fn dump(self, hardware: &mut HardwareInfo) -> Result<()> {
         hardware.timebase_frequency_hz = cpus::parse(&self, &mut hardware.cpus)?;
         memory::parse(&self, &mut hardware.memory)?;

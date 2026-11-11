@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 终端会话、行规程与输入缓存。
+//! Terminal sessions, line discipline, and input buffering.
 
-// TODO: 支持伪终端与多个独立终端会话。
+// TODO: Support pseudo-terminals and multiple independent terminal sessions.
 
 use alloc::{collections::VecDeque, vec::Vec};
 use core::cell::{Cell, Ref, RefCell};
@@ -211,7 +211,7 @@ impl Terminal {
         (output, count)
     }
 
-    // TODO: 支持软件流控、输入重打印和 UTF-8 擦除。
+    // TODO: Support software flow control, input reprinting, and UTF-8 erase.
     fn receive(&self, bytes: Vec<u8>) -> Vec<u8> {
         let mut echo = Vec::new();
         let mut state = self.state.borrow_mut();

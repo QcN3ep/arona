@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 管道字节队列与端点存活期。
+//! Pipe byte queues and endpoint lifetime.
 
 use alloc::{collections::VecDeque, rc::Rc, vec::Vec};
 use core::{

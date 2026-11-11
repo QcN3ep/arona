@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 发现设备并规范化地址、中断和 DMA 资源，保留设备专属属性。
+//! Discover devices and normalize address, interrupt, and DMA resources while preserving device-specific properties.
 
 pub mod flash;
 mod interrupts;
@@ -29,7 +29,7 @@ const PAGE_SIZE: u64 = 4096;
 
 #[derive(Debug)]
 struct DeviceNode<'a> {
-    // fdt 的 NodeId 假定字符串块位于结构块后，这里用节点名在 DTB 中的位置标识节点。
+    // fdt's NodeId assumes the strings block follows the structure block; identify a node here by its node name's position in the DTB.
     name: &'a str,
 }
 

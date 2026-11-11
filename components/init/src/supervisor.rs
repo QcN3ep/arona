@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 配置程序的启动、退出与重启监督。
+//! Supervision of startup, exit, and restart for configured programs.
 
-// TODO: 支持配置重载及服务依赖管理。
-// TODO: 按依赖顺序停止服务并完成刷盘、卸载与关机或重启。
+// TODO: Support configuration reload and service dependency management.
+// TODO: Stop services in dependency order and complete flushing, unmounting, and shutdown or restart.
 
 use crate::{
     InitError,
@@ -74,7 +74,7 @@ pub fn run(
             .min();
         match ipc::wait_many(&items, next.map_or(WaitMode::Forever, WaitMode::Until)) {
             Ok(ready) if ready.index < services.len() => {
-                // TODO: 重启基础服务并重建依赖会话。
+                // TODO: Restart the base service and rebuild dependent sessions.
                 return Ok(services[ready.index].wait()?.max(1));
             }
             Ok(_) | Err(Error::Kernel(KernelError::TimedOut)) => {}

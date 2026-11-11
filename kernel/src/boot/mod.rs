@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 启动数据定义及内核入口。
+//! Boot data definitions and kernel entry.
 
 mod console;
 mod hardware;
@@ -27,7 +27,7 @@ pub struct BootInfo<'boot> {
 
 /// # Safety
 ///
-/// `info` 及其字段须合法且与实际硬件一致，当前处理器须处于内核运行所需的执行环境。
+/// `info` and its fields must be valid and consistent with the actual hardware; the current processor must be in the execution environment required to run the kernel.
 pub fn boot_kernel(info: BootInfo<'_>) -> ! {
     log::info!("Entering kernel");
     memory::initialize(&info)

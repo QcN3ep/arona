@@ -18,7 +18,7 @@ mod paging;
 use paging::{FIRMWARE_BASE, LARGE_PAGE_SIZE, UART_BASE, UART_PHYSICAL_BASE};
 
 static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
-// SAFETY: 地址须对应 QEMU virt 的字节宽度与步长均为 1 的 16550 UART，且普通访问须由此实例独占。
+// SAFETY: The address must correspond to the 16550 UART on QEMU virt with byte width and stride of 1, and normal access must be exclusive to this instance.
 pub(super) static EARLY_CONSOLE: EarlyConsole = EarlyConsole::new(unsafe { Uart::new(UART_BASE) });
 
 unsafe extern "C" {
@@ -30,7 +30,7 @@ unsafe extern "C" {
 
 /// # Safety
 ///
-/// 只能由固件按 ELF 入口约定在物理地址启动。
+/// Must only be entered by the firmware at a physical address following the ELF entry convention.
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
@@ -54,7 +54,7 @@ unsafe extern "C" fn _start() -> ! {
 
 /// # Safety
 ///
-/// 只能在 `_start` 建立页表并切换至高半区后进入。
+/// Must only be entered after `_start` has built the page table and switched to the higher half.
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.boot")]
@@ -72,7 +72,7 @@ unsafe extern "C" fn _start_virtual(_hartid: usize, _dtb: usize) -> ! {
 
 /// # Safety
 ///
-/// 只能由 `_start` 在系统启动时建立高半区映射与栈后调用一次。
+/// Must be called only once by `_start` after the higher-half mapping and stack are established at system boot.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
     clear_bss();
@@ -81,9 +81,9 @@ pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
     logger::init(log::LevelFilter::Debug).expect("failed to initialize logger");
     log::info!(target: "arch::boot", "Booting kernel on CPU {hartid}");
 
-    // SAFETY: 可变借用存续期间须独占访问 HARDWARE_INFO。
+    // SAFETY: HARDWARE_INFO must be accessed exclusively for the lifetime of the mutable borrow.
     let hardware = unsafe { &mut *core::ptr::addr_of_mut!(HARDWARE_INFO) };
-    // SAFETY: dtb 须指向解析期间可读且不变的完整 DTB。
+    // SAFETY: dtb must point to a complete DTB that remains readable and unchanged during parsing.
     let tree = unsafe { Dtb::new((FIRMWARE_BASE + (dtb & (LARGE_PAGE_SIZE - 1))) as *const u8) }
         .unwrap_or_else(|error| panic!("failed to read DTB: {error}"));
     let dtb_range = PhysRange {
@@ -118,7 +118,7 @@ pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
     });
 
     log::debug!(target: "arch::boot", "Parsed DTB at {dtb:#x}");
-    // SAFETY: 启动信息须与实际硬件一致，处理器须处于内核运行所需的执行环境。
+    // SAFETY: The boot information must match the actual hardware, and the processor must be in the execution environment required by the kernel.
     kernel::boot_kernel(info)
 }
 
@@ -127,7 +127,7 @@ fn clear_bss() {
     let end = core::ptr::addr_of!(_ebss) as usize;
 
     while cursor < end {
-        // SAFETY: 需要保证该地址位于可写且 8 字节对齐的 BSS 中。
+        // SAFETY: The address must lie in the writable, 8-byte-aligned BSS.
         unsafe {
             (cursor as *mut u64).write_volatile(0);
         }
@@ -137,7 +137,7 @@ fn clear_bss() {
 
 /// # Safety
 ///
-/// 只能由处理器在高半区映射和异常入口有效时调用。
+/// Must only be called by the processor while the higher-half mapping and exception entry are valid.
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.boot")]

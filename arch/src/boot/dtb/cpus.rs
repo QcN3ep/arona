@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 从已启用的 CPU 节点生成按硬件 ID 排序的处理器清单。
+//! Build a processor list sorted by hardware ID from enabled CPU nodes.
 
 use arrayvec::ArrayVec;
 use kernel::{CpuInfo, boot::MAX_CPUS};

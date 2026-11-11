@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! LoongArch 64 ISA 实现。
+//! LoongArch 64 ISA implementation.
 
 pub mod boot;
 mod cpu;

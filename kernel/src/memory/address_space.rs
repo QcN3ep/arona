@@ -33,7 +33,7 @@ pub const USER_ADDRESS_RANGE: VirtRange = VirtRange {
 
 /// # Safety
 ///
-/// 操作及析构须满足 `Mmu` 的执行环境要求，析构前须让所有处理器切离该地址空间。
+/// Operations and drop must satisfy the execution environment requirements of `Mmu`; all processors must switch away from the address space before drop.
 pub struct AddressSpace {
     table: PageTable,
     state: Mutex<AddressSpaceState>,
@@ -541,7 +541,7 @@ impl AddressSpace {
             return Err(error);
         }
         let mut allocator = manager().allocator().lock();
-        // 同一页框的多个别名须一起撤销旧访问计数，才能一起切换权限。
+        // Multiple aliases of the same page frame must revoke the old access counts together so that their permissions can be switched together.
         for address in pages(range) {
             let journal = state.record(address).journal;
             allocator.release_access(
@@ -778,7 +778,7 @@ impl AddressSpace {
                         end: attempted_end,
                     },
                 ) {
-                    // 残余设备映射不得越过授权生命周期。
+                    // Residual device mappings must not outlive the grant.
                     log::error!("Failed to roll back device mapping: {error:?}");
                     hardware::cpu().halt();
                 }
@@ -831,7 +831,7 @@ impl AddressSpace {
         }
         self.table
             .edit(|table| clear_device_pages(table, record.range))?;
-        // 保留地址直至映射持有者释放，避免旧访问命中新映射。
+        // Keep the address reserved until the mapping holder releases it, preventing stale accesses from hitting a new mapping.
         record.kind = MappingKind::Guard;
         state.mappings.set(record);
         Ok(())
@@ -839,7 +839,7 @@ impl AddressSpace {
 
     /// # Safety
     ///
-    /// 后备存储须在内核运行期间持续有效。
+    /// Backing storage must remain valid for the entire kernel runtime.
     pub(crate) fn map_permanent(
         &self,
         address: usize,

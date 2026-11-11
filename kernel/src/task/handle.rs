@@ -24,7 +24,7 @@ pub enum HandleError {
 
 /// # Safety
 ///
-/// 操作及析构期间须保留内存管理器所需的内核映射。
+/// Operations and drop must retain the kernel mappings required by the memory manager.
 pub struct HandleTable {
     state: Mutex<TableState>,
 }
@@ -357,7 +357,7 @@ impl HandleTable {
         target: &Self,
         operation: impl FnOnce(&mut TableState, Option<&mut TableState>) -> T,
     ) -> T {
-        // 同表只取一次锁，跨表按地址顺序取锁。
+        // Acquire the lock only once for the same table; for different tables, acquire locks in address order.
         if ptr::eq(self, target) {
             operation(&mut self.state.lock(), None)
         } else if ptr::from_ref(self).addr() < ptr::from_ref(target).addr() {
@@ -386,7 +386,7 @@ impl Drop for HandleTable {
 }
 
 impl PreparedTransfer<'_> {
-    /// 目标句柄仅在 `commit` 成功后可用，放弃事务会释放预留槽位。
+    /// Target handles are usable only after `commit` succeeds; abandoning the transaction releases the reserved slots.
     pub fn handles(&self) -> impl ExactSizeIterator<Item = Handle> + '_ {
         self.pending.iter().map(|transfer| transfer.target)
     }
