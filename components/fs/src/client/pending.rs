@@ -19,6 +19,7 @@ pub type PendingDirectory<'a> =
     Pending<Directory<'a>, (&'a Handle<Task>, Handle<Channel>, Arc<()>)>;
 pub type PendingRead = Pending<Vec<u8>, (Handle<FrameAllocation>, usize)>;
 pub type PendingMetadata = Pending<Metadata, Handle<FrameAllocation>>;
+pub type PendingStatistics = Pending<crate::Statistics, Handle<FrameAllocation>>;
 pub type PendingWrite = Pending<usize, (Arc<AtomicUsize>, usize)>;
 pub type PendingAppend = Pending<(usize, usize), (Arc<AtomicUsize>, usize)>;
 pub type PendingSize = Pending<usize, Arc<AtomicUsize>>;
@@ -152,6 +153,14 @@ impl<'a> Client<'a> {
 }
 
 impl File<'_> {
+    pub fn start_statistics(&self) -> Result<PendingStatistics, Error> {
+        statistics_call(
+            self.task,
+            &self.channel,
+            Message::new(protocol::STATFS, &[])?,
+        )
+    }
+
     pub fn start_metadata(&self) -> Result<PendingMetadata, Error> {
         metadata_call(
             self.task,
@@ -263,6 +272,10 @@ impl File<'_> {
 }
 
 impl Directory<'_> {
+    pub fn start_statistics(&self) -> Result<PendingStatistics, Error> {
+        self.file.start_statistics()
+    }
+
     pub fn start_fsync(&self) -> Result<Pending<()>, Error> {
         self.file.start_fsync()
     }
@@ -382,6 +395,32 @@ pub(super) fn input_buffer(
     )?;
     frames.write(0, bytes)?;
     Ok(frames)
+}
+
+pub(super) fn statistics_call(
+    task: &Handle<Task>,
+    channel: &Handle<Channel>,
+    mut request: Message,
+) -> Result<PendingStatistics, Error> {
+    let output = output_buffer(task, crate::Statistics::SIZE)?;
+    transfer(
+        &mut request,
+        output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
+        Rights::WRITE,
+    )?;
+    Ok(Pending::new(
+        channel.start_call(&mut request)?,
+        output,
+        |output, response| {
+            let response = response_result(response)?;
+            if !response.words().is_empty() {
+                return Err(Error::InvalidData);
+            }
+            let mut bytes = [0; crate::Statistics::SIZE];
+            output.read(0, &mut bytes)?;
+            crate::Statistics::decode(&bytes)
+        },
+    ))
 }
 
 pub(super) fn metadata_call(

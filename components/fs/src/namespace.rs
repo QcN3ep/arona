@@ -36,6 +36,13 @@ enum DirectoryNode {
 }
 
 impl Directory {
+    pub fn statistics(&self) -> Result<crate::Statistics, Error> {
+        match &self.node {
+            DirectoryNode::Archive(directory) => directory.statistics(),
+            DirectoryNode::Ext4(directory) => directory.statistics(),
+        }
+    }
+
     pub fn path(&self) -> Result<Vec<u8>, Error> {
         let mut path = self.path.clone();
         if let DirectoryNode::Ext4(directory) = &self.node {
@@ -97,6 +104,16 @@ impl Directory {
 }
 
 impl Namespace {
+    pub fn statistics(&self, path: &[u8]) -> Result<crate::Statistics, Error> {
+        let path = normalize(&self.resolve(b"/", path, true, false)?)?;
+        for (prefix, filesystem) in self.mounts.borrow().iter() {
+            if beneath(&path, prefix) {
+                return filesystem.statistics();
+            }
+        }
+        self.archive.statistics()
+    }
+
     pub fn new(archive: Archive) -> Self {
         Self {
             archive,
@@ -365,6 +382,13 @@ impl ReadAt for File {
 }
 
 impl File {
+    pub fn statistics(&self) -> Result<crate::Statistics, Error> {
+        match self {
+            Self::Archive(file) => file.statistics(),
+            Self::Ext4(file) => file.statistics(),
+        }
+    }
+
     pub fn check_writable(&self) -> Result<(), Error> {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),

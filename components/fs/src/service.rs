@@ -284,6 +284,15 @@ fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Er
             output.write(0, &metadata.encode())?;
             Ok(Message::new(protocol::SUCCESS, &[])?)
         }
+        (protocol::STATFS, []) if request.handles().len() == 1 => {
+            let mut output = take_frames(&mut request, Rights::WRITE)?;
+            let statistics = match node {
+                Node::File(file) => file.statistics()?,
+                Node::Directory(directory) => directory.statistics()?,
+            };
+            output.write(0, &statistics.encode())?;
+            Ok(Message::new(protocol::SUCCESS, &[])?)
+        }
         (protocol::SET_ATTRIBUTES, []) if request.handles().len() == 1 => {
             let input = take_frames(&mut request, Rights::READ)?;
             let mut bytes = [0; crate::Attributes::SIZE];

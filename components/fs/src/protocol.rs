@@ -31,6 +31,7 @@ pub const APPEND: u64 = 20;
 pub const OPEN_DIRECTORY: u64 = 21;
 pub const RELATIVE: u64 = 22;
 pub const DIRECTORY_PATH: u64 = 23;
+pub const STATFS: u64 = 24;
 
 pub const SUCCESS: u64 = 0;
 pub const INVALID_REQUEST: u64 = 1;

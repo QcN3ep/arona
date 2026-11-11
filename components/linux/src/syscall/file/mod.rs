@@ -2,7 +2,7 @@
 
 //! Linux filesystem calls and asynchronous completion.
 
-// TODO: Support statfs and file change notifications.
+// TODO: Support file change notifications.
 
 mod buffer;
 mod directory;
@@ -13,6 +13,7 @@ mod open;
 pub(in crate::syscall) mod path;
 mod pipe;
 mod poll;
+mod statistics;
 mod terminal;
 mod virtual_file;
 
@@ -44,6 +45,7 @@ pub(super) enum Pending<'a> {
     Write(io::Write<'a>),
     Seek(io::Seek<'a>),
     Stat(metadata::Stat<'a>),
+    Statistics(statistics::Statistics<'a>),
     Directory(directory::ReadDirectory<'a>),
     Output {
         request: devmgr::device::Pending<usize, usize>,
@@ -89,6 +91,13 @@ pub(super) fn dispatch<'a>(
         ),
         abi::CLOSE => Outcome::Complete(close(process, arguments[0])),
         abi::FSTAT => fstat(process, arguments[0], arguments[1]),
+        abi::STATFS | abi::FSTATFS => statistics::start(
+            process,
+            files,
+            arguments[0],
+            arguments[1],
+            number == abi::FSTATFS,
+        ),
         abi::EVENTFD2 => {
             Outcome::Complete(eventfd::create(process, arguments[0] as u32, arguments[1]))
         }
@@ -259,6 +268,7 @@ impl<'a> Pending<'a> {
             Self::Write(write) => write.call(),
             Self::Seek(seek) => seek.call(),
             Self::Stat(stat) => Some(stat.call()),
+            Self::Statistics(statistics) => Some(statistics.call()),
             Self::Directory(directory) => directory.call(),
             Self::Output { request, .. } => Some(request.call()),
             Self::Truncate { request, .. } => Some(request.call()),
@@ -283,6 +293,7 @@ impl<'a> Pending<'a> {
             Self::Write(write) => write.poll(),
             Self::Seek(seek) => seek.poll(),
             Self::Stat(stat) => stat.poll(process),
+            Self::Statistics(statistics) => statistics.poll(process),
             Self::Directory(directory) => directory.poll(process),
             Self::Output {
                 request, consumed, ..
