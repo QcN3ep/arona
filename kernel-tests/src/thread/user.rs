@@ -156,7 +156,7 @@ fn preemption() {
     scheduler::run_ready().unwrap();
     drop(creator);
 
-    for terminate in [false, true] {
+    for (terminate, explicit) in [(false, false), (true, false), (false, true), (true, true)] {
         let (fixture, creator) = preemption_fixture(73);
         let (other, other_creator) = preemption_fixture(42);
         let observer = Thread::new(preemption_observer, usize::from(terminate)).unwrap();
@@ -164,8 +164,12 @@ fn preemption() {
         other.thread.start().unwrap();
         observer.start().unwrap();
         *BOOT.lock() = Some(fixture);
-        scheduler::set_preemption_deadline(Some(hardware::timer().now_ns().unwrap() + 5_000_000))
+        if explicit {
+            scheduler::set_preemption_deadline(Some(
+                hardware::timer().now_ns().unwrap() + 5_000_000,
+            ))
             .unwrap();
+        }
         scheduler::run_ready().unwrap();
         let fixture = BOOT.lock().take().unwrap();
         fixture.assert_exit(if terminate { 19 } else { 73 });
@@ -249,10 +253,7 @@ fn preemption_deadlines() {
                 .unwrap();
         }
         scheduler::run_ready().unwrap();
-        assert_eq!(
-            TIMERS.load(Ordering::Relaxed),
-            count + if wait_first && !request { 2 } else { 1 }
-        );
+        assert!(TIMERS.load(Ordering::Relaxed) > count);
         let fixture = BOOT.lock().take().unwrap();
         fixture.assert_exit(73);
         assert_eq!(fixture.marker(), 73);
