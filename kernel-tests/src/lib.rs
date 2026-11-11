@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 在真实硬件能力上运行内核集成测试。
+//! Run kernel integration tests on real hardware capabilities.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -65,7 +65,7 @@ fn run_thread(entry: kernel::thread::ThreadEntry) {
     use kernel::thread::{Thread, ThreadState, scheduler};
     let owner = Thread::new(entry, 0).unwrap();
     owner.start().unwrap();
-    // 测试超时由外层 QEMU runner 控制。
+    // Test timeouts are controlled by the outer QEMU runner.
     loop {
         scheduler::run_ready().unwrap();
         if let ThreadState::Dead(status) = owner.state() {

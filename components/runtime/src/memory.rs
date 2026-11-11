@@ -39,7 +39,7 @@ impl Handle<Task> {
         Ok(())
     }
 
-    /// 写入其他 Task 的用户内存。
+    /// Write to another Task's user memory.
     pub fn write_memory(&self, address: usize, input: &[u8]) -> Result<(), Error> {
         self.borrow().invoke(
             task::WRITE_MEMORY,
@@ -58,7 +58,7 @@ impl Handle<Task> {
         let [raw, _] = self
             .borrow()
             .invoke(task::ALLOCATE, [frames, rights.bits(), 0, 0, 0])?;
-        // SAFETY: ALLOCATE 成功须交付一个独占的页框分配句柄。
+        // SAFETY: A successful ALLOCATE must deliver an exclusive page frame allocation handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
     pub fn map(
@@ -109,7 +109,7 @@ impl Handle<Task> {
         self.query_mapping(address, task::QUERY)
     }
 
-    /// 查询覆盖 address 的区域或其后的第一个区域。
+    /// Query the region covering address or the first region after it.
     pub fn query_next(&self, address: usize) -> Result<Option<MappingInfo>, Error> {
         self.query_mapping(address, task::QUERY_NEXT)
     }

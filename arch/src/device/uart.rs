@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 16550 UART 的有界轮询输出。
+//! Bounded polling output for the 16550 UART.
 
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -18,7 +18,7 @@ pub struct Uart {
 impl Uart {
     /// # Safety
     ///
-    /// base 须指向持续可访问、字节宽度与步长均为 1 的 16550 寄存器，普通访问须经本实例串行化。
+    /// base must point to persistently accessible 16550 registers with byte width and stride of 1; normal access must be serialized through this instance.
     pub const unsafe fn new(base: usize) -> Self {
         Self {
             base,
@@ -49,7 +49,7 @@ impl Uart {
         Err(fmt::Error)
     }
 
-    /// 绕过输出锁，允许 panic 中的输出与未完成的普通输出交错。
+    /// Bypass the output lock, allowing output during a panic to interleave with unfinished normal output.
     pub fn emergency_write(&self, arguments: fmt::Arguments<'_>) -> fmt::Result {
         self.write_unlocked(arguments)
     }
@@ -71,7 +71,7 @@ impl Uart {
     }
 
     fn read_register(&self, offset: usize) -> u8 {
-        // SAFETY: 地址须位于持续可读的 UART 寄存器内。
+        // SAFETY: The address must lie within persistently readable UART registers.
         let value = unsafe { ((self.base + offset) as *const u8).read_volatile() };
         io_fence();
         value
@@ -79,7 +79,7 @@ impl Uart {
 
     fn write_register(&self, offset: usize, value: u8) {
         io_fence();
-        // SAFETY: 地址须位于持续可写的 UART 寄存器内。
+        // SAFETY: The address must lie within persistently writable UART registers.
         unsafe { ((self.base + offset) as *mut u8).write_volatile(value) };
         io_fence();
     }

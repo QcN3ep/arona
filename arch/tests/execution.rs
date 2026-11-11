@@ -77,12 +77,12 @@ unsafe extern "C" {
 
 /// # Safety
 ///
-/// 启动映像及栈须已映射到高半区，测试 RAM 须独占且本地中断须关闭。
+/// The boot image and stack must already be mapped into the higher half, the test RAM must be exclusive, and local interrupts must be disabled.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
     let start = core::ptr::addr_of!(_sbss) as *mut u8;
     let length = core::ptr::addr_of!(_ebss) as usize - start as usize;
-    // SAFETY: 该范围须为启动入口尚未使用的独占 BSS。
+    // SAFETY: The range must be exclusive BSS not yet used by the boot entry point.
     unsafe {
         start.write_bytes(0, length);
     }
@@ -210,7 +210,7 @@ impl kernel_tests::Platform for Platform {
     }
 
     fn syscall_code() -> &'static [u64] {
-        // SAFETY: 测试代码须独占一个完整且可读的内核代码页。
+        // SAFETY: The test code must exclusively occupy a complete, readable kernel code page.
         unsafe {
             core::slice::from_raw_parts(
                 isa::syscall_user_code as *const () as *const u64,
@@ -224,7 +224,7 @@ impl kernel_tests::Platform for Platform {
     }
 
     fn user_code() -> &'static [u64] {
-        // SAFETY: 测试代码须独占一个完整且可读的内核代码页。
+        // SAFETY: The test code must exclusively occupy a complete, readable kernel code page.
         unsafe {
             core::slice::from_raw_parts(
                 isa::task_user_code as *const () as *const u64,
@@ -247,7 +247,7 @@ fn select_suite() -> Suite {
     let mut input = [0u8; 16];
     let mut length = 0;
     loop {
-        // SAFETY: UART 须保持可读的启动映射且由测试独占。
+        // SAFETY: UART must retain a readable boot mapping and be exclusively used by the test.
         let byte = unsafe {
             while ((UART + 5) as *const u8).read_volatile() & 1 == 0 {
                 core::hint::spin_loop();
@@ -460,7 +460,7 @@ fn user_state_round_trip(current: usize, id: usize, round: usize, pc: usize) {
 }
 
 fn context(index: usize) -> &'static Context {
-    // SAFETY: 测试上下文须位于始终存活的独占堆对象中，且仅由当前处理器访问。
+    // SAFETY: The test context must reside in an exclusively owned heap object that lives forever, and be accessed only by the current processor.
     unsafe { &*CONTEXTS.load(Ordering::Relaxed).add(index) }
 }
 
@@ -525,7 +525,7 @@ fn map_user(manager: &MemoryManager) {
 }
 
 fn uart() -> Uart {
-    // SAFETY: UART 须保留当前 ISA 的启动映射，测试访问须串行执行。
+    // SAFETY: UART must retain the boot mapping of the current ISA, and test accesses must be serialized.
     unsafe { Uart::new(UART) }
 }
 

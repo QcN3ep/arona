@@ -17,7 +17,7 @@ pub fn set_floating_control(state: &mut UserState, id: usize) {
 
 pub fn frequency(dtb: usize) -> Option<u64> {
     let pointer = (0xffff_ffc0_0040_0000 + (dtb & 0x1f_ffff)) as *const u32;
-    // SAFETY: 固件 DTB 须完整映射到启动固件窗口且解析期间保持不变。
+    // SAFETY: The firmware DTB must be fully mapped into the boot firmware window and remain unchanged during parsing.
     let tree = unsafe { fdt::Fdt::from_ptr_fallible(pointer) }.unwrap();
     tree.root()
         .unwrap()
@@ -28,7 +28,7 @@ pub fn frequency(dtb: usize) -> Option<u64> {
 }
 
 pub fn set_floating_enabled(enabled: bool) {
-    // SAFETY: 当前处理器须允许修改 sstatus，修改期间不得执行浮点指令。
+    // SAFETY: The current processor must permit modifying sstatus, and no floating-point instructions may be executed during the modification.
     unsafe {
         if enabled {
             asm!("csrs sstatus, {}", in(reg) 2usize << 13, options(nomem, nostack));
@@ -40,7 +40,7 @@ pub fn set_floating_enabled(enabled: bool) {
 
 pub fn floating_enabled() -> bool {
     let status: usize;
-    // SAFETY: 执行环境须允许读取 sstatus。
+    // SAFETY: The execution environment must permit reading sstatus.
     unsafe {
         asm!("csrr {}, sstatus", out(reg) status, options(nomem, nostack));
     }
@@ -119,7 +119,7 @@ pub extern "C" fn user_code() -> ! {
         "lr.d t3, (t2)",
         "ecall",
         "sc.d t3, s0, (t2)",
-        // SC 成功返回 0，跨 Trap 的预约必须失效。
+        // SC returns 0 on success; a reservation across a Trap must be invalidated.
         "beqz t3, 9f",
         "bnez a0, 9f",
         "bne a1, s0, 9f",

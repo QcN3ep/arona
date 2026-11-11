@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! ext4 位图与空闲计数更新。
+//! ext4 bitmap and free count updates.
 
 use super::{half, volume::Volume, word};
 use crate::{Error, block::BLOCK_SIZE};

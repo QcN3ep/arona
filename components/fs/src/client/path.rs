@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 目录会话的相对路径请求。
+//! Relative path requests for directory sessions.
 
 use super::pending::{
     complete_directory, complete_open, complete_read, empty_call, input_buffer, metadata_call,

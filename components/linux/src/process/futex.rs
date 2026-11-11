@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! futex 等待索引与唤醒登记。
+//! futex wait indexing and wakeup registration.
 
 use alloc::{
     collections::{BTreeMap, VecDeque},

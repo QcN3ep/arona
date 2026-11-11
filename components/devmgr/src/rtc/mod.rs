@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! RTC 的识别与 Unix 时间读取。
+//! RTC identification and Unix time reads.
 
 pub mod service;
 mod session;
@@ -101,7 +101,7 @@ impl<'a> Rtc<'a> {
     pub fn now(&mut self) -> Result<Timestamp, Error> {
         match self.configuration.kind {
             Kind::Goldfish => {
-                // 读取低位时锁存高位。
+                // Reading the low word latches the high word.
                 let low = self.read(TIME_LOW)?;
                 let high = self.read(TIME_HIGH)?;
                 let nanoseconds = ((u64::from(high) << 32) | u64::from(low)) as i64;

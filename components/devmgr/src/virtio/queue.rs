@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! split virtqueue 的描述符发布与 used ring 消费。
+//! Split virtqueue descriptor publication and used ring consumption.
 
 use alloc::vec::Vec;
 use runtime::{

@@ -199,7 +199,7 @@ impl Session {
         self.receive(output, TRY_READ)
     }
 
-    /// 返回已进入发送缓冲区的字节数。
+    /// Returns the number of bytes accepted into the transmit buffer.
     pub fn write(&self, bytes: &[u8]) -> Result<usize, Error> {
         let bytes = &bytes[..bytes.len().min(MAX_BYTES)];
         let words = encode(bytes);

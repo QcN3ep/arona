@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-// TODO: 接入 libc 与 coreutils 等真实 Linux 应用的兼容性验证。
-// TODO: 接入 IPC、调度、文件 I/O 与网络的性能基准及 Linux 对照。
+// TODO: Integrate compatibility verification for real Linux applications such as libc and coreutils.
+// TODO: Integrate performance benchmarks for IPC, scheduling, file I/O, and networking, along with Linux comparisons.
 
 mod linux_test;
 mod rootfs;

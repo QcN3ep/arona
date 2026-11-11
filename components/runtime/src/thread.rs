@@ -25,7 +25,7 @@ pub fn sleep_until(deadline_ns: u64) -> Result<(), Error> {
 pub fn now_ns() -> Result<u64, Error> {
     Ok(current().invoke(thread::NOW, [0; 5])?[0])
 }
-/// 结束当前线程，不展开栈或运行线程本地析构。
+/// Terminate the current thread without unwinding the stack or running thread-local destructors.
 pub fn exit(status: usize) -> ! {
     let _ = current().invoke(thread::EXIT, [status as u64, 0, 0, 0, 0]);
     loop {
@@ -37,13 +37,13 @@ impl Handle<Task> {
         let [raw, _] = self
             .borrow()
             .invoke(task::CREATE, [rights.bits(), 0, 0, 0, 0])?;
-        // SAFETY: CREATE 成功交付独占的 Task 句柄。
+        // SAFETY: A successful CREATE delivers an exclusive Task handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
     /// # Safety
     ///
-    /// 若目标与调用方共享地址空间，entry 的代码与存储须保持存活，
-    /// 线程须独占其栈并满足入口的调用约定。
+    /// If the target shares an address space with the caller, the code and storage referenced by entry must remain alive,
+    /// and the thread must have an exclusive stack and satisfy the entry's calling convention.
     pub unsafe fn create_thread(
         &self,
         entry: UserEntry,
@@ -54,7 +54,7 @@ impl Handle<Task> {
             task::CREATE_THREAD,
             [bytes.as_ptr() as u64, rights.bits(), 0, 0, 0],
         )?;
-        // SAFETY: CREATE_THREAD 成功交付独占的 Thread 句柄。
+        // SAFETY: A successful CREATE_THREAD delivers an exclusive Thread handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
     pub fn install<T: crate::Object>(

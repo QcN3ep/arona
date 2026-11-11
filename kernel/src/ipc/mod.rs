@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 消息通信、一次性回复、合并通知与多对象等待。
+//! Message communication, one-shot replies, coalesced notifications, and multi-object waiting.
 
 mod call;
 mod channel;

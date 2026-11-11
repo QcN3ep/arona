@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 内核日志记录的编码。
+//! Encoding of kernel log records.
 
 pub const MAX_RECORD_SIZE: usize = 1024;
 pub const HEADER_SIZE: usize = 32;
@@ -20,9 +20,9 @@ pub enum Level {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Record<'a> {
-    /// 序号从一开始，空缺表示记录丢失。
+    /// The sequence starts at one; a gap indicates a lost record.
     pub sequence: u64,
-    /// 时钟初始化后的纳秒数，时钟不可用时为 None。
+    /// Nanoseconds since clock initialization, or None when the clock is unavailable.
     pub timestamp_ns: Option<u64>,
     pub level: Level,
     pub truncated: bool,

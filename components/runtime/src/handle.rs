@@ -31,7 +31,7 @@ pub struct HandleInfo {
 impl<T: Object> Handle<T> {
     /// # Safety
     ///
-    /// raw 须为当前 Task 独占持有且类型为 T 的已安装句柄。
+    /// raw must be an installed handle of type T held exclusively by the current Task.
     pub unsafe fn from_raw(raw: abi::Handle) -> Self {
         Self {
             raw,
@@ -82,7 +82,7 @@ impl<T: Object> BorrowedHandle<'_, T> {
     }
     pub fn try_clone(&self, rights: Rights) -> Result<Handle<T>, Error> {
         let [raw, _] = self.invoke(abi::method::DUPLICATE, [rights.bits(), 0, 0, 0, 0])?;
-        // SAFETY: DUPLICATE 成功须交付一个同类型的新句柄。
+        // SAFETY: A successful DUPLICATE must deliver a new handle of the same type.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
     pub(crate) fn invoke(&self, method: u64, arguments: [u64; 5]) -> Result<[u64; 2], Error> {
@@ -104,7 +104,7 @@ impl AnyHandle {
             return Err(self);
         }
         let raw = self.into_raw();
-        // SAFETY: 类型已匹配，所有权从动态句柄移交。
+        // SAFETY: The type is already matched, and ownership transfers from the dynamic handle.
         Ok(unsafe { Handle::from_raw(raw) })
     }
     pub(crate) fn raw(&self) -> abi::Handle {

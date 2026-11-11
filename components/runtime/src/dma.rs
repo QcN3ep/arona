@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! DMA 域、总线地址映射与缓冲区访问。
+//! DMA domains, bus address mapping, and buffer access.
 
 use crate::{BorrowedHandle, Device, DmaDomain, Error, FrameAllocation, Handle, Rights, Task};
 pub use abi::dma::{DmaDirection, DmaInfo, DmaProfile, DmaState};
@@ -28,7 +28,7 @@ impl Handle<Device> {
         let [raw, _] = self
             .borrow()
             .invoke(device::CREATE_DMA, [id as u64, rights.bits(), 0, 0, 0])?;
-        // SAFETY: CREATE_DMA 成功须交付独占的新 DMA 域句柄。
+        // SAFETY: A successful CREATE_DMA must deliver an exclusive new DMA domain handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
 }
@@ -97,7 +97,7 @@ impl Handle<DmaDomain> {
 
     /// # Safety
     ///
-    /// 设备队列须已停止，且在途 DMA 已完成。
+    /// The device queue must be stopped, and in-flight DMA must have completed.
     pub fn quiesce(&self) -> Result<(), Error> {
         self.borrow().invoke(dma::QUIESCE, [0; 5])?;
         Ok(())
@@ -199,12 +199,12 @@ buffer_access!(DmaBuffer, .borrow());
 
 pub fn synchronize() {
     #[cfg(target_arch = "riscv64")]
-    // SAFETY: 屏障不得修改栈或通用寄存器。
+    // SAFETY: The barrier must not modify the stack or general-purpose registers.
     unsafe {
         core::arch::asm!("fence iorw, iorw", options(nostack, preserves_flags));
     }
     #[cfg(target_arch = "loongarch64")]
-    // SAFETY: 屏障不得修改栈或通用寄存器。
+    // SAFETY: The barrier must not modify the stack or general-purpose registers.
     unsafe {
         core::arch::asm!("dbar 0", options(nostack, preserves_flags));
     }
@@ -212,7 +212,7 @@ pub fn synchronize() {
 
 impl Drop for DmaRange<'_> {
     fn drop(&mut self) {
-        // 活动域拒绝解除映射，页框由域继续保留。
+        // An active domain refuses unmapping; the domain retains the page frames.
         let _ = self.unmap();
     }
 }

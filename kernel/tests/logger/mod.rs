@@ -17,26 +17,26 @@ thread_local! {
 
 struct CountingAllocator;
 
-// SAFETY: 分配与释放须遵循 Layout 契约，且分配器方法不得展开栈。
+// SAFETY: Allocation and deallocation must follow the Layout contract, and allocator methods must not unwind the stack.
 unsafe impl GlobalAlloc for CountingAllocator {
     /// # Safety
     ///
-    /// layout.size() 须大于零。
+    /// layout.size() must be greater than zero.
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let _ = ALLOCATIONS.try_with(|count| {
             if let Some(value) = count.get() {
                 count.set(Some(value + 1));
             }
         });
-        // SAFETY: layout.size() 须大于零。
+        // SAFETY: layout.size() must be greater than zero.
         unsafe { System.alloc(layout) }
     }
 
     /// # Safety
     ///
-    /// pointer 和 layout 须对应此分配器尚未释放的分配。
+    /// pointer and layout must refer to an allocation of this allocator that has not been deallocated.
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // SAFETY: pointer 和 layout 须对应 System 尚未释放的分配。
+        // SAFETY: pointer and layout must refer to an allocation of System that has not been deallocated.
         unsafe { System.dealloc(pointer, layout) }
     }
 }

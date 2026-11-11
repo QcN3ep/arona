@@ -30,8 +30,8 @@ pub enum TrapError {
 
 /// # Safety
 ///
-/// 安装及后续操作须在同一处理器执行；栈须独占、常驻且完整映射为内核可写内存，直到替换或停机。
-/// handler 须有界执行，不展开栈或启用中断；上下文切换须经 Execution。
+/// Installation and subsequent operations must run on the same processor; the stack must be exclusive, resident, and fully mapped as kernel-writable memory until replaced or halted.
+/// The handler must execute in bounded time without unwinding the stack or enabling interrupts; context switches must go through Execution.
 pub trait TrapControl: Sync {
     fn install(&self, stack: VirtRange, handler: Handler) -> Result<(), TrapError>;
 

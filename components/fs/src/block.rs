@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 块设备会话上的定长磁盘访问。
+//! Fixed-length disk access over block device sessions.
 
 use alloc::vec::Vec;
 use core::cell::RefCell;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 用户日志客户端、管理接口与日志服务。
+//! Userspace log client, management interface, and log service.
 
 #![no_std]
 #![forbid(unsafe_code)]

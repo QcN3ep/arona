@@ -6,13 +6,13 @@ use kernel::memory::Frame;
 
 pub fn floating_enabled() -> bool {
     let status: usize;
-    // SAFETY: 执行环境须允许读取 sstatus。
+    // SAFETY: The execution environment must permit reading sstatus.
     unsafe { asm!("csrr {}, sstatus", out(reg) status, options(nomem, nostack)) };
     status & 0x6000 != 0
 }
 
 pub fn floating(enabled: bool) {
-    // SAFETY: 测试须独占 sstatus 的浮点状态配置。
+    // SAFETY: The test must exclusively own the floating-point status configuration of sstatus.
     unsafe {
         asm!(
             "csrc sstatus, {mask}",
@@ -25,12 +25,12 @@ pub fn floating(enabled: bool) {
 }
 
 pub fn acknowledge() {
-    // SAFETY: 测试须独占监督态软件中断。
+    // SAFETY: The test must exclusively own the supervisor software interrupt.
     unsafe { asm!("csrci sip, 2", options(nostack)) };
 }
 
 pub fn clobber_floating() {
-    // SAFETY: 浮点扩展须已启用，现场须已由入口保存。
+    // SAFETY: The floating-point extension must already be enabled, and the context must already be saved by the entry point.
     unsafe {
         asm!(
             "fmv.d.x ft0, zero",

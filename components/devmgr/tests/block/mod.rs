@@ -172,7 +172,7 @@ fn requests(block: &mut Block<'_>, event: &Handle<Event>) {
         );
     }
     assert_eq!(block.acknowledge(0), Err(Error::NotFound));
-    // 跨越 ring 的回绕位置，并重复利用已经确认的请求槽位。
+    // Cross the ring wraparound point and reuse already acknowledged request slots.
     for round in 0..20 {
         for id in 0..count {
             block.read(id, 0, copy(&output), 0, 512).unwrap();

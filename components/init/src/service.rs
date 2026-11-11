@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-// TODO: 接入提供协议栈、地址配置与 DNS 的网络服务。
+// TODO: Integrate network services providing the protocol stack, address configuration, and DNS.
 
 use runtime::{
     Channel, DeviceSet, Error, Handle, KernelLog, Rights, Task,

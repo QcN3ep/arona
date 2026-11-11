@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 块设备会话的请求提交、取消与完成确认。
+//! Request submission, cancellation, and completion acknowledgement for block device sessions.
 
 use runtime::{
     Channel, FrameAllocation, Handle, Rights, Task,

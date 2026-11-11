@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 文件内容、长度与 extent 树更新。
+//! File content, length, and extent tree updates.
 
 use super::{extent::Extent, inode::Inode, volume::Volume, word};
 use crate::{Error, block::BLOCK_SIZE};

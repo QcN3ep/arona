@@ -26,22 +26,22 @@ pub enum TimerError {
 
 /// # Safety
 ///
-/// 所有操作须在同一处理器且关中断时执行；设置 deadline 前，异常入口及其栈须已就绪。
+/// All operations must run on the same processor with interrupts disabled; before setting a deadline, the exception entry and its stack must be ready.
 pub trait Timer: Sync {
-    /// 初始化后时间从零开始，定时中断保持停用；无硬件频率来源时使用传入值。
+    /// Time starts at zero after initialization and the timer interrupt stays disabled; the supplied value is used when there is no hardware frequency source.
     fn initialize(&self, frequency_hz: Option<u64>) -> Result<(), TimerError>;
 
     fn frequency_hz(&self) -> Result<u64, TimerError>;
 
-    /// 返回自初始化起不回退的纳秒数，超出范围时饱和。
+    /// Returns non-decreasing nanoseconds since initialization, saturating when out of range.
     fn now_ns(&self) -> Result<u64, TimerError>;
 
-    /// 替换绝对纳秒 deadline，向上取整；已到期时尽快触发，失败保留原定时设置。
+    /// Replaces the absolute nanosecond deadline, rounding up; fires as soon as possible when already expired, and keeps the original timer setting on failure.
     fn set_deadline(&self, deadline_ns: u64) -> Result<(), TimerError>;
 
-    /// 幂等停用定时中断，返回后旧 deadline 不再触发。
+    /// Idempotently disables the timer interrupt; the old deadline no longer fires after it returns.
     fn cancel(&self) -> Result<(), TimerError>;
 
-    /// 清除当前中断并保持停用。
+    /// Clears the current interrupt and keeps the timer disabled.
     fn acknowledge(&self) -> Result<(), TimerError>;
 }

@@ -4,7 +4,7 @@ use core::arch::naked_asm;
 
 pub fn frequency(dtb: usize) -> Option<u64> {
     let pointer = (0xffff_ffc0_0040_0000 + (dtb & 0x1f_ffff)) as *const u32;
-    // SAFETY: 固件 DTB 须完整映射到启动固件窗口且解析期间保持不变。
+    // SAFETY: The firmware DTB must be fully mapped into the boot firmware window and remain unchanged during parsing.
     let tree = unsafe { fdt::Fdt::from_ptr_fallible(pointer) }.unwrap();
     tree.root()
         .unwrap()

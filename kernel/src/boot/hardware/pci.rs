@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! PCI 地址窗口及 INTx、MSI 请求源路由。
+//! PCI address windows and INTx/MSI request-source routing.
 
 pub use abi::device::PciBar;
 use arrayvec::ArrayVec;

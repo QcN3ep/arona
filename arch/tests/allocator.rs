@@ -56,17 +56,17 @@ impl Drop for Object {
 
 /// # Safety
 ///
-/// 启动映像的高半区映射与启动栈须可用，测试 RAM 须可独占使用。
+/// The higher-half mapping of the boot image and the boot stack must be usable, and the test RAM must be exclusively available.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn __wrap__start_native() -> ! {
     let mut cursor = core::ptr::addr_of!(_sbss) as usize;
     let end = core::ptr::addr_of!(_ebss) as usize;
     while cursor < end {
-        // SAFETY: cursor 须位于启动入口尚未使用的 BSS 内。
+        // SAFETY: cursor must lie within BSS not yet used by the boot entry point.
         unsafe { (cursor as *mut u8).write_volatile(0) };
         cursor += 1;
     }
-    // SAFETY: UART 须为当前 ISA 的启动 UART 映射，且仅由测试使用。
+    // SAFETY: UART must be the boot UART mapping of the current ISA and must be used only by the test.
     let uart = unsafe { Uart::new(UART) };
     uart.init().unwrap();
     uart.write(format_args!("Heap allocator tests started\n"))
@@ -118,7 +118,7 @@ fn initialize() -> &'static MemoryManager {
     let slot = (address >> shift) & ((1 << layout.index_bits) - 1);
     let boot_root = Frame::new(arch::boot::kernel_image().boot_tables.start).unwrap();
     let entry = mmu.read_entry(boot_root, slot, layout.levels - 1).unwrap();
-    // 测试保留整个启动分支，映像与 UART 继续使用静态启动页表。
+    // The test keeps the entire boot branch; the image and UART continue to use the static boot page tables.
     mmu.write_entry(space.root(), slot, layout.levels - 1, entry)
         .unwrap();
     manager.initialize_direct_map().unwrap();
@@ -188,7 +188,7 @@ fn halt() -> ! {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    // SAFETY: UART 须保持启动映射且仅由测试使用。
+    // SAFETY: UART must keep its boot mapping and must be used only by the test.
     let uart = unsafe { Uart::new(UART) };
     let _ = uart.emergency_write(format_args!("Heap allocator tests failed: {info}\n"));
     halt()

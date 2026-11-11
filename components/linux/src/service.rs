@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 服务的启动与异步事件处理。
+//! Startup and asynchronous event handling for the Linux service.
 
 mod loading;
 

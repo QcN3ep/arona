@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 子进程退出等待与回收。
+//! Child process exit waiting and reclamation.
 
 use crate::{
     process::{Process, namespace::ChildChange},
@@ -64,7 +64,7 @@ pub(super) fn start<'a>(process: &Process<'a>, number: usize, args: [usize; 6]) 
             return Err(EINVAL);
         }
         if usage != 0 {
-            // TODO: 接入进程 CPU 时间与资源用量统计。
+            // TODO: Integrate process CPU time and resource usage statistics.
             return Err(EOPNOTSUPP);
         }
         Ok(Pending {

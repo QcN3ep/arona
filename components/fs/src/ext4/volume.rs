@@ -40,7 +40,7 @@ pub(super) struct Group {
 }
 
 impl Volume {
-    // TODO: 扩展 ext4 的块大小与磁盘特征支持。
+    // TODO: Extend ext4 block size and disk feature support.
     // REFERENCE: https://www.kernel.org/doc/html/v6.12/filesystems/ext4/super.html
     pub fn mount(disk: Rc<Disk>, start: u64, length: u64) -> Result<Self, Error> {
         if !start.is_multiple_of(BLOCK_SIZE as u64)

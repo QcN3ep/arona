@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 程序的装载、系统调用转发与生命周期管理。
+//! Linux program loading, syscall forwarding, and lifecycle management.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
 extern crate alloc;
 
-// TODO: 接入网络服务并提供 Linux socket 接口与 Unix 域 socket。
+// TODO: Integrate the network service and provide Linux socket and Unix domain socket interfaces.
 
 mod client;
 pub mod elf;

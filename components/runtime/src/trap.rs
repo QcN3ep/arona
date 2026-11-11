@@ -18,7 +18,7 @@ impl Handle<Task> {
         let [raw, _] = self
             .borrow()
             .invoke(method::task::TRAP_PORT, [rights.bits(), 0, 0, 0, 0])?;
-        // SAFETY: TRAP_PORT 成功须交付独占的 TrapPort 句柄。
+        // SAFETY: A successful TRAP_PORT must deliver an exclusive TrapPort handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
 
@@ -61,7 +61,7 @@ impl Handle<TrapPort> {
             );
             match result {
                 Ok([raw, length]) => {
-                    // SAFETY: RECEIVE 成功须交付独占的 TrapContinuation 句柄。
+                    // SAFETY: A successful RECEIVE must deliver an exclusive TrapContinuation handle.
                     let continuation = unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) };
                     if length != TrapInfo::SIZE as u64 {
                         return Err(Error::Protocol);

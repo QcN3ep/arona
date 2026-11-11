@@ -22,7 +22,7 @@ pub struct Builder {
     stack_size: usize,
 }
 
-/// 丢弃句柄会分离线程，退出后的资源由运行时回收。
+/// Dropping the handle detaches the thread; resources after exit are reclaimed by the runtime.
 #[must_use]
 pub struct JoinHandle<T: Send + 'static> {
     resources: Option<Box<Resources<T>>>,
@@ -144,7 +144,7 @@ impl<T: Send + 'static> Resources<T> {
             })),
             Ordering::Release,
         );
-        // SAFETY: 栈、TLS 与 packet 须独占交付，并保留至内核确认线程退出。
+        // SAFETY: The stack, TLS, and packet must be delivered exclusively and retained until the kernel confirms the thread has exited.
         let thread = unsafe {
             process::task().create_thread(
                 UserEntry {
@@ -221,7 +221,7 @@ fn stack_size(size: usize) -> Result<usize, Error> {
 
 /// # Safety
 ///
-/// argument 须指向独占交付给当前线程的 Packet<T>，其资源须保留至内核确认线程退出。
+/// argument must point to a Packet<T> delivered exclusively to the current thread, and its resources must be retained until the kernel confirms the thread has exited.
 #[cfg(target_arch = "riscv64")]
 #[unsafe(naked)]
 unsafe extern "C" fn enter<T: Send + 'static>(_: *const Packet<T>) -> ! {
@@ -237,7 +237,7 @@ unsafe extern "C" fn enter<T: Send + 'static>(_: *const Packet<T>) -> ! {
 
 /// # Safety
 ///
-/// argument 须满足 run 的线程启动约定。
+/// argument must satisfy run's thread startup convention.
 #[cfg(target_arch = "loongarch64")]
 #[unsafe(naked)]
 unsafe extern "C" fn enter<T: Send + 'static>(_: *const Packet<T>) -> ! {
@@ -246,16 +246,16 @@ unsafe extern "C" fn enter<T: Send + 'static>(_: *const Packet<T>) -> ! {
 
 /// # Safety
 ///
-/// argument 须指向本线程独占的 Packet<T>，栈与 TLS 须已就绪且存活至线程退出。
+/// argument must point to a Packet<T> exclusive to this thread, and the stack and TLS must be ready and alive until the thread exits.
 unsafe extern "C" fn run<T: Send + 'static>(argument: *const Packet<T>) -> ! {
-    // SAFETY: 启动参数须指向此线程存活的 packet。
+    // SAFETY: The startup argument must point to a packet that is alive for this thread.
     let packet = unsafe { &*argument };
     let job = packet.job.swap(ptr::null_mut(), Ordering::Acquire);
-    // SAFETY: job 须为本线程唯一取出的 Box<Job<T>>。
+    // SAFETY: job must be the Box<Job<T>> taken only once by this thread.
     let Job { function } = *unsafe { Box::from_raw(job) };
     let result = function();
     crate::tls::destroy();
-    // SAFETY: 仅当前线程写入结果，读取方须等待线程退出并取得 returned。
+    // SAFETY: Only the current thread writes the result; the reader must wait for the thread to exit and obtain returned.
     unsafe { (*packet.result.get()).write(result) };
     packet.returned.store(true, Ordering::Release);
     super::exit(0)
@@ -267,7 +267,7 @@ impl<T> Packet<T> {
             return None;
         }
         *self.returned.get_mut() = false;
-        // SAFETY: returned 须发布完整结果，线程须已退出且结果须只取出一次。
+        // SAFETY: returned must publish the complete result, the thread must have exited, and the result must be taken only once.
         Some(unsafe { self.result.get_mut().assume_init_read() })
     }
 }
@@ -276,7 +276,7 @@ impl<T> Drop for Packet<T> {
     fn drop(&mut self) {
         let job = *self.job.get_mut();
         if !job.is_null() {
-            // SAFETY: 非空 job 须尚未被线程取走，且线程须已停止或未启动。
+            // SAFETY: A non-null job must not yet have been taken by the thread, and the thread must have stopped or not have started.
             drop(unsafe { Box::from_raw(job) });
         }
         drop(self.take_result());

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 页表条目访问、地址翻译切换与缓存同步的硬件能力。
+//! Hardware capability for page table entry access, address translation switching, and cache synchronization.
 
 use core::ops::Range;
 
@@ -64,7 +64,7 @@ pub enum PageTableEntry {
     Mapping(PageMapping),
 }
 
-/// arch 访问物理内存所需的固定页表分支，不归调用方所有。
+/// Fixed page table branch required by arch for physical memory access; not owned by the caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TableWindow {
     pub virtual_address: usize,
@@ -79,18 +79,18 @@ pub struct PageTableLayout {
     pub window: TableWindow,
 }
 
-/// 页表层级从叶级的 0 开始，物理读写的 offset 以 u64 为单位。
+/// Page table levels start at 0 for the leaf level; physical read and write offsets are in units of u64.
 ///
 /// # Safety
 ///
-/// 当前处理器须允许执行分页与缓存维护指令，本地中断须关闭，当前页表须保留物理访问窗口。
-/// 启用的页表及其后备页框须持续存活，内存访问不得与活动 Rust 引用冲突，修改不得破坏当前执行所依赖的映射。
+/// The current processor must permit paging and cache maintenance instructions, local interrupts must be disabled, and the current page table must retain the physical access window.
+/// Enabled page tables and their backing page frames must stay alive, memory accesses must not conflict with active Rust references, and modifications must not break mappings that the current execution depends on.
 pub trait Mmu: Sync {
     fn layout(&self) -> PageTableLayout;
     fn is_valid_virtual_address(&self, address: usize) -> bool;
     fn physical_address_bits(&self) -> u32;
 
-    /// 设备寄存器的分页属性。
+    /// Paging attributes for device registers.
     fn device_memory_type(&self) -> MemoryType;
 
     fn read_entry(
@@ -100,7 +100,7 @@ pub trait Mmu: Sync {
         level: usize,
     ) -> Result<PageTableEntry, MmuError>;
 
-    /// 以完整条目提交修改，不刷新 TLB；失败时保留原条目。
+    /// Commits the change as a complete entry without flushing the TLB; the original entry is kept on failure.
     fn write_entry(
         &self,
         table: Frame,
@@ -109,7 +109,7 @@ pub trait Mmu: Sync {
         entry: PageTableEntry,
     ) -> Result<(), MmuError>;
 
-    /// 切换根页表并完成本地 TLB 同步；失败时保留原根。
+    /// Switches the root page table and synchronizes the local TLB; the original root is kept on failure.
     fn switch_root(&self, root: Frame) -> Result<(), MmuError>;
 
     fn read_frame(
@@ -130,7 +130,7 @@ pub trait Mmu: Sync {
 
     /// # Safety
     ///
-    /// 访问期间须保持完整的普通内存页可读。
+    /// The full normal memory page must remain readable during access.
     fn read_mapped_frame(
         &self,
         address: usize,
@@ -140,21 +140,21 @@ pub trait Mmu: Sync {
 
     /// # Safety
     ///
-    /// 访问期间须保持完整的普通内存页可写。
+    /// The full normal memory page must remain writable during access.
     fn write_mapped_frame(
         &self,
         address: usize,
         offset: usize,
         words: &[u64],
     ) -> Result<(), MmuError>;
-    /// 使该页的本地 TLB 项失效，包括全局项。
+    /// Invalidates the local TLB entry for the page, including global entries.
     fn invalidate_page(&self, address: usize) -> Result<(), MmuError>;
-    /// 清除本地全部 TLB 项，包括全局项。
+    /// Clears all local TLB entries, including global entries.
     fn invalidate_all(&self);
     /// # Safety
     ///
-    /// 同步期间须保持普通内存映射有效，且不得写入该范围。
+    /// Normal memory mappings must remain valid during synchronization, and the range must not be written.
     fn synchronize_code(&self, range: Range<usize>) -> Result<(), MmuError>;
-    /// 同步物理页框的此前写入与后续取指，不依赖目标虚拟映射。
+    /// Synchronizes prior writes and subsequent instruction fetches for the physical page frame, independent of the target virtual mapping.
     fn synchronize_frame(&self, frame: Frame) -> Result<(), MmuError>;
 }

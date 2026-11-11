@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 线程创建与线程标识。
+//! Linux thread creation and thread identifiers.
 
-// TODO: 接入 robust futex 登记与线程退出清理。
+// TODO: Integrate robust futex registration and thread exit cleanup.
 
 use crate::{
     process::{Process, Thread},

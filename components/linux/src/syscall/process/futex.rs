@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 非 PI futex 等待与唤醒。
+//! Linux non-PI futex waiting and wakeup.
 
-// TODO: 补齐其余 futex 操作。
+// TODO: Complete the remaining futex operations.
 
 use crate::{
     process::{Process, futex::Registration},
@@ -32,7 +32,7 @@ pub(super) fn start<'a>(process: &Process<'a>, args: [usize; 6]) -> Outcome<'a> 
             return Err(EOPNOTSUPP);
         }
         if realtime {
-            // TODO: 接入 CLOCK_REALTIME 的 futex 绝对期限。
+            // TODO: Integrate CLOCK_REALTIME absolute futex timeouts.
             return Err(EOPNOTSUPP);
         }
         let (key, frames) = process
@@ -112,7 +112,7 @@ fn read(process: &Process<'_>, address: usize) -> Result<u32, Errno> {
 
 impl Pending {
     pub fn restartable(&self) -> bool {
-        // TODO: 通过 restart_syscall 保留有期限 futex 等待的绝对截止时间。
+        // TODO: Preserve the absolute deadline of timed futex waits via restart_syscall.
         self.deadline
             .remaining()
             .is_ok_and(|remaining| remaining.is_none())

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 系统调用的分发与异步完成。
+//! Linux syscall dispatch and asynchronous completion.
 
-// TODO: 支持 epoll、eventfd、timerfd 与 signalfd。
+// TODO: Support epoll, eventfd, timerfd, and signalfd.
 
 pub(crate) mod abi;
 mod file;

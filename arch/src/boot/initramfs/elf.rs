@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 校验初始静态 ELF 并提供可加载段。
+//! Validate the initial static ELF and provide loadable segments.
 
 use super::Image;
 use kernel::{

@@ -41,7 +41,7 @@ impl TrapControl for RiscvTrap {
         if CPU.interrupt_state() != InterruptState::Disabled {
             return Err(TrapError::InterruptsEnabled);
         }
-        // SAFETY: 当前处理器须独占入口状态，并在关中断时安装。
+        // SAFETY: The current processor must exclusively own the entry state and install it with interrupts disabled.
         let state = unsafe { &mut *core::ptr::addr_of_mut!(STATE) };
         if state.handler.is_some() {
             return Err(TrapError::AlreadyInstalled);
@@ -49,7 +49,7 @@ impl TrapControl for RiscvTrap {
         state.set_stack(stack, size_of::<TrapFrame>())?;
         state.emergency_top = core::ptr::addr_of!(EMERGENCY_STACK) as usize + EMERGENCY_STACK_SIZE;
         state.handler = Some(handler);
-        // SAFETY: 入口及其静态状态和栈须保持映射，当前处理器须独占 sscratch。
+        // SAFETY: The entry, its static state, and the stack must remain mapped, and the current processor must exclusively own sscratch.
         unsafe {
             asm!(
                 "mv {tp}, tp",
@@ -73,7 +73,7 @@ impl TrapControl for RiscvTrap {
         if CPU.interrupt_state() != InterruptState::Disabled {
             return Err(TrapError::InterruptsEnabled);
         }
-        // SAFETY: 当前处理器须独占入口状态，且本地中断须关闭。
+        // SAFETY: The current processor must exclusively own the entry state, and local interrupts must be disabled.
         let state = unsafe { &mut *core::ptr::addr_of_mut!(STATE) };
         if state.handler.is_none() {
             return Err(TrapError::NotInstalled);
@@ -86,7 +86,7 @@ impl TrapControl for RiscvTrap {
 
 /// # Safety
 ///
-/// sscratch 须指向当前处理器的常驻入口状态，入口代码及紧急栈须始终可访问。
+/// sscratch must point to the current processor's resident entry state, and the entry code and emergency stack must always be accessible.
 #[unsafe(naked)]
 extern "C" fn entry() -> ! {
     naked_asm!(
@@ -242,16 +242,16 @@ extern "C" fn double_fault() -> ! {
 }
 
 extern "C" fn handle(frame: *mut TrapFrame) -> *const TrapFrame {
-    // SAFETY: frame 须为当前入口的有效现场。
+    // SAFETY: frame must be the valid frame of the current entry.
     let (trap, reason) = unsafe { ((*frame).decode(), (*frame).reason) };
     if reason == EntryReason::Normal {
-        // SAFETY: STATE 须已完成安装，访问期间须关闭本地中断。
+        // SAFETY: STATE must already be installed, and local interrupts must be disabled during access.
         let handler = unsafe { (*core::ptr::addr_of!(STATE)).handler }.unwrap();
         match handler(trap) {
             TrapOutcome::Resume => return frame,
             TrapOutcome::Return { status, values } => {
                 if let TrapEvent::Syscall { successor, .. } = trap.event {
-                    // SAFETY: handler 返回后现场须仍由当前入口独占。
+                    // SAFETY: After the handler returns, the frame must still be exclusively owned by the current entry.
                     let frame = unsafe { &mut *frame };
                     frame.registers[10..13].copy_from_slice(&[status, values[0], values[1]]);
                     frame.pc = successor;
@@ -261,7 +261,7 @@ extern "C" fn handle(frame: *mut TrapFrame) -> *const TrapFrame {
             TrapOutcome::Stop => {}
         }
     }
-    // SAFETY: 停止前现场须仍由当前入口独占。
+    // SAFETY: Before stopping, the frame must still be exclusively owned by the current entry.
     let frame = unsafe { &*frame };
     EARLY_CONSOLE.emergency_write(format_args!(
         "\nFATAL TRAP: {:?} at {:#x}: {:?}\nsp={:#x} cause={:#x} entry={:?}\n",

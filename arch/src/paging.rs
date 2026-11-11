@@ -35,7 +35,7 @@ pub(crate) trait Format: Mmu {
         operation: impl FnOnce(&mut PageTable) -> T,
     ) -> Result<T, MmuError> {
         self.with_frame(address, PagePermissions::ReadWrite, |address| {
-            // SAFETY: 窗口须独占映射完整可写页框。
+            // SAFETY: The window must exclusively map the complete writable page frame.
             operation(unsafe { &mut *(address as *mut PageTable) })
         })
     }
@@ -90,12 +90,12 @@ impl PageTable {
     }
 
     pub(crate) fn read(&self, index: usize) -> u64 {
-        // SAFETY: index 须在页表内，硬件与其他处理器不得并发修改该条目。
+        // SAFETY: index must be within the page table, and hardware and other processors must not modify the entry concurrently.
         unsafe { (&raw const self.entries[index]).read_volatile() }
     }
 
     pub(crate) fn write(&mut self, index: usize, entry: u64) {
-        // SAFETY: index 须在独占页表内，条目以对齐的完整 64 位存储提交。
+        // SAFETY: index must be within the exclusive page table; the entry is committed as an aligned, full 64-bit store.
         unsafe { (&raw mut self.entries[index]).write_volatile(entry) }
     }
 }
@@ -114,7 +114,7 @@ pub(crate) fn read_frame<F: Format>(
         return Err(MmuError::InvalidRange);
     }
     format.with_frame(address, PagePermissions::ReadOnly, |address| {
-        // SAFETY: 窗口须只读映射完整页框，访问期间不得与写引用冲突。
+        // SAFETY: The window must map the complete page frame read-only, and no write reference may conflict during access.
         let page = unsafe { &*(address as *const PageTable) };
         for (index, word) in words.iter_mut().enumerate() {
             *word = page.read(offset + index);
@@ -166,7 +166,7 @@ pub(crate) fn read_mapped_frame(
     let _access = lock_memory();
     for (index, word) in words.iter_mut().enumerate() {
         let pointer = (address + (offset + index) * size_of::<u64>()) as *const u64;
-        // SAFETY: 映射须保持可读，访问不得与活动写引用冲突。
+        // SAFETY: The mapping must remain readable, and the access must not conflict with an active write reference.
         *word = unsafe { pointer.read_volatile() };
     }
     Ok(())
@@ -182,7 +182,7 @@ pub(crate) fn write_mapped_frame(
     let _access = lock_memory();
     for (index, word) in words.iter().enumerate() {
         let pointer = (address + (offset + index) * size_of::<u64>()) as *mut u64;
-        // SAFETY: 映射须保持可写，访问不得与活动 Rust 引用冲突。
+        // SAFETY: The mapping must remain writable, and the access must not conflict with an active Rust reference.
         unsafe { pointer.write_volatile(*word) };
     }
     Ok(())

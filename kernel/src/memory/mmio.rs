@@ -4,7 +4,7 @@ use super::{MemoryError, PhysRange, VirtRange, manager};
 
 /// # Safety
 ///
-/// 访问及析构期间须保留共享内核映射，并满足内存管理器的执行环境要求。
+/// The shared kernel mapping must be retained during access and drop, and the memory manager's execution environment requirements must be met.
 #[derive(Debug)]
 pub struct DeviceMapping {
     pub(super) pages: VirtRange,

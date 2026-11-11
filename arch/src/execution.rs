@@ -15,7 +15,7 @@ use crate::trap::EntryState;
 #[repr(C)]
 pub(crate) struct SavedContext<F, C> {
     pub frame: F,
-    // 内核调用续点不得覆盖挂起 handler 的用户现场。
+    // The kernel call continuation must not overwrite the user frame of a suspended handler.
     pub continuation: C,
     pub entry: EntryContext,
     pub status: ContextStatus,
@@ -148,7 +148,7 @@ pub(crate) fn validate_user_access<F, C>(
 
 /// # Safety
 ///
-/// 两份上下文须独占且已初始化，入口状态须由当前处理器在关中断时独占。
+/// Both contexts must be exclusive and initialized, and the entry state must be exclusively held by the current processor with interrupts disabled.
 pub(crate) unsafe fn activate<F, C>(
     current: *mut SavedContext<F, C>,
     next: *mut SavedContext<F, C>,
@@ -158,7 +158,7 @@ pub(crate) unsafe fn activate<F, C>(
     if current.is_null() || current == next || state.context != current.cast() {
         return Err(ExecutionError::InvalidState);
     }
-    // SAFETY: 当前和目标存储须有效且互不重叠。
+    // SAFETY: The current and target storage must be valid and non-overlapping.
     unsafe {
         if (*current).status != ContextStatus::Running || (*next).status != ContextStatus::Suspended
         {
@@ -175,13 +175,13 @@ pub(crate) unsafe fn activate<F, C>(
 
 /// # Safety
 ///
-/// frame 须为当前入口的有效现场，state.context 须为空或指向以 F 起始的独占上下文存储。
+/// frame must be the valid frame of the current entry, and state.context must be null or point to exclusive context storage beginning with F.
 pub(crate) unsafe fn capture_frame<F>(frame: *mut F, state: &EntryState) -> *mut F {
     if state.active != 1 || state.context.is_null() {
         return frame;
     }
     let destination = state.context.cast::<F>();
-    // SAFETY: 两份现场须有效且不重叠，入口状态须由当前处理器独占。
+    // SAFETY: Both frames must be valid and non-overlapping, and the entry state must be exclusively held by the current processor.
     unsafe { frame.copy_to_nonoverlapping(destination, 1) };
     destination
 }

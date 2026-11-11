@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 对象调用的鉴权与分派。
+//! Authorization and dispatch of object calls.
 
 mod device;
 mod dma;

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 文件系统调用与异步完成。
+//! Linux filesystem syscalls and asynchronous completion.
 
-// TODO: 接入 /dev、/proc、/sys 及 null、zero、random 等虚拟设备。
-// TODO: 支持 statfs 与文件变更通知。
+// TODO: Integrate /dev, /proc, /sys, and virtual devices such as null, zero, and random.
+// TODO: Support statfs and file change notifications.
 
 mod buffer;
 mod directory;
@@ -204,7 +204,7 @@ pub(super) fn fcntl(
             descriptor.description.set_flags(flags);
             Ok(0)
         }
-        // TODO: 接入文件锁与其余 fcntl 操作。
+        // TODO: Integrate file locks and the remaining fcntl operations.
         _ => Err(EOPNOTSUPP),
     }
 }

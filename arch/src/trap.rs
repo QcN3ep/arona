@@ -25,7 +25,7 @@ pub(crate) struct EntryState {
     pub stack_start: usize,
     pub stack_end: usize,
     pub emergency_top: usize,
-    // 0：入口外；1：普通处理；2：紧急处理，再次异常直接停机。
+    // 0: outside the entry; 1: normal handling; 2: emergency handling, another exception halts directly.
     pub active: usize,
     pub scratch: [usize; 4],
     pub kernel_tp: usize,

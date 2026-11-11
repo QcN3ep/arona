@@ -29,7 +29,7 @@ pub struct MemoryStats {
     pub metadata_frames: u64,
 }
 
-// TODO: 引入 buddy 分配器以支持连续且对齐的物理块分配。
+// TODO: Introduce a buddy allocator to support contiguous and aligned physical block allocation.
 pub(super) struct FrameAllocator {
     metadata: FrameMetadata,
     free: [u64; 2],

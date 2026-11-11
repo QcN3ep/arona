@@ -178,7 +178,7 @@ impl Configuration {
         }
         let end = if header_type == 1 { 0x34 } else { 0x28 };
         for offset in (0x10..end).step_by(4) {
-            // 0x1c 的高半部是 W1C Secondary Status。
+            // The upper half of 0x1c is the W1C Secondary Status.
             if header_type == 1 && matches!(offset, 0x18 | 0x1c) {
                 continue;
             }

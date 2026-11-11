@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 固件启动信息解析与内核交接准备。
+//! Firmware boot information parsing and kernel handoff preparation.
 
-// TODO: 支持多处理器启动与真实硬件平台的固件交接。
+// TODO: Support multiprocessor boot and firmware handoff on real hardware platforms.
 
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 pub(crate) mod console;

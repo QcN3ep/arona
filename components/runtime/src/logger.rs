@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 按游标读取内核日志。
+//! Read the kernel log by cursor.
 
 use crate::{Error, Handle, KernelLog};
 pub use abi::logger::{Level, MAX_RECORD_SIZE, Record};
 
 impl Handle<KernelLog> {
-    /// cursor 为零时读取最早记录，之后使用上一条记录的 sequence + 1。
+    /// When cursor is zero, read the earliest record; afterward use the previous record's sequence + 1.
     pub fn read<'a>(&self, cursor: u64, output: &'a mut [u8]) -> Result<Option<Record<'a>>, Error> {
         let [length, _] = self.borrow().invoke(
             abi::method::kernel_log::READ,

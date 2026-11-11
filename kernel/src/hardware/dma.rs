@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! DMA 寻址、信任配置与设备内存同步能力。
+//! DMA addressing, trust configuration, and device memory synchronization capability.
 
 use super::{BindError, Slot};
 use crate::{HardwareDeviceInfo, memory::PhysRange};

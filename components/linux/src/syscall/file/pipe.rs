@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 管道创建和阻塞 I/O。
+//! Pipe creation and blocking I/O.
 
 use super::super::{
     Outcome,

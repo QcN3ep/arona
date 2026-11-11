@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 文件命名空间与挂载所有权。
+//! File namespace and mount ownership.
 
 use crate::{
     Error, FileSystem, ReadAt,

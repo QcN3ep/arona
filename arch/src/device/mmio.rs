@@ -23,7 +23,7 @@ impl Mmio {
     pub fn read32(&self, offset: u64) -> Result<u32, MmioError> {
         let address = self.address(offset, 4)?;
         io_fence();
-        // SAFETY: 地址须为持续可读的 32 位设备寄存器。
+        // SAFETY: The address must be a persistently readable 32-bit device register.
         let value = unsafe { (address as *const u32).read_volatile() };
         io_fence();
         Ok(value)
@@ -32,7 +32,7 @@ impl Mmio {
     pub fn write32(&self, offset: u64, value: u32) -> Result<(), MmioError> {
         let address = self.address(offset, 4)?;
         io_fence();
-        // SAFETY: 地址须为独占可写的 32 位设备寄存器。
+        // SAFETY: The address must be an exclusively writable 32-bit device register.
         unsafe { (address as *mut u32).write_volatile(value) };
         io_fence();
         Ok(())
@@ -42,7 +42,7 @@ impl Mmio {
     pub fn write8(&self, offset: u64, value: u8) -> Result<(), MmioError> {
         let address = self.address(offset, 1)?;
         io_fence();
-        // SAFETY: 地址须为独占可写的 8 位设备寄存器。
+        // SAFETY: The address must be an exclusively writable 8-bit device register.
         unsafe { (address as *mut u8).write_volatile(value) };
         io_fence();
         Ok(())

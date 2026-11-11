@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 时间结构编码和休眠。
+//! Linux time structure encoding and sleep.
 
 use super::{Pending as Operation, outcome};
 use crate::{

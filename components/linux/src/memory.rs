@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-// TODO: 支持按需分页、页回收与换页。
+// TODO: Support demand paging, page reclamation, and swapping.
 
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::{cell::RefCell, ops::Range};
@@ -435,7 +435,7 @@ impl AddressSpace {
 }
 
 impl AddressSpace {
-    // TODO: 通过写时复制共享私有页，替代逐页复制。
+    // TODO: Share private pages through copy-on-write instead of copying them page by page.
     pub fn fork(
         &self,
         parent: &Handle<Task>,

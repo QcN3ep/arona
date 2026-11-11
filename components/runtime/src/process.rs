@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 进程运行环境与子 Task 的构建和启动。
+//! Process runtime environment and construction and startup of child Tasks.
 
 use crate::{
     Channel, Error, FrameAllocation, Handle, Object, Rights, Task, memory::Permissions,
@@ -19,7 +19,7 @@ const CONSTRUCTION_RIGHTS: Rights = Rights::DUPLICATE
     .union(Rights::FRAME_ALLOCATE)
     .union(Rights::MAP_MEMORY);
 
-/// 丢弃时终止尚未启动的子 Task。
+/// Terminate the child Task that has not yet started when dropped.
 #[must_use]
 pub struct ChildTask {
     task: Option<Handle<Task>>,
@@ -103,7 +103,7 @@ impl SupervisedTask {
         entry: UserEntry,
         rights: Rights,
     ) -> Result<Handle<crate::Thread>, Error> {
-        // SAFETY: 目标须为该构建器新建且与调用方隔离的 Task。
+        // SAFETY: The target must be a Task newly created by this builder and isolated from the caller.
         unsafe { self.task.create_thread(entry, rights) }
     }
 }
@@ -115,7 +115,7 @@ impl Drop for SupervisedTask {
 }
 
 impl ChildTask {
-    /// rights 指定子进程持有的自身 Task 权限。
+    /// rights specifies the rights to its own Task held by the child process.
     pub fn new(parent: &Handle<Task>, rights: Rights) -> Result<Self, Error> {
         if !rights.contains(ProcessStart::REQUIRED_RIGHTS) {
             return Err(Error::Kernel(abi::Error::InvalidArgument));
@@ -210,7 +210,7 @@ impl ChildTask {
         )?
         .into_range()?;
         let argument = range.end - ProcessStart::SIZE;
-        // SAFETY: 目标须使用与调用方隔离的地址空间。
+        // SAFETY: The target must use an address space isolated from the caller.
         let thread = unsafe {
             task.create_thread(
                 UserEntry {
@@ -269,9 +269,9 @@ pub(crate) mod current {
 
     /// # Safety
     ///
-    /// 启动句柄须独占移交给当前进程，task 须指向当前 Task，且初始化须仅执行一次。
+    /// The startup handle must be transferred exclusively to the current process, task must point to the current Task, and initialization must run only once.
     pub(crate) unsafe fn initialize(start: ProcessStart) -> Result<(), Error> {
-        // SAFETY: 启动方须移交当前 Task 句柄的独占所有权。
+        // SAFETY: The launcher must transfer exclusive ownership of the current Task handle.
         let task = unsafe { Handle::<Task>::from_raw(start.task) };
         let info = task.info()?;
         if info.kind != crate::ObjectType::Task
@@ -280,7 +280,7 @@ pub(crate) mod current {
             return Err(Error::Kernel(abi::Error::Denied));
         }
         let bootstrap = if let Some(raw) = start.bootstrap {
-            // SAFETY: 启动方须移交 Channel 句柄的独占所有权。
+            // SAFETY: The launcher must transfer exclusive ownership of the Channel handle.
             let channel = unsafe { Handle::<Channel>::from_raw(raw) };
             if channel.info()?.kind != crate::ObjectType::Channel {
                 return Err(Error::Kernel(abi::Error::WrongType));

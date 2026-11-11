@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 特权内核库。
+//! Privileged kernel library.
 
 #![no_std]
 

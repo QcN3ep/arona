@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! FIFO 调度器
+//! FIFO scheduler
 
-// TODO: 需要更好的调度算法
-// TODO: 在线程派发时设置时间片并在到期后重新调度。
-// TODO: 支持优先级、CPU 亲和性与多处理器调度。
+// TODO: A better scheduling algorithm is needed
+// TODO: Set a time slice when dispatching a Thread and reschedule when it expires.
+// TODO: Support priorities, CPU affinity, and multiprocessor scheduling.
 
 use spin::{Mutex, Once};
 
@@ -62,7 +62,7 @@ pub(super) enum SuspendReason {
 
 /// # Safety
 ///
-/// 初始化及后续调度须在同一处理器执行，异常入口须已安装，当前栈须作为调度栈保持存活。
+/// Initialization and subsequent scheduling must run on the same processor; the exception entry must be installed, and the current stack must stay alive as the scheduling stack.
 pub fn initialize() -> Result<(), ThreadError> {
     let _interrupts = InterruptGuard::new();
     let mut initialized = false;
@@ -107,14 +107,14 @@ pub fn yield_now() -> Result<(), ThreadError> {
     suspend(SuspendReason::Yield)
 }
 
-/// 请求在返回用户态前重新调度，内核执行不会被异步切出。
+/// Requests rescheduling before returning to user mode; kernel execution is not switched out asynchronously.
 pub fn request_preemption() -> Result<(), ThreadError> {
     dispatcher()?;
     with_scheduler(|scheduler| scheduler.preemption_requested = true);
     Ok(())
 }
 
-/// 设置一次性绝对 deadline；切出时失效，`None` 取消尚未到期的请求。
+/// Sets a one-shot absolute deadline that is invalidated on switch-out; `None` cancels a request that has not yet expired.
 pub fn set_preemption_deadline(deadline_ns: Option<u64>) -> Result<(), ThreadError> {
     dispatcher()?;
     with_scheduler(|scheduler| {
@@ -191,7 +191,7 @@ pub fn run_ready() -> Result<(), ThreadError> {
     }
     while dispatch()? {
         STATE.lock().arm_timer()?;
-        // 线程状态已提交且资源已回收，此处不持有锁。
+        // The Thread state has been committed and resources reclaimed; no lock is held here.
         hardware::cpu().restore_interrupts(InterruptState::Enabled);
         hardware::cpu().disable_interrupts();
     }
@@ -351,7 +351,7 @@ pub(super) extern "C" fn enter(_: usize) -> ! {
     exit(status)
 }
 
-/// 结束当前线程，不展开当前栈；调用前须释放需要析构的局部资源。
+/// Terminates the current Thread without unwinding the current stack; local resources that need dropping must be released before calling.
 pub fn exit(status: usize) -> ! {
     suspend(SuspendReason::Exit(status))
         .unwrap_or_else(|error| panic!("failed to exit thread: {error:?}"));
@@ -449,7 +449,7 @@ impl Scheduler {
             (Some(thread), Some(ipc)) => Some(thread.min(ipc)),
             (thread, ipc) => thread.or(ipc),
         };
-        // 相同目标不重装，避免清除已经置位的定时中断。
+        // Do not rearm for the same target, to avoid clearing an already-pending timer interrupt.
         if target == self.timer_target {
             return Ok(());
         }
@@ -462,7 +462,7 @@ impl Scheduler {
         let mut deadline = target.max(now);
         loop {
             match timer.set_deadline(deadline) {
-                // 长 deadline 分段计时，中间中断不完成尚未到期的等待。
+                // Time a long deadline in segments so that intermediate interrupts do not complete a wait that has not yet expired.
                 Err(TimerError::DeadlineOutOfRange) if deadline > now => {
                     deadline = now + (deadline - now) / 2;
                 }

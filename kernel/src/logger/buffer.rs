@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 有界日志格式化与整条记录环形存储。
+//! Bounded log formatting and ring storage of whole records.
 
 use core::{
     fmt::{self, Write},
@@ -60,7 +60,7 @@ impl Buffer {
         let (target, message) = text.bytes.split_at(target_length);
         let mut bytes = [0; MAX_RECORD_SIZE];
         let ring = self.ring.try_lock();
-        // 锁内取序号，使已发布记录保持递增；未写入的记录留下序号空缺。
+        // Allocate the sequence number under the lock so published records remain increasing; records that are not written leave gaps in the sequence.
         let sequence = self
             .sequence
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {

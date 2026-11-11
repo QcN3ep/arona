@@ -21,7 +21,7 @@ pub fn frequency(_firmware: usize) -> Option<u64> {
 }
 
 pub fn set_floating_enabled(enabled: bool) {
-    // SAFETY: 当前处理器须允许修改 EUEN，修改期间不得执行浮点指令。
+    // SAFETY: The current processor must permit modifying EUEN, and no floating-point instructions may be executed during the modification.
     unsafe {
         asm!("csrxchg {}, {}, 0x2", inout(reg) usize::from(enabled) => _, in(reg) 1usize, options(nomem, nostack));
     }
@@ -29,7 +29,7 @@ pub fn set_floating_enabled(enabled: bool) {
 
 pub fn floating_enabled() -> bool {
     let extensions: usize;
-    // SAFETY: 执行环境须允许读取 EUEN。
+    // SAFETY: The execution environment must permit reading EUEN.
     unsafe {
         asm!("csrrd {}, 0x2", out(reg) extensions, options(nomem, nostack));
     }
@@ -113,7 +113,7 @@ pub extern "C" fn user_code() -> ! {
         "syscall 0",
         "move $t3, $s0",
         "sc.d $t3, $sp, -8",
-        // SC 成功返回 1，跨 Trap 的预约必须失效。
+        // SC returns 1 on success; a reservation across a Trap must be invalidated.
         "bnez $t3, 9f",
         "bnez $a0, 9f",
         "bne $a1, $s0, 9f",

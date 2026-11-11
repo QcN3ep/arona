@@ -51,7 +51,7 @@ pub fn run(devices: &Handle<DeviceSet>, id: u32, group: u32, configuration: Conf
         session.acknowledge(1, deadline()).unwrap(),
         super::success(512)
     );
-    // 监督者关闭控制通道时，服务仍须排空当前会话的在途请求。
+    // When the supervisor closes the control channel, the service must still drain in-flight requests of the current session.
     session.read(2, 0, &output, 0, 512).unwrap();
     drop(control);
     worker.join().unwrap();

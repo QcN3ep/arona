@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 熵请求的排队、完成交付与会话回收。
+//! Entropy request queuing, completion delivery, and session reclamation.
 
 use super::{MAX_BYTES, Rng, session::READ};
 use crate::{

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 独占上下文存储及其创建、恢复和切换能力。
+//! Exclusive context storage and its creation, restoration, and switching capability.
 
 use core::{alloc::Layout, convert::Infallible};
 
@@ -34,7 +34,7 @@ pub use abi::trap::UserState;
 
 #[derive(Clone, Copy, Debug)]
 pub enum ContextStart {
-    /// 为当前控制流提供保存位置，首次切出前不可恢复。
+    /// Provides a save location for the current control flow; cannot be restored before the first switch-out.
     Current,
     Kernel {
         stack: VirtRange,
@@ -90,8 +90,8 @@ impl Context {
 
     /// # Safety
     ///
-    /// 上下文须始终在同一处理器使用；其栈、入口及用户地址空间须存活至停止执行，
-    /// 用户栈与特权栈须独占，且栈和上下文存储在切换使用的页表中须保持映射。
+    /// The context must always be used on the same processor; its stack, entry, and user address space must stay alive until execution stops,
+    /// The user stack and privileged stack must be exclusive, and the stack and context storage must remain mapped in the page table used for switching.
     pub fn new(start: ContextStart) -> Result<Self, ExecutionError> {
         check_interrupts()?;
         let provider = execution();
@@ -111,12 +111,12 @@ impl Context {
         Ok(Self { storage })
     }
 
-    /// 返回表示当前控制流再次被恢复；失败时两个上下文均保持原状。
+    /// Returns when the current control flow is resumed again; on failure both contexts remain unchanged.
     ///
     /// # Safety
     ///
-    /// 当前控制流须独占当前栈，切换时不得持有锁或跨线程借用；本地中断须关闭。
-    /// 页表和当前线程的选择由调用方在切换前完成，离开的活动栈须由其他控制流回收。
+    /// The current control flow must exclusively own the current stack, no locks or cross-thread borrows may be held while switching, and local interrupts must be disabled.
+    /// The caller selects the page table and current Thread before switching; the departing active stack must be reclaimed by another control flow.
     pub fn switch_to(&self, next: &Self) -> Result<(), ExecutionError> {
         check_interrupts()?;
         execution().switch(&self.storage, &next.storage)
@@ -124,17 +124,17 @@ impl Context {
 
     /// # Safety
     ///
-    /// 执行环境同 switch_to，当前上下文及其栈须由恢复方持有至切出完成。
+    /// The execution environment is as for switch_to; the current context and its stack must be held by the resumer until the switch-out completes.
     pub fn switch_from_current(&self) -> Result<(), ExecutionError> {
         check_interrupts()?;
         execution().switch_current(&self.storage)
     }
 
-    /// 放弃当前控制流并恢复 next；被放弃的上下文不再可用。
+    /// Abandons the current control flow and restores next; the abandoned context is no longer usable.
     ///
     /// # Safety
     ///
-    /// 调用环境同 switch_to；当前控制流不再恢复，其活动栈须延后回收。
+    /// The calling environment is as for switch_to; the current control flow is not resumed, and its active stack must be reclaimed later.
     pub fn restore(&self, next: &Self) -> Result<Infallible, ExecutionError> {
         check_interrupts()?;
         execution().restore(&self.storage, &next.storage)
@@ -150,8 +150,8 @@ fn check_interrupts() -> Result<(), ExecutionError> {
 
 /// # Safety
 ///
-/// 实现者只能解释自身声明布局的存储；切换前须完成全部校验，失败不得修改入口状态或寄存器。
-/// 切换不得保留指向 Context 包装对象的指针，且只能在同一处理器、关中断及标量浮点关闭时执行。
+/// Implementations may interpret only storage matching their declared layout; all validation must complete before switching, and failure must not modify entry state or registers.
+/// A switch must not retain pointers to the Context wrapper object and may run only on the same processor with interrupts and scalar floating-point disabled.
 pub trait Execution: Sync {
     fn context_layout(&self) -> Layout;
     fn user_entry(&self, state: &UserState) -> Result<UserEntry, ExecutionError>;

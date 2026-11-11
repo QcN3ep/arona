@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! ext4 卷校验、目录查找与 extent 文件访问。
+//! ext4 volume validation, directory lookup, and extent file access.
 
 mod allocator;
 mod directory;

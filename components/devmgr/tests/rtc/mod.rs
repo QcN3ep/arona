@@ -60,7 +60,7 @@ fn exercise_device(devices: &Handle<DeviceSet>, id: u32) -> bool {
 }
 
 fn check_time(time: Timestamp) {
-    // QEMU 分别从闰年与世纪平年的二月末启动。
+    // QEMU starts at the end of February in a leap year and in a century non-leap year, respectively.
     assert!(
         [951_868_799, 4_107_542_399]
             .into_iter()

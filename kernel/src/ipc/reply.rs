@@ -6,14 +6,14 @@ use alloc::vec::Vec;
 
 /// # Safety
 ///
-/// 操作及析构期间须保留内存管理器所需的内核映射。
+/// Operations and drop must retain the kernel mappings required by the memory manager.
 pub struct Reply {
     reference: ReplyReference,
 }
 
 /// # Safety
 ///
-/// 操作及析构期间须保留内存管理器所需的内核映射。
+/// Operations and drop must retain the kernel mappings required by the memory manager.
 #[derive(Clone)]
 pub struct ReplyReference(CallReference);
 

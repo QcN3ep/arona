@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 合并固件 RAM 和保留项，生成覆盖全部 RAM 的互斥区域表。
+//! Merge firmware RAM and reserved entries to produce a non-overlapping region table covering all RAM.
 
 use arrayvec::ArrayVec;
 use kernel::{

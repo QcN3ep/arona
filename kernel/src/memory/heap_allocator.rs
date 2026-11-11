@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 内核堆分配、占用统计与空闲缓存回收。
+//! Kernel heap allocation, usage accounting, and free cache reclamation.
 
 use core::alloc::Layout;
 use spin::Mutex;
@@ -48,7 +48,7 @@ pub struct HeapStats {
     pub cached_frames: usize,
 }
 
-/// 独占堆存储，析构时释放。
+/// Exclusive heap storage, released on drop.
 #[must_use]
 pub struct HeapAllocation {
     layout: Layout,
@@ -295,7 +295,7 @@ impl SlabAllocator {
             bitmap,
         }
         .write(record);
-        // 页框所有权转入元数据记录，释放 slab 时取回。
+        // Page frame ownership transfers to the metadata record and is reclaimed when the slab is released.
         core::mem::forget(backing);
         self.frames += 1;
         self.link_partial(record);

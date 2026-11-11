@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 信号系统调用。
+//! Linux signal syscalls.
 
 use crate::{
     process::{

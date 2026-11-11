@@ -71,16 +71,16 @@ pub enum ChannelError {
 
 /// # Safety
 ///
-/// 操作及析构期间须保留内存管理器所需的内核映射。
+/// Operations and drop must retain the kernel mappings required by the memory manager.
 pub struct Channel {
     reference: ChannelReference,
 }
 
-/// 保持端点存储存活，不计入开放引用。
+/// Keeps the endpoint storage alive; not counted as an open reference.
 ///
 /// # Safety
 ///
-/// 操作及析构期间须保留内存管理器所需的内核映射。
+/// Operations and drop must retain the kernel mappings required by the memory manager.
 #[derive(Clone)]
 pub struct ChannelReference {
     channel: HeapArc<Mutex<ChannelState>>,
@@ -184,7 +184,7 @@ impl ReceivedMessage {
 impl Channel {
     pub fn pair() -> Result<(Self, Self), ChannelError> {
         let _interrupts = InterruptGuard::new();
-        // 分开构造状态与分配队列，降低内核栈峰值。
+        // Construct the state and allocate the queue separately to reduce peak kernel stack usage.
         let channel = ChannelState::allocate()?;
         for direction in &mut channel.lock().directions {
             direction
@@ -278,7 +278,7 @@ impl ChannelReference {
                 }
                 let direction = &mut state.directions[self.side];
                 if direction.messages.len() < CAPACITY {
-                    // 句柄转移依次取得 TASKS、句柄表和 Channel 的锁。
+                    // Handle transfer acquires the TASKS, handle table, and Channel locks in order.
                     drop(state);
                     let handles = match transfer() {
                         Ok(handles) => handles,
@@ -503,7 +503,7 @@ impl ChannelState {
             }
             cleanup.active = true;
         }
-        // 迭代释放消息中的端点，避免析构链耗尽内核栈。
+        // Release endpoints in messages iteratively to avoid exhausting the kernel stack through the drop chain.
         loop {
             let channel = {
                 let mut cleanup = CLEANUP.lock();
@@ -704,7 +704,7 @@ impl Drop for Registration {
         let notified = state
             .waiters(self.direction, self.condition)
             .remove(self.index);
-        // 被唤醒者退出时，将尚未使用的就绪通知交给下一等待者。
+        // When the wakeup recipient exits, hand the unused readiness notification to the next waiter.
         if notified && !self.retrying && state.ready(self.direction, self.condition) {
             state.waiters(self.direction, self.condition).wake_one();
         }

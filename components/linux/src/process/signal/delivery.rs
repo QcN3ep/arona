@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 信号与用户陷入续体的交接。
+//! Handoff between signals and user trap continuations.
 
 use super::{Action, Info, KILL, NODEFER, RESETHAND, STOP, bit, frame, ignored};
 use crate::{
@@ -224,7 +224,7 @@ fn fault_info(space: &crate::memory::AddressSpace, trap: &runtime::trap::TrapInf
                 .is_some_and(|info| info.permissions.is_some());
             (11, if mapped { 2 } else { 1 }, address)
         }
-        // TODO: 补齐其他异常对应的 Linux 信号。
+        // TODO: Complete the Linux signals corresponding to other exceptions.
         _ => (11, 1, address),
     };
     Info {

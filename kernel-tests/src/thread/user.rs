@@ -66,7 +66,7 @@ pub fn handle(trap: Trap) -> TrapOutcome {
 }
 
 fn handle_user(trap: Trap) -> Action {
-    // 用户 Trap 作为测试同步点。
+    // User Trap serves as the test synchronization point.
     let TrapEvent::Syscall { arguments, .. } = trap.event else {
         return Action::Dispatch;
     };

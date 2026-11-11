@@ -226,7 +226,7 @@ impl DirectMap {
             return Ok(false);
         };
         let address = self.address(frame).ok_or(MemoryError::InvalidFrame)?;
-        // aperture 的分支和叶条目永久保留，权限修改由页框分配器锁串行化。
+        // The aperture's branch and leaf entries are retained permanently; permission changes are serialized by the frame allocator lock.
         let walk = PageTableState::walk_from(layout.root, address)?;
         let PageTableEntry::Mapping(mut mapping) = walk.entry else {
             return Err(MmuError::InvalidTable.into());

@@ -93,7 +93,7 @@ impl InterruptController for PlicController {
             };
             if plic.validate(source).is_err() {
                 registers.write32(plic.context + 4, line)?;
-                // SAFETY: 当前处理器须独占监督态外部中断使能位。
+                // SAFETY: The current processor must exclusively own the supervisor external interrupt enable bit.
                 unsafe { asm!("csrc sie, {}", in(reg) 1usize << 9, options(nostack)) };
                 return Err(InterruptError::InvalidSource);
             }
@@ -166,7 +166,7 @@ impl Plic {
             registers.write32(line as u64 * 4, 0)?;
         }
         registers.write32(self.context, 0)?;
-        // SAFETY: 异常入口须已就绪，当前处理器须独占监督态外部中断使能位。
+        // SAFETY: The exception entry must be ready, and the current processor must exclusively own the supervisor external interrupt enable bit.
         unsafe { asm!("csrs sie, {}", in(reg) 1usize << 9, options(nostack)) };
         Ok(())
     }
@@ -202,7 +202,7 @@ impl Plic {
         if abandoned {
             registers.write32(source.line as u64 * 4, 0)?;
         }
-        // PLIC 只接受当前上下文仍使能的输入的完成写入。
+        // The PLIC only accepts completion writes for inputs still enabled in the current context.
         registers.write32(offset, enabled | bit)?;
         registers.write32(self.context + 4, source.line)?;
         registers.write32(offset, if abandoned { enabled & !bit } else { enabled })?;

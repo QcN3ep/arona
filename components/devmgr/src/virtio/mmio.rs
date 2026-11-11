@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! VirtIO MMIO version 2 的寄存器操作。
+//! Register operations for VirtIO MMIO version 2.
 
 use runtime::{Device, Handle, device};
 

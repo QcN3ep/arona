@@ -43,7 +43,7 @@ impl<'a> Client<'a> {
         })
     }
 
-    /// 仅确认入队，队列满时立即返回错误。
+    /// Acknowledge enqueue only; return an error immediately when the queue is full.
     pub fn try_write(&self, level: log::Level, target: &str, message: &str) -> Result<(), Error> {
         self.try_write_fmt(level, target, format_args!("{message}"))
     }
@@ -59,7 +59,7 @@ impl<'a> Client<'a> {
         Ok(())
     }
 
-    /// 等待日志进入内存缓冲区并返回序号。
+    /// Wait for the log to enter the memory buffer and return its sequence number.
     pub fn write(
         &self,
         level: log::Level,
@@ -85,7 +85,7 @@ impl<'a> Client<'a> {
         }
     }
 
-    /// 完成先前日志的输出并同步日志文件。
+    /// Complete the output of prior logs and synchronize the log file.
     pub fn flush(&self, deadline_ns: u64) -> Result<(), Error> {
         let reply = call(
             &self.channel,
@@ -158,7 +158,7 @@ impl<'a> Control<'a> {
         self.read_record(protocol::READ_KERNEL, cursor, output, deadline_ns)
     }
 
-    /// 输出一条内核记录，返回其序号；没有记录时返回 None。
+    /// Output a kernel record and return its sequence number; return None when there is no record.
     pub fn print_kernel(&self, cursor: u64, deadline_ns: u64) -> Result<Option<u64>, Error> {
         let reply = call(
             &self.channel,

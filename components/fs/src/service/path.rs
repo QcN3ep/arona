@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 目录会话锚定的路径操作。
+//! Path operations anchored to directory sessions.
 
 use super::{
     FileSession, Node, PAGE_SIZE, node_request, path, session_response, take_channel, take_frames,

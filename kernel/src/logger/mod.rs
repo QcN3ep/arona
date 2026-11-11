@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 日志门面、内核日志缓冲区与输出 Sink。
+//! Log facade, kernel log buffer, and output Sinks.
 
 mod buffer;
 
@@ -16,11 +16,11 @@ use buffer::Buffer;
 
 pub const MAX_SINKS: usize = 8;
 
-/// 输出与 flush 均须有界，重入或中断上下文中不可等待其他写入者。
+/// Both output and flush must be bounded and must not wait for other writers when reentrant or in interrupt context.
 pub trait Sink: Sync {
     fn write(&self, record: &Record<'_>) -> fmt::Result;
 
-    /// 成功时须已排空待输出数据，失败时须允许重试。
+    /// On success, pending output must have been drained; on failure, retrying must be possible.
     fn flush(&self) -> fmt::Result {
         Ok(())
     }
@@ -50,7 +50,7 @@ struct Slot {
     sink: Option<&'static dyn Sink>,
 }
 
-/// 句柄失效后不得影响复用该槽位的新注册，丢弃句柄不会移除 Sink。
+/// An invalidated handle must not affect a new registration reusing the slot; dropping the handle does not remove the Sink.
 pub struct SinkHandle<'logger> {
     slot: &'logger RwLock<Slot>,
     generation: usize,
@@ -100,7 +100,7 @@ pub struct KernelLog {
 }
 
 impl KernelLog {
-    /// cursor 为零时从最早的记录读取；无记录时返回零，不修改任何读取位置。
+    /// With a zero cursor, reads start from the earliest record; returns zero when there are no records and does not modify any read position.
     pub fn read(&self, cursor: u64, output: &mut [u8]) -> Result<usize, ReadError> {
         self.logger.buffer.read(cursor, output)
     }
@@ -166,7 +166,7 @@ impl Logger {
         self.clock.call_once(|| clock);
     }
 
-    /// 写入与 flush 分发失败的次数，按 Sink 计数。
+    /// Number of failed write and flush dispatches, counted per Sink.
     pub fn failures(&self) -> usize {
         self.failures.load(Ordering::Relaxed)
     }

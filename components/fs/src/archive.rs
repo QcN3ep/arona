@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! CPIO newc 归档的只读索引。
+//! Read-only index of CPIO newc archives.
 
 use alloc::{collections::BTreeMap, rc::Rc, vec, vec::Vec};
 use core::ops::Range;

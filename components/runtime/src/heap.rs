@@ -16,7 +16,7 @@ static HEAP: HeapAllocator = HeapAllocator(Mutex::new(Dlmalloc::new_with_allocat
 struct HeapAllocator(Mutex<Dlmalloc<System>>);
 struct System;
 
-// SAFETY: 返回区间须为独占可写映射，释放须撤销完整区间。
+// SAFETY: The returned range must be an exclusive writable mapping, and freeing must revoke the entire range.
 unsafe impl Allocator for System {
     fn alloc(&self, size: usize) -> (*mut u8, usize, u32) {
         let Some(size) = size
@@ -76,22 +76,22 @@ unsafe impl Allocator for System {
     }
 }
 
-// SAFETY: 堆状态须由锁串行访问，dlmalloc 须维护块的布局与独占性。
+// SAFETY: The heap state must be accessed serially through the lock, and dlmalloc must maintain block layout and exclusivity.
 unsafe impl GlobalAlloc for HeapAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: GlobalAlloc 调用方须提供有效布局。
+        // SAFETY: The GlobalAlloc caller must provide a valid layout.
         unsafe { self.0.lock().malloc(layout.size(), layout.align()) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        // SAFETY: GlobalAlloc 调用方须提供有效布局。
+        // SAFETY: The GlobalAlloc caller must provide a valid layout.
         unsafe { self.0.lock().calloc(layout.size(), layout.align()) }
     }
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        // SAFETY: pointer 须为此堆按 layout 分配且尚未释放的块。
+        // SAFETY: pointer must be a block allocated by this heap according to layout and not yet freed.
         unsafe { self.0.lock().free(pointer, layout.size(), layout.align()) }
     }
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        // SAFETY: pointer 须为此堆按 layout 分配的存活块，size 须非零。
+        // SAFETY: pointer must be a live block allocated by this heap according to layout, and size must be non-zero.
         unsafe {
             self.0
                 .lock()

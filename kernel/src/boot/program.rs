@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 启动程序的段描述及首任务创建。
+//! Segment description of the boot program and creation of the first Task.
 
 use abi::process::ProcessStart;
 use alloc::vec;
@@ -185,7 +185,7 @@ fn bootstrap(
     archive: BootData,
     devices: DeviceSet,
 ) -> Result<abi::Handle, &'static str> {
-    // TODO: 释放启动数据引用后回收外部归档的保留页框。
+    // TODO: Reclaim the reserved page frames of the external archive after releasing the boot data reference.
     let length = archive.len()?;
     let frames = task
         .allocate_frames(length.div_ceil(PAGE_SIZE) as u64)

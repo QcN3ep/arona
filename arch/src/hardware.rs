@@ -2,7 +2,7 @@
 
 use core::mem::{align_of, size_of};
 
-// 空数组确保没有能力声明时，链接段及其边界仍然存在。
+// The empty array ensures the link section and its boundaries still exist when no capabilities are declared.
 #[used]
 #[unsafe(link_section = "arona_hardware")]
 static ANCHOR: [fn(); 0] = [];
@@ -12,7 +12,7 @@ unsafe extern "C" {
     static __stop_arona_hardware: u8;
 }
 
-/// 遍历静态绑定记录。
+/// Iterate over the static binding records.
 pub fn bind() {
     let start = core::ptr::addr_of!(__start_arona_hardware);
     let end = core::ptr::addr_of!(__stop_arona_hardware);
@@ -24,7 +24,7 @@ pub fn bind() {
             && length.is_multiple_of(size_of::<fn()>()),
         "invalid hardware binding layout"
     );
-    // SAFETY: 边界须覆盖连续、按函数指针对齐且永久只读的 fn() 记录。
+    // SAFETY: The boundaries must cover contiguous, function-pointer-aligned, permanently read-only fn() records.
     let bindings =
         unsafe { core::slice::from_raw_parts(start.cast::<fn()>(), length / size_of::<fn()>()) };
     for bind in bindings {
@@ -32,7 +32,7 @@ pub fn bind() {
     }
 }
 
-/// 由链接器收集绑定记录。
+/// Binding records collected by the linker.
 #[macro_export]
 macro_rules! declare_hardware {
     ($visibility:vis static $name:ident: $ty:ty = $value:expr => $bind:path $(;)?) => {

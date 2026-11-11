@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 临时启动页表、高半区访问布局与分页切换。
+//! Temporary boot page tables, higher-half access layout, and paging switch.
 
 use crate::paging::PAGE_TABLE_WINDOW;
 
@@ -50,17 +50,17 @@ unsafe extern "C" {
 
 /// # Safety
 ///
-/// 处理器须关闭中断并在物理地址执行，页表与启动栈须可独占读写，dtb 须为固件交付的物理地址。
+/// The processor must run with interrupts disabled at a physical address; the page tables and boot stack must be exclusively readable and writable; dtb must be the physical address delivered by the firmware.
 #[unsafe(link_section = ".text.entry.rust")]
 pub(super) unsafe extern "C" fn enter(hartid: usize, dtb: usize) -> ! {
     let start = core::ptr::addr_of!(_kernel_phys_start) as usize;
 
-    // SAFETY: 链接脚本定义的页表区域须按页对齐且可独占写入。
+    // SAFETY: The page table region defined by the linker script must be page-aligned and exclusively writable.
     let tables = unsafe { &mut *core::ptr::addr_of_mut!(_boot_tables_phys) };
     tables.init(start, dtb);
 
     let satp = (8usize << 60) | (&raw const tables.root as usize >> 12);
-    // SAFETY: 页表须覆盖当前指令及高半区入口，a0/a1 须保留固件启动参数。
+    // SAFETY: The page tables must cover the current instruction and the higher-half entry, and a0/a1 must preserve the firmware boot arguments.
     unsafe {
         core::arch::asm!(
             "lla t1, 2f",
@@ -92,11 +92,11 @@ impl PageTables {
         self.root.map::<2>(kernel, kernel & !0x3fff_ffff, PAGE_RX);
         self.root.link::<2>(PAGE_TABLE_WINDOW, &self.window_l1);
         let window_table = core::ptr::addr_of!(_boot_tables_window_phys) as usize;
-        // SAFETY: 分页启用前，页表区可经物理地址独占写入。
+        // SAFETY: Before paging is enabled, the page table region can be written exclusively through physical addresses.
         unsafe { (&mut *(window_table as *mut PageTable)).clear() };
         self.window_l1
             .link_address::<1>(PAGE_TABLE_WINDOW, window_table);
-        // 启动映像暂以一个可读写执行的 2 MiB 大页映射。
+        // The boot image is temporarily mapped with a single read-write-execute 2 MiB large page.
         self.kernel_l1.map::<1>(KERNEL_BASE, kernel, PAGE_RWX);
         self.kernel_l1
             .map::<1>(UART_BASE, UART_PHYSICAL_BASE, PAGE_RW);
@@ -144,7 +144,7 @@ impl PageTable {
     #[inline(always)]
     fn write(&mut self, index: usize, value: usize) {
         let entry = self.entries.as_mut_ptr().wrapping_add(index & 511);
-        // SAFETY: entry 位于独占页表内；内联存储避免分页前调用高地址的 core 调试检查。
+        // SAFETY: entry lies within the exclusive page table; the inline assembly store avoids calling high-address core debug checks before paging is enabled.
         unsafe {
             core::arch::asm!(
                 "sd {value}, 0({entry})",

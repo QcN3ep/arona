@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! RISC-V 本地中断与等待指令。
+//! RISC-V local interrupt and wait instructions.
 
 use core::arch::asm;
 
@@ -18,7 +18,7 @@ crate::declare_hardware!(
 impl Cpu for RiscvCpu {
     fn interrupt_state(&self) -> InterruptState {
         let status: usize;
-        // SAFETY: 执行环境须允许读取 sstatus。
+        // SAFETY: The execution environment must allow reading sstatus.
         unsafe { asm!("csrr {}, sstatus", out(reg) status, options(nomem, nostack)) };
         if status & SIE == 0 {
             InterruptState::Disabled
@@ -29,7 +29,7 @@ impl Cpu for RiscvCpu {
 
     fn disable_interrupts(&self) -> InterruptState {
         let status: usize;
-        // SAFETY: 执行环境须允许修改 sstatus.SIE。
+        // SAFETY: The execution environment must allow modifying sstatus.SIE.
         unsafe { asm!("csrrci {}, sstatus, 2", out(reg) status, options(nostack)) };
         if status & SIE == 0 {
             InterruptState::Disabled
@@ -39,7 +39,7 @@ impl Cpu for RiscvCpu {
     }
 
     fn restore_interrupts(&self, state: InterruptState) {
-        // SAFETY: 执行环境须允许修改 sstatus.SIE，开中断时异常入口及其栈须已就绪。
+        // SAFETY: The execution environment must allow modifying sstatus.SIE, and the exception entry and its stack must be ready when interrupts are enabled.
         unsafe {
             match state {
                 InterruptState::Disabled => asm!("csrci sstatus, 2", options(nostack)),
@@ -49,8 +49,8 @@ impl Cpu for RiscvCpu {
     }
 
     fn idle_until_interrupt(&self) {
-        // WFI 在 SIE 关闭时仍响应已使能的中断源，醒来后开放一次中断处理窗口。
-        // SAFETY: 本地中断须关闭，异常入口须可用，执行环境须允许执行 WFI。
+        // WFI still responds to enabled interrupt sources while SIE is clear, opening one interrupt handling window after waking.
+        // SAFETY: Local interrupts must be disabled, the exception entry must be available, and the execution environment must allow executing WFI.
         unsafe {
             asm!(
                 "wfi",
@@ -64,7 +64,7 @@ impl Cpu for RiscvCpu {
     fn halt(&self) -> ! {
         self.disable_interrupts();
         loop {
-            // SAFETY: 执行环境须允许在关中断状态执行 WFI。
+            // SAFETY: The execution environment must allow executing WFI with interrupts disabled.
             unsafe { asm!("wfi", options(nomem, nostack)) };
         }
     }

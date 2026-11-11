@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! execve 的参数快照与映像替换。
+//! Argument snapshots and image replacement for execve.
 
 use crate::{
     Error, Services,

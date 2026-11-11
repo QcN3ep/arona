@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 带未映射保护页的内核栈。
+//! Kernel stack with an unmapped guard page.
 
 use super::{FrameOwner, FramePurpose, MemoryError, VirtRange, manager, mapping::OwnedMapping};
 

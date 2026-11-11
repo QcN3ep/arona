@@ -28,7 +28,7 @@ struct InitrdTable {
 }
 
 static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
-// SAFETY: 地址须对应 QEMU virt 的字节宽度与步长均为 1 的 16550 UART，且普通访问须由此实例独占。
+// SAFETY: The address must correspond to the QEMU virt 16550 UART whose byte width and stride are both 1, and ordinary accesses must be exclusive to this instance.
 pub(super) static EARLY_CONSOLE: EarlyConsole =
     EarlyConsole::new(unsafe { Uart::new(paging::UART_BASE + 0x1e0) });
 
@@ -41,7 +41,7 @@ unsafe extern "C" {
 
 /// # Safety
 ///
-/// 只能由固件按 ELF 入口约定在物理地址启动。
+/// Can only be started by firmware at a physical address following the ELF entry convention.
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
@@ -61,7 +61,7 @@ unsafe extern "C" fn _start() -> ! {
 
 /// # Safety
 ///
-/// 只能在 `_start` 建立页表并切换至高半区后进入。
+/// Can only be entered after `_start` has set up the page tables and switched to the higher half.
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.boot")]
@@ -75,7 +75,7 @@ unsafe extern "C" fn _start_virtual(_system_table: usize) -> ! {
 
 /// # Safety
 ///
-/// 只能由 `_start` 在系统启动时建立高半区映射与栈后调用一次。
+/// Can only be called once by `_start` after establishing the higher-half mapping and stack during system boot.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
     clear_bss();
@@ -84,7 +84,7 @@ pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
     logger::init(log::LevelFilter::Debug).expect("failed to initialize logger");
     // REFERENCE: https://github.com/torvalds/linux/blob/v6.18/arch/loongarch/include/asm/loongarch.h
     let cpu_id: usize;
-    // SAFETY: 执行环境须允许读取 CPUID 寄存器。
+    // SAFETY: The execution environment must permit reading the CPUID register.
     unsafe {
         core::arch::asm!("csrrd {}, 0x20", out(reg) cpu_id, options(nomem, nostack));
     }
@@ -92,7 +92,7 @@ pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
     log::info!(target: "arch::boot", "Booting kernel on CPU {boot_cpu_id}");
 
     // REFERENCE: https://gitlab.com/qemu-project/qemu/-/blob/v11.1.2/hw/loongarch/boot.c
-    // SAFETY: system_table 须指向可读且不变的 SystemTable。
+    // SAFETY: `system_table` must point to a readable and unchanged SystemTable.
     let system = unsafe {
         &*(firmware_address(system_table, size_of::<SystemTable>()) as *const SystemTable)
     };
@@ -108,16 +108,16 @@ pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
             .checked_mul(size_of::<ConfigurationTable>())
             .expect("configuration table size overflow"),
     );
-    // SAFETY: configuration_table 须覆盖 number_of_configuration_table_entries 个可读且不变的配置表项。
+    // SAFETY: `configuration_table` must cover `number_of_configuration_table_entries` readable and unchanged configuration table entries.
     let tables =
         unsafe { core::slice::from_raw_parts(tables_address as *const ConfigurationTable, count) };
     let dtb = configuration_table(tables, guid!("b1b621d5-f19c-41a5-830b-d9152c69aae0"))
         .expect("QEMU configuration table is missing DTB");
     let external_initramfs = initramfs(tables);
 
-    // SAFETY: 可变借用存续期间须独占访问 HARDWARE_INFO。
+    // SAFETY: HARDWARE_INFO must be exclusively accessible for the duration of the mutable borrow.
     let hardware = unsafe { &mut *core::ptr::addr_of_mut!(HARDWARE_INFO) };
-    // SAFETY: dtb 须指向解析期间可读且不变的完整 DTB。
+    // SAFETY: `dtb` must point to a complete DTB that remains readable and unchanged during parsing.
     let tree = unsafe { Dtb::new(firmware_address(dtb, 1024 * 1024) as *const u8) }
         .unwrap_or_else(|error| panic!("failed to read DTB: {error}"));
     let dtb_range = PhysRange {
@@ -157,7 +157,7 @@ pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
     });
 
     log::debug!(target: "arch::boot", "Parsed DTB at {dtb:#x}");
-    // SAFETY: 启动信息须与实际硬件一致，处理器须处于内核运行所需的执行环境。
+    // SAFETY: Boot information must match the actual hardware, and the processor must be in the execution environment required to run the kernel.
     kernel::boot_kernel(info)
 }
 
@@ -174,7 +174,7 @@ fn configuration_table(tables: &[ConfigurationTable], guid: Guid) -> Option<usiz
 fn initramfs(tables: &[ConfigurationTable]) -> Option<PhysRange> {
     let address = configuration_table(tables, guid!("5568e427-68fc-4f3d-ac74-ca555231cc68"))?;
     // REFERENCE: https://gitlab.com/qemu-project/qemu/-/blob/v11.1.2/include/hw/loongarch/boot.h
-    // SAFETY: 配置表须指向可读且不变的 QEMU initrd 描述。
+    // SAFETY: The configuration table must point to a readable and unchanged QEMU initrd description.
     let table =
         unsafe { &*(firmware_address(address, size_of::<InitrdTable>()) as *const InitrdTable) };
     if table.base == 0 && table.size == 0 {
@@ -196,7 +196,7 @@ fn clear_bss() {
     let end = core::ptr::addr_of!(_ebss) as usize;
 
     while cursor < end {
-        // SAFETY: 需要保证该地址位于可写且 8 字节对齐的 BSS 中。
+        // SAFETY: Must ensure this address lies in writable, 8-byte-aligned BSS.
         unsafe {
             (cursor as *mut u64).write_volatile(0);
         }
@@ -214,7 +214,7 @@ fn firmware_address(physical: usize, size: usize) -> usize {
 
 /// # Safety
 ///
-/// 只能由处理器在高半区映射和异常入口有效时调用。
+/// Can only be called by the processor while the higher-half mapping and exception entry are valid.
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.boot.trap")]

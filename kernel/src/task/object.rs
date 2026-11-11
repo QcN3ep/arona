@@ -27,11 +27,11 @@ macro_rules! define_objects {
     ($($kind:ident = $id:literal => [$($right:ident),*];)*) => {
         /// # Safety
         ///
-        /// 析构期间须关闭本地中断并保留内核映射。
+        /// Local interrupts must be disabled and kernel mappings retained during drop.
         pub enum Object { $($kind($kind),)* }
         /// # Safety
         ///
-        /// 析构期间须关闭本地中断并保留内核映射。
+        /// Local interrupts must be disabled and kernel mappings retained during drop.
         #[derive(Clone)]
         pub enum ObjectReference { $($kind(<$kind as ObjectPayload>::Reference),)* }
 

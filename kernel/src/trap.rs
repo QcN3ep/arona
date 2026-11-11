@@ -44,7 +44,7 @@ pub struct Trap {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TrapOutcome {
     Resume,
-    /// 仅用于 Syscall；arch 写入返回寄存器并恢复至 successor。
+    /// Used only for Syscall; arch writes the return registers and resumes at the successor.
     Return {
         status: usize,
         values: [usize; 2],
@@ -68,7 +68,7 @@ pub fn dispatch(trap: Trap) -> TrapOutcome {
     if trap.event == TrapEvent::ExternalInterrupt {
         return external_interrupt();
     }
-    // TODO: 接入缺页处理。
+    // TODO: Hook up page fault handling.
     log::error!(
         "Unhandled {:?} trap at {:#x}: {:?}",
         trap.origin,

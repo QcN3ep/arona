@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 文件内容访问、定位、截断与同步。
+//! File content access, positioning, truncation, and synchronization.
 
 use super::super::{
     Outcome,

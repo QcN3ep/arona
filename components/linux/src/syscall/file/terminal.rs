@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 终端读入与终端 ioctl。
+//! Terminal input and terminal ioctl.
 
 use super::{Buffer, Pending, buffer::IoVectors, fd, outcome};
 use crate::{
@@ -398,7 +398,7 @@ fn terminal_ioctl(
             1 | 2 => Err(EOPNOTSUPP),
             _ => Err(EINVAL),
         },
-        // TODO: 接入其余终端控制操作。
+        // TODO: Integrate the remaining terminal control operations.
         _ => Err(ENOTTY),
     }
 }

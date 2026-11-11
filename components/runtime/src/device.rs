@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 设备目录、MMIO 访问与 IRQ 绑定。
+//! Device directory, MMIO access, and IRQ binding.
 
 use crate::{BorrowedHandle, Device, DeviceSet, Error, Event, Handle, Rights};
 pub use abi::device::{DeviceField, DeviceInfo, PciBar};
@@ -22,7 +22,7 @@ pub struct InterruptBinding<'a> {
 }
 
 impl Handle<DeviceSet> {
-    /// 读取资源配置完成时的只读快照。
+    /// Read the read-only snapshot from when resource configuration completed.
     pub fn pci_config(&self, id: u32, output: &mut [u8; 4096]) -> Result<(), Error> {
         if self.read(id, DeviceField::PciConfig, 0, output)?.len() != output.len() {
             return Err(Error::Protocol);
@@ -86,7 +86,7 @@ impl Handle<DeviceSet> {
             device_set::CLAIM_GROUP,
             [group as u64, rights.bits(), 0, 0, 0],
         )?;
-        // SAFETY: CLAIM_GROUP 成功须交付独占的新设备句柄。
+        // SAFETY: A successful CLAIM_GROUP must deliver an exclusive new device handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
 }
@@ -212,13 +212,13 @@ impl Drop for InterruptBinding<'_> {
 macro_rules! registers {
     ($read:ident, $write:ident, $ty:ty, $rv_load:literal, $rv_store:literal, $la_load:literal, $la_store:literal) => {
         impl Mmio<'_> {
-            /// 授权撤销后的访问触发用户异常。
+            /// Access after authorization is revoked triggers a user exception.
             pub fn $read(&mut self, offset: usize) -> Result<$ty, Error> {
                 let address = self.address(offset, core::mem::size_of::<$ty>())?;
                 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
                 let value: usize;
                 #[cfg(target_arch = "riscv64")]
-                // SAFETY: 映射地址须在访问期间保持为设备页或不可访问页。
+                // SAFETY: The mapped address must remain a device page or an inaccessible page during access.
                 unsafe {
                     core::arch::asm!(
                         "fence iorw, iorw",
@@ -230,7 +230,7 @@ macro_rules! registers {
                     );
                 }
                 #[cfg(target_arch = "loongarch64")]
-                // SAFETY: 映射地址须在访问期间保持为设备页或不可访问页。
+                // SAFETY: The mapped address must remain a device page or an inaccessible page during access.
                 unsafe {
                     core::arch::asm!(
                         "dbar 0",
@@ -250,11 +250,11 @@ macro_rules! registers {
                 Ok(value as $ty)
             }
 
-            /// 授权撤销后的访问触发用户异常。
+            /// Access after authorization is revoked triggers a user exception.
             pub fn $write(&mut self, offset: usize, value: $ty) -> Result<(), Error> {
                 let address = self.address(offset, core::mem::size_of::<$ty>())?;
                 #[cfg(target_arch = "riscv64")]
-                // SAFETY: 映射地址须在访问期间保持为设备页或不可访问页。
+                // SAFETY: The mapped address must remain a device page or an inaccessible page during access.
                 unsafe {
                     core::arch::asm!(
                         "fence iorw, iorw",
@@ -266,7 +266,7 @@ macro_rules! registers {
                     );
                 }
                 #[cfg(target_arch = "loongarch64")]
-                // SAFETY: 映射地址须在访问期间保持为设备页或不可访问页。
+                // SAFETY: The mapped address must remain a device page or an inaccessible page during access.
                 unsafe {
                     core::arch::asm!(
                         "dbar 0",

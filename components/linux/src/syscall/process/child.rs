@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 进程映像复制与子进程登记。
+//! Process image copying and child process registration.
 
 use crate::{
     process::{Process, Thread},
@@ -20,7 +20,7 @@ pub(super) fn fork(
 ) -> SyscallResult {
     let [flags, stack, parent_tid, _, _, _] = args;
     if flags & !0x1000ff != 0 || !matches!(flags & 255, 0 | 17) || stack != 0 {
-        // TODO: 支持 vfork 的共享地址空间与父线程暂停。
+        // TODO: Support vfork's shared address space and parent thread suspension.
         return Err(EOPNOTSUPP);
     }
     let (group, session) = process.namespace.identity(process.pid)?;

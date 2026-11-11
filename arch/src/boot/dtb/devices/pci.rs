@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 解析 generic ECAM 主桥的地址窗口及中断路由。
+//! Parse the address windows and interrupt routing of the generic ECAM host bridge.
 
 use super::{DeviceNode, instance_id, interrupts};
 use arrayvec::ArrayVec;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! RISC-V 时间计数器与 SBI TIME 定时器。
+//! RISC-V time counter and SBI TIME timer.
 
 use core::arch::asm;
 
@@ -51,7 +51,7 @@ impl Timer for RiscvTimer {
                 .checked_add(delay)
                 .ok_or(TimerError::DeadlineOutOfRange)?;
             sbi_call(SBI_TIME, 0, deadline as usize)?;
-            // SAFETY: 当前处理器须独占监督态定时中断，异常入口须已就绪。
+            // SAFETY: The current processor must exclusively own the supervisor timer interrupt, and the exception entry must be ready.
             unsafe { asm!("csrs sie, {}", in(reg) 1usize << 5, options(nostack)) };
             Ok(())
         })
@@ -68,14 +68,14 @@ impl Timer for RiscvTimer {
 
 fn counter() -> u64 {
     let ticks: u64;
-    // SAFETY: 固件须允许当前处理器读取 time 计数器。
+    // SAFETY: The firmware must allow the current processor to read the time counter.
     unsafe { asm!("rdtime {}", out(reg) ticks, options(nomem, nostack)) };
     ticks
 }
 
 fn disarm() -> Result<(), TimerError> {
     sbi_call(SBI_TIME, 0, usize::MAX)?;
-    // SAFETY: 当前处理器须独占监督态定时中断。
+    // SAFETY: The current processor must exclusively own the supervisor timer interrupt.
     unsafe { asm!("csrc sie, {}", in(reg) 1usize << 5, options(nostack)) };
     Ok(())
 }
@@ -83,7 +83,7 @@ fn disarm() -> Result<(), TimerError> {
 fn sbi_call(extension: usize, function: usize, argument: usize) -> Result<usize, TimerError> {
     let error: isize;
     let value: usize;
-    // SAFETY: 固件须提供标准 SBI 调用环境，参数须对应所指定扩展的调用约定。
+    // SAFETY: The firmware must provide a standard SBI call environment, and the arguments must follow the calling convention of the specified extension.
     unsafe {
         asm!(
             "ecall",

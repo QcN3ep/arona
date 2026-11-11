@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! Linux 目录遍历与共享游标。
+//! Linux directory traversal and shared cursors.
 
 use alloc::rc::Rc;
 use runtime::{Call, Handle};

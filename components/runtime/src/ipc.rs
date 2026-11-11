@@ -161,7 +161,7 @@ impl<T, S, E: From<Error>> PendingCall<T, S, E> {
         self.call.cancel().map_err(E::from)
     }
 
-    /// 超时后仍可等待或取消本次调用。
+    /// After a timeout, this call can still be waited on or canceled.
     pub fn wait(&mut self, mode: WaitMode) -> Result<T, E> {
         wait_many(&[WaitItem::new(&self.call, READABLE)], mode).map_err(E::from)?;
         self.try_complete()
@@ -186,7 +186,7 @@ impl Handle<Task> {
             method::task::CHANNEL,
             [first.bits(), second.bits(), 0, 0, 0],
         )?;
-        // SAFETY: CHANNEL 成功交付两个独占的 Channel 句柄。
+        // SAFETY: A successful CHANNEL delivers two exclusive Channel handles.
         Ok(unsafe {
             (
                 Handle::from_raw(abi::Handle::from_raw(first)),
@@ -198,7 +198,7 @@ impl Handle<Task> {
         let [raw, _] = self
             .borrow()
             .invoke(method::task::EVENT, [rights.bits(), 0, 0, 0, 0])?;
-        // SAFETY: EVENT 成功交付独占的 Event 句柄。
+        // SAFETY: A successful EVENT delivers an exclusive Event handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
     pub fn timer(
@@ -211,7 +211,7 @@ impl Handle<Task> {
             method::task::TIMER,
             [event.borrow().raw().raw(), mask, rights.bits(), 0, 0],
         )?;
-        // SAFETY: TIMER 成功交付独占的 Timer 句柄。
+        // SAFETY: A successful TIMER delivers an exclusive Timer handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
 }
@@ -223,7 +223,7 @@ impl Handle<Channel> {
             [bytes.as_ptr() as u64, 0, 0, 0, 0],
         )?;
         message.commit();
-        // SAFETY: START_CALL 成功交付独占的 Call 句柄。
+        // SAFETY: A successful START_CALL delivers an exclusive Call handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
 
@@ -297,7 +297,7 @@ impl Handle<Call> {
         ReceivedMessage::decode(&output)
     }
 
-    /// 取消尚未完成的等待，服务端已经执行的操作不会撤销。
+    /// Cancel a wait that has not completed; operations already performed by the server are not undone.
     pub fn cancel(&self) -> Result<(), Error> {
         self.borrow()
             .invoke(method::call::CANCEL, [0; 5])

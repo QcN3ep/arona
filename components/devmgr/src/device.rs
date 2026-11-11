@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 设备描述查询与会话交接。
+//! Device description queries and session handoff.
 
 use runtime::{
     Call, Channel, DeviceSet, Handle, KernelError, Reply, Rights, Task,

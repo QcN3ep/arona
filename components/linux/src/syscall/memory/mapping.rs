@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 文件私有映射的异步读取与提交。
+//! Asynchronous reads and commits for private file mappings.
 
 use super::{map_error, mapping_error};
 use crate::{
@@ -21,7 +21,7 @@ pub(in crate::syscall) enum Pending<'a> {
     File(FileMapping<'a>),
 }
 
-// TODO: 文件截断后使既有映射失效。
+// TODO: Invalidate existing mappings after file truncation.
 pub(in crate::syscall) struct FileMapping<'a> {
     pub(super) description: Rc<OpenFileDescription<'a>>,
     pub(super) request: Stage,

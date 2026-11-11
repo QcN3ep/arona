@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 文件描述符就绪等待。
+//! File descriptor readiness waiting.
 
 use super::{Pending, outcome};
 use crate::{

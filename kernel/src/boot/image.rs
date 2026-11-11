@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 内核映像的装载范围与常驻分段布局。
+//! Load ranges and resident segment layout of the kernel image.
 
 use crate::memory::PhysRange;
 
@@ -9,7 +9,7 @@ pub struct KernelImage {
     pub physical: PhysRange,
     pub text: ImageSegment,
     pub rodata: ImageSegment,
-    /// 包含 BSS、启动页表和启动栈的可写段。
+    /// Writable segment containing the BSS, boot page tables, and boot stack.
     pub data: ImageSegment,
     pub boot_tables: PhysRange,
     pub boot_stack: PhysRange,

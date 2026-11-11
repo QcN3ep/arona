@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! 早期 UART 日志 Sink 与 panic 输出。
+//! Early UART log sink and panic output.
 
 use core::fmt;
 use core::panic::PanicInfo;
