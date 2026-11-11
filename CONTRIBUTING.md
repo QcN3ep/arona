@@ -68,11 +68,13 @@ Code that meets the following special cases must use comments with specific mark
 
 ## License
 
-The project's open-source license is Mozilla Public License Version 2.0; every code file requires an SPDX identifier:
+The project's open-source license is MPL-2.0 OR GPL-3.0-or-later; every code file requires an SPDX identifier:
 
 ```rust
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 ```
+
+The full license texts are in `LICENSES/`.
 
 Non-Rust files use the comment syntax corresponding to that language.
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use super::FileIdentity;
 use super::{half, inode::Inode, journal::Journal, word};

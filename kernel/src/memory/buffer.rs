@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use super::{FrameAccess, FrameAccessReference, FrameAllocation, MemoryError, ReferenceKind};
 use crate::hardware::mmu::PAGE_SIZE;
