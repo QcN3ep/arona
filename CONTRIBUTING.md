@@ -18,6 +18,8 @@ Fix interrupt starvation from repeated timer rearming
 Move kernel integration tests into kernel-tests
 ```
 
+Agent tools must not add themselves as co-authors in commits without user authorization.
+
 ### Description
 
 When further explanation is needed, add a blank line and a description after the subject; use the imperative mood like the subject.
