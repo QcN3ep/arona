@@ -1,101 +1,79 @@
-# Arona 贡献指南
+# Arona Contribution Guidelines
 
-## 语言
+## Language
 
-文档、提交信息与代码注释应当使用简体中文，技术名词保留其原始写法或缩写。
+Documentation, commit messages, and code comments are written in English; technical terms retain their original form or abbreviation.
 
-中文字符与英文单词之间使用空格隔开，使用反引号包裹的内容与其他文字使用空格隔开。
+Use a space between content wrapped in backticks and the surrounding text.
 
-## Commit 消息
+## Commit Messages
 
-每个提交消息都需符合以下格式：
+Write every commit message in English, in the imperative mood, with a single-line subject. Start with a capitalized imperative verb, keep it concise, and do not end with a period.
+
+For example:
 
 ```
-<类型>: <标题>
-[空行]
-[描述]
+Add the Arona Book
+Fix interrupt starvation from repeated timer rearming
+Move kernel integration tests into kernel-tests
 ```
 
-其中 `类型` 和 `标题` 是必须的，`空行` 与 `描述` 可选。
+### Description
 
-### 类型
+When further explanation is needed, add a blank line and a description after the subject; use the imperative mood like the subject.
 
-`类型` 只能是下列五种之一：
+The description should not duplicate the diff; use a description only when there is information the code cannot convey.
 
-| 类型 | 用于 |
+## Branches
+
+Development work must be done on a non-main branch and merged into `main` as a linear history.
+
+## Tests
+
+When writing integration tests, keep the test file structure consistent with the corresponding source code.
+
+Good tests should:
+* Write scenarios around user-observable functionality, covering normal inputs, necessary boundaries, and representative erroneous inputs.
+* Tests for erroneous functionality should assert the error code and also check the state and resources after failure.
+* Complete feature changes and the corresponding tests in the same commit, prefer extending existing scenarios, and merge duplicate coverage.
+
+Good tests **should not**:
+* Test things that are obviously correct, including but not limited to well-defined data structures and other content whose correctness the compiler guarantees.
+* Regression tests.
+* Treat internal layout or UB as functional assertions.
+* Test hardware-related functionality by faking the hardware backend or injecting according to the order of internal operations.
+
+## Comments
+
+### Doc Comments
+
+Doc comments in Rust may only use `///` and `//!`, must not use `/* */`, and must follow **rustdoc RFC 1574**.
+
+* All `unsafe` functions and traits must have a `# Safety` section
+* Module comments should state the module's functionality and the capabilities it exposes
+
+### Line Comments
+
+Only `//` may be used; do not write them if they have no explanatory value.
+
+Code that meets the following special cases must use comments with specific markers:
+
+| Marker | Used for |
 |---|---|
-| `Add` | 添加代码、实现功能等 |
-| `Fix` | 修复代码功能、修正错别字等 |
-| `Remove` | 移除代码、移除功能、移除文件 |
-| `Refactor` | 不改变功能与行为的前提下的修改 |
-| `Clean` | 清理文档、配置中的冗余与过时内容 |
-| `Bump` | 提升内核或依赖版本 |
+| `// TODO:` | Content to be completed |
+| `// HACK:` | Code that has to be implemented in an unconventional way |
+| `// FIXME:` | Code with known functional or safety issues |
+| `// REFERENCE: <url>` | Behavior defined by an external specification or a non-trivial algorithm |
+| `// SAFETY:` | `unsafe` is used, or `unsafe` is not used but unsafe preconditions exist |
 
-### 标题
+## License
 
-标题包含了对更改的简洁描述：
-
-* 使用祈使句
-* 不得超过 64 个字符
-* 结尾不需要加句号，不得使用破折号、省略号以及逗号等符号
-* 出现的代码标识符使用反引号包裹
-
-### 描述
-
-需要进一步解释时，标题后加入空行和描述，和标题一样使用祈使句。
-
-描述不应该是 diff 的重复，只有需要说明代码无法体现的信息时需要使用描述。
-
-## 分支
-
-项目主分支为 `main`，开发工作需要在非主分支上进行，并在完成后合入主分支。建议的分支命名：`feat/xxx`、`fix/xxx`。
-
-## 测试
-
-编写集成测试时，测试文件结构与对应源码保持一致。
-
-好的测试应当：
-* 围绕使用者可观察的功能编写场景，覆盖正常输入、必要边界和有代表性的错误输入。
-* 针对错误功能的测试在断言错误码的同时还应当检查失败后的状态与资源。
-* 功能改动与对应测试在同一提交中完成，优先扩充现有场景，合并重复覆盖。
-
-好的测试 **不** 应当：
-* 对显而易见正确的内容进行测试，包括但不限于良定义的数据结构等编译器保证正确性的内容。
-* 回归测试。
-* 将内部布局、UB 作为功能断言。
-* 硬件相关功能测试通过伪造硬件后端或按内部操作顺序注入。
-
-## 注释
-
-### 文档注释
-
-文档注释在 Rust 中只能使用 `///` 和 `//!`，不得使用 `/* */`，且需要遵循 **rustdoc RFC 1574**。
-
-* 所有 `unsafe` 函数和 trait 必须有 `# Safety` 段
-* 模块注释应当注明模块的功能以及暴露的能力
-
-### 行注释
-
-只能使用 `//`，没有说明价值不应该写。
-
-符合下列特殊情况的代码必须使用带有特定标记的注释：
-
-| 标记 | 用于 |
-|---|---|
-| `// TODO:` | 待完成的内容 |
-| `// HACK:` | 不得不使用非常规方式实现的代码 |
-| `// FIXME:` | 存在已知功能性或安全性问题的代码 |
-| `// REFERENCE: <url>` | 实现由外部规范或非平凡算法定义的行为 |
-| `// SAFETY:` | 使用了 `unsafe`，或未使用 `unsafe` 但存在不安全前提 |
-
-## 许可证
-
-本项目的开源许可证为 Mozilla Public License Version 2.0，每个代码文件都需要 SPDX 标识：
+The project's open-source license is Mozilla Public License Version 2.0; every code file requires an SPDX identifier:
 
 ```rust
 // SPDX-License-Identifier: MPL-2.0
 ```
 
-非 Rust 文件使用该语言对应的注释语法。
+Non-Rust files use the comment syntax corresponding to that language.
 
-无法添加注释的文件（`.md`、`.json`、图片等）在 `REUSE.toml` 标明。
+Files that cannot contain comments (`.md`, `.json`, images, etc.) are declared in `REUSE.toml`.
