@@ -80,6 +80,8 @@ auxv_done:
     beq $s3, $t1, readonly
     li.d $t1, 105
     beq $s3, $t1, illegal
+    li.d $t1, 101
+    beq $s3, $t1, exceptions
     li.d $t1, 103
     beq $s3, $t1, group
     li.d $t1, 119
@@ -210,6 +212,9 @@ readonly:
     b failure
 illegal:
     .word 0
+    b failure
+exceptions:
+    break 0
     b failure
 group:
     li.d $a0, 43

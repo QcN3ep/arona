@@ -5,7 +5,7 @@ use crate::{
     ipc::{self, WaitItem, WaitMode},
 };
 use abi::method;
-pub use abi::trap::{TrapInfo, UserState};
+pub use abi::trap::{ExceptionClass, TrapInfo, UserState};
 
 #[derive(Debug)]
 pub struct Trap {

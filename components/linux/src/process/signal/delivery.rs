@@ -208,12 +208,32 @@ pub fn fault(process: &mut Process<'_>, index: usize, mut context: Context) -> R
     resume(process, index, context)
 }
 
+// REFERENCE: https://man7.org/linux/man-pages/man7/signal.7.html
+const SIGILL: u8 = 4;
+const SIGTRAP: u8 = 5;
+const SIGBUS: u8 = 7;
+const SIGFPE: u8 = 8;
+const SIGSEGV: u8 = 11;
+
+// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/siginfo.h?h=v6.12
+const ILL_ILLOPC: i32 = 1;
+const ILL_PRVOPC: i32 = 5;
+const TRAP_BRKPT: i32 = 1;
+const FPE_INTDIV: i32 = 1;
+const BUS_ADRALN: i32 = 1;
+const BUS_ADRERR: i32 = 2;
+const SEGV_MAPERR: i32 = 1;
+const SEGV_ACCERR: i32 = 2;
+const SEGV_BNDERR: i32 = 3;
+
 fn fault_info(space: &crate::memory::AddressSpace, trap: &runtime::trap::TrapInfo) -> Info {
     use runtime::trap::TrapInfo;
     let address = trap.address as usize;
     let (number, code, address) = match trap.kind {
-        TrapInfo::ILLEGAL_INSTRUCTION => (4, 1, trap.pc as usize),
-        TrapInfo::PAGE_FAULT if space.bus_fault(address, trap.detail) => (7, 2, address),
+        TrapInfo::ILLEGAL_INSTRUCTION => (SIGILL, ILL_ILLOPC, trap.pc as usize),
+        TrapInfo::PAGE_FAULT if space.bus_fault(address, trap.detail) => {
+            (SIGBUS, BUS_ADRERR, address)
+        }
         TrapInfo::PAGE_FAULT => {
             let mapped = space
                 .native
@@ -222,10 +242,14 @@ fn fault_info(space: &crate::memory::AddressSpace, trap: &runtime::trap::TrapInf
                 .ok()
                 .flatten()
                 .is_some_and(|info| info.permissions.is_some());
-            (11, if mapped { 2 } else { 1 }, address)
+            (
+                SIGSEGV,
+                if mapped { SEGV_ACCERR } else { SEGV_MAPERR },
+                address,
+            )
         }
-        // TODO: Complete the Linux signals corresponding to other exceptions.
-        _ => (11, 1, address),
+        TrapInfo::EXCEPTION => exception(trap.detail, trap.pc as usize, address),
+        _ => (SIGSEGV, SEGV_MAPERR, address),
     };
     Info {
         number,
@@ -233,5 +257,19 @@ fn fault_info(space: &crate::memory::AddressSpace, trap: &runtime::trap::TrapInf
         address,
         sender: 0,
         value: 0,
+    }
+}
+
+fn exception(detail: u64, pc: usize, address: usize) -> (u8, i32, usize) {
+    use runtime::trap::ExceptionClass;
+    match ExceptionClass::from_raw(detail) {
+        Some(ExceptionClass::Breakpoint) => (SIGTRAP, TRAP_BRKPT, pc),
+        // The class does not distinguish integer and floating-point errors; report integer division by zero.
+        Some(ExceptionClass::Arithmetic) => (SIGFPE, FPE_INTDIV, pc),
+        Some(ExceptionClass::MisalignedAddress) => (SIGBUS, BUS_ADRALN, address),
+        Some(ExceptionClass::AccessFault) => (SIGSEGV, SEGV_ACCERR, address),
+        Some(ExceptionClass::BoundsCheck) => (SIGSEGV, SEGV_BNDERR, address),
+        Some(ExceptionClass::Privilege) => (SIGILL, ILL_PRVOPC, pc),
+        Some(ExceptionClass::Unknown) | None => (SIGSEGV, SEGV_MAPERR, address),
     }
 }

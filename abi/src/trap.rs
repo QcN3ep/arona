@@ -106,3 +106,19 @@ pub enum ExceptionClass {
     Privilege = 5,
     Unknown = 6,
 }
+
+impl ExceptionClass {
+    /// 从陷入信息中的原始类别值还原异常类别。
+    pub const fn from_raw(value: u64) -> Option<Self> {
+        Some(match value {
+            0 => Self::MisalignedAddress,
+            1 => Self::AccessFault,
+            2 => Self::BoundsCheck,
+            3 => Self::Breakpoint,
+            4 => Self::Arithmetic,
+            5 => Self::Privilege,
+            6 => Self::Unknown,
+            _ => return None,
+        })
+    }
+}

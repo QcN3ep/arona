@@ -81,6 +81,8 @@ auxv_done:
     beq s3, t1, readonly
     li t1, 105
     beq s3, t1, illegal
+    li t1, 101
+    beq s3, t1, exceptions
     li t1, 103
     beq s3, t1, group
     li t1, 119
@@ -210,6 +212,9 @@ readonly:
     j failure
 illegal:
     .word 0
+    j failure
+exceptions:
+    ebreak
     j failure
 group:
     li a0, 43
