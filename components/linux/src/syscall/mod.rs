@@ -77,7 +77,7 @@ impl<'a> Operation<'a> {
             Self::Exec(_) => unreachable!(),
             Self::WaitChild(operation) => operation.poll(process),
             Self::Signal(operation) => operation.poll(process, index),
-            Self::Futex(operation) => operation.poll(),
+            Self::Futex(operation) => operation.poll(process),
             Self::File(operation) => operation.poll(process, files),
             Self::System(operation) => operation.poll(process),
             Self::Memory(operation) => operation.poll(process),
@@ -108,7 +108,9 @@ pub(crate) fn dispatch<'a>(
         outcome
     } else if let Some(outcome) = system::dispatch(process, services, number, arguments) {
         outcome
-    } else if let Some(outcome) = process::dispatch(process, index, &context, number, arguments) {
+    } else if let Some(outcome) =
+        process::dispatch(process, index, &context, number, arguments, services)
+    {
         outcome
     } else {
         match number {

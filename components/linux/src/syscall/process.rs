@@ -18,9 +18,10 @@ pub(super) fn dispatch<'a>(
     context: &Context,
     number: usize,
     args: [usize; 6],
+    services: &crate::Services<'_>,
 ) -> Option<Outcome<'a>> {
     if number == abi::FUTEX {
-        return Some(futex::start(process, args));
+        return Some(futex::start(process, services, args));
     }
     if matches!(number, abi::WAIT4 | abi::WAITID) {
         return Some(wait::start(process, number, args));
