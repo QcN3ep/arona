@@ -35,6 +35,21 @@ pub(super) enum PageBacking {
     BeyondEof(Permissions),
 }
 
+/// A mapped page together with the permissions observed in the native page table.
+pub(super) struct MappedPage {
+    pub address: usize,
+    pub page: Page,
+    pub permissions: Permissions,
+}
+
+fn effective_permissions(page: &Page, permissions: Permissions) -> Permissions {
+    if matches!(page.backing, PageBacking::BeyondEof(_)) {
+        Permissions::NoAccess
+    } else {
+        permissions
+    }
+}
+
 impl AddressSpace {
     pub fn load(
         parent: &Handle<Task>,
@@ -121,6 +136,168 @@ impl AddressSpace {
         let range = reservation.range().ok_or(runtime::Error::Protocol)?;
         reservation.release()?;
         self.map_zeroed(range.clone(), permissions, shared)?;
+        Ok(range.start)
+    }
+
+    pub fn bounds(&self) -> Result<Range<usize>, runtime::Error> {
+        self.native.task().address_range()
+    }
+
+    /// Collect every mapped page in `range`, failing if any page is not mapped.
+    pub fn snapshot(&self, range: &Range<usize>) -> Result<Vec<MappedPage>, runtime::Error> {
+        let mut pages = Vec::new();
+        for address in range.clone().step_by(PAGE_SIZE) {
+            let page = self
+                .pages
+                .borrow()
+                .get(&address)
+                .cloned()
+                .ok_or(runtime::Error::Kernel(runtime::KernelError::BadAddress))?;
+            let permissions = self
+                .native
+                .task()
+                .query(address)?
+                .and_then(|info| info.permissions)
+                .ok_or(runtime::Error::Kernel(runtime::KernelError::BadAddress))?;
+            pages.push(MappedPage {
+                address,
+                page,
+                permissions,
+            });
+        }
+        Ok(pages)
+    }
+
+    /// Remove the mapping covering `range` and return the pages that were mapped there.
+    pub fn detach(&self, range: Range<usize>) -> Result<Vec<MappedPage>, runtime::Error> {
+        let records: Vec<(usize, Page)> = self
+            .pages
+            .borrow()
+            .range(range.clone())
+            .map(|(address, page)| (*address, page.clone()))
+            .collect();
+        let mut saved = Vec::with_capacity(records.len());
+        for (address, page) in records {
+            let permissions = self
+                .native
+                .task()
+                .query(address)?
+                .and_then(|info| info.permissions)
+                .ok_or(runtime::Error::Kernel(runtime::KernelError::Busy))?;
+            saved.push(MappedPage {
+                address,
+                page,
+                permissions,
+            });
+        }
+        self.unmap(range)?;
+        Ok(saved)
+    }
+
+    /// Re-establish pages returned by `snapshot` or `detach` at their recorded addresses.
+    pub fn restore(&self, pages: &[MappedPage]) -> Result<(), runtime::Error> {
+        for mapped in pages {
+            let permissions = effective_permissions(&mapped.page, mapped.permissions);
+            self.native.map(
+                &mapped.page.frames,
+                mapped.page.offset,
+                1,
+                Some(mapped.address),
+                permissions,
+            )?;
+            self.pages
+                .borrow_mut()
+                .insert(mapped.address, mapped.page.clone());
+        }
+        Ok(())
+    }
+
+    /// Move `pages` to `start` and fill the remainder of `length` with zeroed pages.
+    pub fn place(
+        &self,
+        pages: &[MappedPage],
+        start: usize,
+        length: usize,
+        extension: Option<(Permissions, bool)>,
+    ) -> Result<(), runtime::Error> {
+        let placed_length = pages.len() * PAGE_SIZE;
+        for (index, mapped) in pages.iter().enumerate() {
+            let address = start + index * PAGE_SIZE;
+            let permissions = effective_permissions(&mapped.page, mapped.permissions);
+            if let Err(error) = self.native.map(
+                &mapped.page.frames,
+                mapped.page.offset,
+                1,
+                Some(address),
+                permissions,
+            ) {
+                let _ = self.unmap(start..address);
+                return Err(error);
+            }
+            self.pages.borrow_mut().insert(address, mapped.page.clone());
+        }
+        if length <= placed_length {
+            return Ok(());
+        }
+        let Some((permissions, shared)) = extension else {
+            let _ = self.unmap(start..start + placed_length);
+            return Err(runtime::Error::Kernel(
+                runtime::KernelError::InvalidArgument,
+            ));
+        };
+        let prepared = match self.zeroed_pages(length - placed_length, shared) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = self.unmap(start..start + placed_length);
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.install(start + placed_length, prepared, permissions) {
+            let _ = self.unmap(start..start + placed_length);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Try to extend the mapping ending at `end` by `extra` zeroed pages.
+    pub fn try_expand(
+        &self,
+        end: usize,
+        extra: usize,
+        permissions: Permissions,
+        shared: bool,
+    ) -> Result<bool, runtime::Error> {
+        let mut reservation = match self.native.task().reserve(extra, PAGE_SIZE, Some(end)) {
+            Ok(reservation) => reservation,
+            Err(runtime::Error::Kernel(
+                runtime::KernelError::Busy
+                | runtime::KernelError::InvalidArgument
+                | runtime::KernelError::NoMemory,
+            )) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let Some(range) = reservation.range() else {
+            return Err(runtime::Error::Protocol);
+        };
+        reservation.release()?;
+        match self.map_zeroed(range, permissions, shared) {
+            Ok(()) => Ok(true),
+            Err(runtime::Error::Kernel(
+                runtime::KernelError::Busy
+                | runtime::KernelError::InvalidArgument
+                | runtime::KernelError::NoMemory,
+            )) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Reserve any free gap of `length` bytes and return its start address.
+    pub fn reserve_gap(&self, length: usize) -> Result<usize, runtime::Error> {
+        let mut reservation = self.native.task().reserve(length, PAGE_SIZE, None)?;
+        let Some(range) = reservation.range() else {
+            return Err(runtime::Error::Protocol);
+        };
+        reservation.release()?;
         Ok(range.start)
     }
 

@@ -322,6 +322,7 @@ fn writable(
         b"directory",
         b"path",
         b"FileMappings",
+        b"Xremap",
         b"Pipe",
         b"Readiness",
         b"System",

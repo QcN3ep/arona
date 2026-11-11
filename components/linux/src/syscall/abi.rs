@@ -109,6 +109,7 @@ pub(super) const SENDMSG: usize = 211;
 pub(super) const RECVMSG: usize = 212;
 pub(super) const BRK: usize = 214;
 pub(super) const MUNMAP: usize = 215;
+pub(super) const MREMAP: usize = 216;
 pub(super) const CLONE: usize = 220;
 pub(super) const EXECVE: usize = 221;
 pub(super) const MMAP: usize = 222;

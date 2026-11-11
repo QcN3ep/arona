@@ -145,6 +145,7 @@ pub(crate) fn dispatch<'a>(
                 arguments[0],
                 arguments[1],
             )),
+            abi::MREMAP => Outcome::Complete(memory::mremap(&process.address_space, arguments)),
             abi::MPROTECT => Outcome::Complete(memory::mprotect(
                 &process.address_space,
                 arguments[0],

@@ -43,7 +43,7 @@ When there is no progress, the relevant Calls, events, thread exits, and ports a
 | `syscall/file/` | open, I/O, path, directory, metadata, pipe, poll, and terminal |
 | `syscall/socket/` | TCP and UDP sockets, local Unix socket pairs, messages, addresses, options, and pending I/O |
 | `syscall/process/` | clone, exec, exit, wait, identity, thread, and futex |
-| `syscall/memory/` | mmap, munmap, mprotect, and related memory operations |
+| `syscall/memory/` | mmap, munmap, mprotect, mremap, and related memory operations |
 | `syscall/signal.rs` | signal system calls |
 | `syscall/system/` | uname, clock, sleep, interval timers, and random numbers |
 
@@ -210,6 +210,13 @@ Anonymous shared mappings retain a shared backing relationship between the relev
 
 File-private mappings read content through the file service, allocate and fill the backing page frames, and then map them with the requested permissions.
 `munmap` and `mprotect` modify the native mapping and the compatibility layer records.
+
+`mremap` resizes a mapping in place when the adjacent address range is free, and shrinking unmaps the excess tail.
+`MREMAP_MAYMOVE` permits relocation: the compatibility layer moves the recorded pages and their frame references instead of copying the contents, and zero-fills any pages added by a growth.
+When moving, file-private mappings keep their data and beyond-end-of-file pages keep their fault behavior.
+`MREMAP_FIXED` moves a mapping to the requested address, replaces the mapping already present there, and rejects a destination that overlaps the source range.
+Invalid flags, sizes, alignments, and addresses are rejected before any mapping changes, and a failure during a move restores the source and any replaced destination pages.
+Growing a private file mapping returns `ENOMEM` because the remap path has no synchronous file read, and `MREMAP_DONTUNMAP` returns `EOPNOTSUPP`.
 User buffer reads and writes are completed through the target Task's memory interface and converted into Linux address errors.
 
 When duplicating a process, it walks the original address space, copies or shares data according to the mappings' backing relationships, and establishes the child Task's image.

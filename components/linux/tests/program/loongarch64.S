@@ -130,6 +130,8 @@ auxv_done:
     beq $s3, $t1, mapping_bus_fault
     li.d $t1, 70
     beq $s3, $t1, file_mappings
+    li.d $t1, 88
+    beq $s3, $t1, remap_mappings
     li.d $t1, 112
     beq $s3, $t1, files_path
     li.d $t1, 109

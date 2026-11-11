@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-// TODO: Support mremap.
-
 use core::ops::Range;
 use runtime::memory::Permissions;
 
@@ -9,11 +7,16 @@ use super::file::filesystem_error;
 use super::{
     Outcome,
     abi::{
-        EACCES, EBADF, EEXIST, EINVAL, EIO, ENODEV, ENOMEM, EOPNOTSUPP, EOVERFLOW, Errno,
+        EACCES, EBADF, EEXIST, EFAULT, EINVAL, EIO, ENODEV, ENOMEM, EOPNOTSUPP, EOVERFLOW, Errno,
         SyscallResult,
     },
 };
-use crate::{elf::PAGE_SIZE, file::OpenFileDescription, memory::AddressSpace, process::Process};
+use crate::{
+    elf::PAGE_SIZE,
+    file::OpenFileDescription,
+    memory::{AddressSpace, MappedPage, PageBacking},
+    process::Process,
+};
 use alloc::{rc::Rc, vec::Vec};
 
 pub(super) use mapping::Pending;
@@ -170,6 +173,158 @@ pub(super) fn mprotect(
         space.protect(range, permissions).map_err(mapping_error)?;
     }
     Ok(0)
+}
+
+const MREMAP_MAYMOVE: usize = 1;
+const MREMAP_FIXED: usize = 2;
+const MREMAP_DONTUNMAP: usize = 4;
+
+// REFERENCE: https://man7.org/linux/man-pages/man2/mremap.2.html
+pub(super) fn mremap(space: &AddressSpace, arguments: [usize; 6]) -> SyscallResult {
+    let [old_address, old_size, new_size, flags, new_address, ..] = arguments;
+    if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0
+        || flags & MREMAP_FIXED != 0 && flags & MREMAP_MAYMOVE == 0
+        || flags & MREMAP_DONTUNMAP != 0 && (flags & MREMAP_MAYMOVE == 0 || old_size != new_size)
+        || old_size == 0
+        || new_size == 0
+        || !old_address.is_multiple_of(PAGE_SIZE)
+    {
+        return Err(EINVAL);
+    }
+    if flags & MREMAP_DONTUNMAP != 0 {
+        return Err(EOPNOTSUPP);
+    }
+    let old = range(old_address, old_size)?;
+    let new_length = new_size
+        .checked_next_multiple_of(PAGE_SIZE)
+        .filter(|length| *length <= isize::MAX as usize)
+        .ok_or(ENOMEM)?;
+    let bounds = space.bounds().map_err(mapping_error)?;
+    if old.start < bounds.start || old.end > bounds.end {
+        return Err(EFAULT);
+    }
+    let pages = space.snapshot(&old).map_err(old_error)?;
+    let extension = if new_length > old.len() {
+        Some(extension(&pages)?)
+    } else {
+        None
+    };
+    if flags & MREMAP_FIXED != 0 {
+        return move_fixed(space, old, pages, new_length, new_address, extension);
+    }
+    if new_length <= old.len() {
+        if new_length < old.len() {
+            space
+                .unmap(old.start + new_length..old.end)
+                .map_err(mapping_error)?;
+        }
+        return Ok(old_address);
+    }
+    let Some(extension) = extension else {
+        return Err(ENOMEM);
+    };
+    if space
+        .try_expand(old.end, new_length - old.len(), extension.0, extension.1)
+        .map_err(mapping_error)?
+    {
+        return Ok(old_address);
+    }
+    if flags & MREMAP_MAYMOVE == 0 {
+        return Err(ENOMEM);
+    }
+    grow(space, old, &pages, new_length, extension)
+}
+
+fn old_error(error: runtime::Error) -> Errno {
+    match error {
+        runtime::Error::Kernel(
+            runtime::KernelError::BadAddress
+            | runtime::KernelError::Busy
+            | runtime::KernelError::InvalidArgument,
+        ) => EFAULT,
+        error => mapping_error(error),
+    }
+}
+
+/// Describe how a mapping may grow; file mappings cannot gain pages without file reads.
+fn extension(pages: &[MappedPage]) -> Result<(Permissions, bool), Errno> {
+    let first = pages.first().ok_or(EINVAL)?;
+    if matches!(
+        first.page.backing,
+        PageBacking::File | PageBacking::BeyondEof(_)
+    ) {
+        return Err(ENOMEM);
+    }
+    let shared = matches!(first.page.backing, PageBacking::Shared);
+    for mapped in &pages[1..] {
+        if mapped.permissions != first.permissions
+            || matches!(
+                mapped.page.backing,
+                PageBacking::File | PageBacking::BeyondEof(_)
+            )
+            || matches!(mapped.page.backing, PageBacking::Shared) != shared
+        {
+            return Err(EFAULT);
+        }
+    }
+    Ok((first.permissions, shared))
+}
+
+fn move_fixed(
+    space: &AddressSpace,
+    old: Range<usize>,
+    pages: Vec<MappedPage>,
+    new_length: usize,
+    new_address: usize,
+    extension: Option<(Permissions, bool)>,
+) -> SyscallResult {
+    if new_address == 0 || !new_address.is_multiple_of(PAGE_SIZE) {
+        return Err(EINVAL);
+    }
+    let end = new_address.checked_add(new_length).ok_or(EINVAL)?;
+    let bounds = space.bounds().map_err(mapping_error)?;
+    if new_address < bounds.start || end > bounds.end || old.start < end && new_address < old.end {
+        return Err(EINVAL);
+    }
+    let destination = new_address..end;
+    let saved = space
+        .detach(destination.clone())
+        .map_err(|error| match error {
+            runtime::Error::Kernel(
+                runtime::KernelError::Busy | runtime::KernelError::InvalidArgument,
+            ) => EINVAL,
+            error => mapping_error(error),
+        })?;
+    let moved = new_length.min(old.len()) / PAGE_SIZE;
+    let result = space
+        .place(&pages[..moved], new_address, new_length, extension)
+        .and_then(|()| space.unmap(old));
+    match result {
+        Ok(()) => Ok(new_address),
+        Err(error) => {
+            let _ = space.unmap(destination);
+            let _ = space.restore(&saved);
+            Err(mapping_error(error))
+        }
+    }
+}
+
+fn grow(
+    space: &AddressSpace,
+    old: Range<usize>,
+    pages: &[MappedPage],
+    new_length: usize,
+    extension: (Permissions, bool),
+) -> SyscallResult {
+    let destination = space.reserve_gap(new_length).map_err(mapping_error)?;
+    space
+        .place(pages, destination, new_length, Some(extension))
+        .map_err(mapping_error)?;
+    if let Err(error) = space.unmap(old) {
+        let _ = space.unmap(destination..destination + new_length);
+        return Err(mapping_error(error));
+    }
+    Ok(destination)
 }
 
 fn range(address: usize, length: usize) -> Result<Range<usize>, Errno> {
