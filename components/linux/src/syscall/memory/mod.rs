@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-// TODO: Support msync and mremap.
+// TODO: Support mremap.
 
 use core::ops::Range;
 use runtime::memory::Permissions;
@@ -25,6 +25,11 @@ const MAP_PRIVATE: usize = 2;
 const MAP_FIXED: usize = 0x10;
 const MAP_ANONYMOUS: usize = 0x20;
 const MAP_FIXED_NOREPLACE: usize = 0x100000;
+
+// REFERENCE: https://man7.org/linux/man-pages/man2/msync.2.html
+const MS_ASYNC: usize = 1;
+const MS_INVALIDATE: usize = 2;
+const MS_SYNC: usize = 4;
 
 pub(super) fn mmap<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Outcome<'a> {
     match start(process, arguments) {
@@ -130,6 +135,22 @@ pub(super) fn munmap(space: &AddressSpace, address: usize, length: usize) -> Sys
         ) => EINVAL,
         error => mapping_error(error),
     })?;
+    Ok(0)
+}
+
+pub(super) fn msync(
+    space: &AddressSpace,
+    address: usize,
+    length: usize,
+    flags: usize,
+) -> SyscallResult {
+    if flags & !(MS_ASYNC | MS_INVALIDATE | MS_SYNC) != 0
+        || flags & MS_ASYNC != 0 && flags & MS_SYNC != 0
+    {
+        return Err(EINVAL);
+    }
+    let range = range(address, length)?;
+    space.msync(range).map_err(mapping_error)?;
     Ok(0)
 }
 

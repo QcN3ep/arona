@@ -41,6 +41,46 @@ file_mappings:
     bnez t1, mapping_failure
     li t1, 120
     sb t1, 0(s1)
+    mv a0, s1
+    li a1, 12288
+    li a2, 4
+    invoke 227
+    expect 0
+    mv a0, s1
+    li a1, 4096
+    li a2, 1
+    invoke 227
+    expect 0
+    mv a0, s1
+    li a1, 4096
+    li a2, 2
+    invoke 227
+    expect 0
+    mv a0, s1
+    li a1, 0
+    li a2, 4
+    invoke 227
+    expect 0
+    mv a0, s1
+    li a1, 4096
+    li a2, 8
+    invoke 227
+    expect -22
+    addi a0, s1, 1
+    li a1, 4096
+    li a2, 4
+    invoke 227
+    expect -22
+    mv a0, s1
+    li a1, 4096
+    li a2, 5
+    invoke 227
+    expect -22
+    li a0, 0x40000000
+    li a1, 4096
+    li a2, 4
+    invoke 227
+    expect -12
     mv a0, s0
     li a1, 0
     li a2, 1

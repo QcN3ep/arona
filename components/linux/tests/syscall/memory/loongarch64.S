@@ -40,6 +40,46 @@ file_mappings:
     bnez $t1, mapping_failure
     li.d $t1, 120
     st.b $t1, $s1, 0
+    move $a0, $s1
+    li.d $a1, 12288
+    li.d $a2, 4
+    invoke 227
+    expect 0
+    move $a0, $s1
+    li.d $a1, 4096
+    li.d $a2, 1
+    invoke 227
+    expect 0
+    move $a0, $s1
+    li.d $a1, 4096
+    li.d $a2, 2
+    invoke 227
+    expect 0
+    move $a0, $s1
+    li.d $a1, 0
+    li.d $a2, 4
+    invoke 227
+    expect 0
+    move $a0, $s1
+    li.d $a1, 4096
+    li.d $a2, 8
+    invoke 227
+    expect -22
+    addi.d $a0, $s1, 1
+    li.d $a1, 4096
+    li.d $a2, 4
+    invoke 227
+    expect -22
+    move $a0, $s1
+    li.d $a1, 4096
+    li.d $a2, 5
+    invoke 227
+    expect -22
+    li.d $a0, 0x40000000
+    li.d $a1, 4096
+    li.d $a2, 4
+    invoke 227
+    expect -12
     move $a0, $s0
     li.d $a1, 0
     li.d $a2, 1
