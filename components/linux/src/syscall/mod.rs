@@ -2,7 +2,7 @@
 
 //! Linux syscall dispatch and asynchronous completion.
 
-// TODO: Support epoll, timerfd, and signalfd.
+// TODO: Support epoll and signalfd.
 
 pub(crate) mod abi;
 mod file;

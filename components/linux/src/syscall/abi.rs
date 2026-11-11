@@ -185,3 +185,7 @@ impl Machine {
         }] = result.unwrap_or_else(|errno| -errno.0 as usize);
     }
 }
+
+pub(super) const TIMERFD_CREATE: usize = 85;
+pub(super) const TIMERFD_SETTIME: usize = 86;
+pub(super) const TIMERFD_GETTIME: usize = 87;

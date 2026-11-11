@@ -80,6 +80,9 @@ For example, for an ordinary file read, the compatibility service submits the of
 The `F_GETPIPE_SZ` and `F_SETPIPE_SZ` commands query and resize a pipe through either endpoint.
 Resizing preserves queued bytes and rejects a capacity below the amount already queued.
 
+Monotonic timer descriptors report expiration counts through `read`.
+Their shared timer wakes blocked reads and readiness waits, including after another process rearms or disarms the descriptor.
+
 ## Address Space
 
 The compatibility layer's AddressSpace records program mappings and their backing page frames and operates the native address space through the supervised Task.

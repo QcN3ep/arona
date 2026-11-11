@@ -157,6 +157,17 @@ fn readiness(description: &OpenFileDescription<'_>) -> u16 {
             INPUT | OUTPUT
         }
         OpenFileDescription::VirtualFile { .. } => INPUT,
+        OpenFileDescription::Timerfd { state, .. } => {
+            if state
+                .next
+                .get()
+                .is_some_and(|next| wait::now().is_ok_and(|now| now >= next))
+            {
+                INPUT
+            } else {
+                0
+            }
+        }
         OpenFileDescription::Eventfd { counter, .. } => {
             (if counter.get() < u64::MAX - 1 {
                 OUTPUT
@@ -183,6 +194,11 @@ impl Poll<'_> {
 
     pub fn waits<'a>(&'a self, items: &mut Vec<WaitItem<'a>>) {
         self.deadline.waits(items);
+        for entry in &self.entries {
+            if let Some(OpenFileDescription::Timerfd { state, .. }) = entry.description.as_deref() {
+                items.push(WaitItem::new(&state.event, 1));
+            }
+        }
     }
 
     pub fn poll(&mut self, process: &Process<'_>) -> Option<SyscallResult> {

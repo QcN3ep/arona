@@ -64,6 +64,22 @@ pub(in crate::syscall) fn read<'a>(
         .is_some_and(|descriptor| {
             matches!(
                 descriptor.description.as_ref(),
+                OpenFileDescription::Timerfd { .. }
+            )
+        })
+    {
+        return if offset.is_some() {
+            Outcome::Complete(Err(ESPIPE))
+        } else {
+            super::timerfd::read(process, fd_raw, buffer)
+        };
+    }
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| {
+            matches!(
+                descriptor.description.as_ref(),
                 OpenFileDescription::Pipe { .. }
             )
         })
@@ -119,6 +135,7 @@ pub(in crate::syscall) fn read<'a>(
             OpenFileDescription::Pipe { .. } => unreachable!(),
             OpenFileDescription::Terminal { .. } => unreachable!(),
             OpenFileDescription::Eventfd { .. }
+            | OpenFileDescription::Timerfd { .. }
             | OpenFileDescription::Virtual { .. }
             | OpenFileDescription::VirtualFile { .. } => {
                 unreachable!()
@@ -254,6 +271,18 @@ pub(in crate::syscall) fn write<'a>(
             super::eventfd::write(process, fd_raw, buffer)
         };
     }
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| {
+            matches!(
+                descriptor.description.as_ref(),
+                OpenFileDescription::Timerfd { .. }
+            )
+        })
+    {
+        return Outcome::Complete(Err(if offset.is_some() { ESPIPE } else { EINVAL }));
+    }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         if descriptor.description.flags() & 3 == 0 {
@@ -271,6 +300,7 @@ pub(in crate::syscall) fn write<'a>(
         Ok(Some(match description.as_ref() {
             OpenFileDescription::Terminal { .. } => unreachable!(),
             OpenFileDescription::Eventfd { .. }
+            | OpenFileDescription::Timerfd { .. }
             | OpenFileDescription::Virtual { .. }
             | OpenFileDescription::VirtualFile { .. } => {
                 unreachable!()
@@ -323,6 +353,7 @@ pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome
             OpenFileDescription::Terminal { .. }
             | OpenFileDescription::Pipe { .. }
             | OpenFileDescription::Eventfd { .. }
+            | OpenFileDescription::Timerfd { .. }
             | OpenFileDescription::Virtual { .. }
             | OpenFileDescription::VirtualFile { .. } => {
                 return Err(EINVAL);
@@ -381,6 +412,7 @@ pub(in crate::syscall) fn seek<'a>(
                 return Err(ESPIPE);
             }
             OpenFileDescription::Eventfd { .. }
+            | OpenFileDescription::Timerfd { .. }
             | OpenFileDescription::Virtual { .. }
             | OpenFileDescription::VirtualFile { .. } => {
                 unreachable!()

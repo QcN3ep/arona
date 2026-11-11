@@ -297,12 +297,138 @@ event_read_child:
     ld.d $t0, $sp, 96
     li.d $t1, 7
     bne $t0, $t1, poll_failure
+    li.d $a0, 1
+    li.d $a1, 0x80800
+    invoke 85
+    bltz $a0, poll_failure
+    move $s0, $a0
+    event_io 63, 16
+    expect -11
+    st.d $zero, $sp, 192
+    st.d $zero, $sp, 200
+    st.d $zero, $sp, 208
+    li.d $t0, 10000000
+    st.d $t0, $sp, 216
+    move $a0, $s0
+    li.d $a1, 0
+    addi.d $a2, $sp, 192
+    li.d $a3, 0
+    invoke 86
+    expect 0
+    st.w $s0, $sp, 16
+    li.d $t0, 1
+    st.h $t0, $sp, 20
+    addi.d $a0, $sp, 16
+    li.d $a1, 1
+    li.d $a2, 0
+    li.d $a3, 0
+    li.d $a4, 8
+    invoke 73
+    expect 1
+    move $a0, $s0
+    li.d $a1, 0
+    li.d $a2, 8
+    invoke 63
+    expect -14
+    event_io 63, 16
+    expect 8
+    ld.d $t0, $sp, 96
+    li.d $t1, 1
+    bne $t0, $t1, poll_failure
+    event_io 63
+    expect -11
+    li.d $t0, 1000000000
+    st.d $t0, $sp, 216
+    move $a0, $s0
+    li.d $a1, 0
+    addi.d $a2, $sp, 192
+    li.d $a3, 0
+    invoke 86
+    expect -22
+    li.d $t0, 2000000
+    st.d $t0, $sp, 200
+    st.d $t0, $sp, 216
+    move $a0, $s0
+    li.d $a1, 0
+    addi.d $a2, $sp, 192
+    li.d $a3, 0
+    invoke 86
+    expect 0
+    event_delay
+    event_delay
+    event_io 63
+    expect 8
+    ld.d $t0, $sp, 96
+    beq $t0, $zero, poll_failure
+    move $a0, $s0
+    addi.d $a1, $sp, 224
+    invoke 87
+    expect 0
+    ld.d $t0, $sp, 232
+    li.d $t1, 2000000
+    bne $t0, $t1, poll_failure
+    ld.d $t0, $sp, 248
+    beq $t0, $zero, poll_failure
+    bltu $t1, $t0, poll_failure
+    st.d $zero, $sp, 192
+    st.d $zero, $sp, 200
+    st.d $zero, $sp, 208
+    st.d $zero, $sp, 216
+    move $a0, $s0
+    li.d $a1, 0
+    addi.d $a2, $sp, 192
+    li.d $a3, 0
+    invoke 86
+    expect 0
+    move $a0, $s0
+    invoke 57
+    expect 0
+    li.d $a0, 1
+    li.d $a1, 0
+    invoke 85
+    bltz $a0, poll_failure
+    move $s0, $a0
+    li.d $t0, 1
+    st.d $t0, $sp, 208
+    move $a0, $s0
+    li.d $a1, 0
+    addi.d $a2, $sp, 192
+    li.d $a3, 0
+    invoke 86
+    expect 0
+    event_fork timer_rearm
+    event_io 63
+    expect 8
+    event_reap
+    move $a0, $s0
+    invoke 57
+    expect 0
     li.d $a0, 42
     invoke 94
 poll_failure:
     addi.d $a0, $s8, 100
     invoke 94
     b poll_failure
+timer_rearm:
+    event_delay
+    st.d $zero, $sp, 208
+    move $a0, $s0
+    li.d $a1, 0
+    addi.d $a2, $sp, 192
+    li.d $a3, 0
+    invoke 86
+    expect 0
+    event_delay
+    li.d $t0, 2000000
+    st.d $t0, $sp, 216
+    move $a0, $s0
+    li.d $a1, 0
+    addi.d $a2, $sp, 192
+    li.d $a3, 0
+    invoke 86
+    expect 0
+    li.d $a0, 42
+    invoke 94
 .section .rodata
 poll_payload: .ascii "x"
 .section .note.GNU-stack,"",@progbits

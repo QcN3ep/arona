@@ -7,6 +7,7 @@ pub(crate) mod terminal;
 
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::cell::Cell;
+use runtime::{Event, Handle, Timer};
 
 pub(crate) const O_APPEND: u32 = 0x400;
 pub(crate) const O_NONBLOCK: u32 = 0x800;
@@ -49,6 +50,10 @@ pub(crate) enum OpenFileDescription<'a> {
         offset: Cell<usize>,
         busy: Cell<bool>,
     },
+    Timerfd {
+        state: TimerState,
+        flags: Cell<u32>,
+    },
     Eventfd {
         counter: Cell<u64>,
         semaphore: bool,
@@ -64,6 +69,13 @@ pub(crate) enum OpenFileDescription<'a> {
         flags: Cell<u32>,
         offset: Cell<usize>,
     },
+}
+
+pub(crate) struct TimerState {
+    pub next: Cell<Option<u64>>,
+    pub interval: Cell<u64>,
+    pub event: Handle<Event>,
+    pub timer: Handle<Timer>,
 }
 
 pub(crate) struct FilePosition<'a> {
@@ -153,6 +165,16 @@ impl<'a> Descriptor<'a> {
             close_on_exec,
         }
     }
+    pub fn timerfd(state: TimerState, flags: u32, close_on_exec: bool) -> Self {
+        Self {
+            description: Rc::new(OpenFileDescription::Timerfd {
+                state,
+                flags: Cell::new(2 | flags),
+            }),
+            close_on_exec,
+        }
+    }
+
     pub fn eventfd(initial: u32, flags: u32, close_on_exec: bool) -> Self {
         Self {
             description: Rc::new(OpenFileDescription::Eventfd {
@@ -212,6 +234,7 @@ impl<'a> OpenFileDescription<'a> {
             | Self::Directory { flags, .. }
             | Self::Regular { flags, .. }
             | Self::Eventfd { flags, .. }
+            | Self::Timerfd { flags, .. }
             | Self::Virtual { flags, .. }
             | Self::VirtualFile { flags, .. } => flags.get(),
         }
@@ -223,6 +246,7 @@ impl<'a> OpenFileDescription<'a> {
         | Self::Directory { flags, .. }
         | Self::Regular { flags, .. }
         | Self::Eventfd { flags, .. }
+        | Self::Timerfd { flags, .. }
         | Self::Virtual { flags, .. }
         | Self::VirtualFile { flags, .. }) = self;
         flags.set((flags.get() & !(O_APPEND | O_NONBLOCK)) | (value & (O_APPEND | O_NONBLOCK)));
