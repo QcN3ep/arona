@@ -82,7 +82,10 @@ pub(in crate::syscall) fn openat<'a>(
                 return open_virtual(process, flags, Virtual::Zero)
                     .map(|fd| Outcome::Complete(Ok(fd)));
             }
-
+            b"/dev/random" | b"/dev/urandom" => {
+                return open_virtual(process, flags, Virtual::Random)
+                    .map(|fd| Outcome::Complete(Ok(fd)));
+            }
             _ => {}
         }
         let lookup = super::path::Lookup::from_name(process, directory, name)?;

@@ -4,7 +4,7 @@
 
 use super::super::{
     Outcome,
-    abi::{EBADF, EFBIG, EINVAL, EISDIR, EOVERFLOW, ESPIPE, SyscallResult},
+    abi::{EBADF, EFBIG, EINVAL, EIO, EISDIR, EOPNOTSUPP, EOVERFLOW, ESPIPE, SyscallResult},
 };
 use super::{Buffer, Pending, buffer::IoVectors, completion, fd, filesystem_error, outcome};
 use crate::{
@@ -53,6 +53,7 @@ pub(in crate::syscall) fn read<'a>(
     fd_raw: usize,
     buffer: Buffer,
     offset: Option<usize>,
+    services: &crate::Services<'_>,
 ) -> Outcome<'a> {
     if process
         .files
@@ -91,7 +92,7 @@ pub(in crate::syscall) fn read<'a>(
             )
         })
     {
-        return virtual_read(process, fd_raw, buffer, offset);
+        return virtual_read(process, fd_raw, buffer, offset, services);
     }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
@@ -125,6 +126,7 @@ fn virtual_read<'a>(
     raw: usize,
     buffer: Buffer,
     _offset: Option<usize>,
+    services: &crate::Services<'_>,
 ) -> Outcome<'a> {
     let result = (|| {
         let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
@@ -140,6 +142,16 @@ fn virtual_read<'a>(
             crate::file::Virtual::Zero => {
                 let mut zeros = alloc::vec![0; buffers.length()];
                 buffers.scatter(process, &mut zeros)?
+            }
+            crate::file::Virtual::Random => {
+                // Entropy reads complete synchronously with a one-second deadline.
+                let entropy = services.entropy.as_ref().ok_or(EOPNOTSUPP)?;
+                let mut bytes = alloc::vec![0; buffers.length()];
+                let deadline = runtime::thread::now_ns()
+                    .map_err(|_| EIO)?
+                    .saturating_add(1_000_000_000);
+                entropy.fill(&mut bytes, deadline).map_err(|_| EIO)?;
+                buffers.scatter(process, &mut bytes)?
             }
         })
     })();
