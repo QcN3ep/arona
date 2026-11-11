@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 //! ext4 update staging and write failure state.
 

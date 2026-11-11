@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 // TODO: Integrate compatibility verification for real Linux applications such as libc and coreutils.
 // TODO: Integrate performance benchmarks for IPC, scheduling, file I/O, and networking, along with Linux comparisons.

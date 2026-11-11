@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use crate::{BorrowedHandle, Error, FrameAllocation, Handle, Rights, Task};
 pub use abi::memory::Permissions;

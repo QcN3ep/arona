@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 mod address_space;
 mod direct_map;

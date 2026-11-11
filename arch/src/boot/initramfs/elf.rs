@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 //! Validate the initial static ELF and provide loadable segments.
 

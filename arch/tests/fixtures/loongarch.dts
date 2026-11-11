@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MPL-2.0
+// SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 // REFERENCE: https://gitlab.com/qemu-project/qemu/-/blob/v11.1.2/hw/loongarch/virt.c
 

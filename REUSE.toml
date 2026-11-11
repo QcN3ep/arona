@@ -4,7 +4,7 @@ version = 1
 path = ["**.md", "**.txt", "**.json", "**.yml", "**.yaml", "**.toml", "**.dtb", ".gitignore", ".gitattributes"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 The Arona Authors"
-SPDX-License-Identifier = "MPL-2.0"
+SPDX-License-Identifier = "MPL-2.0 OR GPL-3.0-or-later"
 
 [[annotations]]
 path = ["book/mdbook-admonish.css"]

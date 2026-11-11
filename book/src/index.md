@@ -23,5 +23,5 @@ See the [Maintenance Guide](contributing/book.md) for build instructions and out
 
 ## License
 
-The main code of this project and this book use the Mozilla Public License 2.0.
+The project, including this book, is licensed under the Mozilla Public License 2.0 or the GNU General Public License version 3.0 or later, at your option.
 Licenses for third-party files are recorded in the repository's `REUSE.toml` and `LICENSES/`.
