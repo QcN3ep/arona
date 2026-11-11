@@ -57,15 +57,18 @@ Scheduling policy, thread sets, and resource reclamation are maintained by the c
 Only after the current context has left its own stack does code on the scheduling stack reclaim that thread's context and kernel stack.
 The Thread control object remains available for other threads to query and wait for the exit result.
 
-## FIFO Scheduling and Preemption Requests
+## Scheduling and Preemption Requests
 
 The ready queue uses FIFO: enqueued threads are appended to the tail, and dispatch takes from the head.
+Each user thread receives a 10 ms time slice when dispatched.
+When the slice expires, the scheduler moves the thread to the tail before returning to user mode, so other ready threads can run even if it does not yield.
 The scheduler handles four kinds of switch-out reasons: yield, block, exit, and preemption.
 After each dispatch, it returns to the scheduling stack to process state commits and resource reclamation, and gives pending interrupts a chance to enter the handling path.
 
 The preemption mechanism provides `request_preemption` and `set_preemption_deadline`.
 The former requests rescheduling at the user return boundary; the latter registers a one-shot absolute time event and sets a preemption request when it expires.
 A thread's one-shot preemption deadline is cleared when it switches out.
+Explicit deadlines and automatic time slices are tracked separately, and the hardware timer uses the earliest pending deadline.
 Kernel execution leaves the current context at controlled switching points.
 
 When there is no ready thread, the scheduler uses the CPU's wait-for-interrupt capability to enter the idle state.

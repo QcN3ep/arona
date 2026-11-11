@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! FIFO scheduler
+//! FIFO ready queue with user-thread time slices.
 
 // TODO: A better scheduling algorithm is needed
-// TODO: Set a time slice when dispatching a Thread and reschedule when it expires.
 // TODO: Support priorities, CPU affinity, and multiprocessor scheduling.
 
 use spin::{Mutex, Once};
@@ -31,9 +30,12 @@ static STATE: Mutex<Scheduler> = Mutex::new(Scheduler {
     request: None,
     preemption_requested: false,
     preemption_deadline: None,
+    quantum_deadline: None,
     timer_target: None,
     deadlines: DeadlineQueue::new(),
 });
+
+const TIME_SLICE_NS: u64 = 10_000_000;
 
 pub(super) struct Scheduler {
     pub ready: ReadyQueue,
@@ -43,6 +45,7 @@ pub(super) struct Scheduler {
     request: Option<SuspendReason>,
     preemption_requested: bool,
     preemption_deadline: Option<u64>,
+    quantum_deadline: Option<u64>,
     timer_target: Option<u64>,
     pub deadlines: DeadlineQueue,
 }
@@ -217,6 +220,13 @@ pub(crate) fn timer_interrupt() -> Result<(), ThreadError> {
         scheduler.preemption_deadline = None;
         scheduler.preemption_requested = true;
     }
+    if scheduler
+        .quantum_deadline
+        .is_some_and(|deadline| deadline <= now)
+    {
+        scheduler.quantum_deadline = None;
+        scheduler.preemption_requested = true;
+    }
     scheduler.arm_timer()
 }
 
@@ -246,6 +256,22 @@ fn dispatch() -> Result<bool, ThreadError> {
         let Some(thread) = scheduler.ready.pop() else {
             return Ok(false);
         };
+        scheduler.quantum_deadline = if matches!(thread.0.kind, ThreadKind::User(_)) {
+            match hardware::timer().now_ns() {
+                Ok(now) => Some(now.saturating_add(TIME_SLICE_NS)),
+                Err(error) => {
+                    scheduler.ready.push_front(thread);
+                    return Err(error.into());
+                }
+            }
+        } else {
+            None
+        };
+        if let Err(error) = scheduler.arm_timer() {
+            scheduler.quantum_deadline = None;
+            scheduler.ready.push_front(thread);
+            return Err(error);
+        }
         let (resources, previous) = {
             let mut data = thread.0.data.lock();
             let previous = data.state;
@@ -286,6 +312,8 @@ fn dispatch() -> Result<bool, ThreadError> {
         drop(data);
         scheduler.current = None;
         scheduler.ready.push_front(thread);
+        scheduler.quantum_deadline = None;
+        scheduler.arm_timer()?;
         return Err(error);
     }
     complete(thread, resources);
@@ -301,6 +329,7 @@ fn complete(thread: Thread, resources: ThreadResources) {
     scheduler.current = None;
     scheduler.preemption_requested = false;
     scheduler.preemption_deadline = None;
+    scheduler.quantum_deadline = None;
     let mut data = thread.0.data.lock();
     if let Some(start) = data.dispatched_ns.take()
         && let Ok(now) = hardware::timer().now_ns()
@@ -450,6 +479,10 @@ impl Scheduler {
         let target = match (self.deadlines.next_deadline(), self.preemption_deadline) {
             (Some(wait), Some(preemption)) => Some(wait.min(preemption)),
             (wait, preemption) => wait.or(preemption),
+        };
+        let target = match (target, self.quantum_deadline) {
+            (Some(wait), Some(quantum)) => Some(wait.min(quantum)),
+            (wait, quantum) => wait.or(quantum),
         };
         let target = match (target, crate::ipc::next_timer_deadline()) {
             (Some(thread), Some(ipc)) => Some(thread.min(ipc)),
