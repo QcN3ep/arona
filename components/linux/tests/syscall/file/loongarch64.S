@@ -466,6 +466,31 @@ files:
     expect 0
     invoke 23
     expect 3
+    li.d $a0, 1
+    li.d $a1, 0x5401
+    move $a2, $sp
+    invoke 29
+    expect 0
+    li.d $a0, 1
+    li.d $a1, 0x5403
+    move $a2, $sp
+    invoke 29
+    expect 0
+    li.d $a0, 1
+    li.d $a1, 0x5404
+    move $a2, $sp
+    invoke 29
+    expect 0
+    li.d $a0, 1
+    li.d $a1, 0x540b
+    li.d $a2, 2
+    invoke 29
+    expect 0
+    li.d $a0, 1
+    li.d $a1, 0x540b
+    li.d $a2, 1
+    invoke 29
+    expect 0
     li.d $t0, 8192
     add.d $sp, $sp, $t0
     ld.d $ra, $sp, 0

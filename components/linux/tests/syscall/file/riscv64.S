@@ -467,6 +467,31 @@ files:
     expect 0
     invoke 23
     expect 3
+    li a0, 1
+    li a1, 0x5401
+    mv a2, sp
+    invoke 29
+    expect 0
+    li a0, 1
+    li a1, 0x5403
+    mv a2, sp
+    invoke 29
+    expect 0
+    li a0, 1
+    li a1, 0x5404
+    mv a2, sp
+    invoke 29
+    expect 0
+    li a0, 1
+    li a1, 0x540b
+    li a2, 2
+    invoke 29
+    expect 0
+    li a0, 1
+    li a1, 0x540b
+    li a2, 1
+    invoke 29
+    expect 0
     li t0, 8192
     add sp, sp, t0
     ld ra, 0(sp)
