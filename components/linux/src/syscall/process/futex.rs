@@ -5,22 +5,29 @@
 // TODO: Complete the remaining futex operations.
 
 use crate::{
+    Services,
     process::{Process, futex::Registration},
     syscall::{
         Operation, Outcome,
-        abi::{EAGAIN, EFAULT, EINVAL, EOPNOTSUPP, ETIMEDOUT, Errno, SyscallResult},
+        abi::{EAGAIN, EFAULT, EINVAL, EIO, EOPNOTSUPP, ETIMEDOUT, Errno, SyscallResult},
         wait::{self, Deadline},
     },
 };
-use runtime::ipc::WaitItem;
+use runtime::{KernelError, ipc::WaitItem};
 
 pub(in crate::syscall) struct Pending {
     registration: Registration,
     deadline: Deadline,
+    clock: Option<devmgr::device::Pending<devmgr::rtc::Timestamp>>,
+    realtime: Option<u64>,
 }
 
 // REFERENCE: https://man7.org/linux/man-pages/man2/futex.2.html
-pub(super) fn start<'a>(process: &Process<'a>, args: [usize; 6]) -> Outcome<'a> {
+pub(super) fn start<'a>(
+    process: &Process<'a>,
+    services: &Services<'_>,
+    args: [usize; 6],
+) -> Outcome<'a> {
     let result = (|| {
         let [address, operation, value, timeout, second, bits] = args;
         let operation = operation as u32 as usize;
@@ -29,10 +36,6 @@ pub(super) fn start<'a>(process: &Process<'a>, args: [usize; 6]) -> Outcome<'a> 
         let command = operation & 127;
         let realtime = operation & 256 != 0;
         if operation & !511 != 0 || realtime && command != 9 {
-            return Err(EOPNOTSUPP);
-        }
-        if realtime {
-            // TODO: Integrate CLOCK_REALTIME absolute futex timeouts.
             return Err(EOPNOTSUPP);
         }
         let (key, frames) = process
@@ -47,18 +50,17 @@ pub(super) fn start<'a>(process: &Process<'a>, args: [usize; 6]) -> Outcome<'a> 
                 if read(process, address)? != value as u32 {
                     return Err(EAGAIN);
                 }
-                let mut duration = wait::duration(process, timeout)?;
-                if command == 9 {
-                    duration = {
-                        let now = wait::now()?;
-                        duration.map(|absolute| absolute.saturating_sub(now))
-                    };
-                }
-                let deadline = Deadline::new(process.supervisor, duration)?;
+                let Wait {
+                    deadline,
+                    clock,
+                    realtime: realtime_deadline,
+                } = wait_deadline(process, services, command, timeout, realtime)?;
                 let registration = process.namespace.futexes.register(key, mask, frames);
                 Ok(Outcome::Pending(Operation::Futex(Pending {
                     registration,
                     deadline,
+                    clock,
+                    realtime: realtime_deadline,
                 })))
             }
             1 | 10 => {
@@ -101,6 +103,42 @@ pub(super) fn start<'a>(process: &Process<'a>, args: [usize; 6]) -> Outcome<'a> 
     result.unwrap_or_else(|error| Outcome::Complete(Err(error)))
 }
 
+struct Wait {
+    deadline: Deadline,
+    clock: Option<devmgr::device::Pending<devmgr::rtc::Timestamp>>,
+    realtime: Option<u64>,
+}
+
+fn wait_deadline(
+    process: &Process<'_>,
+    services: &Services<'_>,
+    command: usize,
+    timeout: usize,
+    realtime: bool,
+) -> Result<Wait, Errno> {
+    let mut duration = wait::duration(process, timeout)?;
+    let mut realtime_deadline = None;
+    let clock = if realtime {
+        let clock = services.clock.as_ref().ok_or(EOPNOTSUPP)?;
+        realtime_deadline = duration;
+        duration
+            .map(|_| clock.start_now().map_err(|_| EIO))
+            .transpose()?
+    } else {
+        if command == 9 {
+            let now = wait::now()?;
+            duration = duration.map(|absolute| absolute.saturating_sub(now));
+        }
+        None
+    };
+    let deadline = Deadline::new(process.supervisor, if realtime { None } else { duration })?;
+    Ok(Wait {
+        deadline,
+        clock,
+        realtime: realtime_deadline,
+    })
+}
+
 fn read(process: &Process<'_>, address: usize) -> Result<u32, Errno> {
     let mut bytes = [0; 4];
     process
@@ -113,17 +151,44 @@ fn read(process: &Process<'_>, address: usize) -> Result<u32, Errno> {
 impl Pending {
     pub fn restartable(&self) -> bool {
         // TODO: Preserve the absolute deadline of timed futex waits via restart_syscall.
-        self.deadline
-            .remaining()
-            .is_ok_and(|remaining| remaining.is_none())
+        self.clock.is_none()
+            && self
+                .deadline
+                .remaining()
+                .is_ok_and(|remaining| remaining.is_none())
     }
 
     pub fn waits<'a>(&'a self, items: &mut alloc::vec::Vec<WaitItem<'a>>) {
+        if let Some(clock) = &self.clock {
+            items.push(WaitItem::new(clock.call(), runtime::ipc::READABLE));
+        }
         self.deadline.waits(items);
     }
-    pub fn poll(&self) -> Option<SyscallResult> {
+
+    pub fn poll(&mut self, process: &Process<'_>) -> Option<SyscallResult> {
         if self.registration.ready() {
             return Some(Ok(0));
+        }
+        if let Some(request) = &mut self.clock {
+            let timestamp = match request.try_complete() {
+                Err(devmgr::Error::Runtime(runtime::Error::Kernel(KernelError::WouldBlock))) => {
+                    return None;
+                }
+                Err(_) => return Some(Err(EIO)),
+                Ok(timestamp) => timestamp,
+            };
+            let now =
+                i128::from(timestamp.seconds) * 1_000_000_000 + i128::from(timestamp.nanoseconds);
+            let remaining = (i128::from(self.realtime.unwrap_or(0)) - now).max(0);
+            self.clock = None;
+            if remaining == 0 {
+                return Some(Err(ETIMEDOUT));
+            }
+            let remaining = u64::try_from(remaining).unwrap_or(u64::MAX);
+            match Deadline::new(process.supervisor, Some(remaining)) {
+                Ok(deadline) => self.deadline = deadline,
+                Err(error) => return Some(Err(error)),
+            }
         }
         match self.deadline.expired() {
             Ok(true) => Some(Err(ETIMEDOUT)),

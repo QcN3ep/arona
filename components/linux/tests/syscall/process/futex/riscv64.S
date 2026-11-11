@@ -43,6 +43,31 @@ futex_basics:
     sd t0, 8(sp)
     invoke 98
     expect -110
+    li a0, 0
+    mv a1, sp
+    invoke 113
+    expect 0
+    ld t0, 8(sp)
+    li t1, 2000000
+    add t0, t0, t1
+    li t1, 1000000000
+    bltu t0, t1, 1f
+    sub t0, t0, t1
+    ld t1, 0(sp)
+    addi t1, t1, 1
+    sd t1, 0(sp)
+1:
+    sd t0, 8(sp)
+    li t0, 7
+    sw t0, 16(sp)
+    addi a0, sp, 16
+    li a1, 393
+    li a2, 7
+    mv a3, sp
+    li a4, 0
+    li a5, 1
+    invoke 98
+    expect -110
     addi a0, sp, 16
     li a1, 137
     li a3, 0

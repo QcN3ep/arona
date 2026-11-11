@@ -43,6 +43,31 @@ futex_basics:
     st.d $t0, $sp, 8
     invoke 98
     expect -110
+    li.d $a0, 0
+    move $a1, $sp
+    invoke 113
+    expect 0
+    ld.d $t0, $sp, 8
+    li.d $t1, 2000000
+    add.d $t0, $t0, $t1
+    li.d $t1, 1000000000
+    bltu $t0, $t1, 1f
+    sub.d $t0, $t0, $t1
+    ld.d $t1, $sp, 0
+    addi.d $t1, $t1, 1
+    st.d $t1, $sp, 0
+1:
+    st.d $t0, $sp, 8
+    li.d $t0, 7
+    st.w $t0, $sp, 16
+    addi.d $a0, $sp, 16
+    li.d $a1, 393
+    li.d $a2, 7
+    move $a3, $sp
+    li.d $a4, 0
+    li.d $a5, 1
+    invoke 98
+    expect -110
     addi.d $a0, $sp, 16
     li.d $a1, 137
     li.d $a3, 0
