@@ -21,6 +21,12 @@ pub(crate) struct Descriptor<'a> {
     pub close_on_exec: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum Virtual {
+    Null,
+    Zero,
+}
+
 pub(crate) enum OpenFileDescription<'a> {
     Pipe {
         end: pipe::PipeEnd,
@@ -41,6 +47,10 @@ pub(crate) enum OpenFileDescription<'a> {
         flags: Cell<u32>,
         offset: Cell<usize>,
         busy: Cell<bool>,
+    },
+    Virtual {
+        kind: Virtual,
+        flags: Cell<u32>,
     },
 }
 
@@ -131,6 +141,15 @@ impl<'a> Descriptor<'a> {
             close_on_exec,
         }
     }
+    pub fn virtual_file(kind: Virtual, flags: u32, close_on_exec: bool) -> Self {
+        Self {
+            description: Rc::new(OpenFileDescription::Virtual {
+                kind,
+                flags: Cell::new(flags),
+            }),
+            close_on_exec,
+        }
+    }
     pub fn regular(file: fs::File<'a>, flags: u32, close_on_exec: bool) -> Self {
         Self {
             description: Rc::new(OpenFileDescription::Regular {
@@ -157,7 +176,8 @@ impl<'a> OpenFileDescription<'a> {
             Self::Pipe { flags, .. }
             | Self::Terminal { flags, .. }
             | Self::Directory { flags, .. }
-            | Self::Regular { flags, .. } => flags.get(),
+            | Self::Regular { flags, .. }
+            | Self::Virtual { flags, .. } => flags.get(),
         }
     }
 
@@ -165,7 +185,8 @@ impl<'a> OpenFileDescription<'a> {
         let (Self::Pipe { flags, .. }
         | Self::Terminal { flags, .. }
         | Self::Directory { flags, .. }
-        | Self::Regular { flags, .. }) = self;
+        | Self::Regular { flags, .. }
+        | Self::Virtual { flags, .. }) = self;
         flags.set((flags.get() & !(O_APPEND | O_NONBLOCK)) | (value & (O_APPEND | O_NONBLOCK)));
     }
 

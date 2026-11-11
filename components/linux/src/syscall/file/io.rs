@@ -81,11 +81,24 @@ pub(in crate::syscall) fn read<'a>(
         }
         return super::terminal::read(process, index, fd_raw, buffer);
     }
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| {
+            matches!(
+                descriptor.description.as_ref(),
+                OpenFileDescription::Virtual { .. }
+            )
+        })
+    {
+        return virtual_read(process, fd_raw, buffer, offset);
+    }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         match descriptor.description.as_ref() {
             OpenFileDescription::Pipe { .. } => unreachable!(),
             OpenFileDescription::Terminal { .. } => unreachable!(),
+            OpenFileDescription::Virtual { .. } => unreachable!(),
             OpenFileDescription::Directory { .. } => return Err(EISDIR),
             OpenFileDescription::Regular { .. } => {
                 if descriptor.description.flags() & 3 == 1 {
@@ -105,6 +118,43 @@ pub(in crate::syscall) fn read<'a>(
         }))
     })();
     outcome(operation)
+}
+
+fn virtual_read<'a>(
+    process: &Process<'a>,
+    raw: usize,
+    buffer: Buffer,
+    _offset: Option<usize>,
+) -> Outcome<'a> {
+    let result = (|| {
+        let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
+        if descriptor.description.flags() & 3 == 1 {
+            return Err(EBADF);
+        }
+        let buffers = buffer.import(process)?;
+        let OpenFileDescription::Virtual { kind, .. } = descriptor.description.as_ref() else {
+            unreachable!()
+        };
+        Ok(match kind {
+            crate::file::Virtual::Null => 0,
+            crate::file::Virtual::Zero => {
+                let mut zeros = alloc::vec![0; buffers.length()];
+                buffers.scatter(process, &mut zeros)?
+            }
+        })
+    })();
+    Outcome::Complete(result)
+}
+
+fn virtual_write<'a>(process: &Process<'a>, raw: usize, buffer: Buffer) -> Outcome<'a> {
+    let result = (|| {
+        let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
+        if descriptor.description.flags() & 3 == 0 {
+            return Err(EBADF);
+        }
+        Ok(buffer.import(process)?.length())
+    })();
+    Outcome::Complete(result)
 }
 
 pub(in crate::syscall) fn write<'a>(
@@ -138,6 +188,18 @@ pub(in crate::syscall) fn write<'a>(
     {
         return super::pipe::start(process, fd_raw, buffer, offset, true);
     }
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| {
+            matches!(
+                descriptor.description.as_ref(),
+                OpenFileDescription::Virtual { .. }
+            )
+        })
+    {
+        return virtual_write(process, fd_raw, buffer);
+    }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         if descriptor.description.flags() & 3 == 0 {
@@ -154,6 +216,7 @@ pub(in crate::syscall) fn write<'a>(
         let description = Rc::clone(&descriptor.description);
         Ok(Some(match description.as_ref() {
             OpenFileDescription::Terminal { .. } => unreachable!(),
+            OpenFileDescription::Virtual { .. } => unreachable!(),
             OpenFileDescription::Regular { .. } => Pending::Write(Write {
                 description,
                 input,
@@ -199,7 +262,9 @@ pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome
         let request = match descriptor.description.as_ref() {
             OpenFileDescription::Regular { file, .. } => file.start_fsync(),
             OpenFileDescription::Directory { session, .. } => session.start_fsync(),
-            OpenFileDescription::Terminal { .. } | OpenFileDescription::Pipe { .. } => {
+            OpenFileDescription::Terminal { .. }
+            | OpenFileDescription::Pipe { .. }
+            | OpenFileDescription::Virtual { .. } => {
                 return Err(EINVAL);
             }
         }
@@ -218,12 +283,29 @@ pub(in crate::syscall) fn seek<'a>(
     offset: usize,
     whence: usize,
 ) -> Outcome<'a> {
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| {
+            matches!(
+                descriptor.description.as_ref(),
+                OpenFileDescription::Virtual { .. }
+            )
+        })
+    {
+        return Outcome::Complete(if whence as u32 > 2 {
+            Err(EINVAL)
+        } else {
+            Ok(0)
+        });
+    }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         match descriptor.description.as_ref() {
             OpenFileDescription::Terminal { .. } | OpenFileDescription::Pipe { .. } => {
                 return Err(ESPIPE);
             }
+            OpenFileDescription::Virtual { .. } => unreachable!(),
             OpenFileDescription::Directory { .. } if whence as u32 == 2 => return Err(EINVAL),
             OpenFileDescription::Directory { .. } => {}
             OpenFileDescription::Regular { .. } => {}

@@ -72,7 +72,6 @@ files:
     li a2, 0
     invoke 62
     expect 0
-
     mv a0, s0
     mv a1, sp
     li a2, 4
@@ -511,6 +510,75 @@ files:
     li a2, 0x200000
     invoke 56
     expect -95
+    li a0, -100
+    la a1, null_path
+    li a2, 2
+    invoke 56
+    bltz a0, file_failure
+    mv s0, a0
+    mv a0, s0
+    la a1, null_data
+    li a2, 3
+    invoke 64
+    expect 3
+    mv a0, s0
+    mv a1, sp
+    li a2, 4
+    invoke 63
+    expect 0
+    mv a0, s0
+    li a1, 37
+    li a2, 0
+    invoke 62
+    expect 0
+    mv a0, s0
+    li a1, -1
+    li a2, 1
+    invoke 62
+    expect 0
+    mv a0, s0
+    li a1, 0
+    li a2, 3
+    invoke 62
+    expect -22
+    mv a0, s0
+    mv a1, sp
+    li a2, 16
+    invoke 80
+    expect 0
+    lw t0, 16(sp)
+    li t1, 0x2000
+    and t0, t0, t1
+    beqz t0, file_failure
+    mv a0, s0
+    invoke 57
+    expect 0
+    li a0, -100
+    la a1, zero_path
+    li a2, 2
+    invoke 56
+    bltz a0, file_failure
+    mv s0, a0
+    mv a0, s0
+    mv a1, sp
+    li a2, 8
+    invoke 63
+    expect 8
+    ld t0, 0(sp)
+    bnez t0, file_failure
+    mv a0, s0
+    mv a1, sp
+    li a2, 5
+    invoke 64
+    expect 5
+    mv a0, s0
+    invoke 57
+    expect 0
+    li a0, -100
+    la a1, null_path
+    li a2, 0x10000
+    invoke 56
+    expect -20
     li t0, 8192
     add sp, sp, t0
     ld ra, 0(sp)
@@ -523,6 +591,9 @@ file_failure:
 
 .section .rodata
  data_path: .asciz "/etc/linux-data"
+ null_path: .asciz "/dev/null"
+ zero_path: .asciz "/dev/zero"
+ null_data: .ascii "abc"
  relative_path: .asciz "etc/linux-data"
  trailing_path: .asciz "/etc/linux-data/"
  root_path: .asciz "/bin"

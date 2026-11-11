@@ -161,6 +161,7 @@ fn readiness(description: &OpenFileDescription<'_>) -> u16 {
                 | if terminal.readable() { INPUT } else { 0 }
                 | if terminal.failed() { ERROR | HANGUP } else { 0 }
         }
+        OpenFileDescription::Virtual { .. } => INPUT | OUTPUT,
     }
 }
 

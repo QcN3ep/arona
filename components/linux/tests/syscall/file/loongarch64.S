@@ -510,6 +510,75 @@ files:
     li.d $a2, 0x200000
     invoke 56
     expect -95
+    li.d $a0, -100
+    la.pcrel $a1, null_path
+    li.d $a2, 2
+    invoke 56
+    bltz $a0, file_failure
+    move $s0, $a0
+    move $a0, $s0
+    la.pcrel $a1, null_data
+    li.d $a2, 3
+    invoke 64
+    expect 3
+    move $a0, $s0
+    move $a1, $sp
+    li.d $a2, 4
+    invoke 63
+    expect 0
+    move $a0, $s0
+    li.d $a1, 37
+    li.d $a2, 0
+    invoke 62
+    expect 0
+    move $a0, $s0
+    li.d $a1, -1
+    li.d $a2, 1
+    invoke 62
+    expect 0
+    move $a0, $s0
+    li.d $a1, 0
+    li.d $a2, 3
+    invoke 62
+    expect -22
+    move $a0, $s0
+    move $a1, $sp
+    li.d $a2, 16
+    invoke 80
+    expect 0
+    ld.w $t0, $sp, 16
+    li.d $t1, 0x2000
+    and $t0, $t0, $t1
+    beqz $t0, file_failure
+    move $a0, $s0
+    invoke 57
+    expect 0
+    li.d $a0, -100
+    la.pcrel $a1, zero_path
+    li.d $a2, 2
+    invoke 56
+    bltz $a0, file_failure
+    move $s0, $a0
+    move $a0, $s0
+    move $a1, $sp
+    li.d $a2, 8
+    invoke 63
+    expect 8
+    ld.d $t0, $sp, 0
+    bnez $t0, file_failure
+    move $a0, $s0
+    move $a1, $sp
+    li.d $a2, 5
+    invoke 64
+    expect 5
+    move $a0, $s0
+    invoke 57
+    expect 0
+    li.d $a0, -100
+    la.pcrel $a1, null_path
+    li.d $a2, 0x10000
+    invoke 56
+    expect -20
     li.d $t0, 8192
     add.d $sp, $sp, $t0
     ld.d $ra, $sp, 0
@@ -522,6 +591,9 @@ file_failure:
 
 .section .rodata
  data_path: .asciz "/etc/linux-data"
+ null_path: .asciz "/dev/null"
+ zero_path: .asciz "/dev/zero"
+ null_data: .ascii "abc"
  relative_path: .asciz "etc/linux-data"
  trailing_path: .asciz "/etc/linux-data/"
  root_path: .asciz "/bin"

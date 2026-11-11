@@ -62,6 +62,21 @@ fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) ->
                 },
             ));
         }
+        OpenFileDescription::Virtual { kind, .. } => {
+            return Outcome::Complete(buffer.write(
+                process,
+                fs::Metadata {
+                    device: 0x0103,
+                    inode: match kind {
+                        crate::file::Virtual::Null => 3,
+                        crate::file::Virtual::Zero => 5,
+                    },
+                    mode: 0o020666,
+                    links: 1,
+                    ..fs::Metadata::default()
+                },
+            ));
+        }
     };
     outcome(
         request

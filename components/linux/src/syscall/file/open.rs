@@ -16,7 +16,7 @@ use super::super::{
 use super::{O_CLOEXEC, Pending, completion, filesystem_error, outcome};
 use crate::{
     elf::PAGE_SIZE,
-    file::{Descriptor, O_APPEND, O_DSYNC, O_NONBLOCK, OpenFileDescription},
+    file::{Descriptor, O_APPEND, O_DSYNC, O_NONBLOCK, OpenFileDescription, Virtual},
     process::Process,
 };
 
@@ -73,6 +73,18 @@ pub(in crate::syscall) fn openat<'a>(
         if name == b"/dev/tty" {
             return open_terminal(process, flags).map(|fd| Outcome::Complete(Ok(fd)));
         }
+        match name.as_slice() {
+            b"/dev/null" => {
+                return open_virtual(process, flags, Virtual::Null)
+                    .map(|fd| Outcome::Complete(Ok(fd)));
+            }
+            b"/dev/zero" => {
+                return open_virtual(process, flags, Virtual::Zero)
+                    .map(|fd| Outcome::Complete(Ok(fd)));
+            }
+
+            _ => {}
+        }
         let lookup = super::path::Lookup::from_name(process, directory, name)?;
         let request = files
             .start_open_at(
@@ -96,6 +108,19 @@ pub(in crate::syscall) fn openat<'a>(
         }))))
     })();
     operation.unwrap_or_else(|error| Outcome::Complete(Err(error)))
+}
+
+fn open_virtual(process: &mut Process<'_>, flags: u32, kind: Virtual) -> Result<usize, Errno> {
+    if flags & O_DIRECTORY != 0 {
+        return Err(ENOTDIR);
+    }
+    process
+        .files
+        .insert(
+            Descriptor::virtual_file(kind, flags & (3 | O_NONBLOCK), flags & O_CLOEXEC != 0),
+            0,
+        )
+        .ok_or(EMFILE)
 }
 
 fn open_terminal(process: &mut Process<'_>, flags: u32) -> Result<usize, Errno> {
