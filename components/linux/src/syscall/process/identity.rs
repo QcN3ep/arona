@@ -16,7 +16,7 @@ pub(super) fn dispatch(
     number: usize,
     args: [usize; 6],
 ) -> Option<SyscallResult> {
-    Some(match number {
+    let result = match number {
         abi::GETUID => Ok(process.credentials.uid as usize),
         abi::GETEUID => Ok(process.credentials.euid as usize),
         abi::GETGID => Ok(process.credentials.gid as usize),
@@ -91,7 +91,17 @@ pub(super) fn dispatch(
         }
         abi::SETSID => process.namespace.new_session(process.pid),
         _ => return None,
-    })
+    };
+    if result.is_ok()
+        && let Some(record) = process
+            .namespace
+            .processes
+            .borrow_mut()
+            .get_mut(&process.pid)
+    {
+        record.uid = process.credentials.uid;
+    }
+    Some(result)
 }
 
 fn pid(process: &Process<'_>, raw: usize) -> usize {

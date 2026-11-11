@@ -58,6 +58,7 @@ fn send(process: &Process<'_>, call: usize, args: [usize; 6]) -> SyscallResult {
         number: number as u8,
         code: if call == abi::KILL { 0 } else { -6 },
         sender: process.pid,
+        uid: process.credentials.uid,
         address: 0,
         value: 0,
     };

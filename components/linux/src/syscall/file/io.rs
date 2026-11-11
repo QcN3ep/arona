@@ -58,94 +58,36 @@ pub(in crate::syscall) fn read<'a>(
     if super::virtual_file::is_virtual(process, fd_raw) {
         return Outcome::Complete(super::virtual_file::read(process, fd_raw, buffer, offset));
     }
-    if process
-        .files
-        .get(fd_raw as i32 as usize)
-        .is_some_and(|descriptor| {
-            matches!(
-                descriptor.description.as_ref(),
-                OpenFileDescription::Timerfd { .. }
-            )
-        })
-    {
-        return if offset.is_some() {
-            Outcome::Complete(Err(ESPIPE))
-        } else {
-            super::timerfd::read(process, fd_raw, buffer)
-        };
-    }
-    if process
-        .files
-        .get(fd_raw as i32 as usize)
-        .is_some_and(|descriptor| {
-            matches!(
-                descriptor.description.as_ref(),
-                OpenFileDescription::Pipe { .. }
-            )
-        })
-    {
-        return super::pipe::start(process, fd_raw, buffer, offset, false);
-    }
-    if process
-        .files
-        .get(fd_raw as i32 as usize)
-        .is_some_and(|descriptor| {
-            matches!(
-                descriptor.description.as_ref(),
-                OpenFileDescription::Terminal { .. }
-            )
-        })
-    {
-        if offset.is_some() {
-            return Outcome::Complete(Err(ESPIPE));
+    let Some(descriptor) = process.files.get(fd_raw as i32 as usize) else {
+        return Outcome::Complete(Err(EBADF));
+    };
+    match descriptor.description.as_ref() {
+        OpenFileDescription::Pipe { .. } => {
+            return super::pipe::start(process, fd_raw, buffer, offset, false);
         }
-        return super::terminal::read(process, index, fd_raw, buffer);
-    }
-    if process
-        .files
-        .get(fd_raw as i32 as usize)
-        .is_some_and(|descriptor| {
-            matches!(
-                descriptor.description.as_ref(),
-                OpenFileDescription::Virtual { .. }
-            )
-        })
-    {
-        return virtual_read(process, fd_raw, buffer, offset, services);
-    }
-    if process
-        .files
-        .get(fd_raw as i32 as usize)
-        .is_some_and(|descriptor| {
-            matches!(
-                descriptor.description.as_ref(),
-                OpenFileDescription::Eventfd { .. }
-            )
-        })
-    {
-        return if offset.is_some() {
-            Outcome::Complete(Err(ESPIPE))
-        } else {
-            super::eventfd::read(process, fd_raw, buffer)
-        };
+        OpenFileDescription::Virtual { .. } => {
+            return virtual_read(process, fd_raw, buffer, offset, services);
+        }
+        OpenFileDescription::Directory { .. } => return Outcome::Complete(Err(EISDIR)),
+        OpenFileDescription::Regular { .. } => {}
+        _ if offset.is_some() => return Outcome::Complete(Err(ESPIPE)),
+        OpenFileDescription::Terminal { .. } => {
+            return super::terminal::read(process, index, fd_raw, buffer);
+        }
+        OpenFileDescription::Eventfd { .. } => {
+            return super::eventfd::read(process, fd_raw, buffer);
+        }
+        OpenFileDescription::Timerfd { .. } => {
+            return super::timerfd::read(process, fd_raw, buffer);
+        }
+        OpenFileDescription::Signalfd { .. } => {
+            return super::signalfd::read(process, fd_raw, buffer);
+        }
+        OpenFileDescription::VirtualFile { .. } => unreachable!(),
     }
     let operation = (|| {
-        let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
-        match descriptor.description.as_ref() {
-            OpenFileDescription::Pipe { .. } => unreachable!(),
-            OpenFileDescription::Terminal { .. } => unreachable!(),
-            OpenFileDescription::Eventfd { .. }
-            | OpenFileDescription::Timerfd { .. }
-            | OpenFileDescription::Virtual { .. }
-            | OpenFileDescription::VirtualFile { .. } => {
-                unreachable!()
-            }
-            OpenFileDescription::Directory { .. } => return Err(EISDIR),
-            OpenFileDescription::Regular { .. } => {
-                if descriptor.description.flags() & 3 == 1 {
-                    return Err(EBADF);
-                }
-            }
+        if descriptor.description.flags() & 3 == 1 {
+            return Err(EBADF);
         }
         if offset.is_some_and(|offset| offset > i64::MAX as usize) {
             return Err(EINVAL);
@@ -219,72 +161,32 @@ pub(in crate::syscall) fn write<'a>(
     if super::virtual_file::is_virtual(process, fd_raw) {
         return Outcome::Complete(super::virtual_file::write(process, fd_raw));
     }
-    if process
-        .files
-        .get(fd_raw as i32 as usize)
-        .is_some_and(|descriptor| {
-            matches!(
-                descriptor.description.as_ref(),
-                OpenFileDescription::Terminal { .. }
-            )
-        })
-    {
-        return super::terminal::write_output(process, index, fd_raw, buffer, offset);
-    }
-    if process
-        .files
-        .get(fd_raw as i32 as usize)
-        .is_some_and(|descriptor| {
-            matches!(
-                descriptor.description.as_ref(),
-                OpenFileDescription::Pipe { .. }
-            )
-        })
-    {
-        return super::pipe::start(process, fd_raw, buffer, offset, true);
-    }
-    if process
-        .files
-        .get(fd_raw as i32 as usize)
-        .is_some_and(|descriptor| {
-            matches!(
-                descriptor.description.as_ref(),
-                OpenFileDescription::Virtual { .. }
-            )
-        })
-    {
-        return virtual_write(process, fd_raw, buffer);
-    }
-    if process
-        .files
-        .get(fd_raw as i32 as usize)
-        .is_some_and(|descriptor| {
-            matches!(
-                descriptor.description.as_ref(),
-                OpenFileDescription::Eventfd { .. }
-            )
-        })
-    {
-        return if offset.is_some() {
-            Outcome::Complete(Err(ESPIPE))
-        } else {
-            super::eventfd::write(process, fd_raw, buffer)
-        };
-    }
-    if process
-        .files
-        .get(fd_raw as i32 as usize)
-        .is_some_and(|descriptor| {
-            matches!(
-                descriptor.description.as_ref(),
-                OpenFileDescription::Timerfd { .. }
-            )
-        })
-    {
-        return Outcome::Complete(Err(if offset.is_some() { ESPIPE } else { EINVAL }));
+    let Some(descriptor) = process.files.get(fd_raw as i32 as usize) else {
+        return Outcome::Complete(Err(EBADF));
+    };
+    match descriptor.description.as_ref() {
+        OpenFileDescription::Terminal { .. } => {
+            return super::terminal::write_output(process, index, fd_raw, buffer, offset);
+        }
+        OpenFileDescription::Pipe { .. } => {
+            return super::pipe::start(process, fd_raw, buffer, offset, true);
+        }
+        OpenFileDescription::Virtual { .. } => return virtual_write(process, fd_raw, buffer),
+        OpenFileDescription::Eventfd { .. } => {
+            return if offset.is_some() {
+                Outcome::Complete(Err(ESPIPE))
+            } else {
+                super::eventfd::write(process, fd_raw, buffer)
+            };
+        }
+        OpenFileDescription::Timerfd { .. } | OpenFileDescription::Signalfd { .. } => {
+            return Outcome::Complete(Err(if offset.is_some() { ESPIPE } else { EINVAL }));
+        }
+        OpenFileDescription::Directory { .. } => return Outcome::Complete(Err(EBADF)),
+        OpenFileDescription::Regular { .. } => {}
+        OpenFileDescription::VirtualFile { .. } => unreachable!(),
     }
     let operation = (|| {
-        let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         if descriptor.description.flags() & 3 == 0 {
             return Err(EBADF);
         }
@@ -296,25 +198,13 @@ pub(in crate::syscall) fn write<'a>(
         if input.is_empty() {
             return Ok(None);
         }
-        let description = Rc::clone(&descriptor.description);
-        Ok(Some(match description.as_ref() {
-            OpenFileDescription::Terminal { .. } => unreachable!(),
-            OpenFileDescription::Eventfd { .. }
-            | OpenFileDescription::Timerfd { .. }
-            | OpenFileDescription::Virtual { .. }
-            | OpenFileDescription::VirtualFile { .. } => {
-                unreachable!()
-            }
-            OpenFileDescription::Regular { .. } => Pending::Write(Write {
-                description,
-                input,
-                offset,
-                position: None,
-                request: None,
-            }),
-            OpenFileDescription::Pipe { .. } => unreachable!(),
-            OpenFileDescription::Directory { .. } => return Err(EBADF),
-        }))
+        Ok(Some(Pending::Write(Write {
+            description: Rc::clone(&descriptor.description),
+            input,
+            offset,
+            position: None,
+            request: None,
+        })))
     })();
     match operation {
         Ok(Some(operation)) => Outcome::Pending(super::super::Operation::File(operation)),
@@ -354,6 +244,7 @@ pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome
             | OpenFileDescription::Pipe { .. }
             | OpenFileDescription::Eventfd { .. }
             | OpenFileDescription::Timerfd { .. }
+            | OpenFileDescription::Signalfd { .. }
             | OpenFileDescription::Virtual { .. }
             | OpenFileDescription::VirtualFile { .. } => {
                 return Err(EINVAL);
@@ -413,6 +304,7 @@ pub(in crate::syscall) fn seek<'a>(
             }
             OpenFileDescription::Eventfd { .. }
             | OpenFileDescription::Timerfd { .. }
+            | OpenFileDescription::Signalfd { .. }
             | OpenFileDescription::Virtual { .. }
             | OpenFileDescription::VirtualFile { .. } => {
                 unreachable!()

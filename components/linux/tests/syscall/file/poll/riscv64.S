@@ -404,6 +404,85 @@ event_read_child:
     mv a0, s0
     invoke 57
     expect 0
+    li t0, 0xa00
+    sd t0, 192(sp)
+    li a0, 0
+    addi a1, sp, 192
+    li a2, 0
+    li a3, 8
+    invoke 135
+    expect 0
+    li a0, -1
+    addi a1, sp, 192
+    li a2, 8
+    li a3, 0x80800
+    invoke 74
+    bltz a0, poll_failure
+    mv s0, a0
+    mv a0, s0
+    addi a1, sp, 256
+    li a2, 128
+    invoke 63
+    expect -11
+    invoke 172
+    mv s2, a0
+    invoke 178
+    mv s3, a0
+    li a0, 123
+    invoke 146
+    expect 0
+    mv a0, s3
+    li a1, 10
+    invoke 130
+    expect 0
+    mv a0, s2
+    li a1, 12
+    invoke 129
+    expect 0
+    sw s0, 16(sp)
+    li t0, 1
+    sh t0, 20(sp)
+    sd zero, 64(sp)
+    sd zero, 72(sp)
+    addi a0, sp, 16
+    li a1, 1
+    addi a2, sp, 64
+    li a3, 0
+    li a4, 8
+    invoke 73
+    expect 1
+    mv a0, s0
+    li a1, 0
+    li a2, 128
+    invoke 63
+    expect -14
+    mv a0, s0
+    addi a1, sp, 256
+    li a2, 256
+    invoke 63
+    expect 256
+    lw t0, 256(sp)
+    li t1, 10
+    bne t0, t1, poll_failure
+    lw t0, 264(sp)
+    li t1, -6
+    bne t0, t1, poll_failure
+    lw t0, 268(sp)
+    bne t0, s2, poll_failure
+    lw t0, 272(sp)
+    li t1, 123
+    bne t0, t1, poll_failure
+    lw t0, 384(sp)
+    li t1, 12
+    bne t0, t1, poll_failure
+    mv a0, s0
+    addi a1, sp, 256
+    li a2, 128
+    invoke 63
+    expect -11
+    mv a0, s0
+    invoke 57
+    expect 0
     li a0, 42
     invoke 94
 poll_failure:

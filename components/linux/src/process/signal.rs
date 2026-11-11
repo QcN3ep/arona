@@ -29,6 +29,7 @@ pub struct Info {
     pub number: u8,
     pub code: i32,
     pub sender: usize,
+    pub uid: u32,
     pub address: usize,
     pub value: u64,
 }
@@ -42,6 +43,7 @@ impl Info {
             bytes[16..24].copy_from_slice(&(self.address as u64).to_le_bytes());
         } else {
             bytes[16..20].copy_from_slice(&(self.sender as u32).to_le_bytes());
+            bytes[20..24].copy_from_slice(&self.uid.to_le_bytes());
             bytes[24..32].copy_from_slice(&self.value.to_le_bytes());
         }
         bytes

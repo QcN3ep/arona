@@ -50,6 +50,10 @@ pub(crate) enum OpenFileDescription<'a> {
         offset: Cell<usize>,
         busy: Cell<bool>,
     },
+    Signalfd {
+        mask: Cell<u64>,
+        flags: Cell<u32>,
+    },
     Timerfd {
         state: TimerState,
         flags: Cell<u32>,
@@ -165,6 +169,16 @@ impl<'a> Descriptor<'a> {
             close_on_exec,
         }
     }
+    pub fn signalfd(mask: u64, flags: u32, close_on_exec: bool) -> Self {
+        Self {
+            description: Rc::new(OpenFileDescription::Signalfd {
+                mask: Cell::new(mask),
+                flags: Cell::new(2 | flags),
+            }),
+            close_on_exec,
+        }
+    }
+
     pub fn timerfd(state: TimerState, flags: u32, close_on_exec: bool) -> Self {
         Self {
             description: Rc::new(OpenFileDescription::Timerfd {
@@ -235,6 +249,7 @@ impl<'a> OpenFileDescription<'a> {
             | Self::Regular { flags, .. }
             | Self::Eventfd { flags, .. }
             | Self::Timerfd { flags, .. }
+            | Self::Signalfd { flags, .. }
             | Self::Virtual { flags, .. }
             | Self::VirtualFile { flags, .. } => flags.get(),
         }
@@ -247,6 +262,7 @@ impl<'a> OpenFileDescription<'a> {
         | Self::Regular { flags, .. }
         | Self::Eventfd { flags, .. }
         | Self::Timerfd { flags, .. }
+        | Self::Signalfd { flags, .. }
         | Self::Virtual { flags, .. }
         | Self::VirtualFile { flags, .. }) = self;
         flags.set((flags.get() & !(O_APPEND | O_NONBLOCK)) | (value & (O_APPEND | O_NONBLOCK)));

@@ -403,6 +403,85 @@ event_read_child:
     move $a0, $s0
     invoke 57
     expect 0
+    li.d $t0, 0xa00
+    st.d $t0, $sp, 192
+    li.d $a0, 0
+    addi.d $a1, $sp, 192
+    li.d $a2, 0
+    li.d $a3, 8
+    invoke 135
+    expect 0
+    li.d $a0, -1
+    addi.d $a1, $sp, 192
+    li.d $a2, 8
+    li.d $a3, 0x80800
+    invoke 74
+    bltz $a0, poll_failure
+    move $s0, $a0
+    move $a0, $s0
+    addi.d $a1, $sp, 256
+    li.d $a2, 128
+    invoke 63
+    expect -11
+    invoke 172
+    move $s2, $a0
+    invoke 178
+    move $s3, $a0
+    li.d $a0, 123
+    invoke 146
+    expect 0
+    move $a0, $s3
+    li.d $a1, 10
+    invoke 130
+    expect 0
+    move $a0, $s2
+    li.d $a1, 12
+    invoke 129
+    expect 0
+    st.w $s0, $sp, 16
+    li.d $t0, 1
+    st.h $t0, $sp, 20
+    st.d $zero, $sp, 64
+    st.d $zero, $sp, 72
+    addi.d $a0, $sp, 16
+    li.d $a1, 1
+    addi.d $a2, $sp, 64
+    li.d $a3, 0
+    li.d $a4, 8
+    invoke 73
+    expect 1
+    move $a0, $s0
+    li.d $a1, 0
+    li.d $a2, 128
+    invoke 63
+    expect -14
+    move $a0, $s0
+    addi.d $a1, $sp, 256
+    li.d $a2, 256
+    invoke 63
+    expect 256
+    ld.w $t0, $sp, 256
+    li.d $t1, 10
+    bne $t0, $t1, poll_failure
+    ld.w $t0, $sp, 264
+    li.d $t1, -6
+    bne $t0, $t1, poll_failure
+    ld.w $t0, $sp, 268
+    bne $t0, $s2, poll_failure
+    ld.w $t0, $sp, 272
+    li.d $t1, 123
+    bne $t0, $t1, poll_failure
+    ld.w $t0, $sp, 384
+    li.d $t1, 12
+    bne $t0, $t1, poll_failure
+    move $a0, $s0
+    addi.d $a1, $sp, 256
+    li.d $a2, 128
+    invoke 63
+    expect -11
+    move $a0, $s0
+    invoke 57
+    expect 0
     li.d $a0, 42
     invoke 94
 poll_failure:

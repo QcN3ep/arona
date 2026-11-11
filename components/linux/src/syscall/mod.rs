@@ -2,7 +2,7 @@
 
 //! Linux syscall dispatch and asynchronous completion.
 
-// TODO: Support epoll and signalfd.
+// TODO: Support epoll.
 
 pub(crate) mod abi;
 mod file;
@@ -88,7 +88,7 @@ impl<'a> Operation<'a> {
             Self::WaitChild(operation) => operation.poll(process),
             Self::Signal(operation) => operation.poll(process, index),
             Self::Futex(operation) => operation.poll(process),
-            Self::File(operation) => operation.poll(process, files),
+            Self::File(operation) => operation.poll(process, index, files),
             Self::System(operation) => operation.poll(process),
             Self::Memory(operation) => operation.poll(process),
         }
@@ -262,6 +262,7 @@ impl Context {
                     number: 13,
                     code: 0,
                     sender: process.pid,
+                    uid: process.credentials.uid,
                     address: 0,
                     value: 0,
                 })

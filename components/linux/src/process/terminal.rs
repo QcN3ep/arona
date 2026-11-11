@@ -137,6 +137,7 @@ impl PidNamespace {
                     number,
                     code: 128,
                     sender: 0,
+                    uid: 0,
                     address: 0,
                     value: 0,
                 },
