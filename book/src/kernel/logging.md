@@ -1,57 +1,57 @@
-# 内核日志
+# Kernel Logging
 
-内核的第一批日志产生在内存分配器和定时器就绪之前，这时通过早期 UART 输出。
-它们同时进入静态环形缓冲区，串口交给用户态后，程序还可以通过 KernelLog 读取这些记录。
-`Logger` 将记录存储与 Sink 输出连接起来，内核各模块统一使用 Rust 的 `log` 门面。
+The kernel's first log records are produced before the memory allocator and timers are ready, so they are output through the early UART.
+They also enter a static ring buffer, so programs can still read these records through KernelLog after the serial port is handed over to user mode.
+`Logger` connects record storage with Sink output, and all kernel modules use the Rust `log` facade uniformly.
 
-## 日志产生与存储
+## Log Production and Storage
 
-日志使用 `error!`、`warn!`、`info!`、`debug!` 和 `trace!` 等标准宏。
-Logger 根据当前 `LevelFilter` 过滤记录，再格式化 target 与消息文本。
-每条记录包含递增序号、可选时间戳、级别、截断标记、target 和正文。
+Logging uses the standard macros such as `error!`, `warn!`, `info!`, `debug!`, and `trace!`.
+The Logger filters records according to the current `LevelFilter`, then formats the target and the message text.
+Each record contains an incrementing sequence number, an optional timestamp, a level, a truncation flag, a target, and the body.
 
-缓冲区为静态分配的 64 KiB 环形存储，按完整记录保存和淘汰。
-空间不足时丢弃最早的完整记录，为新记录腾出空间。
-文本按 UTF-8 字符边界截断，并记录截断状态。
+The buffer is a statically allocated 64 KiB ring buffer that stores and evicts whole records.
+When space runs short, the oldest complete records are dropped to make room for new ones.
+Text is truncated at UTF-8 character boundaries, and the truncation state is recorded.
 
-日志可能产生在中断或其他日志处理过程中，写入路径因此尝试取锁，锁被占用时放弃本条存储并继续执行。
-这会在序号中留下空缺，读者能据此识别两条记录之间缺少了内容。
+Logging can occur in interrupt context or while other logging is in progress, so the write path tries to take the lock; if the lock is held, this record is not stored and execution continues.
+This leaves a gap in the sequence numbers, which lets readers detect that content is missing between two records.
 
-## Sink 注册与替换
+## Sink Registration and Replacement
 
-Logger 最多注册 8 个 Sink。
-`add_sink` 返回 `SinkHandle`，句柄记录槽位及 generation。
-槽位被重新使用后，旧句柄返回 `Detached`。
+The Logger registers at most 8 Sinks.
+`add_sink` returns a `SinkHandle`, and the handle records a slot and a generation.
+Once the slot is reused, the old handle returns `Detached`.
 
-| 操作 | 行为 |
+| Operation | Behavior |
 |---|---|
-| `replace` | 先 flush 原 Sink，成功后替换 |
-| `remove` | 先 flush，成功后移除 |
-| `discard` | 直接移除 |
+| `replace` | Flush the original Sink first, then replace it on success |
+| `remove` | Flush first, then remove on success |
+| `discard` | Remove directly |
 
-丢弃 `SinkHandle` 保留注册状态。
-写入和 flush 的分发错误按 Sink 计入 `failures()`。
-Sink 在产生日志的控制流中执行，早期串口 Sink 直接轮询寄存器完成输出。
+Dropping a `SinkHandle` keeps the registration in place.
+Dispatch errors from writes and flushes are counted per Sink in `failures()`.
+Sinks run in the control flow that produces the log, and the early serial Sink outputs by polling registers directly.
 
-## 从早期输出到用户服务
+## From Early Output to the User Service
 
-架构入口初始化 UART，注册早期控制台 Sink。
-这一阶段日志同时输出到串口和缓冲区。
-定时器初始化后，内核注册时间戳回调，后续记录带单调纳秒时间。
+The architecture entry point initializes the UART and registers the early console Sink.
+During this stage, logs go to both the serial port and the buffer.
+After timer initialization, the kernel registers a timestamp callback, and later records carry a monotonic nanosecond timestamp.
 
-init 建立后，启动路径传递 KernelLog 句柄并解除早期控制台。
-随后 devmgr 管理 UART，logger 服务提供内核记录读取与输出接口，并处理用户日志。
-内核缓冲区贯穿交接过程，保留下来的早期记录与后续记录使用同一套读取接口。
+Once init is established, the boot path passes the KernelLog handle and releases the early console.
+devmgr then manages the UART, and the logger service provides interfaces for reading and outputting kernel records and handles user logs.
+The kernel buffer persists across the handoff, and the early records that remain use the same read interface as later records.
 
-## 按游标读取
+## Reading by Cursor
 
-KernelLog 的 `READ` 接受游标和输出缓冲区。
-游标为 0 时从当前保留的最早记录开始；其他值查找序号大于或等于游标的首条记录。
-读取成功返回一条编码记录，读者使用该记录的序号加一作为下次游标。
+KernelLog's `READ` takes a cursor and an output buffer.
+A cursor of 0 starts from the earliest record currently retained; any other value finds the first record whose sequence number is greater than or equal to the cursor.
+A successful read returns one encoded record, and the reader uses that record's sequence number plus one as the next cursor.
 
-没有匹配记录时返回 0。
-输出太小时返回 `BufferTooSmall`，缓冲区忙时返回 `Busy`。
-例如，读到序号 42 后，下次以 43 为游标继续读取。
-每个读者独立保存游标，读取操作保持缓冲区中的记录供其他读者使用。
+When no record matches, it returns 0.
+If the output is too small it returns `BufferTooSmall`, and if the buffer is busy it returns `Busy`.
+For example, after reading sequence number 42, the next read continues with cursor 43.
+Each reader keeps its own cursor independently, and reads leave the records in the buffer for other readers.
 
-用户日志与持久化方式见[日志服务](../services/logger.md)。
+For user logs and persistence, see [Logging Service](../services/logger.md).

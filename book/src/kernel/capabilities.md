@@ -1,78 +1,78 @@
-# 对象与能力
+# Objects and Capabilities
 
-程序通过句柄使用内核对象。
-例如，一个 Channel 句柄既标识通道端点，也记录这份句柄是否允许发送、接收和转移。
-Task 的句柄表保存这些对象引用与权限，内核据此处理每次调用。
+Programs use kernel objects through handles.
+For example, a Channel handle both identifies a channel endpoint and records whether this handle permits sending, receiving, and transferring.
+A Task's handle table stores these object references and permissions, and the kernel uses it to process each call.
 
-## 对象类型
+## Object Types
 
-`abi::objects!` 集中声明对象编号和各类型支持的权限。
-ABI 的类型枚举以及内核的对象与引用类型由这一声明生成。
+`abi::objects!` declares object numbers and the permissions supported by each type in one place.
+The ABI's type enumerations, along with the kernel's object and reference types, are generated from this declaration.
 
-| 类型 | 表达的资源 |
+| Type | Resource represented |
 |---|---|
-| `Task` | 地址空间、句柄表和线程容器 |
-| `Thread` | 执行与退出观察对象 |
-| `FrameAllocation` | 一次物理页框分配 |
-| `Channel` | 双向消息通道的一个端点 |
-| `Event` | 可合并的位通知 |
-| `Timer` | 向事件发送通知的定时对象 |
-| `Reply` | 一次调用的回复权限 |
-| `DeviceSet` | 设备目录和设备组授权入口 |
-| `Device` | 设备组授权 |
-| `KernelLog` | 内核日志读取入口 |
-| `DmaDomain` | 某个设备的 DMA 映射与启停状态 |
-| `TrapPort` | 被转发执行事件的接收端 |
-| `TrapContinuation` | 恢复一次被暂停执行的权限 |
-| `Call` | 异步调用的结果与取消入口 |
+| `Task` | Address space, handle table, and thread container |
+| `Thread` | Object for observing execution and exit |
+| `FrameAllocation` | One physical page frame allocation |
+| `Channel` | One endpoint of a bidirectional message channel |
+| `Event` | Bit notifications that can be coalesced |
+| `Timer` | Timer object that sends notifications to an event |
+| `Reply` | Reply permission for one call |
+| `DeviceSet` | Entry point for the device directory and device group authorization |
+| `Device` | Device group authorization |
+| `KernelLog` | Entry point for reading kernel logs |
+| `DmaDomain` | DMA mappings and start/stop state for a device |
+| `TrapPort` | Receiving end for forwarded execution events |
+| `TrapContinuation` | Permission to resume a suspended execution |
+| `Call` | Result and cancellation entry point for an asynchronous call |
 
-对象控制生命周期，`ObjectReference` 用于内核操作期间保持存储引用。
-一些类型还单独计算开放引用数量，以便关闭对象时及时通知等待者。
+Objects control their own lifetime, and `ObjectReference` keeps a storage reference alive during kernel operations.
+Some types also count open references separately so that waiters can be notified promptly when an object is closed.
 
-## 句柄表
+## Handle Tables
 
-句柄在所属 Task 中解释。
-句柄值编码槽位和 generation；槽位重新使用时改变 generation，以拒绝指向旧内容的标识。
-槽位状态分为可用、已预留、已占用和退出复用的状态。
+Handles are interpreted within their owning Task.
+A handle value encodes a slot and a generation; reusing a slot changes the generation so that identifiers pointing at old contents are rejected.
+Slot states are vacant, reserved, occupied, and retired from reuse.
 
-`INFO` 返回对象类型与当前句柄权限，`CLOSE` 释放一个句柄。
-同一对象可以有多份句柄，`CLOSE` 释放其中一份持有关系。
-跨 Task 交接时，内核在目标句柄表中安装对象，接收方得到自己表中的槽位与 generation。
+`INFO` returns the object type and the current handle permissions, and `CLOSE` releases a handle.
+An object can have multiple handles, and `CLOSE` releases one of those holdings.
+When handing a handle across Tasks, the kernel installs the object in the target handle table, and the receiver gets a slot and generation in its own table.
 
-## 权限检查
+## Permission Checks
 
-`Rights` 是权限位集合。
-对象声明给出可接受的权限，方法表给出每种操作所需的权限。
-例如 Channel 的发送需要 `WRITE`，接收需要 `READ`，调用需要 `READ_WRITE`；Task 的映射操作需要 `MAP_MEMORY`。
+`Rights` is a set of permission bits.
+The object declaration gives the acceptable permissions, and the method table gives the permissions required by each operation.
+For example, sending on a Channel requires `WRITE`, receiving requires `READ`, and calling requires `READ_WRITE`; mapping operations on a Task require `MAP_MEMORY`.
 
-系统调用分派器先取得对象类型和句柄权限，再查询方法表并检查权限，随后才进入类型对应的处理函数。
-未知方法返回 `Unsupported`，权限不足返回 `Denied`。
-处理函数继续检查参数、目标状态和涉及的其他对象权限。
+The system call dispatcher first obtains the object type and handle permissions, then looks up the method table and checks permissions, and only then enters the handler for the type.
+An unknown method returns `Unsupported`, and insufficient permissions return `Denied`.
+The handler goes on to check arguments, target state, and the permissions of other objects involved.
 
-创建新 Task 句柄时，创建能力还受调用者已有的创建权限约束。
-子 Task 的后续创建能力由这次授权确定。
+When a new Task handle is created, the creation capability is also constrained by the caller's existing creation permissions.
+The child Task's subsequent creation capabilities are determined by this authorization.
 
-## 复制与转移
+## Duplication and Transfer
 
-`DUPLICATE` 根据源句柄的复制权限建立新句柄，新权限是源权限的子集。
-例如，服务持有可读写通道时，可以复制出可写句柄交给日志生产者，让生产者向通道提交记录。
-Reply 等一次性对象采用单独的所有权语义。
+`DUPLICATE` creates a new handle based on the source handle's duplication permission, with new permissions that are a subset of the source permissions.
+For example, when a service holds a readable and writable channel, it can duplicate a writable handle and give it to a log producer so the producer can submit records to the channel.
+One-shot objects such as Reply use separate ownership semantics.
 
-IPC 转移需要 `TRANSFER`。
-调用方为每个转移句柄指定接收权限，内核检查类型和权限，并为目标预留槽位。
-提交后，发送方的句柄被移走，接收方得到目标表中的句柄。
-复制后转移其中一份，便形成双方各自持有对象的关系。
+IPC transfer requires `TRANSFER`.
+The caller specifies receive permissions for each transferred handle; the kernel checks the type and permissions and reserves a slot for the target.
+After commit, the sender's handle is moved away, and the receiver gets a handle in the target table.
+Duplicating and then transferring one of the copies creates a relationship where both sides hold the object.
 
-`PreparedTransfer` 保存准备阶段的转移记录。
-未提交的准备对象析构时释放预留槽位；成功提交后按消息顺序发布句柄。
-创建对象也通过预留句柄、创建资源、安装对象的统一路径处理失败清理。
+`PreparedTransfer` holds the transfer record for the preparation stage.
+Dropping an uncommitted prepared object releases the reserved slot; after a successful commit, handles are published in message order.
+Object creation also goes through the unified path of reserving a handle, creating the resource, and installing the object, which handles failure cleanup.
 
-## 当前线程身份
+## Current Thread Identity
 
-原生 ABI 将句柄值 0 约定为 `CURRENT_THREAD`。
-调用时由内核解析为发起调用的线程，可查询时间、标识和状态，也可让出、等待或退出。
-该特殊入口的可复制权限包括 `DUPLICATE`、`TRANSFER`、`WAIT` 和 `TERMINATE`。
-复制后得到普通 Thread 句柄；关闭操作要求普通句柄。
+The native ABI reserves handle value 0 for `CURRENT_THREAD`.
+At call time the kernel resolves it to the calling thread, which can query time, identity, and state, and can also yield, wait, or exit.
+The duplication permissions of this special entry include `DUPLICATE`, `TRANSFER`, `WAIT`, and `TERMINATE`.
+Duplicating it produces an ordinary Thread handle; close operations require an ordinary handle.
 
-当前 Task 则由程序启动记录交接。
-runtime 保存该句柄供分配内存、创建线程与建立 IPC 对象等操作使用。
+The current Task, by contrast, is handed over through the program start record.
+The runtime keeps this handle for operations such as allocating memory, creating threads, and creating IPC objects.

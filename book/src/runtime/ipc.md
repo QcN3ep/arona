@@ -1,28 +1,28 @@
-# IPC 编程
+# IPC Programming
 
-两个程序连接一对 Channel 后，就能发送短消息、交接句柄，或以一次请求等待一次回复。
-runtime 将消息编码和内核调用封装起来，文件、日志和设备客户端再用这些接口表达各自的操作。
+Once two programs connect a pair of Channels, they can send short messages, transfer handles, or send a request and wait for a single reply.
+The runtime wraps message encoding and kernel calls, and file, log, and device clients use these interfaces to express their own operations.
 
-## 发送与接收
+## Sending and Receiving
 
-`Message::new(tag, words)` 创建短消息，`Channel::send` 在成功提交后消耗其中的转移句柄。
-接收得到 `ReceivedMessage`，其 `words()` 和 `handles()` 分别提供数据与对象。
-消息析构时关闭尚未取走的接收句柄。
+`Message::new(tag, words)` creates a short message, and `Channel::send` consumes the transfer handles in it after a successful submission.
+Receiving yields a `ReceivedMessage`, whose `words()` and `handles()` provide the data and objects respectively.
+When a message is destroyed, it closes receive handles that have not been taken.
 
-`WaitMode` 决定等待方式：
+`WaitMode` determines the wait behavior:
 
-| 方式 | 含义 |
+| Mode | Meaning |
 |---|---|
-| `Poll` | 立即尝试，不能完成则返回 `WouldBlock` |
-| `Forever` | 等待完成或对象结束 |
-| `Until(ns)` | 等待到绝对单调截止时间 |
+| `Poll` | Try immediately; return `WouldBlock` if it cannot be completed |
+| `Forever` | Wait for completion or the object's end |
+| `Until(ns)` | Wait until an absolute monotonic deadline |
 
-`Until` 的数值使用 `thread::now_ns()` 的时间域，0 和 `u64::MAX` 分别留给轮询与无限等待编码。
+The value of `Until` uses the time domain of `thread::now_ns()`; 0 and `u64::MAX` are reserved for encoding polling and infinite waiting respectively.
 
-## 请求与回复示例
+## Request and Reply Example
 
-下面在同一个 Task 内建立客户端和服务端两个线程。
-主线程发出数据字 42，工作线程从请求中取出 Reply，再将同样的数据回复给主线程：
+The following creates client and server threads within the same Task.
+The main thread sends data word 42, and the worker thread takes the Reply from the request and then replies with the same data to the main thread:
 
 ```rust
 #![no_std]
@@ -65,43 +65,43 @@ fn main() -> Result<(), Error> {
 }
 ```
 
-`client` 和 `server` 是通道的两个端点，`take_reply` 取得内核随调用交付的一次性回复能力。
-工作线程回复后返回，主线程取得响应，再通过 `join` 收回线程结果。
-这个例子将两种调用错误都交给 `main`；携带资源的调用则用提交状态确定句柄归属。
+`client` and `server` are the two endpoints of the channel, and `take_reply` obtains the one-shot reply capability that the kernel delivers along with the call.
+The worker thread returns after replying, the main thread obtains the response, and then retrieves the thread result through `join`.
+This example sends both kinds of call errors to `main`; for calls that carry resources, the submission state determines handle ownership.
 
-## 句柄转移
+## Handle Transfer
 
-`Transfer` 包含 `AnyHandle` 所有权及接收权限，使用 `Message::push` 加入消息。
-push 失败返回原 Transfer，资源继续由调用者持有。
+`Transfer` contains `AnyHandle` ownership and receive rights, and is added to a message with `Message::push`.
+If push fails, it returns the original Transfer, and the caller continues to own the resource.
 
-SEND 或 START_CALL 成功后，runtime 清空消息中的已转移句柄，并放弃发送方所有权。
-失败时消息保留尚未提交的资源。
-同步 CALL 使用内核返回的提交状态决定是否转移所有权。
+After SEND or START_CALL succeeds, the runtime clears the transferred handles from the message and gives up the sender's ownership.
+On failure, the message retains resources that have not been submitted.
+A synchronous CALL uses the submission state returned by the kernel to decide whether to transfer ownership.
 
-| 调用结果 | 待转移资源的归属 |
+| Call result | Ownership of resources to transfer |
 |---|---|
-| `CallError::NotSubmitted` | 仍在请求 Message 中 |
-| 成功或 `CallError::Submitted` | 已提交给内核调用路径 |
+| `CallError::NotSubmitted` | Still in the request Message |
+| Success or `CallError::Submitted` | Submitted to the kernel call path |
 
-例如，客户端向文件服务交付写入缓冲区后超时，服务可能已经完成写入。
-`Submitted` 表达这次请求已交出，文件操作的完成状态由文件服务协议解释。
+For example, if a client times out after delivering a write buffer to the file service, the service may already have completed the write.
+`Submitted` expresses that the request has been handed over, and the completion status of the file operation is interpreted by the file service protocol.
 
-## 异步调用与事件循环
+## Asynchronous Calls and Event Loops
 
-`start_call` 返回 Call 句柄。
-将它与其他来源放入 `wait_many`，收到 `READABLE` 后调用 `try_receive` 取得响应。
-取消使用 `cancel`，丢弃句柄则沿对象关闭路径清理调用资源。
+`start_call` returns a Call handle.
+Place it with other sources into `wait_many`, and after receiving `READABLE` call `try_receive` to obtain the response.
+Use `cancel` to cancel; dropping the handle cleans up the call resources along the object close path.
 
-`PendingCall<T, S, E>` 在 Call 之外保存客户端状态 `S` 和响应解码函数。
-`try_complete` 将状态和 ReceivedMessage 交给解码函数，返回服务结果 `T`。
-`wait` 超时后仍保留本次调用，调用者可以再次等待或取消。
-设备打开与 Linux 程序启动等客户端使用这一封装。
+`PendingCall<T, S, E>` holds a client state `S` and a response decoding function in addition to the Call.
+`try_complete` passes the state and the ReceivedMessage to the decoding function and returns the service result `T`.
+After a `wait` timeout the call is still retained, and the caller can wait again or cancel.
+Clients such as device opening and Linux program startup use this wrapper.
 
-## 多对象等待的使用
+## Using Multi-Object Wait
 
-`WaitItem::new(&handle, conditions)` 借用待观察句柄。
-`wait_many` 返回输入列表中的下标和就绪位，调用者据此处理对应对象。
-内核按底层来源识别等待项，重复来源返回错误。
+`WaitItem::new(&handle, conditions)` borrows a handle to observe.
+`wait_many` returns an index into the input list and the readiness bits for that entry, and the caller uses them to process the corresponding object.
+The kernel identifies wait items by their underlying source; duplicate sources return an error.
 
 ```rust
 fn wait_for_message(
@@ -118,5 +118,5 @@ fn wait_for_message(
 }
 ```
 
-对端关闭时，队列里还可能有最后一批消息，通道因而同时报告可读和关闭。
-事件循环先接收已排队的消息，再处理连接结束；有多个接收线程时，实际取得哪条消息由接收操作确定。
+When the peer closes, there may still be a final batch of messages in the queue, so the channel reports both readable and closed.
+The event loop first receives queued messages and then handles connection termination; with multiple receiving threads, which message is actually obtained is determined by the receive operation.

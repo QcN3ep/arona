@@ -1,18 +1,18 @@
-# 使用内核能力
+# Using Kernel Capabilities
 
-runtime 用 Rust 类型持有内核对象和资源。
-一个分配句柄可以交给映射接口，一段 MMIO 映射可以交给设备驱动，而析构将关闭句柄、解除映射等清理接回对象的生命周期。
-内核在这些操作中逐次检查权限与状态。
+The runtime holds kernel objects and resources with Rust types.
+An allocation handle can be handed to the mapping interface, an MMIO mapping can be handed to a device driver, and destruction ties cleanup such as closing handles and unmapping back into the object's lifetime.
+The kernel checks permissions and state at each of these operations.
 
-## 拥有、借用和检查句柄
+## Owning, Borrowing, and Checking Handles
 
-`Handle<T>` 拥有一个句柄，析构时调用 CLOSE。
-`BorrowedHandle<'a, T>` 借用已有句柄，其生命周期关联原所有者。
-`info` 返回对象类型和权限，`try_clone(rights)` 请求一份缩减或相同权限的新句柄。
+`Handle<T>` owns a handle and calls CLOSE on destruction.
+`BorrowedHandle<'a, T>` borrows an existing handle, and its lifetime is tied to the original owner.
+`info` returns the object type and rights, and `try_clone(rights)` requests a new handle with reduced or identical rights.
 
-IPC 接收的 `AnyHandle` 同样拥有句柄。
-程序可以检查 `kind()`，再通过 `downcast::<T>()` 转成具体类型；类型不匹配时返回原 AnyHandle。
-转换后的句柄保留原权限。
+An `AnyHandle` received from IPC also owns a handle.
+A program can check `kind()` and then convert it to a concrete type through `downcast::<T>()`; if the type does not match, the original AnyHandle is returned.
+The converted handle retains the original rights.
 
 ```rust
 use runtime::{AnyHandle, DeviceSet, Error, Handle};
@@ -24,14 +24,14 @@ fn read_device_catalog(
 }
 ```
 
-这段代码期望收到设备目录，匹配成功后取得 `Handle<DeviceSet>`。
-类型不匹配时，`downcast` 返回原句柄；示例将其随错误路径释放，返回 `Protocol`。
+This code expects to receive a device catalog and, on a successful match, obtains `Handle<DeviceSet>`.
+When the type does not match, `downcast` returns the original handle; the example releases it along the error path and returns `Protocol`.
 
-## 页框与映射
+## Page Frames and Mapping
 
-Task 的 `allocate` 返回 FrameAllocation 句柄。
-`read` 和 `write` 按字节访问分配内容，`map` 则按页框范围将它放入地址空间。
-下面将字符串写入一页分配，建立映射，再读取同一份后备数据：
+Task's `allocate` returns a FrameAllocation handle.
+`read` and `write` access the allocation contents byte by byte, while `map` places it into an address space by page frame range.
+The following writes a string into a one-page allocation, establishes a mapping, and then reads back the same backing data:
 
 ```rust
 use runtime::{Rights, memory::Permissions};
@@ -52,42 +52,42 @@ fn mapped_bytes() -> Result<(), runtime::Error> {
 }
 ```
 
-`Mapping` 保存目标 Task 的借用和虚拟范围。
-显式 `unmap` 返回解除映射的结果，析构时也会尝试解除映射。
-`protect` 修改映射权限，`Reservation` 持有保留范围并在释放时执行 UNRESERVE。
-关闭 FrameAllocation 句柄之后，仍然有效的内核映射引用继续保持后备内存。
-映射结束与分配所有权释放共同决定最终回收时机。
+`Mapping` holds a borrow of the target Task and the virtual range.
+Explicit `unmap` returns the result of unmapping, and destruction also attempts to unmap.
+`protect` modifies mapping permissions, and `Reservation` holds a reserved range and performs UNRESERVE on release.
+After the FrameAllocation handle is closed, an already-valid kernel mapping reference continues to keep the backing memory alive.
+The end of the mapping and the release of allocation ownership together determine the final reclamation time.
 
-## 线程与 Task 控制
+## Threads and Task Control
 
-Task 句柄提供创建子 Task、安装句柄、终止、等待与地址空间操作。
-`install` 消耗转移的 Handle；失败时把错误和原 Handle 一并返回。
+The Task handle provides creating child Tasks, installing handles, termination, waiting, and address space operations.
+`install` consumes the transferred Handle; on failure it returns the error together with the original Handle.
 
-Thread 句柄提供 start、state、terminate、wait 和 id 等操作。
-当前线程还可以查询单调时间、休眠和让出处理器。
-闭包线程的栈与结果管理见[程序运行环境](environment.md)。
+The Thread handle provides operations such as start, state, terminate, wait, and id.
+The current thread can also query monotonic time, sleep, and yield the processor.
+See [Program Runtime Environment](environment.md) for stack and result management of closure threads.
 
-## 设备、MMIO 与 DMA
+## Devices, MMIO, and DMA
 
-DeviceSet 支持枚举、读取描述和授予设备组。
-Device 的 `map_mmio` 返回 `Mmio`，提供带偏移与宽度检查的寄存器访问。
-`InterruptBinding` 保存设备与 Event 的借用，提供 acknowledge 和 unbind，并负责析构解绑。
+DeviceSet supports enumeration, reading descriptions, and granting device groups.
+Device's `map_mmio` returns `Mmio`, which provides register access with offset and width checks.
+`InterruptBinding` holds borrows of a device and an Event, provides acknowledge and unbind, and handles unbinding on destruction.
 
-`DmaMapping` 与 `DmaBuffer` 持有 DMA 范围、总线地址及后备资源。
-程序通过这些封装读写缓冲区，在提交队列前后执行同步，并按对象状态停用、解除映射和撤销。
-devmgr 的 VirtIO 驱动使用这一层建立设备队列和数据缓冲区。
+`DmaMapping` and `DmaBuffer` hold the DMA range, bus address, and backing resources.
+Programs read and write buffers through these wrappers, synchronize before and after submitting to a queue, and deactivate, unmap, and revoke according to object state.
+The VirtIO driver in devmgr uses this layer to establish device queues and data buffers.
 
-## Trap 与内核日志
+## Trap and Kernel Log
 
-`trap_port` 创建事件接收端，`bind_trap` 绑定受监督 Task。
-接收结果包含事件信息与 continuation。
-continuation 读取、修改并恢复用户寄存器状态，恢复失败时把错误和原对象一并返回。
+`trap_port` creates an event receiving endpoint, and `bind_trap` binds a supervised Task.
+The receive result contains event information and a continuation.
+The continuation reads, modifies, and restores user register state; on restore failure it returns the error together with the original object.
 
-KernelLog 的 `read` 接受游标和输出切片，返回可选的借用记录。
-记录文本借用输出切片，读取者处理完本条记录后复用这块存储，再以新游标取得下一条。
+KernelLog's `read` accepts a cursor and an output slice and returns an optional borrowed record.
+The record text borrows the output slice; after the reader has processed this record, it reuses this storage and obtains the next record with a new cursor.
 
-## 错误处理
+## Error Handling
 
-`runtime::Error::Kernel` 保留 ABI 错误码，`Error::Protocol` 表示交接或内核返回数据不符合封装约定。
-错误返回同时保留资源的归属。
-例如 `install` 失败会交回原 Handle，continuation 恢复失败会交回原 continuation，调用者据此继续处理所持有的对象。
+`runtime::Error::Kernel` preserves ABI error codes, while `Error::Protocol` indicates that handoff or kernel-returned data does not conform to the wrapper's conventions.
+Error returns also preserve resource ownership.
+For example, a failed `install` returns the original Handle, and a failed continuation restore returns the original continuation, so the caller can continue processing the objects it holds.

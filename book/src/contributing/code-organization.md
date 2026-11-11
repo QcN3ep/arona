@@ -1,81 +1,81 @@
-# 代码组织
+# Code Organization
 
-仓库按系统中的职责划分 Cargo crate。
-从底层向上阅读时，`abi` 定义交接类型，`kernel` 提供资源机制，`arch` 完成硬件操作并生成内核 ELF；用户态的 runtime 和服务则在这些机制上构建运行环境与系统功能。
+The repository divides Cargo crates by their responsibilities in the system.
+Reading from the bottom up, `abi` defines handover types, `kernel` provides resource mechanisms, and `arch` performs hardware operations and produces the kernel ELF; user-space runtime and services build the runtime environment and system functionality on these mechanisms.
 
-## 工作区成员
+## Workspace Members
 
-| 目录 | Cargo 包名 | 主要内容 |
+| Directory | Cargo Package Name | Main Contents |
 |---|---|---|
-| `abi/` | `arona-abi` | 对象类型、权限、方法和跨边界交换格式 |
-| `kernel/` | `arona-kernel` | 特权态内核机制及硬件接口定义 |
-| `arch/` | `arona-arch` | 硬件接口实现与内核可执行文件 |
-| `kernel-tests/` | `arona-kernel-tests` | 通过真实硬件能力执行的内核集成测试 |
-| `components/runtime/` | `arona-runtime` | 原生 Rust 运行环境及内核调用封装 |
-| `components/init/` | `arona-init` | 基础服务启动和配置应用的监督 |
-| `components/devmgr/` | `arona-devmgr` | 设备管理、驱动和设备会话 |
-| `components/logger/` | `arona-logger` | 用户日志服务及客户端 |
-| `components/fs/` | `arona-fs` | 文件接口、客户端、服务和文件系统实现 |
-| `components/linux/` | `arona-linux` | Linux 程序执行与 ABI 兼容服务 |
-| `xtask/` | `xtask` | 宿主机构建、打包和运行工具 |
+| `abi/` | `arona-abi` | Object types, permissions, methods, and cross-boundary exchange formats |
+| `kernel/` | `arona-kernel` | Privileged kernel mechanisms and hardware interface definitions |
+| `arch/` | `arona-arch` | Hardware interface implementations and the kernel executable |
+| `kernel-tests/` | `arona-kernel-tests` | Kernel integration tests executed through real hardware capabilities |
+| `components/runtime/` | `arona-runtime` | Native Rust runtime environment and kernel call wrappers |
+| `components/init/` | `arona-init` | Starting base services and supervising configured applications |
+| `components/devmgr/` | `arona-devmgr` | Device management, drivers, and device sessions |
+| `components/logger/` | `arona-logger` | User logging service and client |
+| `components/fs/` | `arona-fs` | File interfaces, clients, service, and file system implementations |
+| `components/linux/` | `arona-linux` | Linux program execution and ABI compatibility service |
+| `xtask/` | `xtask` | Host build, packaging, and run tooling |
 
-多个 crate 使用简短的 Rust 库名。
-例如 Cargo 包 `arona-kernel` 在代码中以 `kernel` 引用，`arona-runtime` 以 `runtime` 引用。
-Cargo 命令中的 `-p` 使用包名。
+Several crates use short Rust library names.
+For example, the Cargo package `arona-kernel` is referenced as `kernel` in code, and `arona-runtime` as `runtime`.
+The `-p` flag in Cargo commands takes the package name.
 
-## 核心依赖关系
+## Core Dependencies
 
-`abi` 定义内核与程序之间共同使用的约定和类型，`kernel` 和 runtime 分别依赖它。
+`abi` defines conventions and types used jointly by the kernel and programs; `kernel` and runtime depend on it separately.
 
-`arch` 依赖 `kernel`，实现后者定义的硬件接口，并把入口代码和内核机制链接成 `arch` ELF。
-具体的 RISC-V 和 LoongArch 指令、寄存器和页表格式分别放在对应架构目录下。
-架构之间通用的硬件封装放在 `arch/src/` 的公共模块中。
+`arch` depends on `kernel`, implements the hardware interfaces the latter defines, and links entry code and kernel mechanisms into the `arch` ELF.
+Architecture-specific RISC-V and LoongArch instructions, registers, and page table formats are placed under the corresponding architecture directories.
+Hardware wrappers shared between architectures are placed in common modules under `arch/src/`.
 
-系统服务依赖 runtime 使用内核能力。
-服务 crate 同时提供供其他服务链接的客户端库。
-例如 `components/fs/` 中既有 File 客户端，也有 fs 二进制：init 链接前者编码读取请求，后者在自己的 Task 中处理请求。
+System services depend on the runtime to use kernel capabilities.
+Service crates also provide client libraries for other services to link against.
+For example, `components/fs/` contains both the File client and the fs binary: init links the former to encode read requests, and the latter handles requests in its own Task.
 
-## 内核目录
+## Kernel Directories
 
-| 模块 | 内容 |
+| Module | Contents |
 |---|---|
-| `kernel/src/boot/` | 启动信息、内核初始化、首个程序与启动资源交付 |
-| `kernel/src/hardware/` | CPU、MMU、执行上下文、Trap、时钟和设备访问接口 |
-| `kernel/src/memory/` | 页框、分配器、映射、地址空间、直接映射和内核堆 |
-| `kernel/src/task/` | Task 生命周期、对象与句柄表 |
-| `kernel/src/thread/` | 线程、调度、等待、截止时间和用户态执行 |
-| `kernel/src/ipc/` | 通道、调用、响应、事件、定时器及多对象等待 |
-| `kernel/src/device/` | 设备资源注册、授权、PCI 与 DMA 生命周期 |
-| `kernel/src/syscall/` | 原生对象方法的鉴权和分派 |
-| `kernel/src/logger/` | 内核日志、Sink 和记录缓冲区 |
-| `kernel/src/trap.rs` 与 `trap/` | Trap 分派与用户态异常交付 |
+| `kernel/src/boot/` | Boot information, kernel initialization, the first program, and boot resource delivery |
+| `kernel/src/hardware/` | CPU, MMU, execution context, Trap, clock, and device access interfaces |
+| `kernel/src/memory/` | Page frames, allocator, mapping, address space, direct mapping, and kernel heap |
+| `kernel/src/task/` | Task lifecycle, objects, and handle table |
+| `kernel/src/thread/` | Threads, scheduling, waiting, deadlines, and user-space execution |
+| `kernel/src/ipc/` | Channels, calls, replies, events, timers, and multi-object waiting |
+| `kernel/src/device/` | Device resource registration, authorization, PCI and DMA lifecycle |
+| `kernel/src/syscall/` | Permission checking and dispatch of native object methods |
+| `kernel/src/logger/` | Kernel logging, Sink, and record buffers |
+| `kernel/src/trap.rs` and `trap/` | Trap dispatch and user-space exception delivery |
 
-查找一项跨层功能时，可以沿接口继续阅读。
-例如，用户映射从 `syscall` 进入 `memory`，页表管理调用 `hardware::mmu`，对应架构的页表项编码位于 `arch`。
+To trace a cross-layer feature, follow the interfaces.
+For example, user mapping enters `memory` from `syscall`, page table management calls `hardware::mmu`, and the page table entry encoding for the corresponding architecture lives in `arch`.
 
-## 实现约束与测试位置
+## Implementation Constraints and Test Locations
 
-实现遵循以下规则：
+The implementation follows these rules:
 
-| 范围 | `unsafe` | 条件编译 |
+| Scope | `unsafe` | Conditional Compilation |
 |---|---|---|
-| kernel 实现、kernel-tests、abi | 禁止 | 禁止 |
-| `kernel/tests/` | 允许 | 禁止 |
-| `components/runtime/` | 允许 | 允许 |
-| 其他 `components/` | 禁止 | 禁止 |
-| `arch/` | 允许 | 允许 |
+| kernel implementation, kernel-tests, abi | Forbidden | Forbidden |
+| `kernel/tests/` | Allowed | Forbidden |
+| `components/runtime/` | Allowed | Allowed |
+| Other `components/` | Forbidden | Forbidden |
+| `arch/` | Allowed | Allowed |
 
-Rust 实现中的安全前提和注释规则见[贡献规范](guidelines.md)。
+See the [Contribution Guidelines](guidelines.md) for safety preconditions and comment rules in Rust implementations.
 
-可以在宿主机执行的集成测试放在对应 crate 的 `tests/` 中。
-需要真实页表、异常入口、线程切换或设备的测试由架构测试映像和组件程序承载，通用内核场景放在 `kernel-tests`。
-测试布局见[测试与调试](../tools/testing.md)。
+Integration tests that can run on the host go in the `tests/` directory of the corresponding crate.
+Tests that require real page tables, exception entry points, thread switching, or devices are carried by architecture test images and component programs; general kernel scenarios go in `kernel-tests`.
+See [Testing and Debugging](../tools/testing.md) for the test layout.
 
-## 构建文件与文档
+## Build Files and Documentation
 
-根目录的 `Cargo.toml` 维护工作区成员、共享版本、lint 和构建配置。
-`Cargo.lock` 固定工作区的依赖解析结果，`.cargo/config.toml` 定义 `cargo xtask` 别名。
-架构链接脚本放在 `arch/src/<架构>/link.ld`，原生 Rust 程序的公共链接脚本放在 `components/runtime/link.ld`。
+The root `Cargo.toml` maintains workspace members, shared versions, lints, and build configuration.
+`Cargo.lock` pins the workspace dependency resolution, and `.cargo/config.toml` defines the `cargo xtask` alias.
+Architecture linker scripts live in `arch/src/<arch>/link.ld`, and the common linker script for native Rust programs lives in `components/runtime/link.ld`.
 
-本书位于 `book/`，目录由 `book/src/SUMMARY.md` 定义。
-根目录 `CONTRIBUTING.md` 是贡献规范的维护位置，手册通过 include 引入它。
+This book is in `book/`, and its table of contents is defined by `book/src/SUMMARY.md`.
+The root `CONTRIBUTING.md` is where the contribution guidelines are maintained; the handbook includes it.

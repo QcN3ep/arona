@@ -1,77 +1,77 @@
-# 设备资源管理
+# Device Resource Management
 
-UART 驱动开始收发前，会先从设备目录找到 UART，申请所在资源组，再映射寄存器并绑定中断。
-这些步骤由内核设备模块管理，完成后 devmgr 的用户态驱动便能操作设备。
-同一套资源管理还覆盖 PCI 设备、DMA 映射和退出时的撤销。
+Before a UART driver starts sending or receiving, it finds the UART in the device directory, claims its resource group, and then maps the registers and binds the interrupt.
+These steps are managed by the kernel device module, and once they complete, the user-mode driver in devmgr can operate the device.
+The same resource management also covers PCI devices, DMA mappings, and revocation on exit.
 
-## 设备目录与资源组
+## Device Directory and Resource Groups
 
-设备目录从 `HardwareInfo` 建立，并加入 PCI 枚举得到的设备。
-每项保存设备标识、位置、父设备、名称、匹配身份、MMIO、中断及属性。
-用户通过 DeviceSet 的 `NEXT`、`DESCRIBE` 和 `READ` 枚举并读取字段。
-变长字段支持按偏移读取，返回实际复制长度。
+The device directory is built from `HardwareInfo` and includes devices found by PCI enumeration.
+Each entry stores the device identifier, location, parent device, name, match identity, MMIO, interrupts, and attributes.
+Users enumerate entries and read fields through DeviceSet's `NEXT`, `DESCRIBE`, and `READ`.
+Variable-length fields can be read by offset, and the actual number of bytes copied is returned.
 
-`DeviceUsePolicy` 区分内核保留与可交给用户的设备。
-用户设备按照资源关系形成授权组，`CLAIM_GROUP` 对整组建立 Device 能力。
-同一资源的占用与冲突在目录状态中检查。
+`DeviceUsePolicy` distinguishes devices reserved for the kernel from those that can be handed to users.
+User devices form authorization groups according to resource relationships, and `CLAIM_GROUP` establishes a Device capability for an entire group.
+Occupancy and conflicts over the same resource are checked in the directory state.
 
-设备授权令牌携带开放引用计数与撤销状态。
-复制 Device 句柄共享同一授权。
-最后一个开放 Device 释放时撤销授权，再由内部引用完成映射和通知的清理。
+A device authorization token carries an open reference count and a revocation state.
+Duplicated Device handles share the same authorization.
+When the last open Device is released, the authorization is revoked, and internal references then complete the cleanup of mappings and notifications.
 
-## MMIO 映射
+## MMIO Mappings
 
-Device 的 `MAP` 指定设备成员和寄存器区域编号。
-内核确认该成员属于授权组，再在调用者地址空间中建立设备映射并返回虚拟范围。
-映射保留后备资源与地址空间引用，设备解除映射和授权撤销时由设备模块回收。
+Device's `MAP` specifies a device member and a register region number.
+The kernel verifies that the member belongs to the authorized group, then establishes a device mapping in the caller's address space and returns the virtual range.
+The mapping retains references to the backing resource and the address space, and the device module reclaims it when the device unmaps or the authorization is revoked.
 
-用户驱动通过 runtime 的 MMIO 访问类型读取、写入寄存器。
-寄存器宽度、偏移和协议由具体驱动决定。
-内核控制可映射范围与映射属性。
+User drivers read and write registers through the runtime's MMIO access types.
+Register widths, offsets, and protocols are determined by the specific driver.
+The kernel controls the mappable ranges and mapping attributes.
 
-内核自身使用的中断控制器等设备由 `MmioMapper` 按硬件目录中的范围建立映射。
-它通过同一套内存管理能力持有自己的寄存器映射。
+Devices used by the kernel itself, such as the interrupt controller, are mapped by `MmioMapper` according to the ranges in the hardware directory.
+It holds its own register mappings through the same memory management capabilities.
 
-## 中断授予与确认
+## Interrupt Grants and Acknowledgment
 
-驱动把某个设备中断绑定到 Event 和非零通知位。
-内核保存中断源、授权、事件引用及 pending 状态。
-外部中断分派器认领输入，将该源标记为待处理并通知 Event。
+A driver binds a device interrupt to an Event and a non-zero notification bit.
+The kernel stores the interrupt source, the authorization, the event reference, and the pending state.
+The external interrupt dispatcher claims the input, marks the source as pending, and notifies the Event.
 
-驱动在事件循环中处理设备寄存器和队列，再调用 `ACK`。
-ACK 完成本轮通知的确认并恢复输入。
-解绑、事件关闭和授权撤销会移除路由并屏蔽对应中断。
+The driver handles device registers and queues in its event loop, then calls `ACK`.
+ACK acknowledges the current notification round and restores input.
+Unbinding, closing the event, and revoking the authorization remove the route and mask the corresponding interrupt.
 
-## PCI 资源
+## PCI Resources
 
-PCI host 的 ECAM、内存窗口和中断路由来自硬件描述。
-内核枚举总线上的 function，读取标识和类型，处理桥与 BAR 资源，建立父子关系和设备组。
-固件已配置的桥总线号按现有拓扑使用。
+A PCI host's ECAM, memory windows, and interrupt routing come from the hardware description.
+The kernel enumerates functions on the bus, reads their identifiers and types, handles bridge and BAR resources, and establishes parent-child relationships and device groups.
+Bus numbers of bridges already configured by firmware are used as the existing topology.
 
-PCI 配置空间访问、地址转换和内存窗口校验经硬件接口完成。
-发布到设备目录的 BAR 使用内存资源。
-PCI bus master 状态由 DMA 生命周期管理路径控制。
+PCI configuration space access, address translation, and memory window validation are performed through hardware interfaces.
+BARs published to the device directory use memory resources.
+PCI bus master state is controlled by the DMA lifetime management path.
 
-## DMA 对象与后备内存
+## DMA Objects and Backing Memory
 
-VirtIO 驱动在队列中填写设备可访问的总线地址，设备据此读写缓冲区。
-内核以 DmaDomain 保存这些映射及后备页框，并记录设备当前是否可以进行 DMA。
-Device 为组内设备创建这一对象。
-对象初始为 `Quiesced`，登记映射后可 `RESUME` 为 `Active`。
-驱动停止队列并排空在途访问后调用 `QUIESCE`，随后可以解除映射或撤销。
+VirtIO drivers fill queues with bus addresses that the device can access, and the device uses them to read and write buffers.
+The kernel keeps these mappings and their backing page frames in a DmaDomain, and records whether the device can currently perform DMA.
+Device creates this object for devices in its group.
+The object starts as `Quiesced`; after mappings are registered, `RESUME` moves it to `Active`.
+After the driver stops the queues and drains in-flight accesses, it calls `QUIESCE`; the mappings can then be removed or revoked.
 
-| 状态 | 含义 |
+| State | Meaning |
 |---|---|
-| `Quiesced` | 设备 DMA 静止，可调整资源 |
-| `Active` | 设备可以使用已登记的 DMA 范围 |
-| `Revoked` | 授权已撤销 |
-| `Poisoned` | 资源关闭或硬件启停出现无法继续的状态 |
+| `Quiesced` | Device DMA is quiescent; resources can be adjusted |
+| `Active` | The device may use the registered DMA ranges |
+| `Revoked` | The authorization has been revoked |
+| `Poisoned` | Resources were closed or hardware start/stop reached a state from which it cannot continue |
 
-映射按分配内的页框范围登记，检查物理连续性、设备地址宽度和总线地址转换。
-`ToDevice` 保留读访问，设备写入方向保留写访问。
-页框引用持续到 DMA 映射安全解除，CPU 映射与 DMA 的写入、执行冲突由页框访问记录检查。
+Mappings are registered per page frame range within an allocation, checking physical contiguity, device address width, and bus address translation.
+`ToDevice` retains read access, and the device-write direction retains write access.
+Page frame references persist until the DMA mapping is safely removed, and conflicts between CPU mappings and DMA writes or execution are checked through page frame access records.
 
-当前使用 `CompetitionTrusted` DMA 配置。
-设备访问使用平台总线地址，生命周期操作包含同步以及 PCI bus master 的控制。
-活动 DMA 状态下丢失所有者时，设备可能仍在访问缓冲区。
-这一错误路径保留页框并停止机器，资源状态进入 `Poisoned`。
+The current configuration uses the `CompetitionTrusted` DMA profile.
+Device accesses use platform bus addresses, and lifetime operations include synchronization and control of the PCI bus master.
+If ownership is lost while DMA is active, the device may still be accessing buffers.
+This error path retains the page frames and halts the machine, and the resource state becomes `Poisoned`.

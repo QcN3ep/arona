@@ -1,48 +1,48 @@
-# 系统映像
+# System Images
 
-一次系统构建生成内核 ELF `arch` 和启动归档 `initramfs.cpio`。
-内核包含特权态代码，归档保存 init、其他系统服务和打包进去的应用文件。
-默认构建把归档嵌入 ELF，分发时一个 `arch` 文件就能带上完整的启动内容；独立加载模式则通过 QEMU 的 `-initrd` 传递归档。
+A system build produces the kernel ELF `arch` and the boot archive `initramfs.cpio`.
+The kernel contains privileged-mode code, and the archive stores init, the other system services, and the packaged application files.
+The default build embeds the archive into the ELF, so a single `arch` file carries the complete boot contents when distributed; standalone loading mode instead passes the archive through QEMU's `-initrd`.
 
-## 启动归档的内容
+## Contents of the Boot Archive
 
-归档中的系统服务位于 `/bin`：
+The system services in the archive are located in `/bin`:
 
-| 归档路径 | 程序 |
+| Archive path | Program |
 |---|---|
-| `/bin/init` | 首个原生程序，负责启动其他服务与配置的应用 |
-| `/bin/devmgr` | 设备管理服务 |
-| `/bin/logger` | 日志服务 |
-| `/bin/fs` | 文件服务 |
-| `/bin/linux` | Linux 兼容服务 |
+| `/bin/init` | The first native program; starts the other services and the configured applications |
+| `/bin/devmgr` | Device management service |
+| `/bin/logger` | Log service |
+| `/bin/fs` | File service |
+| `/bin/linux` | Linux compatibility service |
 
-归档中的文件名使用 `bin/init` 等相对路径，文件服务将它们呈现为从 `/` 开始的路径。
-系统服务采用同一架构、同一 debug 或 release 配置构建，归档中的服务 ELF 会去除符号。
+File names in the archive use relative paths such as `bin/init`, and the file service presents them as paths starting from `/`.
+The system services are built for the same architecture and the same debug or release profile, and the service ELFs in the archive are stripped of symbols.
 
-启动归档使用未压缩的 cpio newc 格式。
-每项由固定长度的 ASCII 十六进制头、以 NUL 结束的文件名和文件数据构成，文件名及数据的结尾按 4 字节对齐。
-末尾使用 `TRAILER!!!` 表示归档结束。
-格式说明见 Linux 的 [initramfs buffer format](https://www.kernel.org/doc/html/latest/driver-api/early-userspace/buffer-format.html)。
+The boot archive uses the uncompressed cpio newc format.
+Each entry consists of a fixed-length ASCII hexadecimal header, a NUL-terminated file name, and file data, with the file name and data padded to 4-byte boundaries.
+A `TRAILER!!!` entry at the end marks the end of the archive.
+For a description of the format, see Linux's [initramfs buffer format](https://www.kernel.org/doc/html/latest/driver-api/early-userspace/buffer-format.html).
 
-## 内嵌与独立加载
+## Embedded and Standalone Loading
 
-| 模式 | 构建选项 | 启动时需要的文件 |
+| Mode | Build option | Files needed at boot |
 |---|---|---|
-| 内嵌 | `--initramfs embedded`，也是默认值 | `arch` |
-| 独立加载 | `--initramfs external` | `arch` 与 `initramfs.cpio` |
+| Embedded | `--initramfs embedded`, also the default | `arch` |
+| Standalone | `--initramfs external` | `arch` and `initramfs.cpio` |
 
-内嵌构建启用 `arona-arch` 的 `embedded-initramfs` feature。
-构建脚本通过 `ARONA_INITRAMFS` 找到归档，架构层将其放入内核 ELF 的 `.initramfs` 段，并由只读映像区域承载。
-打包阶段生成的 `initramfs.cpio` 也保存在构建目录中。
+The embedded build enables the `embedded-initramfs` feature of `arona-arch`.
+The build script locates the archive via `ARONA_INITRAMFS`, the architecture layer places it in the `.initramfs` section of the kernel ELF, and it is carried by the read-only image region.
+The `initramfs.cpio` produced during packaging is also kept in the build directory.
 
-独立加载模式把归档留在内核 ELF 之外。
-`xtask run` 使用 QEMU 的 `-initrd` 传递归档，架构启动代码从交接信息中取得其物理范围。
-两种模式最终都定位同一个归档中的 `/bin/init`，并使用相同的内核启动接口。
+Standalone loading mode leaves the archive outside the kernel ELF.
+`xtask run` passes the archive with QEMU's `-initrd`, and the architecture boot code obtains its physical range from the handoff information.
+Both modes ultimately locate `/bin/init` in the same archive and use the same kernel boot interface.
 
-## 添加外部根目录
+## Adding an External Root Directory
 
-`--rootfs PATH` 把一个宿主机目录的内容追加到归档。
-例如，将 BusyBox、Shell 链接和启动配置组织为：
+`--rootfs PATH` appends the contents of a host directory to the archive.
+For example, arrange BusyBox, the shell links, and the boot configuration as:
 
 ```text
 rootfs/
@@ -53,40 +53,40 @@ rootfs/
     init.toml
 ```
 
-将这个目录加入 RISC-V 映像：
+Add this directory to the RISC-V image:
 
 ```sh
 cargo xtask run riscv64 --release --rootfs ./rootfs
 ```
 
-这里的 `bin/busybox` 是 RISC-V 的 Linux 静态 ELF，`bin/sh` 指向它，`etc/init.toml` 告诉 init 怎样启动 Shell。
-对应配置见[启动配置与使用](configuration.md)。
+Here `bin/busybox` is a Linux static ELF for RISC-V, `bin/sh` points to it, and `etc/init.toml` tells init how to start the shell.
+For the corresponding configuration, see [Boot Configuration and Usage](configuration.md).
 
-打包器支持普通文件、目录和符号链接，保留 Unix 权限位，并按文件名排序遍历目录。
-符号链接保存其目标文本，打包时不跟随链接读取目标。
-文件路径和符号链接目标采用 UTF-8。
-五个系统服务的路径由打包器保留，外部目录中的同名项在打包时报告冲突。
+The packager supports regular files, directories, and symbolic links, preserves Unix permission bits, and walks directories in file-name order.
+Symbolic links store their target text; packaging does not follow links to read the target.
+File paths and symbolic link targets use UTF-8.
+The paths of the five system services are reserved by the packager, and entries with the same name in external directories are reported as conflicts during packaging.
 
-## 从归档到首个程序
+## From Archive to First Program
 
-架构启动代码先选择归档来源，再扫描 newc 条目并定位 init。
-它检查 init 的 ELF 机器类型、段范围、入口、权限等布局信息，作为 `BootProgram` 交给内核。
-启动加载器接受与平台匹配的静态 ELF64 `ET_EXEC`，校验可加载段的 R、RW 或 RX 权限。
+The architecture boot code first selects the archive source, then scans the newc entries and locates init.
+It checks init's ELF machine type, segment ranges, entry, permissions, and other layout information, and passes it to the kernel as a `BootProgram`.
+The boot loader accepts static ELF64 `ET_EXEC` binaries matching the platform and validates that loadable segments have R, RW, or RX permissions.
 
-内核根据程序段建立 init 的映射、栈和线程，并通过 bootstrap 通道交付三项资源：
+The kernel sets up init's mappings, stack, and thread from the program segments, and delivers three resources through the bootstrap channel:
 
-| 资源 | 用途 |
+| Resource | Purpose |
 |---|---|
-| 归档的 `FrameAllocation` 句柄及实际字节数 | 让 init 读取服务程序，并把归档交给文件服务 |
-| `DeviceSet` 句柄 | 授权并分配设备资源 |
-| `KernelLog` 句柄 | 交给日志服务读取内核日志 |
+| The archive's `FrameAllocation` handle and its actual byte count | Lets init read the service programs and hand the archive to the file service |
+| `DeviceSet` handle | Authorizes and allocates device resources |
+| `KernelLog` handle | Handed to the log service to read kernel logs |
 
-到这里，init 已经拥有加载其他服务的程序数据，以及分配设备和读取内核日志的能力。
-它先从归档启动 fs，随后通过文件接口读取、解析和加载其余服务。
+At this point init has the program data for loading other services, along with the capabilities to allocate devices and read kernel logs.
+It first starts fs from the archive, then reads, parses, and loads the remaining services through the file interface.
 
-## 手动启动 QEMU
+## Starting QEMU Manually
 
-内嵌归档的 RISC-V：
+RISC-V with an embedded archive:
 
 ```sh
 cargo xtask build riscv64 --release --initramfs embedded
@@ -96,7 +96,7 @@ qemu-system-riscv64 \
   -kernel target/riscv64gc-unknown-none-elf/release/arch
 ```
 
-独立归档的 LoongArch：
+LoongArch with a standalone archive:
 
 ```sh
 cargo xtask build loongarch64 --release --initramfs external
@@ -106,5 +106,5 @@ qemu-system-loongarch64 \
   -initrd target/loongarch64-unknown-none/release/initramfs.cpio
 ```
 
-手动命令也便于添加磁盘等 QEMU 设备。
-`xtask run` 的固定机器参数见[快速开始](getting-started.md)。
+Manual commands also make it easy to add QEMU devices such as disks.
+For the fixed machine arguments of `xtask run`, see [Getting Started](getting-started.md).

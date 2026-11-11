@@ -1,120 +1,120 @@
-# 内核内存管理
+# Kernel Memory Management
 
-为程序建立一块内存时，内核先分配物理页框，再把它们映射到虚拟地址；分配和映射分别持有资源，最后一次引用释放后才回收页框。
-`kernel::memory` 围绕这条生命周期组织物理分配、地址空间、RAM direct map 和内核堆。
-公共入口是全局的 `MemoryManager`，通过 `memory::manager()` 访问，页表硬件操作由 MMU 接口完成。
+When establishing a block of memory for a program, the kernel first allocates physical page frames, then maps them into virtual addresses; allocation and mapping each hold resources, and the page frames are reclaimed only after the last reference is released.
+`kernel::memory` organizes physical allocation, address spaces, the RAM direct map, and the kernel heap around this lifetime.
+The public entry point is the global `MemoryManager`, accessed via `memory::manager()`; page table hardware operations are performed through the MMU interface.
 
-## 地址与物理区域
+## Addresses and Physical Regions
 
-`PhysRange` 和 `VirtRange` 分别描述物理、虚拟字节范围，使用左闭右开区间 `[start, end)`。
-页大小 `PAGE_SIZE` 为 4096 字节。
-启动内存图将这些范围按用途分类：
+`PhysRange` and `VirtRange` describe physical and virtual byte ranges respectively, using the half-open interval `[start, end)`.
+The page size `PAGE_SIZE` is 4096 bytes.
+The boot memory map classifies these ranges by purpose:
 
-| 状态 | 含义 |
+| State | Meaning |
 |---|---|
-| `Available` | 可纳入页框分配器 |
-| `BootReserved` | 启动期间保留的范围 |
-| `Reserved` | 持续保留 |
-| `NoMap` | 持续保留且禁止建立映射 |
+| `Available` | Can be included in the page frame allocator |
+| `BootReserved` | Range reserved during boot |
+| `Reserved` | Permanently reserved |
+| `NoMap` | Permanently reserved and mappings are prohibited |
 
-内存图最多容纳 256 个切分区域。
-保留操作覆盖相应页的完整包络，可用范围按完整页纳入管理。
+The memory map holds at most 256 split regions.
+A reservation covers the full envelope of the corresponding pages; available ranges are managed in whole pages.
 
-## 页框标识、分配与引用
+## Page Frame Identity, Allocation, and References
 
-| 类型 | 表达的内容 |
+| Type | What it expresses |
 |---|---|
-| `Frame` | 一个对齐的物理页框地址，可复制 |
-| `FrameAllocation` | 一次分配的所有权，可以包含多个页框 |
-| `FrameAllocationReference` | 对整次分配的存活引用 |
-| `FrameAccessReference` | 对某个页框的读、写或执行访问 |
-| `ReservedRangeReference` | 对保留物理范围的引用 |
+| `Frame` | An aligned physical page frame address, copyable |
+| `FrameAllocation` | Ownership of one allocation, may contain multiple page frames |
+| `FrameAllocationReference` | A live reference to the entire allocation |
+| `FrameAccessReference` | Read, write, or execute access to a particular page frame |
+| `ReservedRangeReference` | A reference to a reserved physical range |
 
-`FrameAllocation::frames()` 依次产出 `Frame` 标识。
-迭代得到的地址用来定位页框，分配本身由 `FrameAllocation` 及其引用持有。
-分配记录还包含 `FrameOwner`、`FramePurpose` 以及映射、DMA 和临时引用计数。
+`FrameAllocation::frames()` yields `Frame` identities in order.
+The addresses obtained from iteration locate page frames; the allocation itself is held by `FrameAllocation` and its references.
+An allocation record also contains a `FrameOwner`, a `FramePurpose`, and mapping, DMA, and temporary reference counts.
 
-分配器为 Kernel 和 User 维护独立的空闲页框链。
-初始化时从可分配内存中划出最多 32 MiB 的 Kernel 池，其余归入 User 池。
-一次多页框分配从对应空闲链取出页框，并用元数据连接成一个分配对象。
-这些页框可以位于不同的物理位置，虚拟映射依照迭代顺序把它们排列在连续的虚拟范围中。
-`MemoryManager::allocate` 在成功返回前清零所分配的全部页框。
+The allocator maintains separate free page frame lists for Kernel and User.
+At initialization, up to 32 MiB is set aside from allocatable memory for the Kernel pool, and the rest goes to the User pool.
+A multi-page-frame allocation takes page frames from the corresponding free list and links them into one allocation object using metadata.
+These page frames may be at different physical locations; the virtual mapping arranges them in a contiguous virtual range in iteration order.
+`MemoryManager::allocate` zeroes all allocated page frames before returning successfully.
 
-分配器元数据本身放在专用物理页框中。
-`ManagedRegion` 描述受管区域，`FrameMetadata` 管理记录存储，`FrameRecord` 保存单个页框及所属分配的信息。
-`MemoryStats` 分别报告两个资源池的总量、空闲量、保留页框和元数据页框数量。
+Allocator metadata itself resides in dedicated physical page frames.
+`ManagedRegion` describes a managed region, `FrameMetadata` manages record storage, and `FrameRecord` stores information about a single page frame and the allocation it belongs to.
+`MemoryStats` separately reports the total, free, reserved page frame, and metadata page frame counts for the two pools.
 
-例如，程序分配两个页框并建立映射后，可以关闭分配句柄，继续通过映射访问数据。
-映射引用持有整次分配；撤销映射、释放最后一份引用后，页框回到原资源池。
+For example, after a program allocates two page frames and establishes a mapping, it can close the allocation handle and continue to access the data through the mapping.
+The mapping reference holds the entire allocation; after the mapping is revoked and the last reference is released, the page frames return to their original pool.
 
-## 地址空间与映射记录
+## Address Spaces and Mapping Records
 
-`AddressSpace` 持有页表和映射索引。
-用户地址空间具有明确的用户边界；内核地址空间管理高半区范围。
-用户页表共享内核分支，并保留对内核页表的引用关系。
+`AddressSpace` holds a page table and a mapping index.
+A user address space has an explicit user boundary; the kernel address space manages the high-half range.
+User page tables share the kernel branch and retain a reference relationship to the kernel page table.
 
-映射入口接受 `&FrameAllocation` 或 `FrameAllocationReference`，同时指定分配中的页框范围和 `MappingOptions`。
-`map` 自动选择虚拟地址，`map_at` 使用指定范围。
-选项包含访问权限、最大权限和地址对齐要求。
+A mapping entry point accepts a `&FrameAllocation` or a `FrameAllocationReference`, along with the range of page frames within the allocation and `MappingOptions`.
+`map` chooses a virtual address automatically; `map_at` uses a specified range.
+Options include access permissions, maximum permissions, and address alignment requirements.
 
-映射索引采用 AVL 树，按范围起始地址排序。
-索引用于检查重叠、寻找空闲范围、查询映射和处理范围切分。
-映射变化还带有 generation，内部所有者据此识别自己建立的映射。
+The mapping index uses an AVL tree, sorted by range start address.
+The index is used to check for overlaps, find free ranges, query mappings, and handle range splitting.
+Mapping changes also carry a generation, by which internal owners identify the mappings they established.
 
-| 操作 | 行为 |
+| Operation | Behavior |
 |---|---|
-| `map`、`map_at` | 建立后备页框与虚拟范围的联系 |
-| `reserve`、`reserve_at` | 占用虚拟地址范围 |
-| `unreserve` | 释放保留范围 |
-| `unmap` | 撤销映射并释放映射引用 |
-| `protect` | 在最大权限内修改映射权限 |
-| `query`、`query_next` | 查询包含指定地址或其后的映射 |
-| `translate` | 查询当前地址空间中的虚拟到物理转换 |
+| `map`, `map_at` | Establish the association between backing page frames and a virtual range |
+| `reserve`, `reserve_at` | Occupy a virtual address range |
+| `unreserve` | Release a reserved range |
+| `unmap` | Revoke a mapping and release the mapping reference |
+| `protect` | Modify mapping permissions within the maximum permissions |
+| `query`, `query_next` | Query the mapping containing a given address or following it |
+| `translate` | Query the virtual-to-physical translation in the current address space |
 
-用户映射记录的全局上限为 65536，保留、准备和已映射记录统一计数。
-例如，只解除一段映射中间的页时，两侧保留的范围会成为独立记录。
-内核在修改前预留切分所用的记录，失败时释放预留量。
-页表编辑通过内存模块内部的 `PageTable` 完成，公开映射入口由 `AddressSpace` 统一维护。
+The global limit on user mapping records is 65536; reserved, prepared, and mapped records are all counted.
+For example, when unmapping only the pages in the middle of a range, the remaining mapped ranges on either side become independent records.
+The kernel reserves the records needed for splitting before modification and releases the reservation on failure.
+Page table edits are performed through the `PageTable` internal to the memory module; the public mapping entry points are maintained uniformly by `AddressSpace`.
 
-## 权限与别名
+## Permissions and Aliases
 
-同一个物理页框可能同时出现在用户映射和内核 direct map 中。
-因此权限检查同时考虑这些别名：映射具有只读、读写、读执行、仅执行和无访问等权限，页框访问记录检查写入与执行之间的冲突。
-将某个物理页框用于可执行映射时，内存管理器同时调整 direct map 对该页框的可写权限，并同步指令访问。
+The same physical page frame may appear in both a user mapping and the kernel direct map.
+Permission checks therefore consider these aliases together: mappings have read-only, read-write, read-execute, execute-only, and no-access permissions, and page frame access records check for conflicts between writing and execution.
+When a physical page frame is used for an executable mapping, the memory manager also adjusts the direct map's write permission for that page frame and synchronizes instruction access.
 
-`protect` 对整段映射建立修改记录，再提交页表与访问引用变化。
-映射建立和权限修改保存中间状态，失败时回滚并返回 `MemoryError`。
-用户内存读写使用固定后备页框的访问对象，使系统调用在跨页访问期间保有所需引用。
+`protect` establishes a modification record for the entire mapping, then commits the page table and access reference changes.
+Mapping establishment and permission modification save intermediate state and roll back on failure, returning a `MemoryError`.
+User memory reads and writes use access objects with pinned backing page frames, so a system call retains the needed references during a cross-page access.
 
-## RAM direct map 与设备映射
+## RAM Direct Map and Device Mappings
 
-RAM direct map 为受管 RAM 建立内核虚拟访问路径。
-它使用正式页表，并随内核映射共享到用户页表的内核部分。
-内存管理器经这条路径读写页框，例如清零新分配的内存或复制程序段。
-启动时的物理访问窗口也保留给底层操作使用。
+The RAM direct map establishes a kernel virtual access path for managed RAM.
+It uses the final page tables and is shared with the kernel portion of user page tables along with the kernel mappings.
+The memory manager reads and writes page frames through this path, for example to zero newly allocated memory or copy program segments.
+The boot-time physical access window is also retained for low-level operations.
 
-设备 MMIO 通过 `DeviceMapping` 和用户设备映射单独管理。
-设备范围、内存属性和资源授权由设备模块检查。
-两种映射都占用虚拟范围，后备资源分别由页框分配和设备授权持有。
+Device MMIO is managed separately through `DeviceMapping` and user device mappings.
+Device ranges, memory attributes, and resource authorization are checked by the device module.
+Both kinds of mapping occupy virtual ranges; their backing resources are held by page frame allocations and device authorization respectively.
 
-## 内核堆
+## Kernel Heap
 
-`HeapAllocator` 从 Kernel 页框池获得内存，并在内核地址空间中建立映射。
-小对象使用按 2 的幂划分的 8 个尺寸类别，范围为 16 到 2048 字节；较大或需要更高对齐的对象使用独立分配。
-小对象的占用状态通过位图记录。
+`HeapAllocator` obtains memory from the Kernel page frame pool and establishes mappings in the kernel address space.
+Small objects use 8 size classes divided by powers of 2, ranging from 16 to 2048 bytes; larger objects or those requiring higher alignment use dedicated allocations.
+The occupancy state of small objects is recorded in bitmaps.
 
-分配结果通过所有权类型进入内核数据结构：
+Allocation results enter kernel data structures through ownership types:
 
-| 类型 | 用途 |
+| Type | Purpose |
 |---|---|
-| `HeapAllocation` | 持有一块满足 `Layout` 的堆内存 |
-| `HeapBox<T>` | 拥有一个堆对象 |
-| `HeapArc<T>` | 共享持有一个堆对象 |
+| `HeapAllocation` | Holds a block of heap memory satisfying a `Layout` |
+| `HeapBox<T>` | Owns a heap object |
+| `HeapArc<T>` | Holds a heap object with shared ownership |
 
-`allocate_pinned` 可取得固定位置的堆对象。
-小对象反复分配时，空闲 slab 留在缓存中供同类对象复用。
-`reclaim_heap` 回收空闲缓存并返回归还的页框数量。
-`HeapStats` 提供堆占用与缓存的统计。
+`allocate_pinned` can obtain a heap object at a fixed location.
+When small objects are allocated repeatedly, free slabs remain cached for reuse by objects of the same class.
+`reclaim_heap` reclaims free caches and returns the number of page frames returned.
+`HeapStats` provides heap usage and cache statistics.
 
-内核线程栈使用 `KernelStack` 持有页框和映射，栈旁建立保护页。
-栈在对应执行上下文离开后才由调度路径回收。
+Kernel thread stacks use `KernelStack` to hold page frames and a mapping, with a guard page established beside the stack.
+A stack is reclaimed by the scheduling path only after the corresponding execution context has left it.

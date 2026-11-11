@@ -1,66 +1,66 @@
-# 构建与运行工作流
+# Build and Run Workflow
 
-修改内核或服务后，通常使用 xtask 重建映像并运行 QEMU；检查某个 crate 时，直接调用 Cargo 即可。
-xtask 串起跨 crate 的构建与打包步骤，内部继续使用 Cargo 的依赖解析和增量编译。
+After changing the kernel or a service, you usually use xtask to rebuild images and run QEMU; to check an individual crate, calling Cargo directly is enough.
+xtask strings together cross-crate build and packaging steps while continuing to use Cargo's dependency resolution and incremental compilation internally.
 
-## 常用循环
+## Common Loop
 
 ```sh
 cargo xtask build riscv64 --release
 cargo xtask run riscv64 --release
 ```
 
-`build` 适合检查构建产物，`run` 在完成相同构建后启动 QEMU。
-切换平台时将参数改为 `loongarch64`。
-省略 `--release` 使用 debug 配置。
+`build` is suitable for checking build artifacts, and `run` starts QEMU after performing the same build.
+To switch platforms, change the argument to `loongarch64`.
+Omitting `--release` uses the debug profile.
 
-一次正常构建按以下顺序执行：
+A normal build proceeds in the following order:
 
-1. 用 nightly 编译 init、devmgr、logger、fs 和 linux。
-2. 将各服务 ELF 与可选外部根目录写入 newc 归档。
-3. 设置归档路径，按选择的内嵌或独立模式构建内核。
-4. run 命令启动指定平台的 QEMU。
+1. Compile init, devmgr, logger, fs, and linux with nightly.
+2. Write the service ELFs and the optional external root directory into a newc archive.
+3. Set the archive path and build the kernel in the selected embedded or standalone mode.
+4. The run command starts QEMU for the specified platform.
 
-子构建使用 `--locked`，并将目标和构建配置统一传给服务与内核。
-服务 ELF 去除符号，内核 ELF 保留相应 Cargo 配置产生的内容。
+Sub-builds use `--locked` and pass the target and build profile uniformly to the services and the kernel.
+Service ELFs are stripped of symbols, while the kernel ELF keeps what the corresponding Cargo profile produces.
 
-## 准备程序和配置
+## Preparing Programs and Configuration
 
-将额外的程序、符号链接和 `/etc/init.toml` 放在一个根目录中：
+Place additional programs, symbolic links, and `/etc/init.toml` in a single root directory:
 
 ```sh
 cargo xtask run riscv64 --release --rootfs ./rootfs
 ```
 
-Linux 静态程序由兼容服务装载；原生服务的链接与入口约定见[编写原生程序](../runtime/programs.md)。
-打包时保留 Unix 权限，可执行权限会参与 Linux 程序装载检查。
+Linux static programs are loaded by the compatibility service; for the linking and entry conventions of native services, see [Writing Native Programs](../runtime/programs.md).
+Packaging preserves Unix permissions, and the executable permission participates in the Linux program load checks.
 
-查看打包结果时，`package-init` 生成归档；`build` 在同样的打包流程后继续生成内核：
+To inspect packaging results, `package-init` produces the archive; `build` continues to the kernel after the same packaging flow:
 
 ```sh
 cargo xtask package-init loongarch64 --release --rootfs ./rootfs
 cargo xtask build loongarch64 --release --initramfs external --rootfs ./rootfs
 ```
 
-独立模式的手动 QEMU 命令见[系统映像](../system/images.md)。
+For manual QEMU commands in standalone mode, see [System Images](../system/images.md).
 
-## 定位构建产物
+## Locating Build Artifacts
 
-默认产物在 `target/<Rust 目标>/<debug 或 release>/`。
-`arch` 为内核 ELF，服务使用各自的二进制名称，`initramfs.cpio` 为正常启动归档。
-为一组构建使用独立缓存目录：
+By default, artifacts are in `target/<Rust target>/<debug or release>/`.
+`arch` is the kernel ELF, the services use their own binary names, and `initramfs.cpio` is the normal boot archive.
+To use a separate cache directory for a set of builds:
 
 ```sh
 CARGO_TARGET_DIR=target/work cargo xtask build riscv64 --release
 ```
 
-xtask 将相对构建目录转换为工作区根下的路径，使内部 Cargo 调用使用同一个目录。
-外部根目录则按用户调用时的工作目录解析。
+xtask resolves a relative build directory against the workspace root so that internal Cargo invocations use the same directory.
+The external root directory, by contrast, is resolved relative to the user's working directory at invocation time.
 
-## 使用 Cargo 检查局部代码
+## Checking Local Code with Cargo
 
-`cargo check` 适合在编辑期间检查类型与接口，Clippy 检查 lint，集成测试验证功能。
-交叉目标与 feature 决定检查哪些实现，例如：
+`cargo check` is suitable for checking types and interfaces while editing, Clippy checks lints, and integration tests verify functionality.
+The cross target and features determine which implementations are checked, for example:
 
 ```sh
 cargo check --locked -p arona-arch --features baremetal \
@@ -69,12 +69,12 @@ cargo +nightly check --locked -p arona-init --features baremetal \
   --target loongarch64-unknown-none
 ```
 
-## 手册工作流
+## Handbook Workflow
 
 ```sh
 cargo xtask book
 cargo xtask book serve --open
 ```
 
-正文位于 `book/src/`，HTML 和 PDF 位于 `target/book/`。
-目录、插件和导出维护见[维护手册](../contributing/book.md)。
+The prose lives in `book/src/`, and the HTML and PDF output in `target/book/`.
+For maintaining the table of contents, plugins, and exports, see the [Maintenance Guide](../contributing/book.md).

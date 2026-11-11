@@ -1,11 +1,11 @@
-# 代码检查
+# Code Checks
 
-代码检查由 Rust 工具和宿主集成测试组成。
-它们检查类型与 lint，以及实际功能行为。
-源码限制是模块边界的项目约定。
-代码审查继续沿资源的创建、使用和释放过程，核对职责、权限与失败后的状态。
+Code checks consist of Rust tooling and host integration tests.
+They check types and lints, and actual functional behavior.
+Source restrictions are project conventions for module boundaries.
+Code review continues along the creation, use, and release of resources, verifying responsibilities, permissions, and the state after failures.
 
-## Rust 检查
+## Rust Checks
 
 ```sh
 cargo fmt --all -- --check
@@ -14,53 +14,53 @@ cargo clippy --locked --workspace --all-targets -- \
 cargo test --locked --workspace --tests
 ```
 
-工作区 lint 将 `unsafe_op_in_unsafe_fn` 与 Clippy correctness 设为拒绝，启用通用 Clippy 检查和不安全代码注释检查。
-`clippy.toml` 的 `check-private-items = true` 将相关检查也应用到私有项，`too-many-lines-threshold = 80` 提供函数规模提示。
+Workspace lints set `unsafe_op_in_unsafe_fn` and Clippy correctness to deny, enabling general Clippy checks and unsafe code comment checks.
+`check-private-items = true` in `clippy.toml` applies the relevant checks to private items as well, and `too-many-lines-threshold = 80` provides a function size hint.
 
 
-## 源码限制
+## Source Restrictions
 
-项目按目录遵循以下规则：
+The project follows these rules by directory:
 
-| 目录 | unsafe | cfg、cfg_attr 与 cfg! |
+| Directory | unsafe | cfg, cfg_attr, and cfg! |
 |---|---|---|
-| `kernel/` 实现 | 禁止 | 禁止 |
-| `kernel/tests/` | 允许 | 禁止 |
-| `kernel-tests/`、`abi/` | 禁止 | 禁止 |
-| `components/runtime/` | 允许 | 允许 |
-| 其他 `components/` | 禁止 | 禁止 |
+| `kernel/` implementation | Forbidden | Forbidden |
+| `kernel/tests/` | Allowed | Forbidden |
+| `kernel-tests/`, `abi/` | Forbidden | Forbidden |
+| `components/runtime/` | Allowed | Allowed |
+| Other `components/` | Forbidden | Forbidden |
 
-架构实现放在 `arch/`，允许使用与硬件操作对应的 `unsafe` 和条件编译。
-
-
-## 文档检查
+Architecture implementations live in `arch/` and may use `unsafe` and conditional compilation corresponding to hardware operations.
 
 
-rustdoc 以拒绝警告的方式构建内核与各目标的接口文档。
-手册构建通过 `cargo xtask book` 检查目录、include、插件和输出。
+## Documentation Checks
 
-## 审查职责和接口
 
-审查可以从一次完整操作入手。
-例如映射用户内存，从 syscall 参数进入地址空间，经过页框引用和页表编辑，再到撤销映射与回收。
-沿途核对状态由谁持有、公开入口更新哪些记录，以及失败路径会留下哪些资源。
-各层的职责为这条路径提供参照：arch 执行硬件操作，kernel 管理资源，服务解释设备与文件语义，runtime 连接程序运行环境与调用接口。
+rustdoc builds interface documentation for the kernel and each target with warnings denied.
+The handbook build checks the table of contents, includes, plugins, and outputs via `cargo xtask book`.
 
-接口审查关注：
+## Review Responsibilities and Interfaces
 
-- 名称是否准确表达对象、所有权或地址标识。
-- 状态是否有一个明确的持有者，派生信息是否能从已有状态取得。
-- 公开入口是否统一维护权限、映射记录和资源生命周期。
-- 输入检查是否通过代码完成，环境要求是否在必要的 `# Safety` 中说明。
-- 失败发生时，哪些操作已提交，句柄、映射、队列和页框分别归谁持有。
-- 锁、关中断范围和等待点是否与调用环境一致。
+A review can start from a single complete operation.
+For example, mapping user memory goes from the system call arguments into the address space, through page frame references and page table edits, and on to unmapping and reclamation.
+Along the way, verify who holds state, which records the public entry points update, and what resources failure paths leave behind.
+The responsibilities of each layer provide a reference for this path: arch performs hardware operations, kernel manages resources, services interpret device and file semantics, and runtime connects the program runtime environment with the call interface.
 
-注释说明代码不能直接表达的必要条件与原因。
-通行术语、清楚的类型和较短的调用路径承担主要的可读性工作。
+Interface review focuses on:
 
-## 按功能验证
+- Whether the name accurately expresses the object, ownership, or address identity.
+- Whether state has a single clear holder, and whether derived information can be obtained from existing state.
+- Whether public entry points uniformly maintain permissions, mapping records, and resource lifetimes.
+- Whether input checks are performed in code, and whether environment requirements are documented in the necessary `# Safety`.
+- When a failure occurs, which operations have committed, and who holds handles, mappings, queues, and page frames respectively.
+- Whether locks, interrupt-disabled regions, and wait points are consistent with the calling environment.
 
-测试围绕正常输入、必要边界与代表性错误组织。
-错误场景同时观察返回值和失败后的资源状态。
-硬件场景通过真实架构实现与 QEMU 设备执行，相关测试与功能改动一起维护。
+Comments explain the necessary conditions and reasons that the code cannot express directly.
+Established terminology, clear types, and shorter call paths carry the main readability work.
+
+## Verification by Feature
+
+Tests are organized around normal inputs, necessary boundaries, and representative errors.
+Error scenarios observe both the return value and the resource state after failure.
+Hardware scenarios are exercised through real architecture implementations and QEMU devices, and related tests are maintained together with feature changes.
 

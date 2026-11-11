@@ -1,86 +1,86 @@
-# Task 与线程
+# Task and Thread
 
-运行一个服务时，内核用 Task 保存它的地址空间、句柄表和用户线程，用 Thread 表示每条可调度的执行流。
-同一 Task 中的线程共享用户映射和句柄表，各自保存寄存器状态与栈。
-这使服务既能使用独立 Task 隔离资源，也能在内部用多个线程共同处理请求。
+When running a service, the kernel uses a Task to hold its address space, handle table, and user threads, and a Thread to represent each schedulable execution flow.
+Threads in the same Task share user mappings and the handle table, and each keeps its own register state and stack.
+This lets a service isolate resources using separate Tasks and also handle requests internally with multiple threads.
 
-## Task 的资源与状态
+## Task Resources and States
 
-Task 的控制记录与运行资源分开保存。
-控制记录保留标识、状态与退出等待者；运行资源包含地址空间、句柄表、线程集合以及 Trap 绑定。
-Task 退出后，内存和句柄随运行资源释放，控制记录继续向观察者提供退出状态。
+A Task's control record and runtime resources are stored separately.
+The control record retains the identity, state, and exit waiters; the runtime resources include the address space, handle table, thread set, and Trap bindings.
+After a Task exits, memory and handles are released with the runtime resources, while the control record continues to provide the exit status to observers.
 
-| 状态 | 含义 |
+| State | Meaning |
 |---|---|
-| `Created` | 已建立资源，等待启动线程 |
-| `Active` | 已有运行活动 |
-| `Dying(status)` | 已请求结束，正在停止线程和回收资源 |
-| `Dead(status)` | 运行资源已退出，可观察最终状态 |
+| `Created` | Resources established, waiting to start a thread |
+| `Active` | There has been running activity |
+| `Dying(status)` | Termination requested, stopping threads and reclaiming resources |
+| `Dead(status)` | Runtime resources have exited, final state observable |
 
-创建子 Task 时记录创建关系。
-创建者通过相应权限向子 Task 安装句柄、分配并映射内存、建立用户线程。
-运行资源回收时关闭句柄、释放地址空间并处理相关 Trap 端口。
+Creation relationships are recorded when a child Task is created.
+The creator installs handles into the child Task, allocates and maps memory, and establishes user threads through the corresponding permissions.
+When runtime resources are reclaimed, handles are closed, the address space is released, and related Trap ports are handled.
 
-`terminate` 请求结束 Task 中的线程。
-等待 Task 退出的接口在最终退出后返回状态；带截止时间的等待还可以返回超时。
+`terminate` requests termination of the threads in a Task.
+The interface that waits for a Task to exit returns the status after final exit; a wait with a deadline can also return a timeout.
 
-## 线程的状态与资源
+## Thread States and Resources
 
-每个 Thread 拥有执行上下文和带保护页的内核栈。
-用户线程另关联所属 Task，用户栈与程序映射位于该 Task 的地址空间中。
-当前内核线程栈大小为 32 KiB，线程对象容量为 4096。
+Each Thread owns an execution context and a kernel stack with a guard page.
+A user thread is additionally associated with its owning Task, and its user stack and program mappings are located in that Task's address space.
+The current kernel thread stack size is 32 KiB, and thread object capacity is 4096.
 
-| 状态 | 典型进入方式 |
+| State | Typical way to enter |
 |---|---|
-| `Created` | 创建线程 |
-| `Ready` | 启动、被唤醒或让出处理器 |
-| `Running` | 调度器派发 |
-| `Blocked` | 等待通知、截止时间或被转发事件的处理 |
-| `Dying(status)` | 请求终止 |
-| `Dead(status)` | 已离开执行上下文并提交退出 |
+| `Created` | Create thread |
+| `Ready` | Start, wake from a wait, or yield the processor |
+| `Running` | Dispatched by the scheduler |
+| `Blocked` | Wait for a notification, a deadline, or the handling of a forwarded event |
+| `Dying(status)` | Termination requested |
+| `Dead(status)` | Has left the execution context and committed exit |
 
-`start` 将已创建线程加入就绪队列。
-`yield_now` 将当前线程交回调度器。
-`exit` 结束当前线程，退出状态供等待者读取。
-用户异常按线程处理，Task 的生命周期由其线程退出和 Task 管理路径共同维护。
+`start` adds a created thread to the ready queue.
+`yield_now` hands the current thread back to the scheduler.
+`exit` ends the current thread, and the exit status is readable by waiters.
+User exceptions are handled per thread; the Task lifetime is maintained jointly by its thread exits and the Task management path.
 
-## 执行上下文
+## Execution Context
 
-`hardware::Execution` 提供上下文布局、初始化、切换、恢复以及用户寄存器状态访问。
-公共 `Context` 为架构状态分配独占的堆存储。
-架构实现保存通用寄存器和标量浮点状态，并区分当前活动上下文与已保存上下文。
+`hardware::Execution` provides context layout, initialization, switching, restoring, and user register state access.
+The common `Context` allocates dedicated heap storage for architecture state.
+The architecture implementation saves general-purpose registers and scalar floating-point state, and distinguishes the currently active context from saved contexts.
 
-派发用户线程时，调度器选择其地址空间，准备异常入口所用的特权栈，再恢复上下文。
-用户返回与再次进入内核所需的硬件状态由架构代码维护。
-调度策略、线程集合和资源回收由公共内核维护。
+When dispatching a user thread, the scheduler selects its address space, prepares the privileged stack used by the exception entry, and then restores the context.
+The hardware state needed for user return and re-entry into the kernel is maintained by architecture code.
+Scheduling policy, thread sets, and resource reclamation are maintained by the common kernel.
 
-当前上下文离开自己的栈之后，调度栈上的代码才回收该线程的上下文和内核栈。
-Thread 控制对象继续供其他线程查询和等待退出结果。
+Only after the current context has left its own stack does code on the scheduling stack reclaim that thread's context and kernel stack.
+The Thread control object remains available for other threads to query and wait for the exit result.
 
-## FIFO 调度与抢占请求
+## FIFO Scheduling and Preemption Requests
 
-就绪队列使用 FIFO，入队线程追加到队尾，派发从队首取出。
-调度器处理让出、阻塞、退出和抢占四类切出原因。
-每次派发结束后，回到调度栈处理状态提交与资源回收，并给挂起中断进入处理路径的机会。
+The ready queue uses FIFO: enqueued threads are appended to the tail, and dispatch takes from the head.
+The scheduler handles four kinds of switch-out reasons: yield, block, exit, and preemption.
+After each dispatch, it returns to the scheduling stack to process state commits and resource reclamation, and gives pending interrupts a chance to enter the handling path.
 
-抢占机制提供 `request_preemption` 和 `set_preemption_deadline`。
-前者请求在用户返回边界重新调度；后者登记一次绝对时间事件，到期后设置抢占请求。
-线程切出时清除其一次性抢占截止时间。
-内核执行在受控的切换位置离开当前上下文。
+The preemption mechanism provides `request_preemption` and `set_preemption_deadline`.
+The former requests rescheduling at the user return boundary; the latter registers a one-shot absolute time event and sets a preemption request when it expires.
+A thread's one-shot preemption deadline is cleared when it switches out.
+Kernel execution leaves the current context at controlled switching points.
 
-没有就绪线程时，调度器使用 CPU 的等待中断能力进入空闲状态。
-通知或定时事件使线程就绪后，再进入派发循环。
+When there is no ready thread, the scheduler uses the CPU's wait-for-interrupt capability to enter the idle state.
+After a notification or timer event makes a thread ready, it enters the dispatch loop again.
 
-## 等待与唤醒
+## Waiting and Waking
 
-等待消息时，检查队列和进入阻塞之间可能恰好有消息到达。
-内核先用 `prepare_wait` 建立带 generation 的等待，再把 `Waker` 登记到事件源，最后提交阻塞。
-消息在提交前到达时，结果先保存在等待状态中，线程随后直接取得结果；提交后到达时，通知把阻塞线程放回就绪队列。
+When waiting for a message, a message may arrive exactly between checking the queue and entering the blocked state.
+The kernel first uses `prepare_wait` to establish a wait with a generation, then registers the `Waker` with the event source, and finally commits the block.
+If the message arrives before the commit, the result is first stored in the wait state and the thread then obtains the result directly; if it arrives after the commit, the notification puts the blocked thread back on the ready queue.
 
-`Waker::wake` 只完成与自身 generation 对应的一次等待。
-下一轮等待使用新的 generation，上一轮的通知随之失效。
-通知、超时与对象退出通过同一个完成路径竞争本轮结果。
-`Wait` 析构会移除截止时间和退出等待登记。
+`Waker::wake` completes only the one wait corresponding to its own generation.
+The next round of waiting uses a new generation, and the previous round's notification becomes invalid.
+Notification, timeout, and object exit race for this round's result through the same completion path.
+`Wait` destruction removes the deadline and the exit wait registration.
 
-线程或 Task 退出时会通知退出等待者。
-多对象等待进一步将这些来源与通道、事件、异步调用组合，见[IPC 与等待](ipc.md)。
+When a thread or Task exits, it notifies the exit waiters.
+Multi-object waiting further combines these sources with channels, events, and asynchronous calls; see [IPC and Waiting](ipc.md).

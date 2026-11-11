@@ -1,11 +1,11 @@
-# 启动配置与使用
+# Boot Configuration and Usage
 
-基础服务就绪后，init 读取 `/etc/init.toml`，把其中的每个 `program` 交给 Linux 兼容服务执行。
-应用的参数、环境、终端和退出后的重启方式都在这里配置。
+Once the base services are ready, init reads `/etc/init.toml` and hands each `program` in it to the Linux compatibility service for execution.
+An application's arguments, environment, terminal, and restart behavior after exit are all configured here.
 
-## 应用配置
+## Application Configuration
 
-一份启动交互式 Shell 的配置如下：
+A configuration that starts an interactive shell looks like this:
 
 ```toml
 [[program]]
@@ -21,55 +21,55 @@ PATH = "/bin"
 PS1 = "arona$ "
 ```
 
-配置与 Shell 一起放入外部根目录，通过 `--rootfs` 打包。
-init 会执行 `/bin/sh -i`，将 UART 接为终端，并在 Shell 退出后重新启动它。
+The configuration is placed in the external root directory together with the shell and packaged via `--rootfs`.
+init runs `/bin/sh -i`, connects the UART as its terminal, and restarts the shell after it exits.
 
-| 字段 | 含义 |
+| Field | Meaning |
 |---|---|
-| `name` | init 用来识别和记录应用的名称，非空且在配置中唯一 |
-| `executor` | 执行器，当前只接受 `linux` |
-| `path` | 应用的绝对路径 |
-| `args` | 追加到应用路径之后的参数，默认空列表 |
-| `env` | 环境变量，默认空表 |
-| `terminal` | 可选，目前接受 `console`，为应用接入控制台输入输出 |
-| `restart` | 退出后的重启策略，默认 `never` |
+| `name` | The name init uses to identify and record the application; must be non-empty and unique in the configuration |
+| `executor` | The executor; currently only `linux` is accepted |
+| `path` | Absolute path of the application |
+| `args` | Arguments appended after the application path; defaults to an empty list |
+| `env` | Environment variables; defaults to an empty table |
+| `terminal` | Optional; currently accepts `console`, which connects the application to console input and output |
+| `restart` | Restart policy after exit; defaults to `never` |
 
-init 使用 `path` 作为 `argv[0]`，再追加 `args`。
-`env` 中的每项编码为 `KEY=VALUE` 交给执行服务；上例的 `PATH` 让 Shell 从 `/bin` 查找外部命令，`PS1` 将提示符设为 `arona$ `。
+init uses `path` as `argv[0]`, then appends `args`.
+Each entry in `env` is encoded as `KEY=VALUE` and passed to the execution service; in the example above, `PATH` makes the shell look up external commands in `/bin`, and `PS1` sets the prompt to `arona$ `.
 
-配置解析器拒绝未知字段、重复或空的应用名、非绝对程序路径，以及参数和环境变量中的 NUL。
-环境变量名采用非空且不含 `=` 的字符串。
-没有 `/etc/init.toml` 时，应用列表为空；配置存在但语法或字段非法时，init 报告错误并结束。
+The configuration parser rejects unknown fields, duplicate or empty application names, non-absolute program paths, and NUL bytes in arguments and environment variables.
+Environment variable names are non-empty strings that do not contain `=`.
+Without `/etc/init.toml`, the application list is empty; if the configuration exists but has invalid syntax or fields, init reports an error and exits.
 
-## 应用退出与重启
+## Application Exit and Restart
 
-| `restart` | 行为 |
+| `restart` | Behavior |
 |---|---|
-| `never` | 应用结束后保持停止 |
-| `on-failure` | 退出码非零或因信号结束时重启 |
-| `always` | 无论退出结果都重启 |
+| `never` | The application stays stopped after it exits |
+| `on-failure` | Restart when the exit code is non-zero or the application is terminated by a signal |
+| `always` | Restart regardless of the exit result |
 
-应用刚启动就退出时，立即重启会使它不断重复启动过程。
-init 为连续退出设置了退避时间：从 100 毫秒开始增长，上限为 30 秒；一次运行达到 30 秒后，连续重启计数重置。
-等待重启期间，监督循环继续处理基础服务和其他应用事件。
+If an application exits right after starting, restarting immediately would make it repeat the startup process continuously.
+init applies a backoff for consecutive exits: it starts at 100 milliseconds and grows up to 30 seconds; once a run reaches 30 seconds, the consecutive restart count is reset.
+While waiting to restart, the supervision loop keeps handling base service and other application events.
 
-监督器检测到基础服务退出后会结束运行，并由服务持有者清理对应 Task。
+When the supervisor detects that a base service has exited, it stops running, and the service owner cleans up the corresponding Task.
 
-## Shell 和命令文件
+## Shell and Command Files
 
-BusyBox 把多个命令放在同一个程序中，通过启动时的名称选择所执行的命令。
-把 `/bin/sh`、`/bin/ls`、`/bin/cat` 链接到 `/bin/busybox` 后，同一份程序就能分别充当 Shell、目录查看和文件读取工具。
+BusyBox puts multiple commands in a single program and selects which command to run based on the name it is started with.
+After linking `/bin/sh`, `/bin/ls`, and `/bin/cat` to `/bin/busybox`, the same program can serve as a shell, a directory viewer, and a file reader respectively.
 
-Shell 从 `PATH` 中寻找这些外部命令，内建的 `echo` 等命令则直接在 Shell 中执行。
-因此归档里的符号链接决定了有哪些可查找的命令，`PATH` 决定查找位置。
-文件树由归档内容和文件服务的挂载共同组成。
+The shell looks up these external commands in `PATH`, while built-in commands such as `echo` execute directly inside the shell.
+The symbolic links in the archive therefore determine which commands can be looked up, and `PATH` determines where to look.
+The file tree consists of the archive contents together with the mounts of the file service.
 
-## 默认存储行为
+## Default Storage Behavior
 
-文件服务使用启动归档建立根文件系统。
-如果设备管理服务提供块设备，init 当前选择枚举到的首个块设备，使用其完整容量尝试挂载到 `/var`。
-挂载从设备起始位置读取 ext4 卷。
+The file service uses the boot archive to establish the root file system.
+If the device management service provides block devices, init currently selects the first block device enumerated and tries to mount it at `/var` using its full capacity.
+The mount reads the ext4 volume from the start of the device.
 
-挂载成功后，init 创建或打开 `/var/log/system.log` 并交给日志服务。
-默认 `xtask run` 使用归档根文件系统和串口日志输出。
-附加 ext4 磁盘后，`/var` 成为可写的持久化区域，logger 的文件输出也随之启用。
+After a successful mount, init creates or opens `/var/log/system.log` and hands it to the log service.
+The default `xtask run` uses the archive root file system and UART log output.
+With an ext4 disk attached, `/var` becomes a writable persistent area, and logger's file output is enabled as well.

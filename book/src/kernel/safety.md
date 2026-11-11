@@ -1,60 +1,60 @@
-# 内核安全边界
+# Kernel Safety Boundaries
 
-一个缓冲区可以先由程序分配，随后被映射到地址空间，最后交给设备进行 DMA。
-这段内存在不同阶段有不同的使用者，回收时机取决于最后一次使用何时结束。
-Arona 用所有权和引用表达这种关系，用句柄权限控制操作，再由架构代码完成底层访问。
+A buffer may first be allocated by a program, then mapped into an address space, and finally handed to a device for DMA.
+This memory has different users at different stages, and the reclamation time depends on when the last use ends.
+Arona expresses this relationship through ownership and references, controls operations through handle permissions, and leaves low-level access to architecture code.
 
-## Safe Rust 与硬件接口
+## Safe Rust and Hardware Interfaces
 
-`kernel` 定义 MMU、CPU、执行上下文、Trap、定时器、中断控制器、MMIO、DMA 和 PCI 等硬件接口。
-`arch` 提供实现，并在进入 `boot_kernel` 前绑定到静态槽位。
-内核通过 `hardware::mmu()` 等函数取得已绑定的实现。
+`kernel` defines hardware interfaces such as MMU, CPU, execution context, Trap, timer, interrupt controller, MMIO, DMA, and PCI.
+`arch` provides implementations and binds them to static slots before entering `boot_kernel`.
+The kernel obtains the bound implementations through functions such as `hardware::mmu()`.
 
-建立映射时，公共内核和架构实现依次完成这些工作：
+When establishing a mapping, the common kernel and the architecture implementation perform these steps in order:
 
-1. 内核分配页表所用的物理页框，维护映射记录和页框引用。
-2. 内核决定虚拟范围、权限以及映射的建立和撤销顺序。
-3. 架构实现编码、读取和写入页表项，执行页表切换、TLB 刷新与指令同步。
+1. The kernel allocates the physical page frames used by the page table and maintains mapping records and page frame references.
+2. The kernel decides the virtual range, permissions, and the order in which mappings are established and revoked.
+3. The architecture implementation encodes, reads, and writes page table entries, and performs page table switches, TLB flushes, and instruction synchronization.
 
-内核实现中禁止使用 `unsafe` 和条件编译。
-原始指针、内联汇编、寄存器与原始物理内存访问集中在架构层。
-具体文件范围见[代码检查](../contributing/checks.md)。
+The kernel implementation forbids the use of `unsafe` and conditional compilation.
+Raw pointers, inline assembly, registers, and raw physical memory access are concentrated in the architecture layer.
+See [Code Checks](../contributing/checks.md) for the specific file scope.
 
-## 类型表达的资源生命周期
+## Resource Lifetimes Expressed by Types
 
-`Frame` 是可复制的物理页框地址标识，`FrameAllocation` 拥有一次页框分配。
-映射通过 `FrameAllocationReference` 保持分配存活，DMA 访问通过带访问方向的引用保持后备页框存活。
-程序关闭最初的分配句柄后，映射和 DMA 引用继续持有这次分配，直到它们也被释放。
+`Frame` is a copyable physical page frame address identity, and `FrameAllocation` owns one page frame allocation.
+Mappings keep an allocation alive through `FrameAllocationReference`, and DMA access keeps backing page frames alive through references carrying an access direction.
+After a program closes the original allocation handle, the mapping and DMA references continue to hold the allocation until they are also released.
 
-对象关闭也经历类似的过程。
-一个通道关闭时，等待记录可能还引用着它；内核先将对象设为关闭并唤醒等待者，再随内部引用的释放销毁存储。
-这样，关闭结果可以送达正在等待的线程，对象的存储也覆盖了通知处理的全过程。
+Object closure follows a similar process.
+When a channel is closed, a wait record may still reference it; the kernel first marks the object as closed and wakes the waiters, then destroys the storage as internal references are released.
+This way, the closure result can be delivered to threads that are waiting, and the object's storage covers the entire notification process.
 
-## 用户内存访问
+## User Memory Access
 
-系统调用中的用户地址在调用者的地址空间中解释。
-内核检查地址范围、长度与读写权限，并通过 `MemoryBuffer` 保持访问期间所需的页框引用。
-跨页输入输出按后备页框访问。
+User addresses in system calls are interpreted in the caller's address space.
+The kernel checks the address range, length, and read/write permissions, and keeps the page frame references needed during access through `MemoryBuffer`.
+Cross-page input and output are performed per backing page frame.
 
-例如，读取一个跨越两页的用户切片时，`MemoryBuffer` 解析两页的映射并取得访问引用，再分别读取其后备页框。
-访问期间，这些引用保持页框存活。
-`query` 和 `translate` 按用户地址空间边界查询；处理器则根据页表项的用户属性和读写执行位执行访问控制。
+For example, when reading a user slice that spans two pages, `MemoryBuffer` resolves the mappings of both pages and obtains access references, then reads their backing page frames separately.
+During access, these references keep the page frames alive.
+`query` and `translate` query according to user address space boundaries; the processor enforces access control based on the user attribute and the read/write/execute bits of page table entries.
 
-## 能力与授权
+## Capabilities and Authorization
 
-句柄属于各 Task 的句柄表，包含对象引用及权限位。
-分派器从调用者的句柄表取得对象，再按对象类型与方法检查所需权限。
+Handles belong to each Task's handle table and contain object references and permission bits.
+The dispatcher obtains the object from the caller's handle table, then checks the required permissions according to object type and method.
 
-复制和转移句柄只能保留或缩减权限。
-跨 Task 转移时，内核在接收方的句柄表中安装对象，并交付接收方的句柄标识。
-设备授权还单独检查设备组、映射、中断绑定和撤销状态。
+Copying and transferring handles can only preserve or reduce permissions.
+When transferring across Tasks, the kernel installs the object in the receiver's handle table and delivers the receiver's handle identity.
+Device authorization additionally checks the device group, mappings, interrupt bindings, and revocation state separately.
 
-## 执行环境约束
+## Execution Environment Constraints
 
-硬件接口中的 `# Safety` 描述执行环境。
-例如，页表操作要求保留物理访问窗口，执行上下文切换要求当前栈和目标地址空间仍然有效，定时器和中断控制操作要求在所属处理器关闭本地中断。
+`# Safety` in hardware interfaces describes the execution environment.
+For example, page table operations require the physical access window to be retained, execution context switches require the current stack and target address space to remain valid, and timer and interrupt control operations require local interrupts to be disabled on the owning processor.
 
-`InterruptGuard` 保存进入时的中断状态，关闭本地中断，并在析构时恢复原状态。
-内核临界区使用这一公共类型。
-上下文切换前释放锁。
-线程请求退出时，退出代码仍在它自己的栈上执行；调度器先切回独立的调度栈，再回收已结束线程的上下文和栈，使回收发生在最后一次使用之后。
+`InterruptGuard` saves the interrupt state at entry, disables local interrupts, and restores the original state on drop.
+Kernel critical sections use this common type.
+Locks are released before context switches.
+When a thread requests exit, the exit code still executes on its own stack; the scheduler first switches back to the dedicated scheduling stack, then reclaims the ended thread's context and stack, so reclamation happens after the last use.
