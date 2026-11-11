@@ -148,7 +148,11 @@ fn build_guest(
         let mut assemble = Command::new("clang");
         assemble
             .arg(format!("--target={triple}"))
-            .args(["-c", "-x", "assembler"])
+            .args(["-c", "-x", "assembler"]);
+        if isa == "riscv64" {
+            assemble.arg("-mno-relax");
+        }
+        assemble
             .arg(root.join(format!("components/linux/tests/{module}/{isa}.S")))
             .arg("-o")
             .arg(&object);
