@@ -11,7 +11,7 @@ runs:
         cargo +stable install --locked --version 1.20.0 mdbook-admonish
     - name: Install PDF renderer
       shell: bash
-      run: cargo +stable install --locked --version 0.1.13 mdbook-pdf
+      run: cargo +stable install --locked --version 0.1.11 mdbook-pdf
     - name: Install PDF outline renderer
       shell: bash
       run: |
