@@ -107,7 +107,8 @@ pub(crate) fn dispatch<'a>(
     } else if let Some(outcome) = signal::dispatch(process, index, &mut context, number, arguments)
     {
         outcome
-    } else if let Some(outcome) = file::dispatch(process, index, files, number, arguments) {
+    } else if let Some(outcome) = file::dispatch(process, index, files, services, number, arguments)
+    {
         outcome
     } else if let Some(outcome) = system::dispatch(process, services, number, arguments) {
         outcome

@@ -575,6 +575,41 @@ files:
     invoke 57
     expect 0
     li.d $a0, -100
+    la.pcrel $a1, random_path
+    li.d $a2, 0
+    invoke 56
+    bltz $a0, file_failure
+    move $s0, $a0
+    move $a0, $s0
+    move $a1, $sp
+    li.d $a2, 8
+    invoke 63
+    expect 8
+    ld.d $t0, $sp, 0
+    beqz $t0, file_failure
+    move $a0, $s0
+    la.pcrel $a1, null_data
+    li.d $a2, 3
+    invoke 64
+    expect -9
+    move $a0, $s0
+    invoke 57
+    expect 0
+    li.d $a0, -100
+    la.pcrel $a1, urandom_path
+    li.d $a2, 0
+    invoke 56
+    bltz $a0, file_failure
+    move $s0, $a0
+    move $a0, $s0
+    move $a1, $sp
+    li.d $a2, 4
+    invoke 63
+    expect 4
+    move $a0, $s0
+    invoke 57
+    expect 0
+    li.d $a0, -100
     la.pcrel $a1, null_path
     li.d $a2, 0x10000
     invoke 56
@@ -593,6 +628,8 @@ file_failure:
  data_path: .asciz "/etc/linux-data"
  null_path: .asciz "/dev/null"
  zero_path: .asciz "/dev/zero"
+ random_path: .asciz "/dev/random"
+ urandom_path: .asciz "/dev/urandom"
  null_data: .ascii "abc"
  relative_path: .asciz "etc/linux-data"
  trailing_path: .asciz "/etc/linux-data/"

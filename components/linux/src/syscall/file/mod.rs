@@ -62,6 +62,7 @@ pub(super) fn dispatch<'a>(
     process: &mut Process<'a>,
     index: usize,
     files: &fs::Client<'a>,
+    services: &crate::Services<'_>,
     number: usize,
     arguments: [usize; 6],
 ) -> Option<Outcome<'a>> {
@@ -103,6 +104,7 @@ pub(super) fn dispatch<'a>(
             arguments[0],
             io_buffer(number, &arguments),
             matches!(number, abi::PREAD64 | abi::PREADV).then_some(arguments[3]),
+            services,
         ),
         abi::WRITE | abi::PWRITE64 | abi::WRITEV | abi::PWRITEV => write(
             process,

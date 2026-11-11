@@ -25,6 +25,7 @@ pub(crate) struct Descriptor<'a> {
 pub(crate) enum Virtual {
     Null,
     Zero,
+    Random,
 }
 
 pub(crate) enum OpenFileDescription<'a> {

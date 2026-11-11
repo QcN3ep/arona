@@ -70,6 +70,7 @@ fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) ->
                     inode: match kind {
                         crate::file::Virtual::Null => 3,
                         crate::file::Virtual::Zero => 5,
+                        crate::file::Virtual::Random => 8,
                     },
                     mode: 0o020666,
                     links: 1,
