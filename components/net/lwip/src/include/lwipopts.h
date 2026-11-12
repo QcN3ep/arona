@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
+
+#ifndef ARONA_LWIP_OPTIONS_H
+#define ARONA_LWIP_OPTIONS_H
+
+#define NO_SYS 0
+#define SYS_LIGHTWEIGHT_PROT 1
+#define LWIP_TCPIP_CORE_LOCKING 0
+#define LWIP_MARK_TCPIP_THREAD() arona_lwip_mark_core()
+#define LWIP_ASSERT_CORE_LOCKED() arona_lwip_check_core()
+#define LWIP_TCPIP_THREAD_ALIVE() arona_lwip_yield()
+#define TCPIP_THREAD_STACKSIZE (128 * 1024)
+#define TCPIP_MBOX_SIZE 64
+#define DEFAULT_TCP_RECVMBOX_SIZE 32
+#define DEFAULT_UDP_RECVMBOX_SIZE 32
+#define DEFAULT_ACCEPTMBOX_SIZE 16
+
+#define MEM_ALIGNMENT 16
+#define MEM_CUSTOM_ALLOCATOR 1
+#define MEM_CUSTOM_MALLOC arona_lwip_alloc
+#define MEM_CUSTOM_CALLOC arona_lwip_calloc
+#define MEM_CUSTOM_FREE arona_lwip_free
+#define MEMP_MEM_MALLOC 1
+#define MEMP_NUM_NETCONN 32
+#define PBUF_POOL_SIZE 32
+#define LWIP_STATS 0
+
+#define LWIP_IPV4 1
+#define LWIP_IPV6 0
+#define LWIP_RAW 0
+#define LWIP_IGMP 0
+#define LWIP_AUTOIP 0
+#define PPP_SUPPORT 0
+#define LWIP_DHCP 1
+#define LWIP_DHCP_DOES_ACD_CHECK 1
+#define LWIP_DNS 1
+#define LWIP_DNS_SUPPORT_MDNS_QUERIES 0
+#define LWIP_NETIF_API 1
+#define LWIP_NETIF_LOOPBACK 1
+#define LWIP_HAVE_LOOPIF 1
+#define LWIP_NETIF_LOOPBACK_MULTITHREADING 1
+
+#define LWIP_NETCONN 1
+#define LWIP_SOCKET 1
+#define LWIP_COMPAT_SOCKETS 0
+#define LWIP_POSIX_SOCKETS_IO_NAMES 0
+#define LWIP_SOCKET_SELECT 0
+#define LWIP_SOCKET_POLL 1
+#define LWIP_NETCONN_FULLDUPLEX 0
+#define LWIP_NETCONN_SEM_PER_THREAD 0
+#define LWIP_SO_RCVTIMEO 1
+#define LWIP_SO_SNDTIMEO 1
+#define LWIP_TCP_KEEPALIVE 1
+#define SO_REUSE 1
+
+#define TCP_MSS 1460
+#define TCP_WND (16 * TCP_MSS)
+#define TCP_SND_BUF (16 * TCP_MSS)
+#define TCP_QUEUE_OOSEQ 1
+#define TCP_LISTEN_BACKLOG 1
+#define LWIP_WND_SCALE 1
+#define TCP_RCV_SCALE 1
+#define LWIP_TCP_TIMESTAMPS 1
+#define LWIP_TCP_SACK_OUT 1
+#define LWIP_HOOK_FILENAME "arch/hooks.h"
+
+#endif

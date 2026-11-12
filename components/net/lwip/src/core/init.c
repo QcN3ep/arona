@@ -58,9 +58,6 @@
 #include "lwip/mld6.h"
 #include "lwip/api.h"
 
-#include "netif/ppp/ppp_opts.h"
-#include "netif/ppp/ppp_impl.h"
-
 #ifndef LWIP_SKIP_PACKING_CHECK
 
 #ifdef PACK_STRUCT_USE_INCLUDES

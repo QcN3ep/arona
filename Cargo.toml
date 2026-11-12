@@ -13,6 +13,7 @@ members = [
     "components/logger",
     "components/fs",
     "components/linux",
+    "components/net/lwip",
     "xtask",
 ]
 

@@ -60,7 +60,9 @@
 #include "lwip/stats.h"
 #include "lwip/err.h"
 
+#if MEM_OVERFLOW_CHECK || MEMP_OVERFLOW_CHECK
 #include <stdio.h>  /* snprintf */
+#endif
 #include <string.h>
 
 #if MEM_LIBC_MALLOC
