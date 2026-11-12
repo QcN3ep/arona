@@ -76,6 +76,48 @@ files_pipe:
     move $a0, $s1
     invoke 82
     expect -22
+    move $a0, $s0
+    li.d $a1, 1032
+    invoke 25
+    expect 65536
+    move $a0, $s0
+    li.d $a1, 1031
+    li.d $a2, 0
+    invoke 25
+    expect 4096
+    move $a0, $s1
+    li.d $a1, 1032
+    invoke 25
+    expect 4096
+    move $a0, $s1
+    la.pcrel $a1, payload
+    li.d $a2, 3
+    invoke 64
+    expect 3
+    move $a0, $s0
+    li.d $a1, 1031
+    li.d $a2, 8191
+    invoke 25
+    expect 8192
+    move $a0, $s0
+    addi.d $a1, $sp, 16
+    li.d $a2, 3
+    invoke 63
+    expect 3
+    move $a0, $s0
+    li.d $a1, 1031
+    li.d $a2, 2097152
+    invoke 25
+    expect -1
+    move $a0, $s0
+    li.d $a1, 1032
+    invoke 25
+    expect 8192
+    move $a0, $s0
+    li.d $a1, 1031
+    li.d $a2, 65536
+    invoke 25
+    expect 65536
     li.d $s4, 16
 fill_pipe:
     move $a0, $s1
@@ -85,6 +127,15 @@ fill_pipe:
     expect 4096
     addi.d $s4, $s4, -1
     bnez $s4, fill_pipe
+    move $a0, $s0
+    li.d $a1, 1031
+    li.d $a2, 4096
+    invoke 25
+    expect -16
+    move $a0, $s1
+    li.d $a1, 1032
+    invoke 25
+    expect 65536
     move $a0, $s1
     la.pcrel $a1, payload
     li.d $a2, 3

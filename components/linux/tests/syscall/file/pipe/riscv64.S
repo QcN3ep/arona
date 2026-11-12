@@ -77,6 +77,48 @@ files_pipe:
     mv a0, s1
     invoke 82
     expect -22
+    mv a0, s0
+    li a1, 1032
+    invoke 25
+    expect 65536
+    mv a0, s0
+    li a1, 1031
+    li a2, 0
+    invoke 25
+    expect 4096
+    mv a0, s1
+    li a1, 1032
+    invoke 25
+    expect 4096
+    mv a0, s1
+    la a1, payload
+    li a2, 3
+    invoke 64
+    expect 3
+    mv a0, s0
+    li a1, 1031
+    li a2, 8191
+    invoke 25
+    expect 8192
+    mv a0, s0
+    addi a1, sp, 16
+    li a2, 3
+    invoke 63
+    expect 3
+    mv a0, s0
+    li a1, 1031
+    li a2, 2097152
+    invoke 25
+    expect -1
+    mv a0, s0
+    li a1, 1032
+    invoke 25
+    expect 8192
+    mv a0, s0
+    li a1, 1031
+    li a2, 65536
+    invoke 25
+    expect 65536
     li s4, 16
 fill_pipe:
     mv a0, s1
@@ -86,6 +128,15 @@ fill_pipe:
     expect 4096
     addi s4, s4, -1
     bnez s4, fill_pipe
+    mv a0, s0
+    li a1, 1031
+    li a2, 4096
+    invoke 25
+    expect -16
+    mv a0, s1
+    li a1, 1032
+    invoke 25
+    expect 65536
     mv a0, s1
     la a1, payload
     li a2, 3
