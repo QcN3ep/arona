@@ -25,6 +25,12 @@ pub(crate) struct Context {
     pub(crate) state: UserState,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Restart {
+    arguments: [usize; 6],
+    deadline: (u64, bool),
+}
+
 pub(crate) struct Pending<'a> {
     context: Context,
     operation: Operation<'a>,
@@ -102,6 +108,9 @@ pub(crate) fn dispatch<'a>(
         trap,
     };
     let (number, arguments) = context.machine.syscall(&context.state);
+    if !matches!(number, abi::FUTEX | abi::RT_SIGRETURN) {
+        process.threads[index].signals.borrow_mut().restart = None;
+    }
     let mask = signal::temporary_mask(process, index, number, arguments);
     let outcome = if let Err(error) = mask {
         Outcome::Complete(Err(error))
@@ -184,9 +193,18 @@ pub(crate) fn poll<'a>(
     if let Some((_, action)) = selected
         && let Some((restartable, result)) = pending.operation.interrupt(process)
     {
+        let restart = match &pending.operation {
+            Operation::Futex(futex) => futex.restart_info(),
+            _ => None,
+        };
         let context = pending.context;
         drop(pending.operation);
         if restartable && action.flags & crate::process::signal::RESTART != 0 {
+            let arguments = context.machine.syscall(&context.state).1;
+            process.threads[index].signals.borrow_mut().restart = restart.map(|deadline| Restart {
+                arguments,
+                deadline,
+            });
             crate::process::signal::delivery::resume(process, index, context)?;
         } else {
             context.complete(process, index, result)?;

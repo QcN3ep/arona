@@ -24,10 +24,18 @@ pub(in crate::syscall) struct Pending {
 
 // REFERENCE: https://man7.org/linux/man-pages/man2/futex.2.html
 pub(super) fn start<'a>(
-    process: &Process<'a>,
+    process: &mut Process<'a>,
+    index: usize,
     services: &Services<'_>,
     args: [usize; 6],
 ) -> Outcome<'a> {
+    let restart = process.threads[index]
+        .signals
+        .borrow_mut()
+        .restart
+        .take()
+        .filter(|restart| restart.arguments == args)
+        .map(|restart| restart.deadline);
     let result = (|| {
         let [address, operation, value, timeout, second, bits] = args;
         let operation = operation as u32 as usize;
@@ -54,7 +62,7 @@ pub(super) fn start<'a>(
                     deadline,
                     clock,
                     realtime: realtime_deadline,
-                } = wait_deadline(process, services, command, timeout, realtime)?;
+                } = wait_deadline(process, services, command, timeout, realtime, restart)?;
                 let registration = process.namespace.futexes.register(key, mask, frames);
                 Ok(Outcome::Pending(Operation::Futex(Pending {
                     registration,
@@ -115,8 +123,18 @@ fn wait_deadline(
     command: usize,
     timeout: usize,
     realtime: bool,
+    restart: Option<(u64, bool)>,
 ) -> Result<Wait, Errno> {
-    let mut duration = wait::duration(process, timeout)?;
+    let mut duration = match restart {
+        Some((target, target_realtime)) if target_realtime == realtime => {
+            if realtime {
+                Some(target)
+            } else {
+                Some(target.saturating_sub(wait::now()?))
+            }
+        }
+        _ => wait::duration(process, timeout)?,
+    };
     let mut realtime_deadline = None;
     let clock = if realtime {
         let clock = services.clock.as_ref().ok_or(EOPNOTSUPP)?;
@@ -125,7 +143,7 @@ fn wait_deadline(
             .map(|_| clock.start_now().map_err(|_| EIO))
             .transpose()?
     } else {
-        if command == 9 {
+        if command == 9 && restart.is_none() {
             let now = wait::now()?;
             duration = duration.map(|absolute| absolute.saturating_sub(now));
         }
@@ -150,12 +168,13 @@ fn read(process: &Process<'_>, address: usize) -> Result<u32, Errno> {
 
 impl Pending {
     pub fn restartable(&self) -> bool {
-        // TODO: Preserve the absolute deadline of timed futex waits via restart_syscall.
         self.clock.is_none()
-            && self
-                .deadline
-                .remaining()
-                .is_ok_and(|remaining| remaining.is_none())
+    }
+
+    pub fn restart_info(&self) -> Option<(u64, bool)> {
+        self.realtime
+            .map(|deadline| (deadline, true))
+            .or_else(|| self.deadline.deadline().map(|deadline| (deadline, false)))
     }
 
     pub fn waits<'a>(&'a self, items: &mut alloc::vec::Vec<WaitItem<'a>>) {

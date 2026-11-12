@@ -106,6 +106,8 @@ auxv_done:
     beq $s3, $t1, threads
     li.d $t1, 78
     beq $s3, $t1, signals
+    li.d $t1, 81
+    beq $s3, $t1, futex_restart
     li.d $t1, 83
     beq $s3, $t1, system_basics
     li.d $t1, 79

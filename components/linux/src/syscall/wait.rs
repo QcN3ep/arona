@@ -38,6 +38,10 @@ impl Deadline {
             .map_or(Ok(false), |end| now().map(|now| now >= end))
     }
 
+    pub fn deadline(&self) -> Option<u64> {
+        self.end
+    }
+
     pub fn remaining(&self) -> Result<Option<u64>, Errno> {
         self.end
             .map(|end| now().map(|now| end.saturating_sub(now)))

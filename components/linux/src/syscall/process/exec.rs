@@ -182,6 +182,8 @@ fn replace(
         let mut signals = thread_signals.borrow_mut();
         signals.altstack = Default::default();
         signals.suspended_mask = None;
+        signals.restart = None;
+        signals.restart_frames.clear();
     }
     process
         .namespace

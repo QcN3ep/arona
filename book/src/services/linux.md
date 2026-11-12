@@ -100,6 +100,9 @@ The signal implementation maintains the process-shared disposition and each thre
 It supports `kill`, `tkill`, `tgkill`, `rt_sigaction`, `rt_sigprocmask`, `rt_sigpending`, `rt_sigsuspend`, `rt_sigtimedwait`, `sigaltstack`, and `rt_sigreturn`.
 On delivery it constructs the signal frame for the current architecture, and on return it restores the user state.
 Blocking operations return `EINTR` or execute the restart path according to the delivery action.
+A restarted timed futex wait keeps its original deadline.
+The signal frame retains that deadline while the handler runs, so futex calls from the handler use their own timeouts.
+Realtime waits read the clock again before calculating the remaining duration.
 
 The identity interfaces provide PID, TID, process group, session, and credential queries.
 A process starts with root credentials and passes its real, effective, and saved user and group IDs to its children.
