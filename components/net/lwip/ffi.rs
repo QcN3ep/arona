@@ -3,6 +3,7 @@
 //! Private declarations for the C socket bridge.
 
 use crate::Endpoint;
+use core::ffi::c_void;
 
 unsafe extern "C" {
     /// # Safety
@@ -18,6 +19,11 @@ unsafe extern "C" {
     ///
     /// Startup must have completed; kind must be SOCK_STREAM or SOCK_DGRAM.
     pub fn arona_lwip_socket(kind: i32) -> i32;
+    /// # Safety
+    ///
+    /// fd must be live and exclusively owned. context transfers one raw Arc
+    /// reference to its Shared state, released by final C entry destruction.
+    pub fn arona_lwip_observe(fd: i32, context: *const c_void);
     /// # Safety
     ///
     /// fd must be live and exclusively accessed; endpoint must be readable for

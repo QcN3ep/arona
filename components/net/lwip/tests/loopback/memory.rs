@@ -2,8 +2,16 @@
 
 use alloc::{vec, vec::Vec};
 use lwip::{Endpoint, Error, SocketKind, Stack};
+use runtime::ipc::WaitMode;
 
 pub(super) fn run(stack: &Stack) {
+    // Drain earlier detached closes before exhausting synchronization storage.
+    stack
+        .socket(SocketKind::Udp)
+        .unwrap()
+        .close()
+        .wait(WaitMode::Forever)
+        .unwrap();
     let mut listener = stack.socket(SocketKind::Tcp).unwrap();
     listener.bind(Endpoint::loopback(0)).unwrap();
     listener.listen(1).unwrap();
@@ -55,6 +63,7 @@ pub(super) fn run(stack: &Stack) {
         Err(Error::NoMemory)
     ));
     assert!(matches!(listener.accept(), Err(Error::NoMemory)));
+    assert!(matches!(receiver.subscribe(), Err(Error::NoMemory)));
     drop(blocks);
     let (mut accepted, _) = super::retry(|| listener.accept());
     assert_eq!(super::retry(|| accepted.receive(&mut output)), 7);
@@ -69,4 +78,7 @@ pub(super) fn run(stack: &Stack) {
     assert_eq!(peer, source);
     assert_eq!(count, payload.len());
     assert_eq!(output, payload);
+    for socket in [accepted, listener, client, receiver, sender] {
+        socket.close().wait(WaitMode::Forever).unwrap();
+    }
 }

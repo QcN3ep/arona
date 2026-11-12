@@ -2,6 +2,7 @@
 
 use alloc::{sync::Arc, vec::Vec};
 use lwip::{Endpoint, Error, SocketKind, Stack};
+use runtime::ipc::WaitMode;
 use runtime::thread;
 
 pub(super) fn run(stack: &Arc<Stack>) {
@@ -15,6 +16,8 @@ pub(super) fn run(stack: &Arc<Stack>) {
     ));
     super::retry(|| client.send(b"before accept"));
     let (mut accepted, _) = super::retry(|| listener.accept());
+    let mut pending = accepted.subscribe().unwrap();
+    super::readiness::ready(&mut pending, |state| state.readable);
 
     let other = Arc::clone(stack);
     let worker = thread::spawn(move || population(&other)).unwrap();
@@ -49,7 +52,12 @@ fn population(stack: &Stack) {
         for (index, (receiver, address)) in receivers.iter_mut().enumerate() {
             if index % 2 == 0 {
                 // Closing discards queued data before a replacement binds the same port.
-                drop(receiver.take());
+                receiver
+                    .take()
+                    .unwrap()
+                    .close()
+                    .wait(WaitMode::Forever)
+                    .unwrap();
                 let mut replacement = stack.socket(SocketKind::Udp).unwrap();
                 replacement.bind(*address).unwrap();
                 assert_eq!(replacement.receive(&mut [0; 2]), Err(Error::WouldBlock));

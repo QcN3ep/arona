@@ -15,6 +15,9 @@ _Static_assert(_Alignof(struct arona_lwip_endpoint) == 2, "Rust endpoint alignme
 _Static_assert(sizeof(ssize_t) == sizeof(ptrdiff_t), "Rust isize result");
 
 void arona_lwip_seed(const uint8_t *seed);
+int arona_lwip_prepare_teardown(void);
+void arona_lwip_teardown(void *argument);
+void arona_lwip_received(int fd, int eof);
 
 static void ready(void *argument) {
   sys_sem_signal((sys_sem_t *)argument);
@@ -27,7 +30,8 @@ int arona_lwip_start(const uint8_t *seed) {
   err_t result = tcpip_init(ready, &initialized);
   if (result == ERR_OK) { sys_sem_wait(&initialized); }
   sys_sem_free(&initialized);
-  return result == ERR_OK ? 0 : -1;
+  if (result != ERR_OK || arona_lwip_prepare_teardown() != 0) { return -1; }
+  return sys_thread_new("teardown", arona_lwip_teardown, NULL, 128 * 1024, 0) ? 0 : -1;
 }
 
 int arona_lwip_last_error(void) { return errno; }
@@ -99,10 +103,15 @@ ssize_t arona_lwip_send(int fd, const uint8_t *bytes, size_t length,
 
 ssize_t arona_lwip_receive(int fd, uint8_t *bytes, size_t length,
                           struct arona_lwip_endpoint *peer) {
-  if (!peer) { return lwip_recv(fd, bytes, length, 0); }
+  if (!peer) {
+    ssize_t result = lwip_recv(fd, bytes, length, 0);
+    arona_lwip_received(fd, result == 0 && length != 0);
+    return result;
+  }
   struct sockaddr_in value;
   socklen_t size = sizeof(value);
   ssize_t result = lwip_recvfrom(fd, bytes, length, 0, (struct sockaddr *)&value, &size);
+  arona_lwip_received(fd, result == 0 && length != 0);
   if (result >= 0) { endpoint(peer, &value); }
   return result;
 }

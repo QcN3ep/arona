@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use lwip::{Endpoint, Error, SocketKind, Stack};
+use runtime::ipc::WaitMode;
 
 pub(super) fn run(stack: &Stack) {
     let mut server = stack.socket(SocketKind::Udp).unwrap();
@@ -37,7 +38,7 @@ pub(super) fn run(stack: &Stack) {
     server.send_to(b"reply", peer).unwrap();
     assert_eq!(super::retry(|| sender.receive(&mut output)), 5);
     assert_eq!(&output[..5], b"reply");
-    drop(server);
+    server.close().wait(WaitMode::Forever).unwrap();
     let mut reused = stack.socket(SocketKind::Udp).unwrap();
     reused.bind(address).unwrap();
 }
