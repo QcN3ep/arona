@@ -275,6 +275,8 @@ struct netconn {
 #endif /* LWIP_SO_LINGER */
   /** flags holding more netconn-internal state, see NETCONN_FLAG_* defines */
   u8_t flags;
+  // Qualify a pending reset received during the initial TCP handshake.
+  u8_t connect_refused;
 #if LWIP_TCP
   /** TCP: when data passed to netconn_write doesn't fit into the send buffer,
       this temporarily stores the message.

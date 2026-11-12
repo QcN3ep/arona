@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
+
+[package]
+name = "arona-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+baremetal = ["runtime/program", "dep:lwip", "lwip/baremetal"]
+
+[lib]
+name = "net"
+test = false
+bench = false
+
+[[bin]]
+name = "net"
+path = "src/main.rs"
+required-features = ["baremetal"]
+test = false
+bench = false
+
+[dependencies]
+runtime = { package = "arona-runtime", path = "../runtime" }
+devmgr = { package = "arona-devmgr", path = "../devmgr" }
+lwip = { package = "arona-lwip", path = "lwip", optional = true }
+
+[dev-dependencies]
+fs = { package = "arona-fs", path = "../fs" }
+linux = { package = "arona-linux", path = "../linux" }
+
+[[test]]
+name = "service"
+path = "tests/service/mod.rs"
+harness = false
+required-features = ["baremetal"]
+
+[[test]]
+name = "native"
+path = "tests/native/mod.rs"
+harness = false
+required-features = ["baremetal"]

@@ -95,15 +95,14 @@ fn refused(stack: &Stack) {
     unused.close().wait(WaitMode::Forever).unwrap();
     let mut socket = stack.socket(SocketKind::Tcp).unwrap();
     let mut changes = socket.subscribe().unwrap();
-    // lwIP reports a reset when loopback rejects a SYN for an unbound port.
     assert!(matches!(
         socket.connect(address),
-        Err(Error::InProgress | Error::ConnectionReset)
+        Err(Error::InProgress | Error::ConnectionRefused)
     ));
     super::readiness::ready(&mut changes, |state| state.error);
     assert!(changes.snapshot().error);
     assert!(socket.readiness().error);
-    assert_eq!(socket.take_error(), Err(Error::ConnectionReset));
+    assert_eq!(socket.take_error(), Err(Error::ConnectionRefused));
     assert_eq!(socket.take_error(), Ok(()));
     let mut reusable = stack.socket(SocketKind::Tcp).unwrap();
     reusable.bind(address).unwrap();

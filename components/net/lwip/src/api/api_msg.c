@@ -448,6 +448,7 @@ err_tcp(void *arg, err_t err)
   conn->pcb.tcp = NULL;
   /* store pending error */
   conn->pending_err = err;
+  conn->connect_refused = conn->state == NETCONN_CONNECT && err == ERR_RST;
   /* prevent application threads from blocking on 'recvmbox'/'acceptmbox' */
   conn->flags |= NETCONN_FLAG_MBOXCLOSED;
 
@@ -717,6 +718,7 @@ netconn_alloc(enum netconn_type t, netconn_callback callback)
   }
 
   conn->pending_err = ERR_OK;
+  conn->connect_refused = 0;
   conn->type = t;
   conn->pcb.tcp = NULL;
 #if LWIP_NETCONN_FULLDUPLEX

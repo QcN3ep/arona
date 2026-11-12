@@ -59,7 +59,7 @@ jobs:
         run: >-
           cargo clippy --locked --workspace --exclude xtask --lib --bins
           --target ${{ matrix.triple }}
-          --features arona-arch/baremetal,arona-arch/embedded-initramfs,arona-runtime/program,arona-init/baremetal,arona-devmgr/baremetal,arona-logger/baremetal,arona-fs/baremetal,arona-linux/baremetal,arona-lwip/baremetal
+          --features arona-arch/baremetal,arona-arch/embedded-initramfs,arona-runtime/program,arona-init/baremetal,arona-devmgr/baremetal,arona-logger/baremetal,arona-fs/baremetal,arona-linux/baremetal,arona-lwip/baremetal,arona-net/baremetal
           -Zbuild-std=core,alloc,compiler_builtins
           -Zbuild-std-features=compiler-builtins-mem
           -- -D warnings --force-warn clippy::too_many_lines
@@ -74,13 +74,17 @@ jobs:
       - name: Clippy user-space tests
         run: >-
           cargo clippy --locked --tests
-          -p arona-runtime -p arona-devmgr -p arona-logger -p arona-fs -p arona-linux -p arona-lwip
-          --features arona-runtime/program,arona-devmgr/baremetal,arona-logger/baremetal,arona-fs/baremetal,arona-linux/baremetal,arona-lwip/baremetal
+          -p arona-runtime -p arona-devmgr -p arona-logger -p arona-fs -p arona-linux -p arona-lwip -p arona-net
+          --features arona-runtime/program,arona-devmgr/baremetal,arona-logger/baremetal,arona-fs/baremetal,arona-linux/baremetal,arona-lwip/baremetal,arona-net/baremetal
           --target ${{ matrix.triple }}
           -Zbuild-std=core,alloc,compiler_builtins
           -Zbuild-std-features=compiler-builtins-mem
           -- -D warnings --force-warn clippy::too_many_lines
       - run: cargo xtask build ${{ matrix.target }} --release
+      - name: Link native network service scenarios
+        run: |
+          cargo xtask package-net-test ${{ matrix.target }}
+          cargo xtask package-net-test ${{ matrix.target }} --release
       - run: cargo xtask package-linux-test ${{ matrix.target }} --release
       - name: Link lwIP loopback and VirtIO net programs
         run: |

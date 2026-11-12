@@ -126,3 +126,11 @@ int arona_lwip_take_error(int fd) {
 
 int arona_lwip_shutdown(int fd, int direction) { return lwip_shutdown(fd, direction); }
 int arona_lwip_close(int fd) { return lwip_close(fd); }
+
+int arona_lwip_option(int fd, int option, int *value, int set) {
+  int level = option == 0 ? SOL_SOCKET : IPPROTO_TCP;
+  int name = option == 0 ? SO_REUSEADDR : TCP_NODELAY;
+  if (set) { return lwip_setsockopt(fd, level, name, value, sizeof(*value)); }
+  socklen_t size = sizeof(*value);
+  return lwip_getsockopt(fd, level, name, value, &size);
+}

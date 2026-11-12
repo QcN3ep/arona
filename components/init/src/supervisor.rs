@@ -25,6 +25,8 @@ pub struct System<'a> {
     pub devmgr: &'a Service,
     pub logger: &'a Service,
     pub linux: &'a Service,
+    pub net: &'a Service,
+    pub net_control: net::Control<'a>,
     pub linux_control: linux::Control<'a>,
     pub logger_control: logger::Control<'a>,
     pub mounts: fs::Control<'a>,
@@ -57,6 +59,7 @@ pub fn run(system: System<'_>, config: Config) -> Result<usize, InitError> {
         system.devmgr,
         system.logger,
         system.linux,
+        system.net,
     ];
     let mut programs: Vec<_> = config
         .program
@@ -113,6 +116,8 @@ pub fn shutdown(system: System<'_>, action: PowerAction) -> Result<usize, InitEr
         logger,
         linux,
         linux_control,
+        net,
+        net_control,
         logger_control,
         mounts,
         devices,
@@ -124,6 +129,9 @@ pub fn shutdown(system: System<'_>, action: PowerAction) -> Result<usize, InitEr
     report.info(format_args!("Stopping Linux programs"));
     drop(linux_control);
     stop_service(linux, &mut report, "Linux service")?;
+    report.info(format_args!("Stopping network service"));
+    drop(net_control);
+    stop_service(net, &mut report, "network service")?;
     report.info(format_args!("Stopping logger service"));
     logger::log::logger().flush();
     drop(logger_control);

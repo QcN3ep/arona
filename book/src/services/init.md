@@ -22,8 +22,9 @@ The archive page frame is then handed to the file service, and init reads the re
 | 2 | Read devmgr from fs, hand over the DeviceSet, and wait for driver initialization to complete |
 | 3 | Query the first block device and, if present, mount its full range as ext4 at `/var` |
 | 4 | Open the UART output session, start logger, and hand over the KernelLog and the optional persistence file |
-| 5 | Establish the local log facade, start linux, and hand over the file, RTC, and random number sessions |
-| 6 | Record `System services ready`, read the configuration, and enter the supervision loop |
+| 5 | Establish the local log facade, start net with a separate RNG session, and wait for loopback readiness |
+| 6 | Start linux and hand over the file, RTC, and random number sessions |
+| 7 | Record `System services ready`, read the configuration, and enter the supervision loop |
 
 fs starts first because it establishes file access capability directly from the archive; devmgr then provides device sessions, letting persistent storage and serial output join the system.
 After the `/var` mount succeeds, init creates the log directory, opens or creates `/var/log/system.log`, and hands the file session to logger.
@@ -64,11 +65,14 @@ When exits repeat within a short time, the restart delay increases exponentially
 `on-failure` decides whether to enter this path based on the exit code or signal, while `never` keeps an exited application stopped.
 
 Exit of a base service makes the supervisor end and return an error state.
-The service objects held by init terminate the related Tasks in the exit path and release control channels and sessions.
+Init closes the remaining control channels and sessions, then waits for the services to exit.
+This lets device drivers reset their hardware before releasing DMA memory.
+If a service does not exit before the deadline, init terminates its Task.
 
 When the configuration requests a boot power action, init stops the base services before applying it.
 The Linux compatibility service stops first.
 Closing its control channel ends its supervised programs.
+The network service stops after Linux releases its resources.
 The log service then flushes and stops.
 Once its files are released, the file service flushes and unmounts its filesystems before it stops.
 The device management service stays available until it performs the shutdown or reboot through the platform power controller.

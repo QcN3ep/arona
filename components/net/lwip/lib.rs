@@ -103,6 +103,12 @@ pub enum SocketKind {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OptionName {
+    ReuseAddress,
+    NoDelay,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Shutdown {
     Read,
     Write,
@@ -133,6 +139,24 @@ impl Stack {
         Ok(Self { _private: () })
     }
 
+    /// Reserve the observer before creating the socket, so allocation failure
+    /// cannot leave a socket without its dispatcher notification resources.
+    pub fn socket_with_subscription(
+        &self,
+        kind: SocketKind,
+    ) -> Result<(Socket, Subscription), Error> {
+        let shared = Shared::new(kind)?;
+        let subscription = Subscription::new(Arc::clone(&shared))?;
+        // SAFETY: Startup completed and shared owns preallocated socket state.
+        let fd = unsafe {
+            ffi::arona_lwip_socket(match kind {
+                SocketKind::Tcp => 1,
+                SocketKind::Udp => 2,
+            })
+        };
+        Ok((Socket::from_result(fd, shared)?, subscription))
+    }
+
     pub fn socket(&self, kind: SocketKind) -> Result<Socket, Error> {
         let shared = Shared::new(kind)?;
         // SAFETY: Initialization completed; the bridge returns a fresh C socket.
@@ -158,11 +182,11 @@ pub struct Socket {
 }
 
 impl Socket {
-    fn from_result(fd: i32, mut shared: Arc<Shared>) -> Result<Self, Error> {
+    fn from_result(fd: i32, shared: Arc<Shared>) -> Result<Self, Error> {
         if fd < 0 {
             return Err(Error::last());
         }
-        Arc::get_mut(&mut shared).unwrap().fd = fd;
+        shared.fd.store(fd, Ordering::Release);
         // SAFETY: fd is exclusively owned. C retains this Arc until its final
         // entry reference leaves, including callbacks running during close.
         unsafe { ffi::arona_lwip_observe(fd, Arc::into_raw(Arc::clone(&shared)).cast()) };
@@ -193,38 +217,58 @@ impl Socket {
 
     pub fn bind(&mut self, endpoint: Endpoint) -> Result<(), Error> {
         // SAFETY: The socket is exclusively borrowed and endpoint is readable.
-        status(unsafe { ffi::arona_lwip_bind(self.shared().fd, &endpoint) })
+        status(unsafe { ffi::arona_lwip_bind(self.shared().fd.load(Ordering::Acquire), &endpoint) })
     }
 
     pub fn listen(&mut self, backlog: u8) -> Result<(), Error> {
         // SAFETY: This method exclusively owns C API access to the socket.
-        status(unsafe { ffi::arona_lwip_listen(self.shared().fd, backlog.into()) })
+        status(unsafe {
+            ffi::arona_lwip_listen(self.shared().fd.load(Ordering::Acquire), backlog.into())
+        })
     }
 
     pub fn connect(&mut self, endpoint: Endpoint) -> Result<(), Error> {
         // SAFETY: The socket is exclusively borrowed and endpoint is readable.
-        status(unsafe { ffi::arona_lwip_connect(self.shared().fd, &endpoint) })
+        status(unsafe {
+            ffi::arona_lwip_connect(self.shared().fd.load(Ordering::Acquire), &endpoint)
+        })
+    }
+
+    /// Reserve observer resources before removing a connection from the listener.
+    pub fn accept_with_subscription(&mut self) -> Result<(Self, Subscription, Endpoint), Error> {
+        let shared = Shared::new(SocketKind::Tcp)?;
+        let subscription = Subscription::new(Arc::clone(&shared))?;
+        let mut peer = Endpoint::loopback(0);
+        // SAFETY: The listener is exclusively borrowed and peer is writable.
+        let fd =
+            unsafe { ffi::arona_lwip_accept(self.shared().fd.load(Ordering::Acquire), &mut peer) };
+        Ok((Self::from_result(fd, shared)?, subscription, peer))
     }
 
     pub fn accept(&mut self) -> Result<(Self, Endpoint), Error> {
         let shared = Shared::new(SocketKind::Tcp)?;
         let mut peer = Endpoint::loopback(0);
         // SAFETY: The listener is exclusively borrowed; peer is writable.
-        let fd = unsafe { ffi::arona_lwip_accept(self.shared().fd, &mut peer) };
+        let fd =
+            unsafe { ffi::arona_lwip_accept(self.shared().fd.load(Ordering::Acquire), &mut peer) };
         Ok((Self::from_result(fd, shared)?, peer))
     }
 
     pub fn local_endpoint(&mut self) -> Result<Endpoint, Error> {
         let mut endpoint = Endpoint::loopback(0);
         // SAFETY: The socket is exclusively borrowed; endpoint is writable.
-        status(unsafe { ffi::arona_lwip_endpoint(self.shared().fd, &mut endpoint, 0) })?;
+        status(unsafe {
+            ffi::arona_lwip_endpoint(self.shared().fd.load(Ordering::Acquire), &mut endpoint, 0)
+        })?;
         Ok(endpoint)
     }
 
     pub fn peer_endpoint(&mut self) -> Result<Endpoint, Error> {
         let mut endpoint = Endpoint::loopback(0);
         // SAFETY: The socket is exclusively borrowed; endpoint is writable.
-        status(unsafe { ffi::arona_lwip_endpoint(self.shared().fd, &mut endpoint, 1) })?;
+        status(unsafe {
+            ffi::arona_lwip_endpoint(self.shared().fd.load(Ordering::Acquire), &mut endpoint, 1)
+        })?;
         Ok(endpoint)
     }
 
@@ -232,7 +276,7 @@ impl Socket {
         // SAFETY: The bridge copies readable bytes before returning.
         length(unsafe {
             ffi::arona_lwip_send(
-                self.shared().fd,
+                self.shared().fd.load(Ordering::Acquire),
                 bytes.as_ptr(),
                 bytes.len(),
                 core::ptr::null(),
@@ -243,7 +287,12 @@ impl Socket {
     pub fn send_to(&mut self, bytes: &[u8], endpoint: Endpoint) -> Result<usize, Error> {
         // SAFETY: Both inputs are readable for the call; no pointer is retained.
         length(unsafe {
-            ffi::arona_lwip_send(self.shared().fd, bytes.as_ptr(), bytes.len(), &endpoint)
+            ffi::arona_lwip_send(
+                self.shared().fd.load(Ordering::Acquire),
+                bytes.as_ptr(),
+                bytes.len(),
+                &endpoint,
+            )
         })
     }
 
@@ -251,7 +300,7 @@ impl Socket {
         // SAFETY: bytes is exclusively writable and not retained by the bridge.
         length(unsafe {
             ffi::arona_lwip_receive(
-                self.shared().fd,
+                self.shared().fd.load(Ordering::Acquire),
                 bytes.as_mut_ptr(),
                 bytes.len(),
                 core::ptr::null_mut(),
@@ -263,15 +312,47 @@ impl Socket {
         let mut peer = Endpoint::loopback(0);
         // SAFETY: The socket and both output regions are exclusively borrowed.
         let count = length(unsafe {
-            ffi::arona_lwip_receive(self.shared().fd, bytes.as_mut_ptr(), bytes.len(), &mut peer)
+            ffi::arona_lwip_receive(
+                self.shared().fd.load(Ordering::Acquire),
+                bytes.as_mut_ptr(),
+                bytes.len(),
+                &mut peer,
+            )
         })?;
         Ok((count, peer))
+    }
+
+    pub fn option(&mut self, option: OptionName) -> Result<bool, Error> {
+        let mut value = 0;
+        // SAFETY: Exclusive socket access; value is writable for this call.
+        status(unsafe {
+            ffi::arona_lwip_option(
+                self.shared().fd.load(Ordering::Acquire),
+                option as i32,
+                &mut value,
+                0,
+            )
+        })?;
+        Ok(value != 0)
+    }
+
+    pub fn set_option(&mut self, option: OptionName, enabled: bool) -> Result<(), Error> {
+        let mut value = i32::from(enabled);
+        // SAFETY: Exclusive socket access; value is readable for this call.
+        status(unsafe {
+            ffi::arona_lwip_option(
+                self.shared().fd.load(Ordering::Acquire),
+                option as i32,
+                &mut value,
+                1,
+            )
+        })
     }
 
     /// Read and clear the pending connection error, as with `SO_ERROR`.
     pub fn take_error(&mut self) -> Result<(), Error> {
         // SAFETY: Only this method accesses the socket during the C call.
-        status(unsafe { ffi::arona_lwip_take_error(self.shared().fd) })
+        status(unsafe { ffi::arona_lwip_take_error(self.shared().fd.load(Ordering::Acquire)) })
     }
 
     /// Transfer ownership to the teardown worker until shutdown completes.

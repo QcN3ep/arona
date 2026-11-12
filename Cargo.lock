@@ -47,6 +47,7 @@ dependencies = [
  "arona-fs",
  "arona-linux",
  "arona-logger",
+ "arona-net",
  "arona-runtime",
  "serde",
  "toml",
@@ -109,6 +110,17 @@ dependencies = [
  "siphasher",
  "spin",
  "toml",
+]
+
+[[package]]
+name = "arona-net"
+version = "0.2.0"
+dependencies = [
+ "arona-devmgr",
+ "arona-fs",
+ "arona-linux",
+ "arona-lwip",
+ "arona-runtime",
 ]
 
 [[package]]

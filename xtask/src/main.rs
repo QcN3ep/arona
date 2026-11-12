@@ -4,6 +4,7 @@
 // TODO: Integrate performance benchmarks for IPC, scheduling, file I/O, and networking, along with Linux comparisons.
 
 mod linux_test;
+mod net_test;
 mod rootfs;
 
 use std::{
@@ -67,8 +68,13 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
         "build" => build(arguments, false),
         "run" => build(arguments, true),
         "book" => book(arguments),
-        "package-init" => package_init(&BuildOptions::parse(arguments)?, false).map(|_| ()),
-        "package-linux-test" => package_init(&BuildOptions::parse(arguments)?, true).map(|_| ()),
+        "package-init" => package_init(&BuildOptions::parse(arguments)?, None).map(|_| ()),
+        "package-net-test" => {
+            package_init(&BuildOptions::parse(arguments)?, Some("net")).map(|_| ())
+        }
+        "package-linux-test" => {
+            package_init(&BuildOptions::parse(arguments)?, Some("linux")).map(|_| ())
+        }
         "help" | "--help" | "-h" => {
             println!("{}", usage());
             Ok(())
@@ -93,7 +99,7 @@ fn book(mut arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
 
 fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), String> {
     let options = BuildOptions::parse(arguments)?;
-    let archive = package_init(&options, false)?;
+    let archive = package_init(&options, None)?;
     run_cargo_build(&options, &archive)?;
     if run {
         let root = workspace_root()?;
@@ -124,6 +130,7 @@ fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), Str
                     .join(options.profile())
                     .join("arch"),
             );
+        command.args(["-device", "virtio-rng-pci,disable-legacy=on"]);
         if options.net {
             command.args([
                 "-netdev",
@@ -143,21 +150,20 @@ fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), Str
     Ok(())
 }
 
-fn package_init(options: &BuildOptions, linux_test: bool) -> Result<PathBuf, String> {
+fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, String> {
     let root = workspace_root()?;
     let profile = options.profile();
     let target_directory = target_directory(&root);
     let archive = target_directory
         .join(options.target.triple())
         .join(profile)
-        .join(if linux_test {
-            "initramfs-linux-test.cpio"
-        } else {
-            "initramfs.cpio"
-        });
+        .join(test.map_or_else(
+            || "initramfs.cpio".to_owned(),
+            |test| format!("initramfs-{test}-test.cpio"),
+        ));
     let mut bytes = Vec::new();
-    for component in ["init", "devmgr", "logger", "fs", "linux"] {
-        if linux_test && component == "init" {
+    for component in ["init", "devmgr", "logger", "fs", "linux", "net"] {
+        if test.is_some() && component == "init" {
             continue;
         }
         build_component(options.target, options.release, component)?;
@@ -169,8 +175,11 @@ fn package_init(options: &BuildOptions, linux_test: bool) -> Result<PathBuf, Str
             .map_err(|error| format!("failed to read {}: {error}", executable.display()))?;
         append_entry(&mut bytes, &format!("bin/{component}"), 0o100755, &image)?;
     }
-    if linux_test {
+    if test == Some("linux") {
         linux_test::append(options, &root, &target_directory, &mut bytes)?;
+    }
+    if test == Some("net") {
+        net_test::append(options, &root, &mut bytes)?;
     }
     let mut reserved = vec![
         "bin/init",
@@ -178,8 +187,9 @@ fn package_init(options: &BuildOptions, linux_test: bool) -> Result<PathBuf, Str
         "bin/logger",
         "bin/fs",
         "bin/linux",
+        "bin/net",
     ];
-    if linux_test {
+    if test == Some("linux") {
         reserved.extend([
             "bin/linux-test",
             "bin/linux-noexec",
@@ -193,6 +203,9 @@ fn package_init(options: &BuildOptions, linux_test: bool) -> Result<PathBuf, Str
             "bin/linux-dynamic",
             "etc/linux-data",
         ]);
+    }
+    if test == Some("net") {
+        reserved.push("bin/net-native");
     }
     rootfs::append(&mut bytes, options.rootfs.as_deref(), &reserved)?;
     append_entry(&mut bytes, "TRAILER!!!", 0, &[])?;
@@ -378,5 +391,5 @@ fn execute(mut command: Command) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|package-init|package-linux-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH] [--net]\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
+    "usage: cargo xtask <build|run|package-init|package-linux-test|package-net-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH] [--net]\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
 }

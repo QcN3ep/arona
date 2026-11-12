@@ -19,6 +19,7 @@ enum InitError {
     Logger(logger::Error),
     Filesystem(fs::Error),
     Linux(linux::Error),
+    Network(net::Error),
     Config(config::Error),
 }
 
@@ -29,6 +30,7 @@ impl core::fmt::Debug for InitError {
             Self::Device(error) => output.debug_tuple("Device").field(error).finish(),
             Self::Logger(error) => output.debug_tuple("Logger").field(error).finish(),
             Self::Filesystem(error) => output.debug_tuple("Filesystem").field(error).finish(),
+            Self::Network(error) => output.debug_tuple("Network").field(error).finish(),
             Self::Linux(error) => output.debug_tuple("Linux").field(error).finish(),
             Self::Config(error) => write!(output, "{error}"),
         }
@@ -48,6 +50,7 @@ init_errors!(
     Logger(logger::Error),
     Filesystem(fs::Error),
     Linux(linux::Error),
+    Network(net::Error),
     Config(config::Error)
 );
 
@@ -101,6 +104,7 @@ fn main() -> Result<usize, InitError> {
         persistent_log,
     )?;
     logger::init(client, logger::log::LevelFilter::Info).map_err(|_| Error::Protocol)?;
+    let (net, net_control) = service::start_net(&loader, &files, &device_control)?;
     let (linux, linux_control) = service::start_linux(&loader, &files, &mounts, &device_control)?;
     if mounted {
         logger::log::info!(target: "init", "Mounted block device at /var");
@@ -117,6 +121,8 @@ fn main() -> Result<usize, InitError> {
         devmgr: &devmgr,
         logger: &logger,
         linux: &linux,
+        net: &net,
+        net_control,
         linux_control,
         logger_control,
         mounts,

@@ -176,7 +176,7 @@ fn run_program(
         data.read(0, &mut bytes).unwrap();
         bytes
     });
-    if matches!(suite, "init" | "linux") {
+    if matches!(suite, "init" | "linux" | "net-service") {
         let init = arch::boot::initramfs::find_init(
             arch::boot::initramfs::Image::from_bytes(bytes, 0).unwrap(),
         )
@@ -186,7 +186,7 @@ fn run_program(
         let run = if suite == "init" {
             kernel_tests::run_init_program
         } else {
-            kernel_tests::run_linux_program
+            kernel_tests::run_service_program
         };
         run(
             &bytes[init.start as usize..init.end as usize],
@@ -196,7 +196,11 @@ fn run_program(
         uart()
             .write(format_args!(
                 "{} service tests passed\n",
-                if suite == "init" { "Init" } else { "Linux" }
+                match suite {
+                    "init" => "Init",
+                    "linux" => "Linux",
+                    _ => "Network",
+                }
             ))
             .unwrap();
     } else {
@@ -271,6 +275,7 @@ fn select_program() -> &'static str {
                 b"service" => "service",
                 b"init" => "init",
                 b"linux" => "linux",
+                b"net-service" => "net-service",
                 b"dma" => "dma",
                 b"block" => "block",
                 b"rng" => "rng",

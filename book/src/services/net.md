@@ -1,9 +1,71 @@
 # Network Stack
 
-The `arona-lwip` crate in `components/net/lwip` runs lwIP inside an Arona user-space program.
-It currently provides IPv4 TCP and UDP sockets through lwIP's loopback interface.
+The network service runs as an independent Task and provides native IPv4 TCP and UDP sockets.
+The `arona-net` client communicates with it through channels and does not link lwIP.
+The service links the maintained lwIP adapter in `components/net/lwip`.
+This version provides loopback networking without requiring a network interface.
 
-## Startup and Sockets
+## Native Socket Requests
+
+Init starts `/bin/net` after the device and log services.
+It supplies a separate devmgr RNG session, and net obtains its startup seed before reporting readiness.
+The default QEMU command includes a modern VirtIO RNG even when `--net` is absent.
+A missing or failed entropy source causes startup to fail.
+Init supervises net with the other base services and stops it after Linux during ordered shutdown.
+
+`Control::connect` returns a native client capability.
+A client creates a socket with `Client::socket` or begins creation with `start_socket`.
+Each socket has a dedicated channel and a server-owned lwIP socket.
+The native interface exposes no C descriptor, register mapping, or DMA authority.
+
+Use `Socket::start` to submit one `Request`, then call `complete` or `try_complete` to collect its result.
+`perform` combines submission and completion.
+These requests cover bind, listen, accept, connect, send, receive, endpoint queries, options, shutdown, and close.
+The supported options are address reuse and TCP_NODELAY.
+`Socket::kind` reports the socket type, and `TakeError` reads and clears its pending connection error.
+
+The service performs a nonblocking attempt for each socket operation.
+It returns `WouldBlock` when that attempt cannot make progress and `InProgress` when a connection is still being established.
+A TCP attempt transfers at most 64 KiB and reports its actual byte count.
+A UDP send contains one datagram with at most 65,507 bytes.
+`ReceiveDatagram` returns the whole datagram and its source endpoint, including empty datagrams.
+The client receives payload storage with READ rights through the `Data` result.
+
+Each socket retains one outstanding request with a monotonically increasing identity.
+The service snapshots send inputs and reserves receive storage before consuming data.
+It keeps the result, received bytes, or accepted socket until the client acknowledges delivery.
+Repeated result retrieval returns the same completion and does not repeat I/O.
+The client acknowledges a received result before returning it to the caller.
+
+A timeout preserves the request identity and any result already received by the client.
+Call `complete` again to resume it.
+Starting another request while one remains outstanding returns `Busy`.
+`forget_reply` discards a reply wait while keeping the operation recoverable.
+Canceling a runtime Call also affects only the reply wait.
+
+`Socket::cancel` reports whether it canceled an unexecuted request, found committed work, or found shutdown or close still running.
+The caller then collects the retained result with `complete`.
+Dropping the socket closes its session, abandons any unacknowledged result, and queues cleanup.
+A service failure closes its session channels, so pending calls and readiness waiters observe failure.
+
+## Native Readiness
+
+`Socket::readiness` returns a non-consuming snapshot.
+Use `subscribe` to obtain an independent Event, a registration channel, and the initial snapshot.
+Each registration lasts until its channel closes.
+Callbacks update adapter state, and the service forwards changes to client Events outside those callbacks.
+
+Take a snapshot before attempting I/O.
+If the attempt returns `WouldBlock`, pass that snapshot to `Subscription::wait` and retry after waking.
+Notifications can coalesce, and a stale notification is harmless because the next snapshot reflects current state.
+Waits observe both the Event and registration-channel closure, so a stopped service cannot leave an Event-only wait asleep.
+The registration does not keep its socket session alive.
+
+## lwIP Adapter
+
+The following interfaces are internal to the service and its adapter scenarios.
+
+### Startup and Sockets
 
 Startup begins with 32 unpredictable bytes obtained through a devmgr RNG session.
 The caller passes these bytes to `Stack::initialize`, which starts the protocol and teardown threads before returning.
@@ -32,7 +94,7 @@ A socket can move between threads, and different sockets can progress concurrent
 Nonblocking I/O can still wait for the local TCP/IP thread to process a request.
 Shutdown and close transfer socket ownership to a shared teardown worker, which keeps protocol cleanup off the caller's thread.
 
-## Readiness and Waiting
+### Readiness and Waiting
 
 `Socket::readiness` returns a snapshot without consuming data or clearing `SO_ERROR`.
 The snapshot includes read and write readiness, a connection error indication, shutdown state, and a change sequence.
@@ -56,7 +118,7 @@ Snapshots remain tied to the original socket after close.
 They report a terminal closed state and never start observing a replacement that reuses the C descriptor.
 Subscriptions retain notification storage until they are dropped, but they do not keep the socket open.
 
-## Shutdown and Close
+### Shutdown and Close
 
 `Socket::shutdown` consumes the socket and returns a `PendingShutdown`.
 The worker holds exclusive C API access until shutdown finishes.
@@ -79,7 +141,7 @@ Timeouts leave the operation pending and can be followed by another wait.
 One worker processes the queue, so a slow teardown can delay later teardown operations while ordinary I/O on other sockets continues.
 Queue links and completion Events are reserved when creating or accepting a socket, so submitting shutdown or close does not allocate storage.
 
-## OS and FFI Boundary
+### OS and FFI Boundary
 
 One TCP/IP thread handles protocol state, timers, callbacks, and loopback input.
 Other threads submit work through lwIP mailboxes and wait for completion through semaphores.
@@ -135,7 +197,18 @@ The C build requires Clang and LLVM's archiver.
 The default executable names are `clang` and `llvm-ar`.
 The `ARONA_CC` and `ARONA_AR` environment variables select different executables when needed.
 
-The following commands build the native loopback program and its architecture test image with the pinned toolchain:
+Build the service and its separate native client scenarios with:
+
+```sh
+cargo xtask package-net-test riscv64 --release
+```
+
+Use `loongarch64` for LoongArch, or omit `--release` for a debug build.
+Boot the archive at `target/<triple>/<profile>/initramfs-net-test.cpio` with the architecture test image, attach the VirtIO RNG, and select `net-service` at `Test suite:`.
+The scenarios cover TCP streams between separate Tasks, complete UDP datagrams, request recovery, cancellation, half-close, session failure, and receive allocation failure.
+The architecture harness checks resource reclamation after the test Tasks exit.
+
+The following commands build the adapter loopback program and its architecture test image with the pinned toolchain:
 
 ```sh
 cargo rustc --locked -p arona-lwip --features baremetal --test loopback \

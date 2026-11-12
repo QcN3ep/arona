@@ -71,6 +71,11 @@ unsafe extern "C" {
     pub fn arona_lwip_take_error(fd: i32) -> i32;
     /// # Safety
     ///
+    /// fd must be live and exclusively accessed. option is 0 or 1, value
+    /// points to a valid integer, and set is 0 (read) or 1 (write).
+    pub fn arona_lwip_option(fd: i32, option: i32, value: *mut i32, set: i32) -> i32;
+    /// # Safety
+    ///
     /// fd must be live and exclusively accessed; direction must be SHUT_RD,
     /// SHUT_WR, or SHUT_RDWR. The socket must remain owned after this call.
     pub fn arona_lwip_shutdown(fd: i32, direction: i32) -> i32;
