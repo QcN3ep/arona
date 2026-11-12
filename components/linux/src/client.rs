@@ -20,6 +20,7 @@ pub struct Program<'a> {
 pub struct Services<'a> {
     pub clock: Option<devmgr::rtc::Session>,
     pub entropy: Option<devmgr::rng::Session<'a>>,
+    pub net: Option<net::Client<'a>>,
 }
 
 pub struct Control<'a> {
@@ -44,8 +45,9 @@ impl<'a> Control<'a> {
         services: Services<'_>,
         deadline: u64,
     ) -> Result<Self, Error> {
-        let flags =
-            u64::from(services.clock.is_some()) | (u64::from(services.entropy.is_some()) << 1);
+        let flags = u64::from(services.clock.is_some())
+            | (u64::from(services.entropy.is_some()) << 1)
+            | (u64::from(services.net.is_some()) << 2);
         let mut request = Message::new(protocol::START, &[flags])?;
         transfer(&mut request, files.into_channel(), CHANNEL_RIGHTS)?;
         if let Some(clock) = services.clock {
@@ -53,6 +55,9 @@ impl<'a> Control<'a> {
         }
         if let Some(entropy) = services.entropy {
             transfer(&mut request, entropy.into_channel(), CHANNEL_RIGHTS)?;
+        }
+        if let Some(net) = services.net {
+            transfer(&mut request, net.into_channel(), CHANNEL_RIGHTS)?;
         }
         let response = channel
             .call(&mut request, Some(deadline))

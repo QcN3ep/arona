@@ -82,6 +82,7 @@ version = "0.2.0"
 dependencies = [
  "arona-devmgr",
  "arona-fs",
+ "arona-net",
  "arona-runtime",
 ]
 

@@ -2,7 +2,7 @@
 
 mod operation;
 mod subscription;
-pub use subscription::Subscription;
+pub use subscription::{PendingReadiness, PendingSubscription, Subscription};
 
 use crate::{Error, Readiness, Request, SocketKind, protocol as p};
 use runtime::{

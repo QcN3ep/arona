@@ -16,6 +16,12 @@ pub(super) fn append(
     let (executable, compact) = build_guest(options, root, target_directory)?;
     let image = fs::read(executable).map_err(|error| error.to_string())?;
     append_entry(bytes, "bin/linux-test", 0o100755, &image)?;
+    append_entry(
+        bytes,
+        "bin/linux-socket",
+        0o100755,
+        &socket_guest(options, root, target_directory)?,
+    )?;
     append_entry(bytes, "bin/linux-noexec", 0o100644, &image)?;
     let mut compact = fs::read(compact).map_err(|error| error.to_string())?;
     append_entry(bytes, "bin/linux-compact", 0o100755, &compact)?;
@@ -186,6 +192,61 @@ fn build_guest(
         directory.join("linux-test"),
         directory.join("linux-compact"),
     ))
+}
+
+fn socket_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<u8>, String> {
+    let (isa, triple) = match options.target {
+        Target::Riscv64 => ("riscv64", "riscv64-unknown-linux-gnu"),
+        Target::LoongArch64 => ("loongarch64", "loongarch64-unknown-linux-gnu"),
+    };
+    let directory = target
+        .join(options.target.triple())
+        .join(options.profile())
+        .join("linux-tests");
+    let mut objects = Vec::new();
+    for name in ["stream.c", &format!("{isa}.S")] {
+        let object = directory.join(format!("socket-{name}.o"));
+        let mut compile = Command::new("clang");
+        compile.arg(format!("--target={triple}")).args([
+            "-c",
+            "-O2",
+            "-ffreestanding",
+            "-fno-builtin",
+            "-fno-stack-protector",
+            "-fno-pic",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+        ]);
+        if isa == "riscv64" {
+            compile.arg("-mno-relax");
+        } else {
+            compile.args(["-mno-lsx", "-mno-lasx"]);
+        }
+        compile
+            .arg(
+                root.join("components/linux/tests/syscall/socket")
+                    .join(name),
+            )
+            .arg("-o")
+            .arg(&object);
+        execute(compile)?;
+        objects.push(object);
+    }
+    let executable = directory.join("linux-socket");
+    let mut link = Command::new("ld.lld");
+    link.args([
+        "-static",
+        "--entry=_start",
+        "-z",
+        "max-page-size=4096",
+        "-Ttext=0x400000",
+    ])
+    .args(&objects)
+    .arg("-o")
+    .arg(&executable);
+    execute(link)?;
+    fs::read(executable).map_err(|error| error.to_string())
 }
 
 const FIXTURE_ENTRY: usize = 0x100;

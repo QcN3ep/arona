@@ -16,7 +16,9 @@ mod client;
 mod protocol;
 mod types;
 
-pub use client::{Client, Completion, Control, Data, Socket, Subscription};
+pub use client::{
+    Client, Completion, Control, Data, PendingReadiness, PendingSubscription, Socket, Subscription,
+};
 pub use types::{
     CancelOutcome, Endpoint, Error, OptionName, Readiness, Request, Shutdown, SocketKind,
 };

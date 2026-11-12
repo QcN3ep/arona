@@ -42,7 +42,7 @@ pub fn launch(bytes: &[u8], machine: Machine, rights: Rights) -> (Service, Handl
     }
     let (sender, receiver) = process::task()
         .channel(
-            Rights::READ_WRITE | Rights::WAIT,
+            Rights::READ_WRITE | Rights::WAIT | Rights::DUPLICATE | Rights::TRANSFER,
             Rights::READ | Rights::WAIT | Rights::TRANSFER,
         )
         .unwrap();
@@ -133,6 +133,7 @@ pub fn resources(service: &Handle<Channel>) -> linux::Services<'static> {
         }
     };
     linux::Services {
+        net: None,
         clock: Some(
             devmgr::rtc::Session::open(
                 process::task(),

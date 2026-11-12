@@ -7,7 +7,7 @@
 
 extern crate alloc;
 
-// TODO: Integrate the network service and provide Linux socket and Unix domain socket interfaces.
+// TODO: Provide Unix domain sockets.
 
 mod client;
 pub mod elf;

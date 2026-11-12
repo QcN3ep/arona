@@ -156,6 +156,7 @@ pub fn start_linux(
     files: &fs::Client<'_>,
     filesystem: &fs::Control<'static>,
     devices: &Handle<Channel>,
+    network: &net::Control<'static>,
 ) -> Result<(Service, linux::Control<'static>), InitError> {
     let (service, channel) = launch(
         loader,
@@ -173,7 +174,11 @@ pub fn start_linux(
         process::task(),
         channel,
         filesystem.connect(deadline()?)?,
-        linux::Services { clock, entropy },
+        linux::Services {
+            clock,
+            entropy,
+            net: Some(network.connect()?),
+        },
         deadline()?,
     )?;
     Ok((service, control))

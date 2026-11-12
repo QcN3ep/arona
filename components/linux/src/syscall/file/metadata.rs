@@ -38,6 +38,16 @@ fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) ->
         None => return Outcome::Complete(Err(EBADF)),
     };
     let request = match description.as_ref() {
+        OpenFileDescription::Socket { .. } => {
+            return Outcome::Complete(buffer.write(
+                process,
+                fs::Metadata {
+                    mode: 0o140777,
+                    links: 1,
+                    ..fs::Metadata::default()
+                },
+            ));
+        }
         OpenFileDescription::Regular { file, .. } => file.start_metadata(),
         OpenFileDescription::Directory { session, .. } => session.start_metadata(),
         OpenFileDescription::VirtualFile { data, inode, .. } => {
