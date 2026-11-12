@@ -86,6 +86,12 @@ struct lwip_sock {
   size_t fd_used;
   /* status of pending close/delete actions */
   u8_t fd_free_pending;
+  // The entry owns one Rust observer reference until its final release.
+  const void *observer;
+  u8_t read_cached;
+  u8_t read_closed;
+  u8_t write_closed;
+  u8_t connection_error;
 #define LWIP_SOCK_FD_FREE_TCP  1
 #define LWIP_SOCK_FD_FREE_FREE 2
 #if LWIP_IGMP

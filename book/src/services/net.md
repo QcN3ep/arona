@@ -6,7 +6,7 @@ It currently provides IPv4 TCP and UDP sockets through lwIP's loopback interface
 ## Startup and Sockets
 
 Startup begins with 32 unpredictable bytes obtained through a devmgr RNG session.
-The caller passes these bytes to `Stack::initialize`, which waits until the protocol thread is ready.
+The caller passes these bytes to `Stack::initialize`, which starts the protocol and teardown threads before returning.
 The initialized stack lives until the program exits.
 Initialization can be attempted only once, so a failed startup requires restarting the program.
 
@@ -30,9 +30,54 @@ This prevents simultaneous C API calls on the same socket.
 A socket can move between threads, and different sockets can progress concurrently.
 
 Nonblocking I/O can still wait for the local TCP/IP thread to process a request.
-Shutdown and dropping a socket can wait for protocol cleanup.
-These calls therefore need a thread that can sleep without holding up unrelated work.
+Shutdown and close transfer socket ownership to a shared teardown worker, which keeps protocol cleanup off the caller's thread.
+
+## Readiness and Waiting
+
+`Socket::readiness` returns a snapshot without consuming data or clearing `SO_ERROR`.
+The snapshot includes read and write readiness, a connection error indication, shutdown state, and a change sequence.
+Read readiness can indicate a pending accept, incoming data, or EOF.
+Write readiness after a connection attempt requires checking `take_error` before transferring data.
+The error indication remains set after a connection failure, even when `take_error` has cleared the pending error value.
+
+Call `subscribe` before checking readiness or attempting an operation that may need to wait.
+Each subscription has its own Event, so independent waiters receive notifications independently.
+Take a snapshot before attempting I/O and pass it to `Subscription::wait` if the attempt returns `WouldBlock`.
+The wait compares change sequences before sleeping and checks them again after waking.
+This covers changes during registration and between the snapshot, I/O attempt, and wait.
+An older Event bit cannot erase a newer sequence change.
+
+Notifications coalesce, and readiness is a hint to retry the operation.
+The operation can still return `WouldBlock`, so repeat the same sequence when necessary.
+A subscription also exposes its Event for use with `runtime::ipc::wait_many`.
+Use one waiting consumer per subscription and recheck its snapshot after the Event wakes.
+
+Snapshots remain tied to the original socket after close.
+They report a terminal closed state and never start observing a replacement that reuses the C descriptor.
+Subscriptions retain notification storage until they are dropped, but they do not keep the socket open.
+
+## Shutdown and Close
+
+`Socket::shutdown` consumes the socket and returns a `PendingShutdown`.
+The worker holds exclusive C API access until shutdown finishes.
+`try_complete` or a successful `wait` returns both the socket and the shutdown result.
+The caller gets ownership back even if shutdown fails.
+After a successful write shutdown, it can continue receiving through the returned socket.
+
+Dropping a pending shutdown requests close after the worker finishes shutdown.
+Calling `PendingShutdown::close` follows the same order and returns a `PendingClose` that can be waited on.
+This keeps close and shutdown serialized without enabling concurrent C calls on the same socket.
+
+`Socket::close` consumes the socket and returns a `PendingClose` immediately after queuing the work.
+Dropping a socket queues the same operation and leaves cleanup to the worker.
+Wait for explicit close completion before relying on the released port being available for another bind.
+A successful close wait means the C close call has returned, while TCP may still retain protocol state for FIN delivery or TIME_WAIT.
 A failure to close an owned socket terminates the Task.
+
+Pending operations expose completion Events for `wait_many` as well as polling and waiting methods.
+Timeouts leave the operation pending and can be followed by another wait.
+One worker processes the queue, so a slow teardown can delay later teardown operations while ordinary I/O on other sockets continues.
+Queue links and completion Events are reserved when creating or accepting a socket, so submitting shutdown or close does not allocate storage.
 
 ## OS and FFI Boundary
 
@@ -55,6 +100,12 @@ Lookup retains an entry under the same lock used to remove it.
 Closing releases the entry after its final user or callback leaves, so its descriptor cannot be reused while the entry is still in use.
 Callbacks also check their connection identity before updating an entry.
 The C API uses poll for readiness checks because select's fixed descriptor bitmap does not support this storage model.
+
+The socket event hook publishes the readiness flags and sequence together through an atomic value.
+It signals subscribers after releasing the C protection lock and retains the socket entry until notification finishes.
+The callback does not allocate or send service IPC.
+Receive completion also refreshes readiness for partially consumed buffers and records EOF.
+Events received before accept publishes the new descriptor remain available in its initial snapshot.
 
 Creating or accepting a socket first reserves its entry storage.
 If this reservation fails, the operation returns `NoMemory` without creating protocol resources or consuming a pending connection.
@@ -107,6 +158,9 @@ Attach an RNG device with `-device virtio-rng-pci,disable-legacy=on` and enter `
 The scenario obtains entropy from that device through a devmgr RNG session, then exchanges TCP and UDP data between Arona threads.
 Two threads also create and reuse groups of 64 UDP sockets while an existing TCP connection remains open.
 Memory pressure checks cover failed socket creation and acceptance, followed by successful retries with the pending data intact.
+Readiness scenarios wait for accept, connect, data, send capacity, EOF, and connection errors.
+They also exercise independent subscribers, old notifications, close and descriptor reuse, half-close, and close queued behind shutdown.
+Another connection transfers data before waiting for a submitted close to finish.
 After the Task terminates, the kernel harness checks resource cleanup.
 
 GitHub CI compiles, lints, and links debug and release programs for both targets.

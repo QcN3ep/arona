@@ -2,29 +2,35 @@
 
 //! lwIP in a native Arona program, with owned sockets and IPv4 endpoints.
 //!
+//! Available with `baremetal` on native `target_os = "none"` targets.
 //! Initialize once with device entropy before creating sockets. Each socket has
 //! exclusive C API access through mutable methods and can move between threads.
-//! I/O is nonblocking; initialization, dispatch, shutdown, and close can sleep.
+//! I/O is nonblocking; initialization and local protocol dispatch can sleep.
+//! Shutdown and close run on a shared worker with exclusive socket ownership.
 //! The stack and its protocol thread live until the program exits.
 
 #![no_std]
-#![cfg_attr(all(feature = "baremetal", target_os = "none"), feature(thread_local))]
+#![cfg(all(feature = "baremetal", target_os = "none"))]
+#![feature(allocator_api, thread_local)]
 
 extern crate alloc;
 
 mod ffi;
-#[cfg(all(feature = "baremetal", target_os = "none"))]
+mod readiness;
+mod teardown;
+pub use readiness::{Readiness, Subscription};
+pub use teardown::{PendingClose, PendingShutdown};
 mod memory;
-#[cfg(all(feature = "baremetal", target_os = "none"))]
 mod random;
-#[cfg(all(feature = "baremetal", target_os = "none"))]
 mod sys;
 
+use alloc::sync::Arc;
 use core::{
     cell::Cell,
     marker::PhantomData,
     sync::atomic::{AtomicU8, Ordering},
 };
+use teardown::Shared;
 
 static STATE: AtomicU8 = AtomicU8::new(0);
 
@@ -39,7 +45,18 @@ pub enum Error {
     NoMemory,
     InvalidArgument,
     AlreadyInitialized,
+    Runtime(runtime::Error),
     Other(i32),
+}
+
+impl From<runtime::Error> for Error {
+    fn from(error: runtime::Error) -> Self {
+        match error {
+            runtime::Error::Kernel(runtime::KernelError::NoMemory) => Self::NoMemory,
+            runtime::Error::Kernel(runtime::KernelError::WouldBlock) => Self::WouldBlock,
+            error => Self::Runtime(error),
+        }
+    }
 }
 
 impl Error {
@@ -117,6 +134,7 @@ impl Stack {
     }
 
     pub fn socket(&self, kind: SocketKind) -> Result<Socket, Error> {
+        let shared = Shared::new(kind)?;
         // SAFETY: Initialization completed; the bridge returns a fresh C socket.
         let fd = unsafe {
             ffi::arona_lwip_socket(match kind {
@@ -124,86 +142,116 @@ impl Stack {
                 SocketKind::Udp => 2,
             })
         };
-        Socket::from_result(fd, kind)
+        Socket::from_result(fd, shared)
     }
 }
 
 /// Exclusive ownership of a nonblocking C socket.
 ///
-/// Dropping it closes it synchronously and can wait for protocol cleanup. Do not
-/// drop or shut down sockets on a dispatcher that must keep serving other work.
-/// A close failure panics and terminates the program.
+/// Shutdown transfers ownership to a worker and returns it on completion.
+/// Dropping a socket queues its close without waiting for protocol cleanup.
+/// Use `close` when cleanup completion is needed. A close failure terminates
+/// the program because the descriptor's ownership cannot be recovered.
 pub struct Socket {
-    fd: i32,
-    kind: SocketKind,
+    shared: Option<Arc<Shared>>,
     _exclusive: PhantomData<Cell<()>>,
 }
 
 impl Socket {
-    fn from_result(fd: i32, kind: SocketKind) -> Result<Self, Error> {
+    fn from_result(fd: i32, mut shared: Arc<Shared>) -> Result<Self, Error> {
         if fd < 0 {
             return Err(Error::last());
         }
-        Ok(Self {
-            fd,
-            kind,
+        Arc::get_mut(&mut shared).unwrap().fd = fd;
+        // SAFETY: fd is exclusively owned. C retains this Arc until its final
+        // entry reference leaves, including callbacks running during close.
+        unsafe { ffi::arona_lwip_observe(fd, Arc::into_raw(Arc::clone(&shared)).cast()) };
+        Ok(Self::from_shared(shared))
+    }
+
+    fn from_shared(shared: Arc<Shared>) -> Self {
+        Self {
+            shared: Some(shared),
             _exclusive: PhantomData,
-        })
+        }
+    }
+
+    fn shared(&self) -> &Arc<Shared> {
+        self.shared.as_ref().unwrap()
+    }
+
+    /// Observe readiness without consuming data or clearing `SO_ERROR`.
+    /// Readability includes accept, EOF, and errors that receive will report.
+    pub fn readiness(&self) -> Readiness {
+        self.shared().notices.snapshot()
+    }
+
+    /// Register an independent waiter, then obtain its initial snapshot.
+    pub fn subscribe(&self) -> Result<Subscription, Error> {
+        Subscription::new(Arc::clone(self.shared()))
     }
 
     pub fn bind(&mut self, endpoint: Endpoint) -> Result<(), Error> {
         // SAFETY: The socket is exclusively borrowed and endpoint is readable.
-        status(unsafe { ffi::arona_lwip_bind(self.fd, &endpoint) })
+        status(unsafe { ffi::arona_lwip_bind(self.shared().fd, &endpoint) })
     }
 
     pub fn listen(&mut self, backlog: u8) -> Result<(), Error> {
         // SAFETY: This method exclusively owns C API access to the socket.
-        status(unsafe { ffi::arona_lwip_listen(self.fd, backlog.into()) })
+        status(unsafe { ffi::arona_lwip_listen(self.shared().fd, backlog.into()) })
     }
 
     pub fn connect(&mut self, endpoint: Endpoint) -> Result<(), Error> {
         // SAFETY: The socket is exclusively borrowed and endpoint is readable.
-        status(unsafe { ffi::arona_lwip_connect(self.fd, &endpoint) })
+        status(unsafe { ffi::arona_lwip_connect(self.shared().fd, &endpoint) })
     }
 
     pub fn accept(&mut self) -> Result<(Self, Endpoint), Error> {
+        let shared = Shared::new(SocketKind::Tcp)?;
         let mut peer = Endpoint::loopback(0);
         // SAFETY: The listener is exclusively borrowed; peer is writable.
-        let fd = unsafe { ffi::arona_lwip_accept(self.fd, &mut peer) };
-        Ok((Self::from_result(fd, SocketKind::Tcp)?, peer))
+        let fd = unsafe { ffi::arona_lwip_accept(self.shared().fd, &mut peer) };
+        Ok((Self::from_result(fd, shared)?, peer))
     }
 
     pub fn local_endpoint(&mut self) -> Result<Endpoint, Error> {
         let mut endpoint = Endpoint::loopback(0);
         // SAFETY: The socket is exclusively borrowed; endpoint is writable.
-        status(unsafe { ffi::arona_lwip_endpoint(self.fd, &mut endpoint, 0) })?;
+        status(unsafe { ffi::arona_lwip_endpoint(self.shared().fd, &mut endpoint, 0) })?;
         Ok(endpoint)
     }
 
     pub fn peer_endpoint(&mut self) -> Result<Endpoint, Error> {
         let mut endpoint = Endpoint::loopback(0);
         // SAFETY: The socket is exclusively borrowed; endpoint is writable.
-        status(unsafe { ffi::arona_lwip_endpoint(self.fd, &mut endpoint, 1) })?;
+        status(unsafe { ffi::arona_lwip_endpoint(self.shared().fd, &mut endpoint, 1) })?;
         Ok(endpoint)
     }
 
     pub fn send(&mut self, bytes: &[u8]) -> Result<usize, Error> {
         // SAFETY: The bridge copies readable bytes before returning.
         length(unsafe {
-            ffi::arona_lwip_send(self.fd, bytes.as_ptr(), bytes.len(), core::ptr::null())
+            ffi::arona_lwip_send(
+                self.shared().fd,
+                bytes.as_ptr(),
+                bytes.len(),
+                core::ptr::null(),
+            )
         })
     }
 
     pub fn send_to(&mut self, bytes: &[u8], endpoint: Endpoint) -> Result<usize, Error> {
         // SAFETY: Both inputs are readable for the call; no pointer is retained.
-        length(unsafe { ffi::arona_lwip_send(self.fd, bytes.as_ptr(), bytes.len(), &endpoint) })
+        length(unsafe {
+            ffi::arona_lwip_send(self.shared().fd, bytes.as_ptr(), bytes.len(), &endpoint)
+        })
     }
 
     pub fn receive(&mut self, bytes: &mut [u8]) -> Result<usize, Error> {
         // SAFETY: bytes is exclusively writable and not retained by the bridge.
         length(unsafe {
             ffi::arona_lwip_receive(
-                self.fd,
+                self.shared().fd,
                 bytes.as_mut_ptr(),
                 bytes.len(),
                 core::ptr::null_mut(),
@@ -215,7 +263,7 @@ impl Socket {
         let mut peer = Endpoint::loopback(0);
         // SAFETY: The socket and both output regions are exclusively borrowed.
         let count = length(unsafe {
-            ffi::arona_lwip_receive(self.fd, bytes.as_mut_ptr(), bytes.len(), &mut peer)
+            ffi::arona_lwip_receive(self.shared().fd, bytes.as_mut_ptr(), bytes.len(), &mut peer)
         })?;
         Ok((count, peer))
     }
@@ -223,33 +271,30 @@ impl Socket {
     /// Read and clear the pending connection error, as with `SO_ERROR`.
     pub fn take_error(&mut self) -> Result<(), Error> {
         // SAFETY: Only this method accesses the socket during the C call.
-        status(unsafe { ffi::arona_lwip_take_error(self.fd) })
+        status(unsafe { ffi::arona_lwip_take_error(self.shared().fd) })
     }
 
-    pub fn shutdown(&mut self, direction: Shutdown) -> Result<(), Error> {
-        // SAFETY: Shutdown has exclusive access until protocol work completes.
-        status(unsafe {
-            ffi::arona_lwip_shutdown(
-                self.fd,
-                match direction {
-                    Shutdown::Read => 0,
-                    Shutdown::Write => 1,
-                    Shutdown::Both => 2,
-                },
-            )
-        })
+    /// Transfer ownership to the teardown worker until shutdown completes.
+    /// Collect the returned operation to regain access to the socket.
+    pub fn shutdown(mut self, direction: Shutdown) -> PendingShutdown {
+        PendingShutdown::new(self.shared.take().unwrap(), direction)
+    }
+
+    /// Queue final close. Dropping the returned operation leaves it running.
+    pub fn close(mut self) -> PendingClose {
+        PendingClose::new(self.shared.take().unwrap())
     }
 
     pub fn kind(&self) -> SocketKind {
-        self.kind
+        self.shared().kind
     }
 }
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        // SAFETY: The owned descriptor is closed exactly once with exclusive access.
-        let result = unsafe { ffi::arona_lwip_close(self.fd) };
-        assert_eq!(result, 0, "failed to close an owned lwIP socket");
+        if let Some(shared) = self.shared.take() {
+            drop(PendingClose::new(shared));
+        }
     }
 }
 

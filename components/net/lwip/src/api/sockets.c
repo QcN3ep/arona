@@ -362,6 +362,31 @@ lwip_socket_thread_cleanup(void)
   netconn_thread_cleanup();
 }
 
+int arona_lwip_publish(const void *context, u32_t flags);
+void arona_lwip_notify(const void *context);
+void arona_lwip_release(const void *context);
+
+// Only atomic publication runs under protection. Callback notification runs
+// after unlocking and retains the socket entry until signaling completes.
+static int
+publish_socket_locked(struct lwip_sock *sock)
+{
+  u32_t flags = 0;
+  if (sock->observer == NULL) { return 0; }
+  if (sock->read_cached || sock->read_closed || sock->rcvevent > 0) { flags |= 1; }
+  if (sock->sendevent && !sock->write_closed) { flags |= 2; }
+  if (sock->connection_error) { flags |= 4; }
+  if (sock->read_closed) { flags |= 8; }
+  if (sock->write_closed) { flags |= 16; }
+  return arona_lwip_publish(sock->observer, flags);
+}
+
+static void
+release_observer(struct lwip_sock *sock)
+{
+  if (sock->observer != NULL) { arona_lwip_release(sock->observer); }
+}
+
 // Lookup and retention share the protection lock with removal.
 static int
 sock_inc_used_locked(struct lwip_sock *sock)
@@ -402,6 +427,7 @@ done_socket(struct lwip_sock *sock)
 
   if (freed) {
     free_socket_free_elements(is_tcp, conn, &lastdata);
+    release_observer(sock);
     mem_free(sock);
   }
 }
@@ -495,6 +521,40 @@ get_socket(int fd)
     return NULL;
   }
   return sock;
+}
+
+void
+arona_lwip_observe(int fd, const void *context)
+{
+  struct lwip_sock *sock = get_socket(fd);
+  SYS_ARCH_DECL_PROTECT(lev);
+  LWIP_ASSERT("owned socket exists", sock != NULL);
+  SYS_ARCH_PROTECT(lev);
+  LWIP_ASSERT("one observer per socket", sock->observer == NULL);
+  sock->observer = context;
+  publish_socket_locked(sock);
+  SYS_ARCH_UNPROTECT(lev);
+  done_socket(sock);
+}
+
+// The caller owns C API access, so only it can change lastdata. Callbacks read
+// this protected cache instead of racing lastdata during partial receives.
+void
+arona_lwip_received(int fd, int eof)
+{
+  struct lwip_sock *sock = get_socket(fd);
+  int changed;
+  SYS_ARCH_DECL_PROTECT(lev);
+  LWIP_ASSERT("owned socket exists", sock != NULL);
+  SYS_ARCH_PROTECT(lev);
+  sock->read_cached = sock->lastdata.pbuf != NULL;
+  if (eof && NETCONNTYPE_GROUP(netconn_type(sock->conn)) == NETCONN_TCP) {
+    sock->read_closed = 1;
+  }
+  changed = publish_socket_locked(sock);
+  SYS_ARCH_UNPROTECT(lev);
+  if (changed) { arona_lwip_notify(sock->observer); }
+  done_socket(sock);
 }
 
 /**
@@ -605,6 +665,7 @@ free_socket(struct lwip_sock *sock, int is_tcp)
 
   if (freed) {
     free_socket_free_elements(is_tcp, conn, &lastdata);
+    release_observer(sock);
     mem_free(sock);
   }
 }
@@ -695,6 +756,7 @@ lwip_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
    */
   SYS_ARCH_PROTECT(lev);
   recvevent = (s16_t)(-1 - newconn->callback_arg.socket);
+  nsock->connection_error = newconn->pending_err != ERR_OK;
   newconn->callback_arg.socket = newsock;
   SYS_ARCH_UNPROTECT(lev);
 
@@ -2506,7 +2568,7 @@ lwip_poll_should_wake(const struct lwip_select_cb *scb, int fd, int has_recveven
 static void
 event_callback(struct netconn *conn, enum netconn_evt evt, u16_t len)
 {
-  int s, check_waiters;
+  int s, check_waiters, changed;
   struct lwip_sock *sock;
   SYS_ARCH_DECL_PROTECT(lev);
 
@@ -2567,12 +2629,14 @@ event_callback(struct netconn *conn, enum netconn_evt evt, u16_t len)
       break;
     case NETCONN_EVT_ERROR:
       sock->errevent = 1;
+      if (conn->pending_err != ERR_OK) { sock->connection_error = 1; }
       break;
     default:
       LWIP_ASSERT("unknown event", 0);
       break;
   }
 
+  changed = publish_socket_locked(sock);
   if (sock->select_waiting && check_waiters) {
     /* Save which events are active */
     int has_recvevent, has_sendevent, has_errevent;
@@ -2585,6 +2649,7 @@ event_callback(struct netconn *conn, enum netconn_evt evt, u16_t len)
   } else {
     SYS_ARCH_UNPROTECT(lev);
   }
+  if (changed) { arona_lwip_notify(sock->observer); }
   done_socket(sock);
 }
 
@@ -2718,6 +2783,17 @@ lwip_shutdown(int s, int how)
     return -1;
   }
   err = netconn_shutdown(sock->conn, shut_rx, shut_tx);
+
+  if (err == ERR_OK) {
+    int changed;
+    SYS_ARCH_DECL_PROTECT(lev);
+    SYS_ARCH_PROTECT(lev);
+    sock->read_closed |= shut_rx;
+    sock->write_closed |= shut_tx;
+    changed = publish_socket_locked(sock);
+    SYS_ARCH_UNPROTECT(lev);
+    if (changed) { arona_lwip_notify(sock->observer); }
+  }
 
   set_errno(err_to_errno(err));
   done_socket(sock);

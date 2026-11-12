@@ -7,6 +7,7 @@ extern crate alloc;
 
 mod entropy;
 mod memory;
+mod readiness;
 mod socket;
 mod tcp;
 mod udp;
@@ -37,6 +38,7 @@ fn main() {
     tcp::run(&stack);
     udp::run(&stack);
     socket::run(&stack);
+    readiness::run(&stack);
     memory::run(&stack);
     bootstrap
         .send(&mut Message::new(73, &[2]).unwrap(), WaitMode::Forever)
