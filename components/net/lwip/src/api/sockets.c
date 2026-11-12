@@ -50,6 +50,7 @@
 #include "lwip/raw.h"
 #include "lwip/udp.h"
 #include "lwip/memp.h"
+#include "lwip/mem.h"
 #include "lwip/pbuf.h"
 #include "lwip/netif.h"
 #include "lwip/priv/tcpip_priv.h"
@@ -257,24 +258,20 @@ union sockaddr_aligned {
 #endif /* LWIP_IPV4 */
 };
 
-/* Define the number of IPv4 multicast memberships, default is one per socket */
-#ifndef LWIP_SOCKET_MAX_MEMBERSHIPS
-#define LWIP_SOCKET_MAX_MEMBERSHIPS NUM_SOCKETS
+#if LWIP_SOCKET_SELECT
+#error "The dynamic socket port uses poll instead of fixed fd sets"
 #endif
 
 #if LWIP_IGMP
 /* This is to keep track of IP_ADD_MEMBERSHIP calls to drop the membership when
    a socket is closed */
 struct lwip_socket_multicast_pair {
-  /** the socket */
-  struct lwip_sock *sock;
+  struct lwip_socket_multicast_pair *next;
   /** the interface address */
   ip4_addr_t if_addr;
   /** the group address */
   ip4_addr_t multi_addr;
 };
-
-static struct lwip_socket_multicast_pair socket_ipv4_multicast_memberships[LWIP_SOCKET_MAX_MEMBERSHIPS];
 
 static int  lwip_socket_register_membership(int s, const ip4_addr_t *if_addr, const ip4_addr_t *multi_addr);
 static void lwip_socket_unregister_membership(int s, const ip4_addr_t *if_addr, const ip4_addr_t *multi_addr);
@@ -285,23 +282,20 @@ static void lwip_socket_drop_registered_memberships(int s);
 /* This is to keep track of IP_JOIN_GROUP calls to drop the membership when
    a socket is closed */
 struct lwip_socket_multicast_mld6_pair {
-  /** the socket */
-  struct lwip_sock *sock;
+  struct lwip_socket_multicast_mld6_pair *next;
   /** the interface index */
   u8_t if_idx;
   /** the group address */
   ip6_addr_t multi_addr;
 };
 
-static struct lwip_socket_multicast_mld6_pair socket_ipv6_multicast_memberships[LWIP_SOCKET_MAX_MEMBERSHIPS];
-
 static int  lwip_socket_register_mld6_membership(int s, unsigned int if_idx, const ip6_addr_t *multi_addr);
 static void lwip_socket_unregister_mld6_membership(int s, unsigned int if_idx, const ip6_addr_t *multi_addr);
 static void lwip_socket_drop_registered_mld6_memberships(int s);
 #endif /* LWIP_IPV6_MLD */
 
-/** The global array of available sockets */
-static struct lwip_sock sockets[NUM_SOCKETS];
+// The list contains live and retiring entries until their final reference leaves.
+static struct lwip_sock *sockets;
 
 #if LWIP_SOCKET_SELECT || LWIP_SOCKET_POLL
 #if LWIP_TCPIP_CORE_LOCKING
@@ -368,30 +362,7 @@ lwip_socket_thread_cleanup(void)
   netconn_thread_cleanup();
 }
 
-#if LWIP_NETCONN_FULLDUPLEX
-/* Thread-safe increment of sock->fd_used, with overflow check */
-static int
-sock_inc_used(struct lwip_sock *sock)
-{
-  int ret;
-  SYS_ARCH_DECL_PROTECT(lev);
-
-  LWIP_ASSERT("sock != NULL", sock != NULL);
-
-  SYS_ARCH_PROTECT(lev);
-  if (sock->fd_free_pending) {
-    /* prevent new usage of this socket if free is pending */
-    ret = 0;
-  } else {
-    ++sock->fd_used;
-    ret = 1;
-    LWIP_ASSERT("sock->fd_used != 0", sock->fd_used != 0);
-  }
-  SYS_ARCH_UNPROTECT(lev);
-  return ret;
-}
-
-/* Like sock_inc_used(), but called under SYS_ARCH_PROTECT lock. */
+// Lookup and retention share the protection lock with removal.
 static int
 sock_inc_used_locked(struct lwip_sock *sock)
 {
@@ -406,11 +377,7 @@ sock_inc_used_locked(struct lwip_sock *sock)
   return 1;
 }
 
-/* In full-duplex mode,sock->fd_used != 0 prevents a socket descriptor from being
- * released (and possibly reused) when used from more than one thread
- * (e.g. read-while-write or close-while-write, etc)
- * This function is called at the end of functions using (try)get_socket*().
- */
+// Each successful lookup releases its reference after its final entry access.
 static void
 done_socket(struct lwip_sock *sock)
 {
@@ -435,43 +402,48 @@ done_socket(struct lwip_sock *sock)
 
   if (freed) {
     free_socket_free_elements(is_tcp, conn, &lastdata);
+    mem_free(sock);
   }
 }
 
-#else /* LWIP_NETCONN_FULLDUPLEX */
-#define sock_inc_used(sock)         1
-#define sock_inc_used_locked(sock)  1
-#define done_socket(sock)
-#endif /* LWIP_NETCONN_FULLDUPLEX */
-
-/* Translate a socket 'int' into a pointer (only fails if the index is invalid) */
+// The caller holds SYS_ARCH_PROTECT and must retain the entry before unlocking.
 static struct lwip_sock *
 tryget_socket_unconn_nouse(int fd)
 {
-  int s = fd - LWIP_SOCKET_OFFSET;
-  if ((s < 0) || (s >= NUM_SOCKETS)) {
-    LWIP_DEBUGF(SOCKETS_DEBUG, ("tryget_socket_unconn(%d): invalid\n", fd));
+  struct lwip_sock *sock;
+  if (fd < LWIP_SOCKET_OFFSET) {
     return NULL;
   }
-  return &sockets[s];
+  for (sock = sockets; sock != NULL && sock->fd < fd; sock = sock->next) {
+  }
+  return sock != NULL && sock->fd == fd ? sock : NULL;
 }
 
 struct lwip_sock *
 lwip_socket_dbg_get_socket(int fd)
 {
-  return tryget_socket_unconn_nouse(fd);
+  struct lwip_sock *sock;
+  SYS_ARCH_DECL_PROTECT(lev);
+  SYS_ARCH_PROTECT(lev);
+  sock = tryget_socket_unconn_nouse(fd);
+  SYS_ARCH_UNPROTECT(lev);
+  return sock;
 }
 
 /* Translate a socket 'int' into a pointer (only fails if the index is invalid) */
 static struct lwip_sock *
 tryget_socket_unconn(int fd)
 {
-  struct lwip_sock *ret = tryget_socket_unconn_nouse(fd);
+  struct lwip_sock *ret;
+  SYS_ARCH_DECL_PROTECT(lev);
+  SYS_ARCH_PROTECT(lev);
+  ret = tryget_socket_unconn_nouse(fd);
   if (ret != NULL) {
-    if (!sock_inc_used(ret)) {
-      return NULL;
+    if (!sock_inc_used_locked(ret)) {
+      ret = NULL;
     }
   }
+  SYS_ARCH_UNPROTECT(lev);
   return ret;
 }
 
@@ -518,9 +490,7 @@ get_socket(int fd)
 {
   struct lwip_sock *sock = tryget_socket(fd);
   if (!sock) {
-    if ((fd < LWIP_SOCKET_OFFSET) || (fd >= (LWIP_SOCKET_OFFSET + NUM_SOCKETS))) {
-      LWIP_DEBUGF(SOCKETS_DEBUG, ("get_socket(%d): invalid\n", fd));
-    }
+    LWIP_DEBUGF(SOCKETS_DEBUG, ("get_socket(%d): invalid\n", fd));
     set_errno(EBADF);
     return NULL;
   }
@@ -536,43 +506,33 @@ get_socket(int fd)
  * @return the index of the new socket; -1 on error
  */
 static int
-alloc_socket(struct netconn *newconn, int accepted)
+alloc_socket(struct lwip_sock *sock, struct netconn *newconn, int accepted)
 {
-  int i;
+  struct lwip_sock **position;
+  int fd = LWIP_SOCKET_OFFSET;
   SYS_ARCH_DECL_PROTECT(lev);
   LWIP_UNUSED_ARG(accepted);
 
-  /* allocate a new socket identifier */
-  for (i = 0; i < NUM_SOCKETS; ++i) {
-    /* Protect socket array */
-    SYS_ARCH_PROTECT(lev);
-    if (!sockets[i].conn) {
-#if LWIP_NETCONN_FULLDUPLEX
-      if (sockets[i].fd_used) {
-        SYS_ARCH_UNPROTECT(lev);
-        continue;
-      }
-      sockets[i].fd_used    = 1;
-      sockets[i].fd_free_pending = 0;
-#endif
-      sockets[i].conn       = newconn;
-      /* The socket is not yet known to anyone, so no need to protect
-         after having marked it as used. */
-      SYS_ARCH_UNPROTECT(lev);
-      sockets[i].lastdata.pbuf = NULL;
+  sock->conn = newconn;
+  sock->fd_used = 1;
 #if LWIP_SOCKET_SELECT || LWIP_SOCKET_POLL
-      LWIP_ASSERT("sockets[i].select_waiting == 0", sockets[i].select_waiting == 0);
-      sockets[i].rcvevent   = 0;
-      /* TCP sendbuf is empty, but the socket is not yet writable until connected
-       * (unless it has been created by accept()). */
-      sockets[i].sendevent  = (NETCONNTYPE_GROUP(newconn->type) == NETCONN_TCP ? (accepted != 0) : 1);
-      sockets[i].errevent   = 0;
+  sock->sendevent = (NETCONNTYPE_GROUP(newconn->type) == NETCONN_TCP ? (accepted != 0) : 1);
 #endif /* LWIP_SOCKET_SELECT || LWIP_SOCKET_POLL */
-      return i + LWIP_SOCKET_OFFSET;
+  SYS_ARCH_PROTECT(lev);
+  for (position = &sockets; *position != NULL && (*position)->fd == fd; position = &(*position)->next) {
+    if (fd == INT_MAX) {
+      SYS_ARCH_UNPROTECT(lev);
+      mem_free(sock);
+      set_errno(ENFILE);
+      return -1;
     }
-    SYS_ARCH_UNPROTECT(lev);
+    fd++;
   }
-  return -1;
+  sock->fd = fd;
+  sock->next = *position;
+  *position = sock;
+  SYS_ARCH_UNPROTECT(lev);
+  return fd;
 }
 
 /** Free a socket (under lock)
@@ -586,17 +546,17 @@ static int
 free_socket_locked(struct lwip_sock *sock, int is_tcp, struct netconn **conn,
                    union lwip_sock_lastdata *lastdata)
 {
-#if LWIP_NETCONN_FULLDUPLEX
+  struct lwip_sock **position;
   LWIP_ASSERT("sock->fd_used > 0", sock->fd_used > 0);
   sock->fd_used--;
   if (sock->fd_used > 0) {
     sock->fd_free_pending = LWIP_SOCK_FD_FREE_FREE | (is_tcp ? LWIP_SOCK_FD_FREE_TCP : 0);
     return 0;
   }
-#else /* LWIP_NETCONN_FULLDUPLEX */
-  LWIP_UNUSED_ARG(is_tcp);
-#endif /* LWIP_NETCONN_FULLDUPLEX */
-
+  for (position = &sockets; *position != sock; position = &(*position)->next) {
+    LWIP_ASSERT("socket is registered", *position != NULL);
+  }
+  *position = sock->next;
   *lastdata = sock->lastdata;
   sock->lastdata.pbuf = NULL;
   *conn = sock->conn;
@@ -636,7 +596,7 @@ free_socket(struct lwip_sock *sock, int is_tcp)
   union lwip_sock_lastdata lastdata;
   SYS_ARCH_DECL_PROTECT(lev);
 
-  /* Protect socket array */
+  // Detach under the lookup lock, then release storage without that lock held.
   SYS_ARCH_PROTECT(lev);
 
   freed = free_socket_locked(sock, is_tcp, &conn, &lastdata);
@@ -645,6 +605,7 @@ free_socket(struct lwip_sock *sock, int is_tcp)
 
   if (freed) {
     free_socket_free_elements(is_tcp, conn, &lastdata);
+    mem_free(sock);
   }
 }
 
@@ -672,9 +633,18 @@ lwip_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
     return -1;
   }
 
+  // Reserve entry storage before consuming a pending connection.
+  nsock = (struct lwip_sock *)mem_calloc(1, sizeof(*nsock));
+  if (nsock == NULL) {
+    set_errno(ENOMEM);
+    done_socket(sock);
+    return -1;
+  }
+
   /* wait for a new connection */
   err = netconn_accept(sock->conn, &newconn);
   if (err != ERR_OK) {
+    mem_free(nsock);
     LWIP_DEBUGF(SOCKETS_DEBUG, ("lwip_accept(%d): netconn_acept failed, err=%d\n", s, err));
     if (NETCONNTYPE_GROUP(netconn_type(sock->conn)) != NETCONN_TCP) {
       set_errno(EOPNOTSUPP);
@@ -688,16 +658,14 @@ lwip_accept(int s, struct sockaddr *addr, socklen_t *addrlen)
   }
   LWIP_ASSERT("newconn != NULL", newconn != NULL);
 
-  newsock = alloc_socket(newconn, 1);
+  newsock = alloc_socket(nsock, newconn, 1);
   if (newsock == -1) {
+    int error = errno;
     netconn_delete(newconn);
-    set_errno(ENFILE);
+    set_errno(error);
     done_socket(sock);
     return -1;
   }
-  LWIP_ASSERT("invalid socket index", (newsock >= LWIP_SOCKET_OFFSET) && (newsock < NUM_SOCKETS + LWIP_SOCKET_OFFSET));
-  nsock = &sockets[newsock - LWIP_SOCKET_OFFSET];
-
   /* Note that POSIX only requires us to check addr is non-NULL. addrlen must
    * not be NULL if addr is valid.
    */
@@ -1724,9 +1692,17 @@ int
 lwip_socket(int domain, int type, int protocol)
 {
   struct netconn *conn;
+  struct lwip_sock *sock;
   int i;
 
   LWIP_UNUSED_ARG(domain); /* @todo: check this */
+
+  // Reserve entry storage before creating protocol resources.
+  sock = (struct lwip_sock *)mem_calloc(1, sizeof(*sock));
+  if (sock == NULL) {
+    set_errno(ENOMEM);
+    return -1;
+  }
 
   /* create a netconn */
   switch (type) {
@@ -1757,25 +1733,33 @@ lwip_socket(int domain, int type, int protocol)
     default:
       LWIP_DEBUGF(SOCKETS_DEBUG, ("lwip_socket(%d, %d/UNKNOWN, %d) = -1\n",
                                   domain, type, protocol));
+      mem_free(sock);
       set_errno(EINVAL);
       return -1;
   }
 
   if (!conn) {
+    mem_free(sock);
     LWIP_DEBUGF(SOCKETS_DEBUG, ("-1 / ENOBUFS (could not create netconn)\n"));
     set_errno(ENOBUFS);
     return -1;
   }
 
-  i = alloc_socket(conn, 0);
+  i = alloc_socket(sock, conn, 0);
 
   if (i == -1) {
+    int error = errno;
     netconn_delete(conn);
-    set_errno(ENFILE);
+    set_errno(error);
     return -1;
   }
-  conn->callback_arg.socket = i;
-  done_socket(&sockets[i - LWIP_SOCKET_OFFSET]);
+  {
+    SYS_ARCH_DECL_PROTECT(lev);
+    SYS_ARCH_PROTECT(lev);
+    conn->callback_arg.socket = i;
+    SYS_ARCH_UNPROTECT(lev);
+    done_socket(sock);
+  }
   LWIP_DEBUGF(SOCKETS_DEBUG, ("%d\n", i));
   set_errno(0);
   return i;
@@ -2528,7 +2512,8 @@ event_callback(struct netconn *conn, enum netconn_evt evt, u16_t len)
 
   LWIP_UNUSED_ARG(len);
 
-  /* Get socket */
+  // Read the callback identity and retain its entry under the removal lock.
+  SYS_ARCH_PROTECT(lev);
   if (conn) {
     s = conn->callback_arg.socket;
     if (s < 0) {
@@ -2537,30 +2522,27 @@ event_callback(struct netconn *conn, enum netconn_evt evt, u16_t len)
        * Just count down (or up) if that's the case and we
        * will use the data later. Note that only receive events
        * can happen before the new socket is set up. */
-      SYS_ARCH_PROTECT(lev);
-      if (conn->callback_arg.socket < 0) {
-        if (evt == NETCONN_EVT_RCVPLUS) {
-          /* conn->socket is -1 on initialization
-             lwip_accept adjusts sock->recvevent if conn->socket < -1 */
-          conn->callback_arg.socket--;
-        }
-        SYS_ARCH_UNPROTECT(lev);
-        return;
+      if (evt == NETCONN_EVT_RCVPLUS) {
+        conn->callback_arg.socket--;
       }
-      s = conn->callback_arg.socket;
       SYS_ARCH_UNPROTECT(lev);
+      return;
     }
 
-    sock = get_socket(s);
-    if (!sock) {
+    sock = tryget_socket_unconn_locked(s);
+    if (sock == NULL || sock->conn != conn) {
+      SYS_ARCH_UNPROTECT(lev);
+      if (sock != NULL) {
+        done_socket(sock);
+      }
       return;
     }
   } else {
+    SYS_ARCH_UNPROTECT(lev);
     return;
   }
 
   check_waiters = 1;
-  SYS_ARCH_PROTECT(lev);
   /* Set event as required */
   switch (evt) {
     case NETCONN_EVT_RCVPLUS:
@@ -4072,23 +4054,23 @@ static int
 lwip_socket_register_membership(int s, const ip4_addr_t *if_addr, const ip4_addr_t *multi_addr)
 {
   struct lwip_sock *sock = get_socket(s);
-  int i;
+  struct lwip_socket_multicast_pair *member;
 
   if (!sock) {
     return 0;
   }
 
-  for (i = 0; i < LWIP_SOCKET_MAX_MEMBERSHIPS; i++) {
-    if (socket_ipv4_multicast_memberships[i].sock == NULL) {
-      socket_ipv4_multicast_memberships[i].sock = sock;
-      ip4_addr_copy(socket_ipv4_multicast_memberships[i].if_addr, *if_addr);
-      ip4_addr_copy(socket_ipv4_multicast_memberships[i].multi_addr, *multi_addr);
-      done_socket(sock);
-      return 1;
-    }
+  member = (struct lwip_socket_multicast_pair *)mem_malloc(sizeof(*member));
+  if (member == NULL) {
+    done_socket(sock);
+    return 0;
   }
+  ip4_addr_copy(member->if_addr, *if_addr);
+  ip4_addr_copy(member->multi_addr, *multi_addr);
+  member->next = sock->ipv4_memberships;
+  sock->ipv4_memberships = member;
   done_socket(sock);
-  return 0;
+  return 1;
 }
 
 /** Unregister a previously registered membership. This prevents dropping the membership
@@ -4100,19 +4082,18 @@ static void
 lwip_socket_unregister_membership(int s, const ip4_addr_t *if_addr, const ip4_addr_t *multi_addr)
 {
   struct lwip_sock *sock = get_socket(s);
-  int i;
+  struct lwip_socket_multicast_pair **position;
 
   if (!sock) {
     return;
   }
 
-  for (i = 0; i < LWIP_SOCKET_MAX_MEMBERSHIPS; i++) {
-    if ((socket_ipv4_multicast_memberships[i].sock == sock) &&
-        ip4_addr_eq(&socket_ipv4_multicast_memberships[i].if_addr, if_addr) &&
-        ip4_addr_eq(&socket_ipv4_multicast_memberships[i].multi_addr, multi_addr)) {
-      socket_ipv4_multicast_memberships[i].sock = NULL;
-      ip4_addr_set_zero(&socket_ipv4_multicast_memberships[i].if_addr);
-      ip4_addr_set_zero(&socket_ipv4_multicast_memberships[i].multi_addr);
+  for (position = &sock->ipv4_memberships; *position != NULL; position = &(*position)->next) {
+    struct lwip_socket_multicast_pair *member = *position;
+    if (ip4_addr_eq(&member->if_addr, if_addr) &&
+        ip4_addr_eq(&member->multi_addr, multi_addr)) {
+      *position = member->next;
+      mem_free(member);
       break;
     }
   }
@@ -4127,23 +4108,19 @@ static void
 lwip_socket_drop_registered_memberships(int s)
 {
   struct lwip_sock *sock = get_socket(s);
-  int i;
+  struct lwip_socket_multicast_pair *member;
 
   if (!sock) {
     return;
   }
 
-  for (i = 0; i < LWIP_SOCKET_MAX_MEMBERSHIPS; i++) {
-    if (socket_ipv4_multicast_memberships[i].sock == sock) {
-      ip_addr_t multi_addr, if_addr;
-      ip_addr_copy_from_ip4(multi_addr, socket_ipv4_multicast_memberships[i].multi_addr);
-      ip_addr_copy_from_ip4(if_addr, socket_ipv4_multicast_memberships[i].if_addr);
-      socket_ipv4_multicast_memberships[i].sock = NULL;
-      ip4_addr_set_zero(&socket_ipv4_multicast_memberships[i].if_addr);
-      ip4_addr_set_zero(&socket_ipv4_multicast_memberships[i].multi_addr);
-
-      netconn_join_leave_group(sock->conn, &multi_addr, &if_addr, NETCONN_LEAVE);
-    }
+  while ((member = sock->ipv4_memberships) != NULL) {
+    ip_addr_t multi_addr, if_addr;
+    sock->ipv4_memberships = member->next;
+    ip_addr_copy_from_ip4(multi_addr, member->multi_addr);
+    ip_addr_copy_from_ip4(if_addr, member->if_addr);
+    mem_free(member);
+    netconn_join_leave_group(sock->conn, &multi_addr, &if_addr, NETCONN_LEAVE);
   }
   done_socket(sock);
 }
@@ -4160,23 +4137,23 @@ static int
 lwip_socket_register_mld6_membership(int s, unsigned int if_idx, const ip6_addr_t *multi_addr)
 {
   struct lwip_sock *sock = get_socket(s);
-  int i;
+  struct lwip_socket_multicast_mld6_pair *member;
 
   if (!sock) {
     return 0;
   }
 
-  for (i = 0; i < LWIP_SOCKET_MAX_MEMBERSHIPS; i++) {
-    if (socket_ipv6_multicast_memberships[i].sock == NULL) {
-      socket_ipv6_multicast_memberships[i].sock   = sock;
-      socket_ipv6_multicast_memberships[i].if_idx = (u8_t)if_idx;
-      ip6_addr_copy(socket_ipv6_multicast_memberships[i].multi_addr, *multi_addr);
-      done_socket(sock);
-      return 1;
-    }
+  member = (struct lwip_socket_multicast_mld6_pair *)mem_malloc(sizeof(*member));
+  if (member == NULL) {
+    done_socket(sock);
+    return 0;
   }
+  member->if_idx = (u8_t)if_idx;
+  ip6_addr_copy(member->multi_addr, *multi_addr);
+  member->next = sock->ipv6_memberships;
+  sock->ipv6_memberships = member;
   done_socket(sock);
-  return 0;
+  return 1;
 }
 
 /** Unregister a previously registered MLD6 membership. This prevents dropping the membership
@@ -4188,19 +4165,17 @@ static void
 lwip_socket_unregister_mld6_membership(int s, unsigned int if_idx, const ip6_addr_t *multi_addr)
 {
   struct lwip_sock *sock = get_socket(s);
-  int i;
+  struct lwip_socket_multicast_mld6_pair **position;
 
   if (!sock) {
     return;
   }
 
-  for (i = 0; i < LWIP_SOCKET_MAX_MEMBERSHIPS; i++) {
-    if ((socket_ipv6_multicast_memberships[i].sock   == sock) &&
-        (socket_ipv6_multicast_memberships[i].if_idx == if_idx) &&
-        ip6_addr_eq(&socket_ipv6_multicast_memberships[i].multi_addr, multi_addr)) {
-      socket_ipv6_multicast_memberships[i].sock   = NULL;
-      socket_ipv6_multicast_memberships[i].if_idx = NETIF_NO_INDEX;
-      ip6_addr_set_zero(&socket_ipv6_multicast_memberships[i].multi_addr);
+  for (position = &sock->ipv6_memberships; *position != NULL; position = &(*position)->next) {
+    struct lwip_socket_multicast_mld6_pair *member = *position;
+    if (member->if_idx == if_idx && ip6_addr_eq(&member->multi_addr, multi_addr)) {
+      *position = member->next;
+      mem_free(member);
       break;
     }
   }
@@ -4215,26 +4190,19 @@ static void
 lwip_socket_drop_registered_mld6_memberships(int s)
 {
   struct lwip_sock *sock = get_socket(s);
-  int i;
+  struct lwip_socket_multicast_mld6_pair *member;
 
   if (!sock) {
     return;
   }
 
-  for (i = 0; i < LWIP_SOCKET_MAX_MEMBERSHIPS; i++) {
-    if (socket_ipv6_multicast_memberships[i].sock == sock) {
-      ip_addr_t multi_addr;
-      u8_t if_idx;
-
-      ip_addr_copy_from_ip6(multi_addr, socket_ipv6_multicast_memberships[i].multi_addr);
-      if_idx = socket_ipv6_multicast_memberships[i].if_idx;
-
-      socket_ipv6_multicast_memberships[i].sock   = NULL;
-      socket_ipv6_multicast_memberships[i].if_idx = NETIF_NO_INDEX;
-      ip6_addr_set_zero(&socket_ipv6_multicast_memberships[i].multi_addr);
-
-      netconn_join_leave_group_netif(sock->conn, &multi_addr, if_idx, NETCONN_LEAVE);
-    }
+  while ((member = sock->ipv6_memberships) != NULL) {
+    ip_addr_t multi_addr;
+    u8_t if_idx = member->if_idx;
+    sock->ipv6_memberships = member->next;
+    ip_addr_copy_from_ip6(multi_addr, member->multi_addr);
+    mem_free(member);
+    netconn_join_leave_group_netif(sock->conn, &multi_addr, if_idx, NETCONN_LEAVE);
   }
   done_socket(sock);
 }

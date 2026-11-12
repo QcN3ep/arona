@@ -21,7 +21,6 @@
 #define MEM_CUSTOM_CALLOC arona_lwip_calloc
 #define MEM_CUSTOM_FREE arona_lwip_free
 #define MEMP_MEM_MALLOC 1
-#define MEMP_NUM_NETCONN 32
 #define PBUF_POOL_SIZE 32
 #define LWIP_STATS 0
 

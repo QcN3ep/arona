@@ -7,9 +7,11 @@ extern crate alloc;
 
 mod entropy;
 mod memory;
+mod socket;
 mod tcp;
 mod udp;
 
+use alloc::sync::Arc;
 use lwip::{Error, Stack};
 use runtime::{
     DeviceSet,
@@ -27,13 +29,14 @@ fn main() {
         .downcast::<DeviceSet>()
         .unwrap();
     let seed = entropy::read(&devices);
-    let stack = Stack::initialize(seed).unwrap();
+    let stack = Arc::new(Stack::initialize(seed).unwrap());
     assert!(matches!(
         Stack::initialize(seed),
         Err(Error::AlreadyInitialized)
     ));
     tcp::run(&stack);
     udp::run(&stack);
+    socket::run(&stack);
     memory::run(&stack);
     bootstrap
         .send(&mut Message::new(73, &[2]).unwrap(), WaitMode::Forever)
