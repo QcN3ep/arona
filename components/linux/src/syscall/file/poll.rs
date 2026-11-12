@@ -30,6 +30,7 @@ pub(in crate::syscall) struct Poll<'a> {
 }
 
 struct Entry<'a> {
+    watch: crate::file::socket::Watch,
     description: Option<Rc<OpenFileDescription<'a>>>,
     events: u16,
     revents: u16,
@@ -83,6 +84,7 @@ fn poll_entries<'a>(
         .map(|(index, bytes)| {
             let fd = i32::from_le_bytes(bytes[..4].try_into().unwrap());
             Entry {
+                watch: crate::file::socket::Watch::default(),
                 description: process
                     .files
                     .get(fd as usize)
@@ -129,6 +131,7 @@ fn select_entries<'a>(
         }
         if events != 0 {
             entries.push(Entry {
+                watch: crate::file::socket::Watch::default(),
                 description: Some(Rc::clone(&process.files.get(fd).ok_or(EBADF)?.description)),
                 events,
                 revents: 0,
@@ -149,6 +152,7 @@ fn select_entries<'a>(
 
 fn readiness(description: &OpenFileDescription<'_>, process: &Process<'_>, index: usize) -> u16 {
     match description {
+        OpenFileDescription::Socket { .. } => unreachable!(),
         OpenFileDescription::Pipe { end, .. } => {
             let ready = end.readiness();
             ready | if ready & 1 != 0 { 0x40 } else { 0 } | if ready & 4 != 0 { 0x100 } else { 0 }
@@ -202,6 +206,7 @@ impl Poll<'_> {
     pub fn waits<'a>(&'a self, items: &mut Vec<WaitItem<'a>>) {
         self.deadline.waits(items);
         for entry in &self.entries {
+            entry.watch.waits(items);
             if let Some(OpenFileDescription::Timerfd { state, .. }) = entry.description.as_deref() {
                 items.push(WaitItem::new(&state.event, 1));
             }
@@ -210,12 +215,27 @@ impl Poll<'_> {
 
     pub fn poll(&mut self, process: &Process<'_>, index: usize) -> Option<SyscallResult> {
         let mut ready = 0;
+        let mut unresolved = false;
         for entry in &mut self.entries {
             entry.revents = if entry.negative {
                 0
             } else {
                 entry.description.as_ref().map_or(INVALID, |description| {
-                    readiness(description, process, index)
+                    let state =
+                        if let OpenFileDescription::Socket { state, .. } = description.as_ref() {
+                            let buffered = if state.readable() { INPUT } else { 0 };
+                            match entry.watch.poll(state) {
+                                Ok(Some(ready)) => socket_readiness(ready) | buffered,
+                                Ok(None) => {
+                                    unresolved = true;
+                                    buffered
+                                }
+                                Err(_) => ERROR | HANGUP,
+                            }
+                        } else {
+                            readiness(description, process, index)
+                        };
+                    state
                         & (entry.events
                             | if matches!(self.output, Output::Poll { .. }) {
                                 ERROR | HANGUP
@@ -227,6 +247,9 @@ impl Poll<'_> {
             ready += usize::from(entry.revents != 0);
         }
         if ready == 0 {
+            if unresolved {
+                return None;
+            }
             match self.deadline.expired() {
                 Ok(false) => return None,
                 Err(error) => return Some(Err(error)),
@@ -279,4 +302,22 @@ impl Poll<'_> {
         }
         Ok(count)
     }
+}
+
+fn socket_readiness(state: net::Readiness) -> u16 {
+    (if state.readable || state.read_closed {
+        INPUT
+    } else {
+        0
+    }) | (if state.writable || state.write_closed {
+        OUTPUT
+    } else {
+        0
+    }) | (if state.error { ERROR } else { 0 })
+        | (if state.closed || (state.read_closed && state.write_closed) {
+            HANGUP
+        } else {
+            0
+        })
+        | (if state.read_closed { 0x2000 } else { 0 })
 }

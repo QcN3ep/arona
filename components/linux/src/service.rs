@@ -104,7 +104,7 @@ fn bootstrap(
     mut startup: ReceivedMessage,
 ) -> Result<(fs::Client<'_>, Machine, Services<'_>), Error> {
     let flags = match startup.words() {
-        [flags] if flags & !3 == 0 => *flags,
+        [flags] if flags & !7 == 0 => *flags,
         _ => return Err(Error::InvalidRequest),
     };
     if startup.tag != protocol::START || startup.handles().len() != 1 + flags.count_ones() as usize
@@ -144,6 +144,19 @@ fn bootstrap(
                 .map_err(|_| Error::InvalidRequest)?,
         )?);
     }
+    if flags & 4 != 0 {
+        services.net = Some(
+            net::Client::from_channel(
+                task,
+                startup
+                    .take_handle(0)
+                    .unwrap()
+                    .downcast()
+                    .map_err(|_| Error::InvalidRequest)?,
+            )
+            .map_err(|_| Error::InvalidRequest)?,
+        );
+    }
     Ok((files, machine, services))
 }
 
@@ -158,7 +171,7 @@ fn poll_loading<'a>(
     port: &alloc::rc::Rc<Handle<runtime::TrapPort>>,
     files: &fs::Client<'a>,
     machine: Machine,
-    services: &Services<'_>,
+    services: &Services<'a>,
     namespace: &alloc::rc::Rc<crate::process::namespace::PidNamespace>,
 ) -> Result<bool, Error> {
     let mut progress = false;
@@ -189,7 +202,7 @@ fn poll_loading<'a>(
 fn poll_running<'a>(
     running: &mut Vec<Running<'a>>,
     files: &fs::Client<'a>,
-    services: &Services<'_>,
+    services: &Services<'a>,
 ) -> Result<bool, Error> {
     let mut progress = false;
     let mut index = 0;

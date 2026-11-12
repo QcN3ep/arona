@@ -9,6 +9,7 @@ mod file;
 mod memory;
 mod process;
 mod signal;
+mod socket;
 mod system;
 mod wait;
 
@@ -53,6 +54,7 @@ enum Operation<'a> {
     Futex(process::futex::Pending),
     Signal(signal::Pending),
     File(file::Pending<'a>),
+    Socket(socket::Pending<'a>),
     Memory(memory::Pending<'a>),
     System(system::Pending),
 }
@@ -69,6 +71,7 @@ impl<'a> Operation<'a> {
             Self::Signal(operation) => operation.waits(items),
             Self::Futex(operation) => operation.waits(items),
             Self::File(operation) => operation.waits(items),
+            Self::Socket(operation) => operation.waits(items),
             Self::System(operation) => operation.waits(items),
             Self::Memory(operation) => {
                 if let Some(call) = operation.call() {
@@ -89,6 +92,7 @@ impl<'a> Operation<'a> {
             Self::Signal(operation) => operation.poll(process, index),
             Self::Futex(operation) => operation.poll(process),
             Self::File(operation) => operation.poll(process, index, files),
+            Self::Socket(operation) => operation.poll(process),
             Self::System(operation) => operation.poll(process),
             Self::Memory(operation) => operation.poll(process),
         }
@@ -100,7 +104,7 @@ pub(crate) fn dispatch<'a>(
     index: usize,
     trap: Trap,
     files: &fs::Client<'a>,
-    services: &crate::Services<'_>,
+    services: &crate::Services<'a>,
 ) -> Result<(), Error> {
     let mut context = Context {
         machine: process.machine,
@@ -116,6 +120,8 @@ pub(crate) fn dispatch<'a>(
         Outcome::Complete(Err(error))
     } else if let Some(outcome) = signal::dispatch(process, index, &mut context, number, arguments)
     {
+        outcome
+    } else if let Some(outcome) = socket::dispatch(process, services, number, arguments) {
         outcome
     } else if let Some(outcome) = file::dispatch(process, index, files, services, number, arguments)
     {
@@ -184,7 +190,7 @@ pub(crate) fn poll<'a>(
     process: &mut Process<'a>,
     index: usize,
     files: &fs::Client<'a>,
-    services: &crate::Services<'_>,
+    services: &crate::Services<'a>,
 ) -> Result<bool, Error> {
     let Some(mut pending) = process.threads[index].pending.take() else {
         return Ok(false);
@@ -223,8 +229,11 @@ pub(crate) fn poll<'a>(
         return Ok(true);
     }
     let Some(result) = pending.operation.poll(process, index, files) else {
-        let progress =
+        let mut progress =
             selected.is_none() && crate::process::signal::delivery::next(process, index).is_some();
+        if let Operation::Socket(socket) = &mut pending.operation {
+            progress |= socket.take_progress();
+        }
         process.threads[index].pending = Some(pending);
         return Ok(progress);
     };
@@ -253,7 +262,9 @@ impl Context {
         index: usize,
         result: SyscallResult,
     ) -> Result<(), Error> {
-        if matches!(result, Err(error) if error == abi::EPIPE) {
+        let (number, arguments) = self.machine.syscall(&self.state);
+        let suppress_sigpipe = number == abi::SENDTO && arguments[3] & 0x4000 != 0;
+        if matches!(result, Err(error) if error == abi::EPIPE) && !suppress_sigpipe {
             process.threads[index]
                 .signals
                 .borrow_mut()
@@ -281,6 +292,7 @@ impl Operation<'_> {
             Self::Futex(futex) => return Some((futex.restartable(), Err(abi::EINTR))),
             Self::Exec(_) | Self::Signal(_) => return Some((false, Err(abi::EINTR))),
             Self::File(file) => return file.interrupt(process),
+            Self::Socket(socket) => return socket.interrupt(),
             Self::System(system) => system.interrupt(process)?,
             Self::Memory(_) => return None,
         };

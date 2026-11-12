@@ -105,7 +105,8 @@ fn main() -> Result<usize, InitError> {
     )?;
     logger::init(client, logger::log::LevelFilter::Info).map_err(|_| Error::Protocol)?;
     let (net, net_control) = service::start_net(&loader, &files, &device_control)?;
-    let (linux, linux_control) = service::start_linux(&loader, &files, &mounts, &device_control)?;
+    let (linux, linux_control) =
+        service::start_linux(&loader, &files, &mounts, &device_control, &net_control)?;
     if mounted {
         logger::log::info!(target: "init", "Mounted block device at /var");
     }

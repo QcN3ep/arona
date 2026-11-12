@@ -35,11 +35,29 @@ fn main() {
     let machine = Machine::from_header(&native).unwrap();
     let fs = service::read(&archive, "/bin/fs");
     let devmgr = service::read(&archive, "/bin/devmgr");
+    let net = service::read(&archive, "/bin/net");
     let (_devices, device_service) = service::devices(&devmgr, machine, &devices);
     let (_filesystem, mounts, files) = service::filesystem(archive, &fs, machine);
     service::mount(&mounts, &device_service);
     let (_linux, channel) = service::launch(&native, machine, linux::service::REQUIRED_RIGHTS);
-    let services = service::resources(&device_service);
+    let mut services = service::resources(&device_service);
+    let (_net, net_channel) = service::launch(
+        &net,
+        machine,
+        runtime::process::ProcessStart::REQUIRED_RIGHTS
+            | runtime::Rights::CREATE_EVENT
+            | runtime::Rights::CREATE_CHANNEL
+            | runtime::Rights::CREATE_THREAD,
+    );
+    let net = net::Control::start(
+        process::task(),
+        net_channel,
+        services.entropy.take().unwrap(),
+        service::deadline(),
+    )
+    .unwrap();
+    services.entropy = service::resources(&device_service).entropy;
+    services.net = Some(net.connect().unwrap());
     let linux = Control::start_with_services(
         process::task(),
         channel,
@@ -58,6 +76,7 @@ fn main() {
         )
         .unwrap()
     };
+    sockets(&linux, &output);
     execution(&linux, &output);
     layouts(&linux, &output);
     malformed(&linux, &output);
@@ -70,6 +89,8 @@ fn main() {
     drop(output);
     drop(linux);
     _linux.wait();
+    drop(net);
+    _net.wait();
     drop(files);
     drop(mounts);
     _filesystem.wait();
@@ -78,6 +99,80 @@ fn main() {
     bootstrap
         .send(&mut Message::new(73, &[37, 41]).unwrap(), WaitMode::Forever)
         .unwrap();
+}
+
+fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
+    output().write_all(b"Linux TCP tests started\n").unwrap();
+    let run = |mode: &[u8]| {
+        linux
+            .start_run(
+                Program {
+                    path: b"/bin/linux-socket",
+                    arguments: &[b"/bin/linux-socket", mode],
+                    environment: &[],
+                },
+                output(),
+            )
+            .unwrap_or_else(|error| {
+                output()
+                    .write_all(alloc::format!("Socket launch {mode:?}: {error:?}\n").as_bytes())
+                    .unwrap();
+                panic!("failed to launch socket scenario");
+            })
+    };
+    let mut server = run(b"server");
+    let mut client = run(b"client");
+    for guest in [&mut client, &mut server] {
+        let result = guest.wait(WaitMode::Until(
+            runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
+        ));
+        if result
+            != Ok(ExitStatus {
+                code: 42,
+                signal: 0,
+            })
+        {
+            output()
+                .write_all(alloc::format!("Socket transfer: {result:?}\n").as_bytes())
+                .unwrap();
+        }
+        assert_eq!(
+            result.unwrap(),
+            ExitStatus {
+                code: 42,
+                signal: 0
+            }
+        );
+    }
+    for mode in [
+        b"refused".as_slice(),
+        b"fork",
+        b"signals",
+        b"exec",
+        b"lifecycle",
+    ] {
+        let result = run(mode).wait(WaitMode::Until(
+            runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
+        ));
+        if result
+            != Ok(ExitStatus {
+                code: 42,
+                signal: 0,
+            })
+        {
+            output()
+                .write_all(alloc::format!("Socket scenario {mode:?}: {result:?}\n").as_bytes())
+                .unwrap();
+        }
+        assert_eq!(
+            result.unwrap(),
+            ExitStatus {
+                code: 42,
+                signal: 0
+            }
+        );
+    }
+    output().write_all(b"Linux TCP tests passed\n").unwrap();
 }
 
 fn writable(

@@ -4,7 +4,7 @@ use super::Socket;
 use crate::{Error, Readiness, protocol as p};
 use runtime::{
     Channel, Event, Handle, Rights,
-    ipc::{self, Message, WaitItem, WaitMode},
+    ipc::{self, Message, PendingCall, WaitItem, WaitMode},
 };
 
 /// Independent wake events and a channel that tracks the registration's lifetime.
@@ -13,24 +13,36 @@ pub struct Subscription {
     event: Handle<Event>,
 }
 
+pub type PendingSubscription = PendingCall<(Subscription, Readiness), Handle<Channel>, Error>;
+pub type PendingReadiness = PendingCall<Readiness, (), Error>;
+
 impl Socket<'_> {
     pub fn readiness(&self, deadline: u64) -> Result<Readiness, Error> {
         snapshot(&self.channel, deadline)
     }
     pub fn subscribe(&self, deadline: u64) -> Result<(Subscription, Readiness), Error> {
+        self.start_subscribe()?.wait(WaitMode::Until(deadline))
+    }
+
+    pub fn start_subscribe(&self) -> Result<PendingSubscription, Error> {
         let (channel, server) = self
             .task
             .channel(p::CHANNEL, p::CHANNEL | Rights::TRANSFER)?;
         let mut request = Message::new(p::SUBSCRIBE, &[])?;
         p::push(&mut request, server, p::CHANNEL)?;
-        let mut response = super::call(&self.channel, &mut request, deadline)?;
-        super::status(response.tag)?;
-        let initial = super::readiness(response.words())?;
-        let event = p::take(&mut response, Rights::WAIT)?;
-        if !response.handles().is_empty() {
-            return Err(Error::InvalidRequest);
-        }
-        Ok((Subscription { channel, event }, initial))
+        Ok(PendingCall::new(
+            self.channel.start_call(&mut request)?,
+            channel,
+            |channel, mut response| {
+                super::status(response.tag)?;
+                let initial = super::readiness(response.words())?;
+                let event = p::take(&mut response, Rights::WAIT)?;
+                if !response.handles().is_empty() {
+                    return Err(Error::InvalidRequest);
+                }
+                Ok((Subscription { channel, event }, initial))
+            },
+        ))
     }
 }
 impl Subscription {
@@ -42,6 +54,20 @@ impl Subscription {
     }
     pub fn snapshot(&self, deadline: u64) -> Result<Readiness, Error> {
         snapshot(&self.channel, deadline)
+    }
+    pub fn start_snapshot(&self) -> Result<PendingReadiness, Error> {
+        Ok(PendingCall::new(
+            self.channel
+                .start_call(&mut Message::new(p::SNAPSHOT, &[])?)?,
+            (),
+            |(), response| {
+                super::status(response.tag)?;
+                if !response.handles().is_empty() {
+                    return Err(Error::InvalidRequest);
+                }
+                super::readiness(response.words())
+            },
+        ))
     }
     /// A service or socket-session exit wakes this wait through peer closure.
     pub fn wait(&self, observed: Readiness, mode: WaitMode) -> Result<Readiness, Error> {

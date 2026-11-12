@@ -34,3 +34,4 @@ required-features = ["baremetal"]
 runtime = { package = "arona-runtime", path = "../runtime" }
 devmgr = { package = "arona-devmgr", path = "../devmgr" }
 fs = { package = "arona-fs", path = "../fs" }
+net = { package = "arona-net", path = "../net" }

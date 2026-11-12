@@ -3,6 +3,7 @@
 //! File descriptors and shared open state.
 
 pub(crate) mod pipe;
+pub(crate) mod socket;
 pub(crate) mod terminal;
 
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
@@ -30,6 +31,10 @@ pub(crate) enum Virtual {
 }
 
 pub(crate) enum OpenFileDescription<'a> {
+    Socket {
+        state: socket::Socket<'a>,
+        flags: Cell<u32>,
+    },
     Pipe {
         end: pipe::PipeEnd,
         flags: Cell<u32>,
@@ -243,7 +248,8 @@ impl<'a> Descriptor<'a> {
 impl<'a> OpenFileDescription<'a> {
     pub fn flags(&self) -> u32 {
         match self {
-            Self::Pipe { flags, .. }
+            Self::Socket { flags, .. }
+            | Self::Pipe { flags, .. }
             | Self::Terminal { flags, .. }
             | Self::Directory { flags, .. }
             | Self::Regular { flags, .. }
@@ -256,7 +262,8 @@ impl<'a> OpenFileDescription<'a> {
     }
 
     pub fn set_flags(&self, value: u32) {
-        let (Self::Pipe { flags, .. }
+        let (Self::Socket { flags, .. }
+        | Self::Pipe { flags, .. }
         | Self::Terminal { flags, .. }
         | Self::Directory { flags, .. }
         | Self::Regular { flags, .. }

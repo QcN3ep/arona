@@ -178,7 +178,7 @@ impl<'a> Process<'a> {
         &mut self,
         trap: Trap,
         files: &fs::Client<'a>,
-        services: &crate::Services<'_>,
+        services: &crate::Services<'a>,
     ) -> Result<(), Error> {
         let Some(index) = self
             .threads
@@ -215,7 +215,7 @@ impl<'a> Process<'a> {
     pub fn poll(
         &mut self,
         files: &fs::Client<'a>,
-        services: &crate::Services<'_>,
+        services: &crate::Services<'a>,
     ) -> Result<bool, Error> {
         let mut progress = self.terminal.poll();
         if self.terminal.failed() {

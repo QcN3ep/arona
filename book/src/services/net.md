@@ -52,6 +52,7 @@ A service failure closes its session channels, so pending calls and readiness wa
 
 `Socket::readiness` returns a non-consuming snapshot.
 Use `subscribe` to obtain an independent Event, a registration channel, and the initial snapshot.
+Dispatchers can use `start_subscribe` and `Subscription::start_snapshot` to collect these replies asynchronously.
 Each registration lasts until its channel closes.
 Callbacks update adapter state, and the service forwards changes to client Events outside those callbacks.
 

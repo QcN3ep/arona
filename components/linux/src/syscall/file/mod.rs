@@ -4,7 +4,7 @@
 
 // TODO: Support file change notifications.
 
-mod buffer;
+pub(super) mod buffer;
 mod directory;
 mod eventfd;
 mod io;

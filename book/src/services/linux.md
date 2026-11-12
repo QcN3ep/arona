@@ -6,7 +6,7 @@ The kernel hands the program's calls and exceptions to it through a TrapPort.
 
 ## Starting a Linux Program
 
-init provides the service with a file client and optional RTC and random number sessions.
+init provides the service with file and network clients and optional RTC and random number sessions.
 The execution request contains the program path, argv, envp, and terminal session.
 `Control::start_run` returns an asynchronous call, and the request completes with an exit status after the program ends.
 
@@ -40,6 +40,7 @@ When there is no progress, the relevant Calls, events, thread exits, and ports a
 | Implementation group | Corresponding content |
 |---|---|
 | `syscall/file/` | open, I/O, path, directory, metadata, pipe, poll, and terminal |
+| `syscall/socket/` | TCP sockets, addresses, options, and pending network I/O |
 | `syscall/process/` | clone, exec, exit, wait, identity, thread, and futex |
 | `syscall/memory/` | mmap, munmap, mprotect, and related memory operations |
 | `syscall/signal.rs` | signal system calls |
@@ -51,7 +52,7 @@ Arguments, flags, and error conversions of recognized calls are checked by their
 ## File Descriptors and Paths
 
 The FileTable maps Linux fds to open file descriptions.
-A description holds a file service File, Directory, pipe end, or terminal, and duplicated fds share the corresponding open state.
+A description holds a file service File, Directory, pipe end, terminal, or socket, and duplicated fds share the corresponding open state.
 Each fd also stores descriptor attributes such as close-on-exec.
 An eventfd shares a counter across duplicated descriptors and inherited process descriptors.
 Reads wait for a nonzero counter, and writes wait for enough room in the counter.
@@ -85,6 +86,32 @@ Their shared timer wakes blocked reads and readiness waits, including after anot
 
 Signal descriptors expose matching pending signals from the reading thread and its process.
 Each read returns complete `signalfd_siginfo` records, and poll/select use the calling thread when checking readiness.
+
+## TCP Sockets
+
+Linux programs can communicate through IPv4 TCP on the local loopback interface.
+The service translates Linux addresses and flags into requests to net.
+External interfaces, UDP, IPv6, and Unix domain sockets remain future work.
+
+The socket calls include `socket`, `bind`, `listen`, `accept`, `accept4`, `connect`, `getsockname`, `getpeername`, and `shutdown`.
+Stream data passes through `read`, `write`, `sendto`, or `recvfrom`.
+The supported socket options are `SO_TYPE`, `SO_ERROR`, `SO_REUSEADDR`, and `TCP_NODELAY`.
+Reading `SO_ERROR` consumes the pending error, while readiness queries leave it available.
+
+A socket belongs to its open file description.
+Descriptors created by `dup` or inherited through `fork` share the connection and `O_NONBLOCK` flag.
+Each descriptor keeps its own close-on-exec flag.
+Closing the last reference closes the native session, and pending operations retain their reference until they finish or are abandoned.
+
+The service makes nonblocking network attempts and saves blocking calls as pending operations.
+Each waiter has an independent readiness subscription, which also participates in `ppoll` and `pselect6` alongside other descriptor types.
+The dispatcher continues serving other Linux threads while a connection or transfer waits.
+A nonblocking connect reports `EINPROGRESS`, and the program can wait for write readiness before checking `SO_ERROR`.
+
+The service collects an in-flight attempt before applying signal interruption, so restarting a call cannot repeat a completed transfer or accept.
+Unread bytes remain in the open file description if copying a received payload reaches an invalid user buffer.
+Blocking reads, writes, and accepts support signal interruption and `SA_RESTART`.
+A broken stream write raises `SIGPIPE` unless `sendto` supplies `MSG_NOSIGNAL`.
 
 ## Address Space
 

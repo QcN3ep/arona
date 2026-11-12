@@ -25,7 +25,7 @@ struct IoVector {
 }
 
 impl Buffer {
-    pub(super) fn import(self, process: &Process<'_>) -> Result<IoVectors, Errno> {
+    pub(in crate::syscall) fn import(self, process: &Process<'_>) -> Result<IoVectors, Errno> {
         let vectors = match self {
             Self::Slice { address, length } => {
                 if length > isize::MAX as usize {
@@ -76,7 +76,7 @@ impl IoVectors {
     }
 
     pub fn gather(&self, process: &Process<'_>, limit: usize) -> Result<Vec<u8>, Errno> {
-        let mut bytes = alloc::vec![0; self.length().min(limit)];
+        let mut bytes = alloc::vec![0; self.total_length().min(limit)];
         let count = self.copy(0, &mut bytes, |address, output| {
             process.address_space.read(address, output)
         })?;
