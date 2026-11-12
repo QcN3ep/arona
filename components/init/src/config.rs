@@ -16,6 +16,22 @@ use serde::Deserialize;
 pub struct Config {
     #[serde(default)]
     pub program: Vec<Program>,
+    #[serde(default)]
+    pub power: Power,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Power {
+    #[serde(default)]
+    pub action: Option<PowerAction>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PowerAction {
+    Shutdown,
+    Reboot,
 }
 
 #[derive(Deserialize)]
