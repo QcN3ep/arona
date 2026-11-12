@@ -92,6 +92,8 @@ auxv_done:
     beq $s3, $t1, exec_process
     li.d $t1, 90
     beq $s3, $t1, exec_replaced
+    li.d $t1, 89
+    beq $s3, $t1, script_exec
     li.d $t1, 73
     beq $s3, $t1, process_identity
     li.d $t1, 85

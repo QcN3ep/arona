@@ -7,6 +7,8 @@
 _start:
     pcaddi $t0, 0
     ld.d $t1, $sp, 0
+    li.d $t2, 4
+    beq $t1, $t2, script_arguments
     addi.d $t1, $t1, 3
     slli.d $t1, $t1, 3
     add.d $t1, $sp, $t1
@@ -42,4 +44,37 @@ _start:
     li.w $a0, 1
     li.w $a7, 93
     syscall 0
+
+script_arguments:
+    ld.d $t1, $sp, 16
+    la.pcrel $t2, script_option
+    bl check_script_text
+    ld.d $t1, $sp, 24
+    la.pcrel $t2, script_name
+    bl check_script_text
+    ld.d $t1, $sp, 32
+    la.pcrel $t2, script_tail
+    bl check_script_text
+    ld.d $t1, $sp, 40
+    bnez $t1, script_failure
+    li.d $a0, 42
+    li.d $a7, 93
+    syscall 0
+check_script_text:
+    ld.bu $t3, $t1, 0
+    ld.bu $t4, $t2, 0
+    bne $t3, $t4, script_failure
+    beqz $t3, script_text_done
+    addi.d $t1, $t1, 1
+    addi.d $t2, $t2, 1
+    b check_script_text
+script_text_done:
+    ret
+script_failure:
+    li.d $a0, 1
+    li.d $a7, 93
+    syscall 0
+script_option: .asciz "option with space"
+script_name: .asciz "/bin/linux-script"
+script_tail: .asciz "tail"
 .section .note.GNU-stack,"",@progbits

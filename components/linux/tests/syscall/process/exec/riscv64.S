@@ -28,6 +28,16 @@ exec_process:
     li a2, 0
     invoke 221
     expect -8
+    la a0, empty_script
+    li a1, 0
+    li a2, 0
+    invoke 221
+    expect -8
+    la a0, loop_script
+    li a1, 0
+    li a2, 0
+    invoke 221
+    expect -40
     li a0, -100
     la a1, exec_data
     li a2, 0x80000
@@ -106,7 +116,26 @@ exec_interp:
     invoke 221
     li a0, 100
     invoke 94
+
+.global script_exec
+script_exec:
+    addi sp, sp, -32
+    la t0, script_path
+    sd t0, 0(sp)
+    la t0, script_tail
+    sd t0, 8(sp)
+    sd zero, 16(sp)
+    la a0, script_path
+    mv a1, sp
+    li a2, 0
+    invoke 221
+    j exec_failure
 .section .rodata
+script_path: .asciz "/bin/linux-script"
+script_tail: .asciz "tail"
+empty_script: .asciz "/bin/linux-empty-script"
+loop_script: .asciz "/bin/linux-script-loop"
+
 executable: .asciz "/bin/linux-test"
 replaced: .asciz "Z"
 environment: .asciz "ARONA_TEST=yes"

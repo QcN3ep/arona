@@ -51,6 +51,16 @@ pub(super) fn append(
     for (name, image) in fixtures(options, root, target_directory)? {
         append_entry(bytes, name, 0o100755, &image)?;
     }
+    for (name, script) in [
+        (
+            "bin/linux-script",
+            b"#! \t/bin/linux-pie \toption with space \t\n".as_slice(),
+        ),
+        ("bin/linux-empty-script", b"#! \t\n"),
+        ("bin/linux-script-loop", b"#!/bin/linux-script-loop\n"),
+    ] {
+        append_entry(bytes, name, 0o100755, script)?;
+    }
     let mut data = b"0123456789abcdef".repeat(512);
     data.push(b'Z');
     append_entry(bytes, "etc/linux-data", 0o100644, &data)?;
@@ -235,7 +245,8 @@ fn assemble_fixture(
     execute(assemble)?;
     let binary = directory.join(format!("{name}.bin"));
     let mut link = Command::new("ld.lld");
-    link.args(["--oformat=binary", "--image-base=0", "-Ttext=0"])
+    link.args(["--oformat=binary", "--image-base=0"])
+        .arg(format!("-Ttext={FIXTURE_ENTRY:#x}"))
         .arg(&object)
         .arg("-o")
         .arg(&binary);

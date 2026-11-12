@@ -2,7 +2,7 @@
 
 //! Asynchronous reads of executable files and startup entropy.
 
-// TODO: Parse script interpreters and construct interpreter startup arguments.
+// TODO: Support script interpreter arguments in service startup requests.
 
 use crate::{
     Error, Services,
@@ -74,6 +74,12 @@ impl<'a> Chain<'a> {
             let Some(loaded) = self.executable.poll(services)? else {
                 return Ok(None);
             };
+            if loaded.bytes.starts_with(b"#!") {
+                return Ok(Some(Images {
+                    main: loaded,
+                    interpreter: None,
+                }));
+            }
             let image = Image::parse(&loaded.bytes, machine)?;
             if let Some(path) = image.interpreter {
                 self.interpreter = Some(Executable::interpreter(files, path)?);

@@ -83,6 +83,10 @@ User buffer reads and writes are completed through the target Task's memory inte
 
 When duplicating a process, it walks the original address space, copies or shares data according to the mappings' backing relationships, and establishes the child Task's image.
 exec reads the new image, constructs a new execution environment, and handles thread, file, and signal state according to exec semantics.
+The `execve` path also recognizes a `#!` interpreter line.
+It passes the optional argument as one string, followed by the script path and the original arguments after `argv[0]`.
+Interpreter scripts may nest up to four levels.
+Service startup requests currently require ELF images.
 
 ## Processes, Threads, and Signals
 
