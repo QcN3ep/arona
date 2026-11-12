@@ -58,6 +58,7 @@ pub enum DriverKind {
     Rng = 3,
     Rtc = 4,
     Power = 5,
+    Net = 6,
 }
 
 pub fn next(
@@ -113,13 +114,14 @@ impl DiscoveryRequest {
             return Ok(None);
         };
         let (kind, after) = match message.words() {
-            [kind @ 1..=5, after] if *after <= u32::MAX as u64 && message.handles().is_empty() => (
+            [kind @ 1..=6, after] if *after <= u32::MAX as u64 && message.handles().is_empty() => (
                 match *kind {
                     1 => DriverKind::Uart,
                     2 => DriverKind::Block,
                     3 => DriverKind::Rng,
                     4 => DriverKind::Rtc,
-                    _ => DriverKind::Power,
+                    5 => DriverKind::Power,
+                    _ => DriverKind::Net,
                 },
                 *after as u32,
             ),

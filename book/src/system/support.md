@@ -40,6 +40,7 @@ init starts applications according to `/etc/init.toml` and enforces restart poli
 |---|---|
 | UART | NS16550-family MMIO UART, configuration, transmit/receive, and interrupt sessions |
 | Block devices | Modern VirtIO MMIO and PCI block, reads and writes, completion confirmation, and flush |
+| Ethernet frames | Modern VirtIO PCI net, copied RX/TX, MTU, MAC, and link change waits |
 | Random numbers | Modern VirtIO PCI RNG |
 | RTC | Goldfish and Loongson LS7A time reads |
 | Root file tree | Files, directories, and links in the cpio newc archive |

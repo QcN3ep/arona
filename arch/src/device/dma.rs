@@ -25,7 +25,9 @@ impl Dma for QemuDma {
         }
         let supported = match &device.location {
             HardwareDeviceLocation::Pci { .. } => {
-                device.has_identity("pci", "1af4:1042") || device.has_identity("pci", "1af4:1044")
+                device.has_identity("pci", "1af4:1041")
+                    || device.has_identity("pci", "1af4:1042")
+                    || device.has_identity("pci", "1af4:1044")
             }
             HardwareDeviceLocation::Platform => {
                 cfg!(target_arch = "riscv64")

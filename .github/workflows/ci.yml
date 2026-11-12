@@ -82,10 +82,15 @@ jobs:
           -- -D warnings --force-warn clippy::too_many_lines
       - run: cargo xtask build ${{ matrix.target }} --release
       - run: cargo xtask package-linux-test ${{ matrix.target }} --release
-      - name: Link lwIP loopback programs
+      - name: Link lwIP loopback and VirtIO net programs
         run: |
           for profile in '' --release; do
             cargo rustc --locked -p arona-lwip --features baremetal --test loopback \
+              --target ${{ matrix.triple }} $profile \
+              -Zbuild-std=core,alloc,compiler_builtins \
+              -Zbuild-std-features=compiler-builtins-mem \
+              -- -Cstrip=symbols -Clink-arg=-zmax-page-size=4096
+            cargo rustc --locked -p arona-devmgr --features baremetal --test net \
               --target ${{ matrix.triple }} $profile \
               -Zbuild-std=core,alloc,compiler_builtins \
               -Zbuild-std-features=compiler-builtins-mem \

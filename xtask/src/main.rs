@@ -124,6 +124,14 @@ fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), Str
                     .join(options.profile())
                     .join("arch"),
             );
+        if options.net {
+            command.args([
+                "-netdev",
+                "user,id=net0",
+                "-device",
+                "virtio-net-pci,disable-legacy=on,netdev=net0,mac=52:54:00:12:34:56",
+            ]);
+        }
         if matches!(options.target, Target::Riscv64) {
             command.args(["-bios", "default"]);
         }
@@ -199,6 +207,7 @@ struct BuildOptions {
     release: bool,
     initramfs: Initramfs,
     rootfs: Option<PathBuf>,
+    net: bool,
 }
 
 impl BuildOptions {
@@ -207,12 +216,14 @@ impl BuildOptions {
         let mut release = false;
         let mut initramfs = Initramfs::Embedded;
         let mut rootfs = None;
+        let mut net = false;
         while let Some(argument) = arguments.next() {
             let argument = argument
                 .into_string()
                 .map_err(|_| "arguments must be valid UTF-8".to_owned())?;
             match argument.as_str() {
                 "--release" if !release => release = true,
+                "--net" if !net => net = true,
                 "--rootfs" if rootfs.is_none() => {
                     rootfs = Some(PathBuf::from(arguments.next().ok_or_else(usage)?));
                 }
@@ -234,6 +245,7 @@ impl BuildOptions {
             release,
             initramfs,
             rootfs,
+            net,
         })
     }
 
@@ -366,5 +378,5 @@ fn execute(mut command: Command) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|package-init|package-linux-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH]\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
+    "usage: cargo xtask <build|run|package-init|package-linux-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH] [--net]\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
 }

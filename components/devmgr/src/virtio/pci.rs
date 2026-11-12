@@ -221,6 +221,15 @@ impl<'a> Pci<'a> {
         Ok(self.common.read_u8(self.config.common.offset + 21)?)
     }
 
+    pub(super) fn config_byte(&mut self, offset: usize) -> Result<u8, Error> {
+        let region = self.config.device.ok_or(Error::InvalidConfiguration)?;
+        if offset >= region.length {
+            return Err(Error::InvalidConfiguration);
+        }
+        let device = self.device.as_mut().ok_or(Error::InvalidConfiguration)?;
+        Ok(device.read_u8(region.offset + offset)?)
+    }
+
     pub(super) fn config_word(&mut self, offset: usize) -> Result<u32, Error> {
         let region = self.config.device.ok_or(Error::InvalidConfiguration)?;
         if offset.checked_add(4).is_none_or(|end| end > region.length)

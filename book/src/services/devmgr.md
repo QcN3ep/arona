@@ -14,6 +14,7 @@ The device manager stores the device instance identity, resource group, driver c
 |---|---|---|
 | UART | Device Tree `ns16550`, `ns16550a` | configuration, input, output, flush |
 | Block device | modern VirtIO MMIO or PCI block | capacity, read/write, flush, request cancellation and acknowledgment |
+| Ethernet | modern VirtIO PCI net | exclusive copied frame RX/TX, MAC, MTU, link state |
 | Random numbers | modern VirtIO PCI RNG | read device random bytes |
 | RTC | Goldfish RTC, Loongson LS7A RTC | read Unix time |
 | Power | Device Tree `syscon` with poweroff/reboot operations | capability query, shutdown, reboot |
@@ -101,6 +102,42 @@ The capability query reports whether shutdown and reboot are available.
 An action that the controller does not describe returns `Unsupported`.
 The QEMU `virt` machine exposes both operations through its `sifive,test0` system controller.
 
+## Ethernet Frame Sessions
+
+The net driver uses RX queue 0 and TX queue 1 on a modern VirtIO PCI device.
+It requires the device MAC feature and negotiates MTU and link status when available.
+The effective MTU is at most 1500 bytes, with 1500 as the default when the device does not advertise an MTU.
+Without the status feature, the link is treated as up.
+Configuration reads use the transport generation to obtain a consistent MAC, MTU, and link snapshot.
+
+Each queue uses at most 32 DMA slots, limited by its negotiated size.
+Every buffer begins with the modern 12-byte VirtIO net header, which the session does not expose.
+Checksum and segmentation offloads, mergeable receive buffers, control queues, and additional queue pairs are disabled.
+The frame length includes the Ethernet header and an optional VLAN tag, and excludes FCS.
+The driver pads transmitted frames shorter than 60 bytes with zeroes.
+It discards received frames outside the supported length range and replenishes their slots.
+Unexpected checksum or segmentation metadata is a device fault.
+
+An authorized client opens one exclusive `net::Session` for the device.
+Another open returns `Busy` until that session closes.
+The session transfers copied frame bytes through ordinary frame allocations and grants no register or DMA access.
+A receive waits for one complete frame, while a link watch waits for a sequence different from the client's last snapshot.
+Only one receive and one watch can wait in a session at a time.
+Their Call handles can be included in `wait_many` alongside other service work.
+
+Transmit submission copies the frame into a free DMA slot.
+A full TX queue returns `Busy` without publishing the frame, and a down link returns `Unavailable`.
+The successful reply arrives after device completion, whose used length is zero because TX buffers are device-readable.
+Completion proves that the device has finished reading the buffer, but provides no peer delivery guarantee.
+Canceling a reply cannot recall an already submitted frame, so a lost reply leaves transmission uncertain.
+
+The service retains at most 32 received frames and drops new arrivals when this cache is full.
+It replenishes DMA buffers independently of client reads and discards frames when no session is open.
+A canceled receive reply leaves its frame in the cache.
+Canceled receives and watches retain their bounded request slots until a frame or link change resolves them, or the session closes.
+Closing the session clears its requests and cached frames, while submitted TX buffers remain owned until device completion.
+Closing the worker control channel resets the device before quiescing its DMA domain and releasing its buffers.
+Pending callers observe service failure if their reply disappears.
 
 ## Failure Handling and Cleanup
 

@@ -21,6 +21,7 @@ const FEATURES_OK: u8 = 8;
 const NEEDS_RESET: u8 = 64;
 const FAILED: u8 = 128;
 const RESET_TIMEOUT_NS: u64 = 1_000_000_000;
+pub(crate) const NET_DEVICE_TYPE: u16 = 1;
 pub(crate) const BLOCK_DEVICE_TYPE: u16 = 2;
 pub(crate) const RNG_DEVICE_TYPE: u16 = 4;
 
@@ -47,6 +48,7 @@ pub(crate) fn probe(
     device_type: u16,
 ) -> Result<Option<Configuration>, Error> {
     let identity = match device_type {
+        NET_DEVICE_TYPE => "1af4:1041",
         BLOCK_DEVICE_TYPE => "1af4:1042",
         RNG_DEVICE_TYPE => "1af4:1044",
         _ => return Err(Error::Unsupported),
@@ -133,5 +135,6 @@ impl<'a> Transport<'a> {
     transport!(notify(queue: Notification) -> ());
     transport!(interrupt_status() -> u8);
     transport!(generation() -> u8);
+    transport!(config_byte(offset: usize) -> u8);
     transport!(config_word(offset: usize) -> u32);
 }

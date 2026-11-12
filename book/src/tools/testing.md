@@ -34,6 +34,59 @@ For example, the file system scenario attaches a disk fixture, and the UART scen
 
 To boot a built image, use `cargo xtask run <target> [--release]`.
 
+## VirtIO Net Frames
+
+The `components/devmgr/tests/net/` program exchanges Ethernet frames with a host peer through a real QEMU VirtIO net device.
+The peer uses QEMU's socket network backend and QMP to echo frames, send invalid Ethernet lengths, and lower and restore the link.
+It needs no host TAP interface or IP configuration.
+
+Build the component and a release interrupt harness for the chosen Rust target:
+
+```sh
+cargo rustc --locked -p arona-devmgr --features baremetal --test net \
+  --target riscv64gc-unknown-none-elf \
+  -Zbuild-std=core,alloc,compiler_builtins \
+  -Zbuild-std-features=compiler-builtins-mem \
+  -- -Cstrip=symbols -Clink-arg=-zmax-page-size=4096
+cargo build --locked -p arona-arch --features baremetal,runtime-tests \
+  --test interrupt --release --target riscv64gc-unknown-none-elf \
+  -Zbuild-std=core,alloc,compiler_builtins \
+  -Zbuild-std-features=compiler-builtins-mem
+```
+
+Use the `net-*` executable from the target's `debug/deps/` directory as `COMPONENT` and the `interrupt-*` executable from `release/deps/` as `HARNESS`.
+Cargo's JSON compiler-artifact messages also identify these paths.
+The release harness can run either profile of the component program.
+
+Start the peer in another terminal before QEMU:
+
+```sh
+python3 components/devmgr/tests/net/peer.py \
+  --port 12345 --qmp /tmp/arona-net.qmp
+```
+
+Then start QEMU and enter `net` at the `Test suite:` prompt:
+
+```sh
+NET_DEVICE=virtio-net-pci,id=nic,disable-legacy=on
+NET_DEVICE="$NET_DEVICE,netdev=net0,mac=52:54:00:12:34:56"
+qemu-system-riscv64 -M virt -m 256M -smp 1 \
+  -nographic -monitor none -nic none -bios default \
+  -kernel "$HARNESS" -initrd "$COMPONENT" \
+  -netdev socket,id=net0,connect=127.0.0.1:12345 \
+  -device "$NET_DEVICE" \
+  -qmp unix:/tmp/arona-net.qmp,server=on,wait=off
+```
+
+For LoongArch, build with `loongarch64-unknown-none`, use `qemu-system-loongarch64`, and omit `-bios default`.
+The scenario checks repeated queue cycling, TX pressure, short-frame padding, copied session I/O, cancellation, session closure, and device reset before DMA revocation.
+It reports `Net driver tests passed` when the component and kernel resource checks finish.
+
+The same scenario supports `host_mtu=576,rx_queue_size=1024,tx_queue_size=256` to exercise a smaller MTU and a different device queue limit.
+To exercise fallback configuration, use `status=off,mac=52:54:00:12:34:57` instead of the normal MAC.
+That MAC tells the scenario to omit link-change assertions because this device configuration provides no link status feature.
+Run a fresh peer for each QEMU instance and give concurrent runs separate ports and QMP paths.
+
 ## Boot Logs
 
 In a normal boot log, the architecture entry point first prints CPU and DTB information, and the kernel then prints the state of memory, Trap, the interrupt controller, timers, and the scheduler in initialization order.

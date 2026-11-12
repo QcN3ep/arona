@@ -150,7 +150,17 @@ fn run_program(
 ) {
     if matches!(
         suite,
-        "dma" | "dma-drop" | "dma-revoke" | "block" | "fs" | "rng" | "power" | "rtc" | "service" | "lwip"
+        "dma"
+            | "dma-drop"
+            | "dma-revoke"
+            | "block"
+            | "fs"
+            | "rng"
+            | "net"
+            | "power"
+            | "rtc"
+            | "service"
+            | "lwip"
     ) {
         kernel::logger::init(kernel::log::LevelFilter::Info).unwrap();
         kernel::logger::LOGGER.add_sink(&TestLog).unwrap();
@@ -215,6 +225,11 @@ fn run_program(
             .write(format_args!("Filesystem tests passed\n"))
             .unwrap();
     }
+    if suite == "net" {
+        uart()
+            .write(format_args!("Net driver tests passed\n"))
+            .unwrap();
+    }
     if suite == "rng" {
         uart()
             .write(format_args!("RNG driver tests passed\n"))
@@ -260,6 +275,7 @@ fn select_program() -> &'static str {
                 b"block" => "block",
                 b"rng" => "rng",
                 b"power" => "power",
+                b"net" => "net",
                 b"lwip" => "lwip",
                 b"rtc" => "rtc",
                 b"fs" => "fs",
