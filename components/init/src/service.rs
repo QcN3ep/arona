@@ -3,7 +3,7 @@
 // TODO: Integrate network services providing the protocol stack, address configuration, and DNS.
 
 use runtime::{
-    Channel, DeviceSet, Error, Handle, KernelLog, Rights, Task,
+    Channel, DeviceSet, Error, Handle, KernelError, KernelLog, Rights, Task,
     ipc::{self, CallError, Message, Transfer, WaitItem},
     process::{self, ProcessStart},
     thread,
@@ -11,7 +11,7 @@ use runtime::{
 
 use fs::{FileSystem, ReadAt, archive::Archive};
 
-use crate::{InitError, program::Loader};
+use crate::{InitError, config::PowerAction, program::Loader};
 
 const START_TIMEOUT_NS: u64 = 10_000_000_000;
 const STACK_SIZE: usize = 64 * 1024;
@@ -109,6 +109,21 @@ pub fn persistent_log_file(files: &fs::Client<'static>) -> Result<fs::File<'stat
     }
 }
 
+pub fn apply_power_action(
+    devmgr: &Handle<Channel>,
+    action: PowerAction,
+) -> Result<(), devmgr::Error> {
+    let id = devmgr::device::next(devmgr, devmgr::device::DriverKind::Power, 0, deadline()?)?
+        .ok_or(devmgr::Error::Unsupported)?;
+    let session = devmgr::power::Session::open(process::task(), devmgr, id, deadline()?)?;
+    let capabilities = session.capabilities(deadline()?)?;
+    match action {
+        PowerAction::Shutdown if capabilities.shutdown => session.shutdown(deadline()?),
+        PowerAction::Reboot if capabilities.reboot => session.reboot(deadline()?),
+        _ => Err(devmgr::Error::Unsupported),
+    }
+}
+
 pub fn start_linux(
     loader: &Loader,
     files: &fs::Client<'_>,
@@ -143,6 +158,20 @@ impl Service {
     }
     pub fn wait(&self) -> Result<usize, Error> {
         self.task.wait(0)
+    }
+    /// Wait for the service Task to exit, terminating it when the deadline expires.
+    ///
+    /// Returns `true` for a graceful exit and `false` after the fallback termination.
+    pub fn stop(&self, deadline: u64) -> Result<bool, Error> {
+        match self.task.wait(deadline) {
+            Ok(_) => Ok(true),
+            Err(Error::Kernel(KernelError::TimedOut)) => {
+                self.task.terminate(1)?;
+                self.task.wait(u64::MAX)?;
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 

@@ -92,7 +92,7 @@ fn main() -> Result<usize, InitError> {
         None
     };
     let mounted = persistent_log.is_some();
-    let (logger, _logger_control, client) = service::start_logger(
+    let (logger, logger_control, client) = service::start_logger(
         &loader,
         &files,
         &devices,
@@ -111,13 +111,23 @@ fn main() -> Result<usize, InitError> {
         logger::log::error!(target: "init", "Failed to load /etc/init.toml: {error:?}");
         logger::log::logger().flush();
     })?;
-    supervisor::run(
-        &[&filesystem, &devmgr, &logger, &linux],
-        config,
-        &linux_control,
-        &device_control,
-        service::console(&devices)?,
-    )
+    let console = service::console(&devices)?;
+    let system = supervisor::System {
+        filesystem: &filesystem,
+        devmgr: &devmgr,
+        logger: &logger,
+        linux: &linux,
+        linux_control,
+        logger_control,
+        mounts,
+        devices: device_control,
+        console,
+        mounted,
+    };
+    if let Some(action) = config.power.action {
+        return supervisor::shutdown(system, action);
+    }
+    supervisor::run(system, config)
 }
 
 fn read_config(files: &fs::Client<'_>) -> Result<config::Config, InitError> {

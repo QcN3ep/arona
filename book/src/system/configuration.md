@@ -41,6 +41,23 @@ The configuration parser rejects unknown fields, duplicate or empty application 
 Environment variable names are non-empty strings that do not contain `=`.
 Without `/etc/init.toml`, the application list is empty; if the configuration exists but has invalid syntax or fields, init reports an error and exits.
 
+## Boot Power Action
+
+An image can request one power action after the base services are ready:
+
+```toml
+[power]
+action = "shutdown"
+```
+
+The action runs after init reports `System services ready` and before application supervision starts.
+`shutdown` and `reboot` are the accepted values.
+init queries the device management service for a platform power controller and reports an error when the platform does not provide the requested action.
+Before the action, init stops the Linux compatibility service, then flushes and stops the log service.
+It then flushes and unmounts the mounted filesystems before stopping the file service.
+The device management service stays available to apply the power action.
+This is useful for single-purpose images and for automated boot checks that must stop the machine.
+
 ## Application Exit and Restart
 
 | `restart` | Behavior |

@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Supervision of startup, exit, and restart for configured programs.
+//! Supervision of startup, exit, and restart for configured programs and ordered base service shutdown.
 
 // TODO: Support configuration reload and service dependency management.
-// TODO: Stop services in dependency order and complete flushing, unmounting, and shutdown or restart.
 
 use crate::{
     InitError,
-    config::{Config, Executor, Program, Restart, Terminal},
-    service::Service,
+    config::{Config, Executor, PowerAction, Program, Restart, Terminal},
+    service::{self, Service},
 };
 use alloc::{string::String, vec::Vec};
+use core::fmt::{self, Write as _};
 use runtime::{
     Call, Channel, Error, Handle, KernelError,
     ipc::{self, PendingCall, WaitItem, WaitMode},
@@ -18,6 +18,20 @@ use runtime::{
 };
 
 type Execution = PendingCall<linux::ExitStatus, (), linux::Error>;
+
+/// Base service tasks and the control endpoints owned by init.
+pub struct System<'a> {
+    pub filesystem: &'a Service,
+    pub devmgr: &'a Service,
+    pub logger: &'a Service,
+    pub linux: &'a Service,
+    pub linux_control: linux::Control<'a>,
+    pub logger_control: logger::Control<'a>,
+    pub mounts: fs::Control<'a>,
+    pub devices: Handle<Channel>,
+    pub console: u32,
+    pub mounted: bool,
+}
 
 struct ProgramState {
     program: Program,
@@ -37,13 +51,13 @@ enum Phase {
     Finished,
 }
 
-pub fn run(
-    services: &[&Service],
-    config: Config,
-    linux: &linux::Control<'_>,
-    devices: &Handle<Channel>,
-    console: u32,
-) -> Result<usize, InitError> {
+pub fn run(system: System<'_>, config: Config) -> Result<usize, InitError> {
+    let services = [
+        system.filesystem,
+        system.devmgr,
+        system.logger,
+        system.linux,
+    ];
     let mut programs: Vec<_> = config
         .program
         .into_iter()
@@ -57,7 +71,7 @@ pub fn run(
     loop {
         let now = thread::now_ns()?;
         for state in &mut programs {
-            state.poll(linux, devices, console, now)?;
+            state.poll(&system.linux_control, &system.devices, system.console, now)?;
         }
         let mut items: Vec<_> = services.iter().map(|service| service.wait_item()).collect();
         for state in &programs {
@@ -79,6 +93,113 @@ pub fn run(
             }
             Ok(_) | Err(Error::Kernel(KernelError::TimedOut)) => {}
             Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+/// Stop base services in reverse dependency order and apply a configured power action.
+///
+/// The Linux compatibility service stops first; closing its control channel makes it
+/// return and drop its supervised processes, which terminates the guest Tasks because
+/// the service has no guest stop protocol. The log service flushes and then stops so
+/// that its persistent log file is released before the file service unmounts. The file
+/// service flushes and unmounts every mounted filesystem through its control protocol
+/// before it stops, and the device management service remains until it performs the
+/// shutdown or reboot through the platform power controller.
+pub fn shutdown(system: System<'_>, action: PowerAction) -> Result<usize, InitError> {
+    let System {
+        filesystem,
+        devmgr,
+        logger,
+        linux,
+        linux_control,
+        logger_control,
+        mounts,
+        devices,
+        console,
+        mounted,
+    } = system;
+    let mut report = Report::open(&devices, console)?;
+    logger::log::logger().flush();
+    report.info(format_args!("Stopping Linux programs"));
+    drop(linux_control);
+    stop_service(linux, &mut report, "Linux service")?;
+    report.info(format_args!("Stopping logger service"));
+    logger::log::logger().flush();
+    drop(logger_control);
+    stop_service(logger, &mut report, "logger service")?;
+    report.info(format_args!("Flushing file service"));
+    if mounted {
+        report.info(format_args!("Unmounting /var"));
+        mounts.unmount(b"/var", service::deadline()?)?;
+        report.info(format_args!("Unmounted /var"));
+    }
+    drop(mounts);
+    stop_service(filesystem, &mut report, "file service")?;
+    match action {
+        PowerAction::Shutdown => report.info(format_args!("Shutting down")),
+        PowerAction::Reboot => report.info(format_args!("Rebooting")),
+    }
+    report.flush();
+    if let Err(error) = service::apply_power_action(&devices, action) {
+        report.info(format_args!("Power action failed: {error:?}"));
+        drop(devices);
+        let _ = devmgr.stop(service::deadline()?);
+        return Err(error.into());
+    }
+    Ok(0)
+}
+
+fn stop_service(base: &Service, report: &mut Report, name: &str) -> Result<(), InitError> {
+    if base.stop(service::deadline()?)? {
+        report.info(format_args!("Stopped {name}"));
+    } else {
+        report.info(format_args!("Terminated {name} after a stop timeout"));
+    }
+    Ok(())
+}
+
+/// Ordered shutdown messages written directly to the console.
+///
+/// The log service stops before the file service, so later shutdown messages cannot
+/// use the log facade; this output session keeps them visible on the console and does
+/// not depend on any remaining service except the device management service.
+struct Report {
+    output: devmgr::uart::Session,
+    failed: bool,
+}
+
+impl Report {
+    fn open(devices: &Handle<Channel>, console: u32) -> Result<Self, InitError> {
+        Ok(Self {
+            output: devmgr::uart::Session::open(
+                process::task(),
+                devices,
+                console,
+                devmgr::uart::Access::Output,
+            )?,
+            failed: false,
+        })
+    }
+
+    fn info(&mut self, message: fmt::Arguments<'_>) {
+        if self.failed {
+            return;
+        }
+        let now = thread::now_ns().unwrap_or(0);
+        let mut line = String::new();
+        let _ = writeln!(
+            line,
+            "[{:>5}.{:06}] INFO init: {message}",
+            now / 1_000_000_000,
+            now % 1_000_000_000 / 1000
+        );
+        self.failed = self.output.write_all(line.as_bytes()).is_err();
+    }
+
+    fn flush(&mut self) {
+        if !self.failed {
+            self.failed = self.output.flush().is_err();
         }
     }
 }

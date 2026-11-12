@@ -65,3 +65,11 @@ When exits repeat within a short time, the restart delay increases exponentially
 
 Exit of a base service makes the supervisor end and return an error state.
 The service objects held by init terminate the related Tasks in the exit path and release control channels and sessions.
+
+When the configuration requests a boot power action, init stops the base services before applying it.
+The Linux compatibility service stops first.
+Closing its control channel ends its supervised programs.
+The log service then flushes and stops.
+Once its files are released, the file service flushes and unmounts its filesystems before it stops.
+The device management service stays available until it performs the shutdown or reboot through the platform power controller.
+If a service does not exit after its control channel closes, init terminates its Task and reports that fallback.
