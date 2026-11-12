@@ -49,8 +49,6 @@
 extern "C" {
 #endif
 
-#define NUM_SOCKETS MEMP_NUM_NETCONN
-
 /** This is overridable for the rare case where more than 255 threads
  * select on the same socket...
  */
@@ -65,6 +63,9 @@ union lwip_sock_lastdata {
 
 /** Contains all internal pointers and states used for a socket */
 struct lwip_sock {
+  // Entries stay at stable addresses and are ordered by descriptor under SYS_ARCH_PROTECT.
+  struct lwip_sock *next;
+  int fd;
   /** sockets currently are built on netconns, each socket has one netconn */
   struct netconn *conn;
   /** data that was left from the previous read */
@@ -81,13 +82,17 @@ struct lwip_sock {
   /** counter of how many threads are waiting for this socket using select */
   SELWAIT_T select_waiting;
 #endif /* LWIP_SOCKET_SELECT || LWIP_SOCKET_POLL */
-#if LWIP_NETCONN_FULLDUPLEX
-  /* counter of how many threads are using a struct lwip_sock (not the 'int') */
-  u8_t fd_used;
+  // API calls and callbacks retain the entry even with full-duplex access disabled.
+  size_t fd_used;
   /* status of pending close/delete actions */
   u8_t fd_free_pending;
 #define LWIP_SOCK_FD_FREE_TCP  1
 #define LWIP_SOCK_FD_FREE_FREE 2
+#if LWIP_IGMP
+  struct lwip_socket_multicast_pair *ipv4_memberships;
+#endif
+#if LWIP_IPV6_MLD
+  struct lwip_socket_multicast_mld6_pair *ipv6_memberships;
 #endif
 };
 
@@ -131,6 +136,7 @@ struct lwip_setgetsockopt_data {
 }
 #endif
 
+// The debugger must stop concurrent socket operations before dereferencing this pointer.
 struct lwip_sock* lwip_socket_dbg_get_socket(int fd);
 
 #if LWIP_SOCKET_SELECT || LWIP_SOCKET_POLL

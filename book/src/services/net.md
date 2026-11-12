@@ -11,7 +11,7 @@ The initialized stack lives until the program exits.
 Initialization can be attempted only once, so a failed startup requires restarting the program.
 
 After initialization, `Stack::socket` creates an owned TCP or UDP socket in nonblocking mode.
-The current socket table has 32 entries.
+Socket entries are allocated as needed and are limited by available memory and descriptor numbers.
 Each socket uses an `Endpoint` containing four IPv4 address bytes and a host-order port.
 Binding port zero requests an ephemeral local port.
 
@@ -49,6 +49,16 @@ These callbacks run on ordinary Arona threads and do not support hardware interr
 The Rust interface keeps C descriptors, pointers, and layouts inside the child crate.
 A small C bridge converts socket addresses and checks the shared endpoint layout against Rust.
 This lets other service crates use the stack through safe Rust interfaces.
+
+Socket entries stay at stable addresses in a list ordered by descriptor.
+Lookup retains an entry under the same lock used to remove it.
+Closing releases the entry after its final user or callback leaves, so its descriptor cannot be reused while the entry is still in use.
+Callbacks also check their connection identity before updating an entry.
+The C API uses poll for readiness checks because select's fixed descriptor bitmap does not support this storage model.
+
+Creating or accepting a socket first reserves its entry storage.
+If this reservation fails, the operation returns `NoMemory` without creating protocol resources or consuming a pending connection.
+After memory becomes available, the caller can retry the operation.
 
 The C build uses the checked-in `sources.toml`, Clang builtin headers, and explicit target ABI flags.
 RISC-V uses `rv64gc/lp64d`.
@@ -95,6 +105,8 @@ The architecture test image uses release mode to fit the existing boot mapping.
 Boot the architecture test image in QEMU with the loopback program supplied through `-initrd`.
 Attach an RNG device with `-device virtio-rng-pci,disable-legacy=on` and enter `lwip` at `Test suite:`.
 The scenario obtains entropy from that device through a devmgr RNG session, then exchanges TCP and UDP data between Arona threads.
+Two threads also create and reuse groups of 64 UDP sockets while an existing TCP connection remains open.
+Memory pressure checks cover failed socket creation and acceptance, followed by successful retries with the pending data intact.
 After the Task terminates, the kernel harness checks resource cleanup.
 
 GitHub CI compiles, lints, and links debug and release programs for both targets.

@@ -472,9 +472,10 @@ typedef struct ipv6_mreq {
 #endif
 
 /* FD_SET used for lwip_select */
+#if LWIP_SOCKET_SELECT
 #ifndef FD_SET
 #undef  FD_SETSIZE
-/* Make FD_SETSIZE match NUM_SOCKETS in socket.c */
+// FD sets have a fixed capacity and are not used by the dynamic socket port.
 #define FD_SETSIZE    MEMP_NUM_NETCONN
 #define LWIP_SELECT_MAXNFDS (FD_SETSIZE + LWIP_SOCKET_OFFSET)
 #define FDSETSAFESET(n, code) do { \
@@ -497,6 +498,7 @@ typedef struct fd_set
 #else
 #define LWIP_SELECT_MAXNFDS FD_SETSIZE
 #endif /* FD_SET */
+#endif /* LWIP_SOCKET_SELECT */
 
 /* poll-related defines and types */
 /* @todo: find a better way to guard the definition of these defines and types if already defined */
