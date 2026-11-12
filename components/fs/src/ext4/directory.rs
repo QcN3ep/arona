@@ -8,7 +8,7 @@ use super::{
     inode::{Entry, Inode},
     volume::Volume,
 };
-use crate::{Error, block::BLOCK_SIZE};
+use crate::{Error, block::MAX_BLOCK_SIZE};
 use alloc::{collections::BTreeSet, rc::Rc, vec::Vec};
 
 impl Volume {
@@ -295,13 +295,13 @@ impl Volume {
 
     pub fn set_entries(&mut self, inode: &mut Inode, entries: &[Entry]) -> Result<(), Error> {
         let old_extents = self.extents(&inode.root)?;
-        let mut blocks: Vec<Rc<[u8; BLOCK_SIZE]>> = Vec::new();
-        let mut inside = BLOCK_SIZE;
+        let mut blocks: Vec<Rc<[u8; MAX_BLOCK_SIZE]>> = Vec::new();
+        let mut inside = self.block_size;
         let mut previous = 0;
         for entry in entries {
             let size = (8 + entry.name.len()).next_multiple_of(4);
-            if inside + size > BLOCK_SIZE {
-                blocks.push(Rc::new([0; BLOCK_SIZE]));
+            if inside + size > self.block_size {
+                blocks.push(Rc::new([0; MAX_BLOCK_SIZE]));
                 inside = 0;
             } else if inside != 0 {
                 let bytes = Rc::make_mut(blocks.last_mut().unwrap());
@@ -311,7 +311,7 @@ impl Volume {
             let bytes = Rc::make_mut(blocks.last_mut().unwrap());
             bytes[inside..inside + 4].copy_from_slice(&entry.inode.to_le_bytes());
             bytes[inside + 4..inside + 6]
-                .copy_from_slice(&((BLOCK_SIZE - inside) as u16).to_le_bytes());
+                .copy_from_slice(&((self.block_size - inside) as u16).to_le_bytes());
             bytes[inside + 6] = entry.name.len() as u8;
             bytes[inside + 7] = entry.file_type;
             bytes[inside + 8..inside + 8 + entry.name.len()].copy_from_slice(&entry.name);
@@ -335,7 +335,7 @@ impl Volume {
                 unwritten: false,
             });
         }
-        inode.size = extents.len() as u64 * BLOCK_SIZE as u64;
+        inode.size = extents.len() as u64 * self.block_size as u64;
         self.replace_extents(inode, extents)?;
         self.store_inode(inode)?;
         for number in old_blocks {

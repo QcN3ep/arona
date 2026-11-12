@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use super::{half, volume::Volume, word};
-use crate::{Error, block::BLOCK_SIZE};
+use crate::{Error, block::MAX_BLOCK_SIZE};
 use alloc::{collections::BTreeSet, vec::Vec};
 
 #[derive(Clone)]
@@ -142,9 +142,9 @@ impl Volume {
         let mut done = 0;
         while done < count {
             let position = offset + done;
-            let logical = (position / BLOCK_SIZE) as u32;
-            let inside = position % BLOCK_SIZE;
-            let length = (BLOCK_SIZE - inside).min(count - done);
+            let logical = (position / self.block_size) as u32;
+            let inside = position % self.block_size;
+            let length = (self.block_size - inside).min(count - done);
             let extent = extents
                 .iter()
                 .find(|extent| (extent.logical..extent.logical + extent.length).contains(&logical));
@@ -161,19 +161,19 @@ impl Volume {
 
     // REFERENCE: https://www.kernel.org/doc/html/v6.12/filesystems/ext4/directory.html
     pub fn entries(&mut self, inode: &Inode) -> Result<Vec<Entry>, Error> {
-        if !inode.directory() || !inode.size.is_multiple_of(BLOCK_SIZE as u64) {
+        if !inode.directory() || !inode.size.is_multiple_of(self.block_size as u64) {
             return Err(Error::InvalidData);
         }
         let mut result = Vec::new();
         let mut names = BTreeSet::new();
-        for offset in (0..inode.size as usize).step_by(BLOCK_SIZE) {
-            let mut bytes = [0; BLOCK_SIZE];
-            if self.read(inode, offset, &mut bytes)? != BLOCK_SIZE {
+        for offset in (0..inode.size as usize).step_by(self.block_size) {
+            let mut bytes = [0; MAX_BLOCK_SIZE];
+            if self.read(inode, offset, &mut bytes[..self.block_size])? != self.block_size {
                 return Err(Error::InvalidData);
             }
             let mut inside = 0;
-            while inside < BLOCK_SIZE {
-                if BLOCK_SIZE - inside < 8 {
+            while inside < self.block_size {
+                if self.block_size - inside < 8 {
                     return Err(Error::InvalidData);
                 }
                 let number = word(&bytes, inside);
@@ -181,7 +181,7 @@ impl Volume {
                 let name_length = usize::from(bytes[inside + 6]);
                 if length < 8
                     || !length.is_multiple_of(4)
-                    || inside + length > BLOCK_SIZE
+                    || inside + length > self.block_size
                     || name_length > length - 8
                     || number > self.inodes
                     || bytes[inside + 7] > 7

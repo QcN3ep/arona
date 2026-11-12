@@ -86,6 +86,14 @@ fn main() {
 fn exercise(disk: &Rc<Disk>) {
     if disk.read_only() {
         read_only(disk);
+    } else if disk.capacity() == SLICE {
+        if !persisted(disk) {
+            read_volume(disk);
+            write_volume(disk);
+            metadata_volume(disk);
+            large_write(disk);
+            persistence(disk);
+        }
     } else if matches!(disk.capacity() / SLICE, 2 | 3 | 5) {
         failure(disk);
     } else if disk.capacity() == 4 * SLICE {
