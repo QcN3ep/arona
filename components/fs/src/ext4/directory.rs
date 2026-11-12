@@ -109,6 +109,7 @@ impl Volume {
                 accessed: crate::Timestamp::default(),
                 modified: crate::Timestamp::default(),
                 changed: crate::Timestamp::default(),
+                birth: crate::Timestamp::default(),
                 flags: 0x80000,
             };
             inode.root[..2].copy_from_slice(&0xf30au16.to_le_bytes());

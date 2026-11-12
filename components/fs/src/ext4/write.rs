@@ -277,6 +277,7 @@ impl Volume {
             store_timestamp(bytes, 8, 140, inode.accessed)?;
             store_timestamp(bytes, 16, 136, inode.modified)?;
             store_timestamp(bytes, 12, 132, inode.changed)?;
+            store_timestamp(bytes, 144, 148, inode.birth)?;
             bytes[4..8].copy_from_slice(&(inode.size as u32).to_le_bytes());
             bytes[26..28].copy_from_slice(&inode.links.to_le_bytes());
             bytes[28..32].copy_from_slice(&(inode.sectors as u32).to_le_bytes());
@@ -307,6 +308,11 @@ fn store_timestamp(
         || !extended && (epoch != 0 || time.nanoseconds != 0)
     {
         return Err(Error::Unsupported);
+    }
+    if offset >= 128
+        && (bytes.len() < offset + 4 || usize::from(super::half(bytes, 128)) < offset + 4 - 128)
+    {
+        return Ok(());
     }
     bytes[offset..offset + 4].copy_from_slice(&base.to_le_bytes());
     if extended {

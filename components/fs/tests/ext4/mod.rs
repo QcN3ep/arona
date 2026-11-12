@@ -440,6 +440,13 @@ fn write_volume(disk: &Rc<Disk>) {
 
 fn metadata_volume(disk: &Rc<Disk>) {
     let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let existing = filesystem.open("/data/message").unwrap();
+    let birth = existing.metadata().unwrap().birth;
+    let attributes = existing.metadata().unwrap().attributes();
+    existing.set_attributes(attributes).unwrap();
+    existing.fsync().unwrap();
+    assert_eq!(existing.metadata().unwrap().birth, birth);
+    drop(existing);
     filesystem.mkdir(b"/links").unwrap();
     let file = filesystem.create(b"/links/\xff").unwrap();
     let attributes = fs::Attributes {
@@ -472,6 +479,8 @@ fn metadata_volume(disk: &Rc<Disk>) {
     let alias = filesystem.open_bytes(b"/links/alias").unwrap();
     assert_eq!(alias.metadata().unwrap().inode, before.inode);
     assert_eq!(alias.metadata().unwrap().links, 2);
+    assert!(before.mount != 0);
+    assert_eq!(alias.metadata().unwrap().mount, before.mount);
     assert_eq!(file.append(b"first").unwrap(), (0, 5));
     assert_eq!(alias.append(b"second").unwrap(), (5, 6));
     filesystem.unlink(b"/links/\xff").unwrap();
@@ -578,6 +587,7 @@ fn dirty_volume(disk: &Rc<Disk>) {
 fn read_only(disk: &Rc<Disk>) {
     let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
     let file = filesystem.open("/data/message").unwrap();
+    assert_ne!(file.metadata().unwrap().mount, 0);
     assert_eq!(file.write_at(0, b"denied"), Err(Error::ReadOnly));
     assert_eq!(filesystem.mkdir(b"/denied"), Err(Error::ReadOnly));
     file.fsync().unwrap();
@@ -760,6 +770,12 @@ fn archive_metadata() {
     assert_eq!(first.metadata().gid, 456);
     assert_eq!(first.metadata().mode, 0o100640);
     assert_eq!(first.metadata().modified.seconds, 12345);
+    assert!(first.metadata().mount != 0);
+    assert_eq!(
+        first.metadata().mount,
+        archive.metadata(b"/").unwrap().mount
+    );
+    assert_eq!(first.metadata().birth, fs::Timestamp::default());
     let mut output = [0; 6];
     first.read_exact_at(0, &mut output).unwrap();
     assert_eq!(&output, b"linked");

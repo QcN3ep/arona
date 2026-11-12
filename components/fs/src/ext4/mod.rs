@@ -104,7 +104,7 @@ impl Ext4 {
     }
     pub fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
         let mut volume = self.volume.borrow_mut();
-        Ok(volume.lookup(path)?.metadata(volume.device))
+        Ok(volume.lookup(path)?.metadata(volume.device, volume.mount))
     }
     pub fn hard_link(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
         self.volume.borrow_mut().hard_link(source, target)
@@ -197,7 +197,9 @@ impl File {
     }
     pub fn metadata(&self) -> Result<crate::Metadata, Error> {
         let mut volume = self.volume.borrow_mut();
-        Ok(volume.inode(self.identity.number)?.metadata(volume.device))
+        Ok(volume
+            .inode(self.identity.number)?
+            .metadata(volume.device, volume.mount))
     }
     pub fn parent_metadata(&self) -> Result<Option<crate::Metadata>, Error> {
         if self.identity.number == 2 {
@@ -211,7 +213,9 @@ impl File {
             .find(|entry| entry.name == b"..")
             .ok_or(Error::InvalidData)?
             .inode;
-        Ok(Some(volume.inode(parent)?.metadata(volume.device)))
+        Ok(Some(
+            volume.inode(parent)?.metadata(volume.device, volume.mount),
+        ))
     }
     pub fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
         self.volume

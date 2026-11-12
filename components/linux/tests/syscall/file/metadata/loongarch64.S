@@ -188,7 +188,7 @@ statx_fill:
     statx_file stat_path, 0x2000, 0x7fffffff, 999
     expect 0
     ld.w $t0, $sp, 256
-    li.d $t1, 0x7ff
+    li.d $t1, 0x17ff
     bne $t0, $t1, metadata_failure
     ld.w $t0, $sp, 260
     li.d $t1, 4096
@@ -255,7 +255,9 @@ statx_fill:
     and $t2, $t2, $t3
     or $t1, $t1, $t2
     bne $t0, $t1, metadata_failure
-    addi.d $t0, $sp, 400
+    ld.d $t0, $sp, 400
+    beqz $t0, metadata_failure
+    addi.d $t0, $sp, 408
     addi.d $t1, $sp, 512
 statx_zero:
     ld.d $t2, $t0, 0
@@ -277,7 +279,7 @@ statx_zero:
     statx_file empty_path, 0x1000, 0x800, 0
     expect 0
     ld.w $t0, $sp, 256
-    li.d $t1, 0x7ff
+    li.d $t1, 0x17ff
     bne $t0, $t1, metadata_failure
     ld.d $t0, $sp, 288
     bne $t0, $s2, metadata_failure
