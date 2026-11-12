@@ -27,6 +27,8 @@ pub mod process;
 #[cfg(all(feature = "program", target_os = "none"))]
 mod start;
 #[cfg(all(feature = "program", target_os = "none"))]
+pub mod sync;
+#[cfg(all(feature = "program", target_os = "none"))]
 pub mod tls;
 
 pub use abi::{Error as KernelError, ObjectType, Rights};

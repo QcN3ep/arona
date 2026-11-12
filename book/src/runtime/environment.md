@@ -46,6 +46,26 @@ When a worker thread returns normally, it runs TLS destructors, saves the return
 Dropping a JoinHandle detaches the thread.
 The runtime hands its resources to a reclamation thread to hold; the worker thread continues execution, and after it exits the reclamation thread frees the stack, TLS, and result storage.
 
+## Thread Synchronization
+
+`runtime::sync`, available with `runtime/program` on native targets, provides `Mutex<T>`, `Semaphore`, and `Mailbox<T>` for threads sharing a program's address space.
+Their waits accept `WaitMode::Poll`, `Forever`, or an absolute nanosecond deadline through `Until`.
+Polling an unavailable object returns `WouldBlock`; an expired wait returns `TimedOut`.
+
+`Mutex::lock` returns a guard that provides exclusive access and releases the lock on drop.
+The mutex is not recursive and does not implement poisoning.
+`Semaphore::wait` consumes one permit and `post` releases one, assigning it to a queued waiter before increasing the available count.
+A permit assigned concurrently with a timeout completes the acquisition successfully.
+
+`Mailbox::new` allocates a nonzero capacity and returns an error if storage cannot be allocated.
+`send` and `receive` preserve FIFO order; failed sends return the original value with the error.
+Mailbox storage is reserved at construction, so successful polling operations do not allocate.
+Dropping the mailbox releases any queued values.
+
+Each blocked waiter uses a private Event; semaphore counts and queued values remain in program memory because Event notifications coalesce and waits consume them.
+Waiting threads sleep without holding the short synchronization-state lock; contention on that state lock yields so its holder can run on a single CPU.
+Forcibly terminating a thread or calling `thread::exit` skips stack destruction, so it does not release a held guard or complete an in-progress send/receive.
+
 ## Thread Local Storage
 
 The linker script places TLS initial data in `.tdata` and the zero-initialized part in `.tbss`.
