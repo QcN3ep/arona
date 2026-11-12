@@ -7,6 +7,8 @@
 _start:
     auipc t0, 0
     ld t1, 0(sp)
+    li t2, 4
+    beq t1, t2, script_arguments
     addi t1, t1, 3
     slli t1, t1, 3
     add t1, sp, t1
@@ -42,4 +44,37 @@ _start:
     li a0, 1
     li a7, 93
     ecall
+
+script_arguments:
+    ld t1, 16(sp)
+    lla t2, script_option
+    jal ra, check_script_text
+    ld t1, 24(sp)
+    lla t2, script_name
+    jal ra, check_script_text
+    ld t1, 32(sp)
+    lla t2, script_tail
+    jal ra, check_script_text
+    ld t1, 40(sp)
+    bnez t1, script_failure
+    li a0, 42
+    li a7, 93
+    ecall
+check_script_text:
+    lbu t3, 0(t1)
+    lbu t4, 0(t2)
+    bne t3, t4, script_failure
+    beqz t3, script_text_done
+    addi t1, t1, 1
+    addi t2, t2, 1
+    j check_script_text
+script_text_done:
+    ret
+script_failure:
+    li a0, 1
+    li a7, 93
+    ecall
+script_option: .asciz "option with space"
+script_name: .asciz "/bin/linux-script"
+script_tail: .asciz "tail"
 .section .note.GNU-stack,"",@progbits

@@ -293,6 +293,13 @@ fn execution(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         start(b"Q").wait(until()).unwrap(),
         ExitStatus { code: 0, signal: 0 }
     );
+    assert_eq!(
+        start(b"Y").wait(until()).unwrap(),
+        ExitStatus {
+            code: 42,
+            signal: 0
+        }
+    );
     let mut fault = start(b"fault");
     let mut survivor = start(b"normal");
     assert_eq!(
