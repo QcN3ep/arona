@@ -8,13 +8,14 @@ use runtime::{
     dma::{self, DmaBuffer, DmaDirection},
 };
 
-use super::Transport;
+use super::{Notification, Transport};
 use crate::Error;
 
 pub(crate) const MAX_SIZE: usize = 256;
 const PAGE_SIZE: usize = 4096;
 
 pub(crate) struct Queue<'a> {
+    notification: Notification,
     descriptors: DmaBuffer<'a>,
     available: DmaBuffer<'a>,
     used: DmaBuffer<'a>,
@@ -29,7 +30,7 @@ pub(crate) struct Queue<'a> {
 #[derive(Clone, Copy)]
 struct Pending {
     descriptors: usize,
-    writable: u32,
+    writable: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -44,9 +45,10 @@ impl<'a> Queue<'a> {
         domain: &'a Handle<DmaDomain>,
         task: &Handle<Task>,
         transport: &mut Transport<'_>,
+        index: u16,
     ) -> Result<Self, Error> {
-        let maximum = transport.queue_size()?;
-        if maximum < 4 || !maximum.is_power_of_two() {
+        let maximum = transport.queue_size(index)?;
+        if maximum == 0 || !maximum.is_power_of_two() {
             return Err(Error::InvalidConfiguration);
         }
         let maximum = maximum.min(MAX_SIZE as u16);
@@ -56,13 +58,15 @@ impl<'a> Queue<'a> {
         for buffer in [&mut descriptors, &mut available, &mut used] {
             buffer.write(0, &[0; PAGE_SIZE])?;
         }
-        transport.configure_queue(
+        let notification = transport.configure_queue(
+            index,
             maximum,
             descriptors.bus_address().unwrap(),
             available.bus_address().unwrap(),
             used.bus_address().unwrap(),
         )?;
         Ok(Self {
+            notification,
             descriptors,
             available,
             used,
@@ -82,6 +86,10 @@ impl<'a> Queue<'a> {
         self.in_flight
     }
 
+    pub(crate) fn notify(&self, transport: &mut Transport<'_>) -> Result<(), Error> {
+        transport.notify(self.notification)
+    }
+
     pub(crate) fn publish(&mut self, head: u16, entries: &[Descriptor]) -> Result<(), Error> {
         let first = usize::from(head);
         let end = first
@@ -90,15 +98,18 @@ impl<'a> Queue<'a> {
         if entries.is_empty() || end > self.size() || self.occupied[first..end].iter().any(|x| *x) {
             return Err(Error::Busy);
         }
-        let mut writable = 0u32;
+        let mut writable = None::<u32>;
         for (index, entry) in entries.iter().enumerate() {
             if entry.address.checked_add(u64::from(entry.length)).is_none() {
                 return Err(Error::InvalidRequest);
             }
             if entry.writable {
-                writable = writable
-                    .checked_add(entry.length)
-                    .ok_or(Error::InvalidRequest)?;
+                writable = Some(
+                    writable
+                        .unwrap_or(0)
+                        .checked_add(entry.length)
+                        .ok_or(Error::InvalidRequest)?,
+                );
             }
             let mut bytes = [0; 16];
             bytes[..8].copy_from_slice(&entry.address.to_le_bytes());
@@ -127,6 +138,9 @@ impl<'a> Queue<'a> {
         Ok(())
     }
 
+    /// Return the completed head and the bytes written by the device.
+    /// All-readable chains require zero bytes. Writable chains require a
+    /// nonzero length within their writable capacity, then driver validation.
     pub(crate) fn complete(&mut self) -> Result<Option<(u16, u32)>, Error> {
         let mut index = [0; 2];
         self.used.read(2, &mut index)?;
@@ -149,7 +163,10 @@ impl<'a> Queue<'a> {
             .copied()
             .flatten()
             .ok_or(Error::DeviceFault)?;
-        if length == 0 || length > pending.writable {
+        if pending
+            .writable
+            .map_or(length != 0, |capacity| length == 0 || length > capacity)
+        {
             return Err(Error::DeviceFault);
         }
         self.pending[head] = None;

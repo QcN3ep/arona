@@ -2,6 +2,7 @@
 
 //! Register operations for VirtIO MMIO version 2.
 
+use super::Notification;
 use runtime::{Device, Handle, device};
 
 use crate::Error;
@@ -11,7 +12,7 @@ pub(crate) struct Mmio<'a>(device::Mmio<'a>);
 impl<'a> Mmio<'a> {
     pub(super) fn open(grant: &'a Handle<Device>, id: u32) -> Result<Self, Error> {
         let mut registers = grant.map_mmio(id, 0)?;
-        if registers.len() < 0x118 || registers.read_u32(0)? != 0x7472_6976 {
+        if registers.len() < 0x100 || registers.read_u32(0)? != 0x7472_6976 {
             return Err(Error::InvalidConfiguration);
         }
         if registers.read_u32(4)? != 2 || registers.read_u32(8)? != 2 {
@@ -43,19 +44,21 @@ impl<'a> Mmio<'a> {
         Ok(())
     }
 
-    pub(super) fn queue_size(&mut self) -> Result<u16, Error> {
-        self.0.write_u32(0x30, 0)?;
+    pub(super) fn queue_size(&mut self, index: u16) -> Result<u16, Error> {
+        self.0.write_u32(0x30, index.into())?;
         u16::try_from(self.0.read_u32(0x34)?).map_err(|_| Error::InvalidConfiguration)
     }
 
     pub(super) fn configure_queue(
         &mut self,
+        index: u16,
         size: u16,
         descriptor: u64,
         available: u64,
         used: u64,
-    ) -> Result<(), Error> {
-        if self.0.read_u32(0x44)? != 0 {
+    ) -> Result<Notification, Error> {
+        let maximum = self.queue_size(index)?;
+        if size == 0 || !size.is_power_of_two() || size > maximum || self.0.read_u32(0x44)? != 0 {
             return Err(Error::InvalidConfiguration);
         }
         self.0.write_u32(0x38, size.into())?;
@@ -63,11 +66,12 @@ impl<'a> Mmio<'a> {
             self.0.write_u32(offset, address as u32)?;
             self.0.write_u32(offset + 4, (address >> 32) as u32)?;
         }
-        Ok(self.0.write_u32(0x44, 1)?)
+        self.0.write_u32(0x44, 1)?;
+        Ok(Notification { index, offset: 0 })
     }
 
-    pub(super) fn notify(&mut self) -> Result<(), Error> {
-        Ok(self.0.write_u32(0x50, 0)?)
+    pub(super) fn notify(&mut self, queue: Notification) -> Result<(), Error> {
+        Ok(self.0.write_u32(0x50, queue.index.into())?)
     }
 
     pub(super) fn interrupt_status(&mut self) -> Result<u8, Error> {
@@ -81,6 +85,13 @@ impl<'a> Mmio<'a> {
     }
 
     pub(super) fn config_word(&mut self, offset: usize) -> Result<u32, Error> {
+        if !offset.is_multiple_of(4)
+            || offset
+                .checked_add(4)
+                .is_none_or(|end| end > self.0.len() - 0x100)
+        {
+            return Err(Error::InvalidConfiguration);
+        }
         Ok(self.0.read_u32(0x100 + offset)?)
     }
 }

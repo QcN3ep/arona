@@ -137,8 +137,11 @@ impl<'a> Block<'a> {
     ) -> Result<Self, Error> {
         let mut transport = Transport::open(configuration.transport, grant)?;
         let features = transport.negotiate(SUPPORTED_FEATURES)?;
-        let queue = Queue::new(domain, task, &mut transport)?;
+        let queue = Queue::new(domain, task, &mut transport, 0)?;
         let count = MAX_REQUESTS.min(queue.size() / 3);
+        if count == 0 {
+            return Err(Error::InvalidConfiguration);
+        }
         let info = configuration_info(&mut transport, features, count)?;
         let headers = domain.allocate(task, 1, DmaDirection::Bidirectional)?;
         let mut buffers = Vec::with_capacity(count);
@@ -279,7 +282,7 @@ impl<'a> Block<'a> {
             }
         }
         if notify {
-            self.transport.notify()?;
+            self.queue.notify(&mut self.transport)?;
         }
         Ok(())
     }

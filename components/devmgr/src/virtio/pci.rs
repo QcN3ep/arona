@@ -4,7 +4,7 @@
 
 use runtime::{Device, Handle, device::Mmio};
 
-use super::{BLOCK_DEVICE_TYPE, RNG_DEVICE_TYPE};
+use super::Notification;
 use crate::{Error, device::DeviceDescription};
 
 const VIRTIO_DEVICE_ID_BASE: u16 = 0x1040;
@@ -32,7 +32,6 @@ pub(crate) struct Pci<'a> {
     isr: Mmio<'a>,
     device: Option<Mmio<'a>>,
     config: Configuration,
-    queue_notify: usize,
 }
 
 // REFERENCE: https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html#x1-1100004
@@ -66,16 +65,21 @@ pub(super) fn probe(
                 return Err(Error::InvalidConfiguration);
             }
             let kind = bytes[offset + 3];
-            if (1..=4).contains(&kind) && !(kind == 4 && device_type == RNG_DEVICE_TYPE) {
+            if (1..=4).contains(&kind) {
                 let index = usize::from(kind - 1);
                 if regions[index].is_some() || kind == 2 && length < 20 {
                     return Err(Error::InvalidConfiguration);
                 }
-                let bar = device.pci_bar(usize::from(bytes[offset + 4]))?;
                 let start = word(&bytes, offset + 8) as usize;
                 let size = word(&bytes, offset + 12) as usize;
-                let minimum = [56, 2, 1, 24][index];
-                let alignment = [4, 2, 1, 4][index];
+                // Devices without configuration fields can advertise an empty region.
+                if kind == 4 && size == 0 {
+                    offset = usize::from(bytes[offset + 1]);
+                    continue;
+                }
+                let bar = device.pci_bar(usize::from(bytes[offset + 4]))?;
+                let minimum = [56, 2, 1, 1][index];
+                let alignment = [4, 2, 1, 1][index];
                 if size < minimum
                     || !start.is_multiple_of(alignment)
                     || start
@@ -102,9 +106,6 @@ pub(super) fn probe(
     let [Some(common), Some(notify), Some(isr), config] = regions else {
         return Err(Error::InvalidConfiguration);
     };
-    if device_type == BLOCK_DEVICE_TYPE && config.is_none() {
-        return Err(Error::InvalidConfiguration);
-    }
     Ok(Configuration {
         id: device.info().id,
         common,
@@ -126,7 +127,6 @@ impl<'a> Pci<'a> {
                 .map(|region| grant.map_mmio(config.id, region.index))
                 .transpose()?,
             config,
-            queue_notify: 0,
         })
     }
 
@@ -157,26 +157,38 @@ impl<'a> Pci<'a> {
         Ok(())
     }
 
-    pub(super) fn queue_size(&mut self) -> Result<u16, Error> {
+    fn select_queue(&mut self, index: u16) -> Result<(), Error> {
         let offset = self.config.common.offset;
-        self.common.write_u16(offset + 22, 0)?;
-        Ok(self.common.read_u16(offset + 24)?)
+        if index >= self.common.read_u16(offset + 18)? {
+            return Err(Error::InvalidConfiguration);
+        }
+        Ok(self.common.write_u16(offset + 22, index)?)
+    }
+
+    pub(super) fn queue_size(&mut self, index: u16) -> Result<u16, Error> {
+        self.select_queue(index)?;
+        Ok(self.common.read_u16(self.config.common.offset + 24)?)
     }
 
     pub(super) fn configure_queue(
         &mut self,
+        index: u16,
         size: u16,
         descriptor: u64,
         available: u64,
         used: u64,
-    ) -> Result<(), Error> {
+    ) -> Result<Notification, Error> {
+        let maximum = self.queue_size(index)?;
         let offset = self.config.common.offset;
-        if self.common.read_u16(offset + 28)? != 0 {
+        if size == 0
+            || !size.is_power_of_two()
+            || size > maximum
+            || self.common.read_u16(offset + 28)? != 0
+        {
             return Err(Error::InvalidConfiguration);
         }
-        self.common.write_u16(offset + 24, size)?;
         let notify = usize::from(self.common.read_u16(offset + 30)?);
-        self.queue_notify = notify
+        let notify = notify
             .checked_mul(self.config.multiplier)
             .filter(|start| {
                 start
@@ -184,18 +196,21 @@ impl<'a> Pci<'a> {
                     .is_some_and(|end| end <= self.config.notify.length)
             })
             .ok_or(Error::InvalidConfiguration)?;
+        self.common.write_u16(offset + 24, size)?;
         for (field, address) in [(32, descriptor), (40, available), (48, used)] {
             self.common.write_u32(offset + field, address as u32)?;
             self.common
                 .write_u32(offset + field + 4, (address >> 32) as u32)?;
         }
-        Ok(self.common.write_u16(offset + 28, 1)?)
+        self.common.write_u16(offset + 28, 1)?;
+        Ok(Notification {
+            index,
+            offset: self.config.notify.offset + notify,
+        })
     }
 
-    pub(super) fn notify(&mut self) -> Result<(), Error> {
-        Ok(self
-            .notify
-            .write_u16(self.config.notify.offset + self.queue_notify, 0)?)
+    pub(super) fn notify(&mut self, queue: Notification) -> Result<(), Error> {
+        Ok(self.notify.write_u16(queue.offset, queue.index)?)
     }
 
     pub(super) fn interrupt_status(&mut self) -> Result<u8, Error> {
@@ -207,11 +222,13 @@ impl<'a> Pci<'a> {
     }
 
     pub(super) fn config_word(&mut self, offset: usize) -> Result<u32, Error> {
-        let region = self.config.device.ok_or(Error::Unsupported)?;
-        if offset.checked_add(4).is_none_or(|end| end > region.length) {
+        let region = self.config.device.ok_or(Error::InvalidConfiguration)?;
+        if offset.checked_add(4).is_none_or(|end| end > region.length)
+            || !(region.offset + offset).is_multiple_of(4)
+        {
             return Err(Error::InvalidConfiguration);
         }
-        let device = self.device.as_mut().ok_or(Error::Unsupported)?;
+        let device = self.device.as_mut().ok_or(Error::InvalidConfiguration)?;
         Ok(device.read_u32(region.offset + offset)?)
     }
 }
