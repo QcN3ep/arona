@@ -169,6 +169,7 @@ fn build_guest(
         ("syscall/process/futex", "futex"),
         ("syscall/process/child", "child"),
         ("syscall/process/identity", "identity"),
+        ("syscall/process/scheduler", "scheduler"),
         ("syscall/process/exec", "exec"),
         ("memory", "memory"),
         ("syscall/file", "file"),

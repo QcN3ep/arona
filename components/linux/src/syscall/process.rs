@@ -4,7 +4,9 @@ mod child;
 pub(super) mod exec;
 pub(super) mod futex;
 mod identity;
+mod membarrier;
 mod rlimit;
+mod scheduler;
 mod thread;
 pub(super) mod wait;
 
@@ -45,6 +47,15 @@ pub(super) fn dispatch<'a>(
         }
         abi::CLONE => thread::clone(process, index, context, args),
         abi::SCHED_YIELD => runtime::thread::yield_now().map(|()| 0).map_err(error),
+        abi::SCHED_SETPARAM
+        | abi::SCHED_SETSCHEDULER
+        | abi::SCHED_GETSCHEDULER
+        | abi::SCHED_GETPARAM
+        | abi::SCHED_SETAFFINITY
+        | abi::SCHED_GETAFFINITY
+        | abi::SETPRIORITY
+        | abi::GETPRIORITY => scheduler::dispatch(process, index, number, args),
+        abi::MEMBARRIER => membarrier::dispatch(process, args),
         _ => identity::dispatch(process, number, args)?,
     };
     Some(Outcome::Complete(result))

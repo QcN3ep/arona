@@ -43,7 +43,7 @@ Object-specific methods start at 16 and reuse numbers by type.
 | Type | Dedicated operations |
 |---|---|
 | Task | Allocate page frames, map, reserve, and query addresses, read or write target memory, create Task, Thread, Channel, Event, Timer, install handles, set Traps, terminate and wait |
-| Thread | Status, start, terminate, wait, exit, yield, sleep, time, identity, user state setup, interrupt and multi-object wait |
+| Thread | Status, start, terminate, wait, exit, yield, sleep, time, identity, user state setup, interrupt, priority query and change, multi-object wait |
 | FrameAllocation | Size, read, and write |
 | Channel | Send, receive, synchronous call, start asynchronous call |
 | Call, Reply | Receive result, cancel call, send one-shot reply |

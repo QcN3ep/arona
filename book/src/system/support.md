@@ -18,7 +18,7 @@ Both platforms use higher-half kernel addresses, final page tables, user address
 | Category | Available capabilities |
 |---|---|
 | Memory | Page frame allocation, reference keep-alive, address reservation, mapping, permission changes, queries, direct map, kernel heap and stack |
-| Execution | Task, user and kernel threads, FIFO ready queue, wait and wakeup, exit reclamation, preemption requests, and deadlines |
+| Execution | Task, user and kernel threads, priority ready queue, wait and wakeup, exit reclamation, preemption requests, and deadlines |
 | Trap | Unified event classification, external interrupt claiming, user state, TrapPort, and continuations |
 | IPC | Messages, handle transfer, synchronous and asynchronous calls, one-shot replies, Event, Timer, and waiting on multiple objects |
 | Capabilities | Typed objects, per-method permissions, handle copy and reduction, cross-Task installation |

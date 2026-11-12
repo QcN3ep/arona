@@ -381,6 +381,7 @@ fn writable(
         b"Kin",
         b"Vfork",
         b"Identity",
+        b"Wpriority",
         b"Virtual",
         b"Live",
         b"Control",

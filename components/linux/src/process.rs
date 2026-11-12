@@ -28,6 +28,24 @@ use crate::{
     syscall::{self, Pending},
 };
 
+/// Non-real-time policies share the nice-based priority ordering of the kernel.
+pub(crate) const SCHED_OTHER: i32 = 0;
+pub(crate) const SCHED_BATCH: i32 = 3;
+pub(crate) const SCHED_IDLE: i32 = 5;
+
+impl Thread<'_> {
+    /// Copies the caller's kernel priority to a newly created thread and returns
+    /// the scheduling policy that the new thread must keep.
+    pub(crate) fn inherit_scheduling(
+        &self,
+        native: &Handle<runtime::Thread>,
+    ) -> Result<i32, runtime::Error> {
+        let priority = self.native.priority()?;
+        native.set_priority(priority)?;
+        Ok(self.policy)
+    }
+}
+
 pub(crate) struct Thread<'a> {
     pub tid: usize,
     pub clear_tid: usize,
@@ -35,6 +53,7 @@ pub(crate) struct Thread<'a> {
     pub robust_list: usize,
     pub native: Handle<runtime::Thread>,
     pub native_id: u64,
+    pub policy: i32,
     pub pending: Option<Pending<'a>>,
     pub signals: Rc<RefCell<ThreadSignals>>,
     pub held: Option<syscall::Context>,
@@ -104,6 +123,14 @@ pub(crate) struct Process<'a> {
     pub cpu_limited: bool,
     pub shm: Rc<RefCell<crate::shm::Table>>,
     pub attaches: BTreeMap<usize, crate::shm::Attach>,
+    pub membarrier: Membarrier,
+}
+
+/// Process-wide `membarrier` registrations, inherited across fork and cleared on exec.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Membarrier {
+    pub private_expedited: bool,
+    pub global_expedited: bool,
 }
 
 /// Real, effective, and saved user and group identities inherited by child processes.
@@ -193,6 +220,7 @@ impl<'a> Process<'a> {
                 robust_list: 0,
                 native,
                 native_id: id,
+                policy: SCHED_OTHER,
                 pending: None,
                 signals: thread_signals,
                 held: None,
@@ -211,6 +239,7 @@ impl<'a> Process<'a> {
             credentials: Credentials::default(),
             shm: Rc::clone(&shared.shm),
             attaches: BTreeMap::new(),
+            membarrier: Membarrier::default(),
             status: ExitStatus { code: 0, signal: 0 },
             limits,
             cpu_limited: false,

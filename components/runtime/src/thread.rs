@@ -2,7 +2,9 @@
 
 use crate::{BorrowedHandle, Error, Handle, Rights, Task, Thread};
 use abi::method::{task, thread};
-pub use abi::thread::{TaskState, ThreadState, UserEntry};
+pub use abi::thread::{
+    PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, TaskState, ThreadState, UserEntry,
+};
 
 #[cfg(all(feature = "program", target_os = "none"))]
 mod reaper;
@@ -24,6 +26,14 @@ pub fn sleep_until(deadline_ns: u64) -> Result<(), Error> {
 }
 pub fn now_ns() -> Result<u64, Error> {
     Ok(current().invoke(thread::NOW, [0; 5])?[0])
+}
+/// Returns the current thread scheduling priority; lower values run first.
+pub fn priority() -> Result<i32, Error> {
+    current().priority()
+}
+/// Changes the current thread scheduling priority within the priority range.
+pub fn set_priority(priority: i32) -> Result<(), Error> {
+    current().set_priority(priority)
 }
 /// Terminate the current thread without unwinding the stack or running thread-local destructors.
 pub fn exit(status: usize) -> ! {
@@ -95,6 +105,12 @@ impl Handle<Thread> {
     pub fn start(&self) -> Result<(), Error> {
         self.borrow().invoke(thread::START, [0; 5]).map(|_| ())
     }
+    pub fn priority(&self) -> Result<i32, Error> {
+        self.borrow().priority()
+    }
+    pub fn set_priority(&self, priority: i32) -> Result<(), Error> {
+        self.borrow().set_priority(priority)
+    }
     pub fn state(&self) -> Result<(ThreadState, usize), Error> {
         self.borrow().state()
     }
@@ -113,6 +129,13 @@ impl Handle<Thread> {
     }
 }
 impl BorrowedHandle<'_, Thread> {
+    pub fn priority(&self) -> Result<i32, Error> {
+        Ok(self.invoke(thread::GET_PRIORITY, [0; 5])?[0] as u32 as i32)
+    }
+    pub fn set_priority(&self, priority: i32) -> Result<(), Error> {
+        self.invoke(thread::SET_PRIORITY, [priority as i64 as u64, 0, 0, 0, 0])
+            .map(|_| ())
+    }
     pub fn state(&self) -> Result<(ThreadState, usize), Error> {
         let [state, status] = self.invoke(thread::STATE, [0; 5])?;
         Ok((

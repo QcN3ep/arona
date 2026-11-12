@@ -68,6 +68,9 @@ fn spawn<'a>(
                 | Rights::INTERRUPT,
         )
         .map_err(super::error)?;
+    let policy = process.threads[index]
+        .inherit_scheduling(&native)
+        .map_err(super::error)?;
     native.set_user_state(&state).map_err(super::error)?;
     let native_id = native.id().map_err(super::error)?;
     start(
@@ -109,6 +112,7 @@ fn spawn<'a>(
             native,
             native_id,
             tid: pid,
+            policy,
             clear_tid: 0,
             robust_list: 0,
             pending: None,
@@ -154,6 +158,7 @@ fn spawn<'a>(
                 })
                 .collect()
         },
+        membarrier: process.membarrier,
         cpu_ns: 0,
         timers: crate::process::timer::Timers::default(),
         status: crate::ExitStatus { code: 0, signal: 0 },

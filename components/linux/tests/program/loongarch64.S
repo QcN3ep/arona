@@ -124,6 +124,8 @@ auxv_done:
     beq $s3, $t1, system_basics
     li.d $t1, 108
     beq $s3, $t1, system_syslog
+    li.d $t1, 87
+    beq $s3, $t1, scheduler
     li.d $t1, 79
     beq $s3, $t1, configured_exit
     li.d $t1, 67

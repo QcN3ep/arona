@@ -60,6 +60,8 @@ methods!(thread {
     INTERRUPT = 26 => INTERRUPT;
     ID = 27 => NONE;
     CPU_TIME = 28 => NONE;
+    GET_PRIORITY = 29 => NONE;
+    SET_PRIORITY = 30 => SET_STATE;
 });
 
 methods!(trap_port { RECEIVE = 16 => READ; });

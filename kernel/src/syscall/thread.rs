@@ -58,6 +58,13 @@ pub(super) fn invoke(
                 .map_err(|_| Error::InvalidState)?,
             0,
         ]),
+        thread::GET_PRIORITY => Ok([target.nice() as i64 as u64, 0]),
+        thread::SET_PRIORITY => {
+            let value = i32::try_from(args[0] as i64).map_err(|_| Error::InvalidArgument)?;
+            let nice = i8::try_from(value).map_err(|_| Error::InvalidArgument)?;
+            target.set_nice(nice)?;
+            Ok([0; 2])
+        }
         thread::EXIT | thread::YIELD | thread::SLEEP | thread::WAIT_MANY => {
             if !is_current(target) {
                 return Err(Error::Denied);

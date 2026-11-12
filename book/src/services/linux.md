@@ -43,7 +43,7 @@ When there is no progress, the relevant Calls, events, thread exits, and ports a
 | `syscall/file/` | open, I/O, path, directory, metadata, pipe, poll, and terminal |
 | `syscall/mqueue.rs` | POSIX message queues and the `/dev/mqueue` attribute view |
 | `syscall/socket/` | TCP and UDP sockets, local Unix socket pairs, messages, addresses, options, and pending I/O |
-| `syscall/process/` | clone, exec, exit, wait, identity, thread, and futex |
+| `syscall/process/` | clone, exec, exit, wait, identity, thread, futex, scheduling, affinity, and membarrier |
 | `syscall/memory/` | mmap, munmap, mprotect, mremap, and related memory operations |
 | `syscall/shm.rs` | System V shared memory segments and control operations |
 | `syscall/signal.rs` | signal system calls |
@@ -379,6 +379,33 @@ The `RLIMIT_NOFILE` soft limit bounds descriptor allocation, `RLIMIT_FSIZE` trun
 `RLIMIT_CPU` sends `SIGXCPU` at the soft limit and `SIGKILL` at the hard limit.
 Requests for another process return `ESRCH`.
 Other resource kinds are recorded without enforcement.
+
+## Scheduling, Affinity, and Memory Barriers
+
+A Linux thread carries its scheduling policy and nice value in the compatibility layer, while the kernel ready queue applies the nice value as the priority.
+`sched_setscheduler` accepts `SCHED_OTHER`, `SCHED_BATCH`, and `SCHED_IDLE`, and `sched_getscheduler` reports the stored policy.
+Real-time `SCHED_FIFO` and `SCHED_RR` requests return `EINVAL` because the kernel does not provide static real-time priority bands yet, and the reset-on-fork policy flag is not supported.
+The policy calls validate the target thread and the `struct sched_param` pointer; non-real-time policies require a zero `sched_priority`.
+`sched_getparam` writes that zero priority, and `sched_setparam` accepts only a zero priority.
+`SCHED_BATCH` and `SCHED_IDLE` currently share the nice-based bands with `SCHED_OTHER`, so the stored policy describes intent rather than a distinct weight.
+
+`setpriority` and `getpriority` use `PRIO_PROCESS` targets and the Linux reporting convention `20 - nice`.
+Values below -20 or above 19 are clamped rather than rejected. Only `PRIO_PROCESS` is implemented; the `PRIO_PGRP` and `PRIO_USER` target kinds return `EINVAL`.
+The nice value belongs to one thread. A process clone and a thread clone inherit the calling thread's policy and nice value, and `execve` preserves both for the replaced thread.
+
+Arona runs on one processor, so CPU affinity accepts exactly the CPU 0 bit.
+`sched_setaffinity` requires a mask of at least eight bytes and inspects only the first eight; an empty mask or a bit naming another processor in that word returns `EINVAL`, while bits for CPUs 64 and above in a longer mask are ignored.
+`sched_getaffinity` requires at least eight bytes, writes only those eight bytes, returns that byte count, and reports CPU 0.
+The kernel itself keeps no per-thread CPU mask, so these calls report the real single-processor topology instead of pretending to support more CPUs.
+
+`membarrier` is also scoped to this uniprocessor.
+The query command returns the supported command mask `543`, covering `GLOBAL`, `GLOBAL_EXPEDITED`, `PRIVATE_EXPEDITED`, the global and private registration commands, and `GET_REGISTRATIONS`.
+`GLOBAL`, `GLOBAL_EXPEDITED`, and a registered `PRIVATE_EXPEDITED` call execute a sequentially consistent hardware fence plus compiler barriers before returning zero, which is the ordering a per-CPU barrier would provide when all threads share the only CPU.
+Using `PRIVATE_EXPEDITED` without the private registration returns `EPERM`.
+Registration state belongs to the process, is inherited across fork, and is cleared by exec.
+A nonzero flags argument returns `EINVAL`; the core-serializing and rseq commands are outside the current scope and return `EOPNOTSUPP`, while unknown commands return `EINVAL`.
+The call never reports success without an ordering operation or a valid registration requirement.
+
 
 ## Terminals and Shell
 

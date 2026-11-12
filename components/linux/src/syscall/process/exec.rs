@@ -210,6 +210,10 @@ fn replace(
                 | Rights::INTERRUPT,
         )
         .map_err(super::error)?;
+    // execve keeps the scheduling policy and nice value of the replaced thread.
+    let policy = process.threads[index]
+        .inherit_scheduling(&native)
+        .map_err(super::error)?;
     native
         .set_user_state(&process.machine.initial(entry, stack))
         .map_err(super::error)?;
@@ -247,6 +251,7 @@ fn replace(
         native,
         native_id,
         tid: process.pid,
+        policy,
         clear_tid: 0,
         robust_list: 0,
         pending: None,
@@ -258,6 +263,8 @@ fn replace(
     process.files.close_on_exec();
     // Interval timers survive exec, but previous threads' CPU time is not carried over.
     process.timers.rebase_cpu(process.cpu_time_ns());
+    // Exec resets process-wide membarrier registrations.
+    process.membarrier = Default::default();
     process.program.clone_from(&arguments.path);
     process.argv.clone_from(&arguments.argv);
     process

@@ -35,7 +35,8 @@ pub(crate) fn dispatch(handle: usize, arguments: [usize; 6]) -> TrapOutcome {
 fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, Error> {
     let current = threads::current().ok_or(Error::InvalidState)?;
     let caller = current.task().ok_or(Error::InvalidState)?;
-    let self_rights = Rights::DUPLICATE | Rights::TRANSFER | Rights::WAIT | Rights::TERMINATE;
+    let self_rights =
+        Rights::DUPLICATE | Rights::TRANSFER | Rights::WAIT | Rights::TERMINATE | Rights::SET_STATE;
     let (kind, rights) = if handle == Handle::CURRENT_THREAD {
         (abi::ObjectType::Thread, self_rights)
     } else {
