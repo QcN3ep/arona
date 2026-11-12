@@ -21,6 +21,126 @@ files_terminal:
     ld.w $t0, $sp, 12
     andi $t0, $t0, 2
     beqz $t0, terminal_failure
+    li.d $t0, 17664
+    st.w $t0, $sp, 0
+    li.d $a0, 0
+    li.d $a1, 0x5402
+    move $a2, $sp
+    invoke 29
+    expect 0
+    li.d $a0, 1
+    la.pcrel $a1, utf8_prompt
+    li.d $a2, 20
+    invoke 64
+    expect 20
+    li.d $a0, 0
+    addi.d $a1, $sp, 128
+    li.d $a2, 32
+    invoke 63
+    expect 3
+    ld.bu $t0, $sp, 128
+    li.d $t1, 65
+    bne $t0, $t1, terminal_failure
+    ld.bu $t0, $sp, 129
+    li.d $t1, 66
+    bne $t0, $t1, terminal_failure
+    ld.bu $t0, $sp, 130
+    li.d $t1, 10
+    bne $t0, $t1, terminal_failure
+    li.d $t0, 1280
+    st.w $t0, $sp, 0
+    li.d $a0, 0
+    li.d $a1, 0x5402
+    move $a2, $sp
+    invoke 29
+    expect 0
+    li.d $a0, 1
+    la.pcrel $a1, bytes_prompt
+    li.d $a2, 21
+    invoke 64
+    expect 21
+    li.d $a0, 0
+    addi.d $a1, $sp, 128
+    li.d $a2, 32
+    invoke 63
+    expect 5
+    ld.bu $t0, $sp, 128
+    li.d $t1, 65
+    bne $t0, $t1, terminal_failure
+    ld.bu $t0, $sp, 129
+    li.d $t1, 226
+    bne $t0, $t1, terminal_failure
+    ld.bu $t0, $sp, 130
+    li.d $t1, 130
+    bne $t0, $t1, terminal_failure
+    ld.bu $t0, $sp, 131
+    li.d $t1, 66
+    bne $t0, $t1, terminal_failure
+    ld.bu $t0, $sp, 132
+    li.d $t1, 10
+    bne $t0, $t1, terminal_failure
+    li.d $t0, 17664
+    st.w $t0, $sp, 0
+    li.d $a0, 0
+    li.d $a1, 0x5402
+    move $a2, $sp
+    invoke 29
+    expect 0
+    li.d $a0, 1
+    la.pcrel $a1, invalid_prompt
+    li.d $a2, 23
+    invoke 64
+    expect 23
+    li.d $a0, 0
+    addi.d $a1, $sp, 128
+    li.d $a2, 32
+    invoke 63
+    expect 4
+    ld.bu $t0, $sp, 128
+    li.d $t1, 65
+    bne $t0, $t1, terminal_failure
+    ld.bu $t0, $sp, 129
+    li.d $t1, 226
+    bne $t0, $t1, terminal_failure
+    ld.bu $t0, $sp, 130
+    li.d $t1, 66
+    bne $t0, $t1, terminal_failure
+    ld.bu $t0, $sp, 131
+    li.d $t1, 10
+    bne $t0, $t1, terminal_failure
+    li.d $t0, 1280
+    st.w $t0, $sp, 0
+    li.d $a0, 0
+    li.d $a1, 0x5402
+    move $a2, $sp
+    invoke 29
+    expect 0
+    li.d $a0, 1
+    la.pcrel $a1, reprint_prompt
+    li.d $a2, 23
+    invoke 64
+    expect 23
+    li.d $a0, 0
+    addi.d $a1, $sp, 128
+    li.d $a2, 32
+    invoke 63
+    expect 3
+    ld.bu $t0, $sp, 128
+    li.d $t1, 97
+    bne $t0, $t1, terminal_failure
+    ld.bu $t0, $sp, 129
+    li.d $t1, 98
+    bne $t0, $t1, terminal_failure
+    ld.bu $t0, $sp, 130
+    li.d $t1, 10
+    bne $t0, $t1, terminal_failure
+    li.d $t0, 0x500
+    st.w $t0, $sp, 0
+    li.d $a0, 0
+    li.d $a1, 0x5402
+    move $a2, $sp
+    invoke 29
+    expect 0
     li.d $a0, 0
     li.d $a1, 0x5413
     addi.d $a2, $sp, 64
@@ -369,6 +489,11 @@ terminal_failure:
     invoke 94
     b terminal_failure
 .section .rodata
+utf8_prompt: .ascii "Linux terminal utf8\n"
+bytes_prompt: .ascii "Linux terminal bytes\n"
+invalid_prompt: .ascii "Linux terminal invalid\n"
+reprint_prompt: .ascii "Linux terminal reprint\n"
+
 canonical_prompt: .ascii "Linux terminal canonical\n"
 raw_prompt: .ascii "Linux terminal raw\n"
 

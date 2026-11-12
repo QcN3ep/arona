@@ -135,6 +135,9 @@ The startup request delivers UART input and output sessions, and the FileTable e
 The terminal layer stores termios, window size, input buffer, controlling session, and foreground process group.
 The line discipline handles canonical and raw input, echo, erase, line ending, EOF, and control character signals.
 The read path also handles `VMIN`, `VTIME`, and non-blocking mode.
+When `IUTF8` is enabled, canonical erase removes a complete valid UTF-8 character.
+With `IUTF8` disabled, it removes one byte.
+The reprint character redraws the pending input line when extended processing and echo are enabled.
 
 In canonical mode, input characters first enter the line buffer, and a line is delivered to the read request only after a carriage return ends it, while backspace modifies the line being edited.
 Raw mode handles characters directly according to the termios settings, and read timing is determined by parameters such as `VMIN` and `VTIME`.

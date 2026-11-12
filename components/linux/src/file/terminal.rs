@@ -211,7 +211,7 @@ impl Terminal {
         (output, count)
     }
 
-    // TODO: Support software flow control, input reprinting, and UTF-8 erase.
+    // TODO: Support software flow control.
     fn receive(&self, bytes: Vec<u8>) -> Vec<u8> {
         let mut echo = Vec::new();
         let mut state = self.state.borrow_mut();
@@ -299,6 +299,12 @@ impl State {
         } else if self.matches(4, byte) {
             let line = core::mem::take(&mut self.line);
             self.ready.push_back(line.into());
+        } else if local & 0x8000 != 0 && local & 8 != 0 && self.matches(12, byte) {
+            echo_byte(byte, local, echo);
+            echo_byte(b'\n', local, echo);
+            for &byte in &self.line {
+                echo_byte(byte, local, echo);
+            }
         } else if local & 0x8000 != 0 && self.matches(14, byte) {
             while self.line.last().is_some_and(u8::is_ascii_whitespace) {
                 self.erase(local, echo);
@@ -317,9 +323,22 @@ impl State {
     }
 
     fn erase(&mut self, local: u32, echo: &mut Vec<u8>) {
-        if let Some(byte) = self.line.pop()
-            && local & 8 != 0
-        {
+        let Some(mut start) = self.line.len().checked_sub(1) else {
+            return;
+        };
+        // REFERENCE: https://man7.org/linux/man-pages/man3/termios.3.html
+        let flags = u32::from_le_bytes(self.termios[..4].try_into().unwrap());
+        if flags & 0x4000 != 0 {
+            while start > 0 && self.line[start] & 0xc0 == 0x80 && self.line.len() - start < 4 {
+                start -= 1;
+            }
+            if core::str::from_utf8(&self.line[start..]).is_err() {
+                start = self.line.len() - 1;
+            }
+        }
+        let byte = self.line[start];
+        self.line.truncate(start);
+        if local & 8 != 0 {
             if local & 0x10 != 0 {
                 echo.extend_from_slice(b"\x08 \x08");
                 if local & 0x200 != 0 && byte.is_ascii_control() && byte != b'\t' {
