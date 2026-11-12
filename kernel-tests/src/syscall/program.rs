@@ -42,7 +42,7 @@ pub fn run_init(image: &'static [u8], archive: &'static [u8], devices: DeviceSet
     run_cases(image, &[9, 10, 11, 12, 13], true, true);
 }
 
-pub fn run_linux(image: &'static [u8], archive: &'static [u8], devices: DeviceSet) {
+pub fn run_service(image: &'static [u8], archive: &'static [u8], devices: DeviceSet) {
     DEVICES.call_once(|| devices);
     ARCHIVE.call_once(|| archive);
     run_cases(image, &[14], true, true);
@@ -80,7 +80,7 @@ pub fn handle(trap: Trap) -> TrapOutcome {
     let supervising = if (9..=13).contains(&MODE.load(Ordering::Relaxed))
         && let TrapEvent::Syscall { arguments, .. } = trap.event
         && arguments[0] == abi::method::thread::WAIT_MANY as usize
-        && arguments[2] == 4
+        && arguments[2] == 5
     {
         caller.as_ref().is_some_and(|caller| {
             caller
@@ -580,8 +580,8 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
             let children = SERVICES.lock().clone();
             assert_eq!(children.len(), 2);
             for child in children {
-                assert_eq!(child.wait().unwrap(), 1);
-                assert_eq!(child.state(), TaskState::Dead(1));
+                assert_eq!(child.wait().unwrap(), 0);
+                assert_eq!(child.state(), TaskState::Dead(0));
             }
         } else {
             assert!(SERVICES.lock().is_empty());
@@ -594,7 +594,7 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
     loop {
         let busy = matches!(devices.claim_group(group), Err(DeviceError::Busy));
         let children = SERVICES.lock().clone();
-        let active = children.len() == 4
+        let active = children.len() == 5
             && children
                 .iter()
                 .all(|child| child.state() == TaskState::Active);
@@ -615,7 +615,7 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
         thread::yield_now().unwrap();
     }
     let children = SERVICES.lock().clone();
-    assert_eq!(children.len(), 4);
+    assert_eq!(children.len(), 5);
     for (index, child) in children.iter().enumerate() {
         assert_eq!(child.state(), TaskState::Active, "service {index}");
     }
@@ -628,18 +628,20 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
         children[0].terminate(74);
         74
     } else {
-        task.terminate(0);
-        0
+        // Killing init would also kill its DMA driver before the device can be reset.
+        children[3].terminate(75);
+        75
     };
     assert_eq!(user.wait().unwrap(), status);
     assert_eq!(task.state(), TaskState::Dead(status));
     for (index, child) in children.iter().enumerate() {
-        let expected = if mode == 10 {
-            0
-        } else if (mode == 9 && index == 2) || (mode == 13 && index == 0) {
+        let expected = if (mode == 9 && index == 2)
+            || (mode == 10 && index == 3)
+            || (mode == 13 && index == 0)
+        {
             status
         } else {
-            1
+            0
         };
         assert_eq!(child.wait().unwrap(), expected);
         assert_eq!(child.state(), TaskState::Dead(expected));

@@ -19,7 +19,7 @@ mod trap;
 
 pub use device::{run as run_devices, run_dma_failure};
 pub use memory::{run as run_memory, validate_regions as validate_memory_regions};
-pub use syscall::{handle_program, run_device_program, run_init_program, run_linux_program};
+pub use syscall::{handle_program, run_device_program, run_init_program, run_service_program};
 
 pub trait Platform {
     fn return_values(state: &mut kernel::hardware::execution::UserState, values: [usize; 3]);

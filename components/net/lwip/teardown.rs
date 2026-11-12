@@ -5,6 +5,7 @@
 
 use crate::{Error, Shutdown, Socket, SocketKind, ffi, readiness::Notices, status};
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicI32, Ordering};
 use runtime::{
     Event, Handle, Rights,
     ipc::{self, WaitItem, WaitMode},
@@ -18,7 +19,7 @@ static QUEUE: spin::Mutex<Queue> = spin::Mutex::new(Queue {
 static WAKE: spin::Once<Handle<Event>> = spin::Once::new();
 
 pub(super) struct Shared {
-    pub(super) fd: i32,
+    pub(super) fd: AtomicI32,
     pub(super) kind: SocketKind,
     pub(super) notices: Notices,
     completion: Handle<Event>,
@@ -43,7 +44,7 @@ impl Shared {
     pub(super) fn new(kind: SocketKind) -> Result<Arc<Self>, Error> {
         let completion = process::task().event(Rights::WAIT | Rights::SIGNAL)?;
         Arc::try_new(Self {
-            fd: -1,
+            fd: AtomicI32::new(-1),
             kind,
             notices: Notices::new(),
             completion,
@@ -247,7 +248,7 @@ fn execute(shared: &Shared) {
         // socket exists until shutdown completes and its result is collected.
         let result = status(unsafe {
             ffi::arona_lwip_shutdown(
-                shared.fd,
+                shared.fd.load(Ordering::Acquire),
                 match direction {
                     Shutdown::Read => 0,
                     Shutdown::Write => 1,
@@ -276,7 +277,7 @@ fn execute(shared: &Shared) {
         }
     }
     // SAFETY: The queue owns final C API access. No socket can be recovered.
-    let result = unsafe { ffi::arona_lwip_close(shared.fd) };
+    let result = unsafe { ffi::arona_lwip_close(shared.fd.load(Ordering::Acquire)) };
     assert_eq!(result, 0, "failed to close an owned lwIP socket");
     shared.notices.close();
     *lock(&shared.operation) = Operation::Closed;

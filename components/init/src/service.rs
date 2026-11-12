@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-// TODO: Integrate network services providing the protocol stack, address configuration, and DNS.
-
 use runtime::{
     Channel, DeviceSet, Error, Handle, KernelError, KernelLog, Rights, Task,
     ipc::{self, CallError, Message, Transfer, WaitItem},
@@ -95,6 +93,35 @@ pub fn start_logger(
         persistent_log,
     )?;
     Ok((service, control, client))
+}
+
+pub fn start_net(
+    loader: &Loader,
+    files: &fs::Client<'_>,
+    devices: &Handle<Channel>,
+) -> Result<(Service, net::Control<'static>), InitError> {
+    let (service, channel) = launch(
+        loader,
+        files.open("/bin/net", deadline()?)?,
+        ProcessStart::REQUIRED_RIGHTS
+            | Rights::CREATE_EVENT
+            | Rights::CREATE_CHANNEL
+            | Rights::CREATE_THREAD,
+    )?;
+    let until = deadline()?;
+    let id = loop {
+        if let Some(id) = devmgr::device::next(devices, devmgr::device::DriverKind::Rng, 0, until)?
+        {
+            break id;
+        }
+        if thread::now_ns()? >= until {
+            return Err(net::Error::Unavailable.into());
+        }
+        thread::yield_now()?;
+    };
+    let entropy = devmgr::rng::Session::open(process::task(), devices, id, until)?;
+    let control = net::Control::start(process::task(), channel, entropy, until)?;
+    Ok((service, control))
 }
 
 pub fn persistent_log_file(files: &fs::Client<'static>) -> Result<fs::File<'static>, InitError> {
@@ -194,7 +221,7 @@ fn launch(
     let (child, entry) = loader.load(file, rights)?;
     let control_rights = Rights::READ.union(Rights::WAIT);
     let (sender, receiver) = process::task().channel(
-        Rights::READ_WRITE | Rights::WAIT,
+        Rights::READ_WRITE | Rights::WAIT | Rights::DUPLICATE | Rights::TRANSFER,
         control_rights.union(Rights::TRANSFER),
     )?;
     let service = Service {
@@ -205,6 +232,10 @@ fn launch(
 
 impl Drop for Service {
     fn drop(&mut self) {
+        // Control channels are dropped first so drivers can stop DMA before Task teardown.
+        if let Ok(deadline) = deadline() {
+            let _ = self.stop(deadline);
+        }
         let _ = self.task.terminate(1);
     }
 }

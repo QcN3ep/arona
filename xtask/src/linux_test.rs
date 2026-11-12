@@ -83,7 +83,7 @@ pub(super) fn append(
         command.arg("--release");
     }
     command.args(["--", "-Cstrip=symbols", "-Clink-arg=-zmax-page-size=4096"]);
-    let executable = build_runner(command)?;
+    let executable = build_runner(command, "program")?;
     append_entry(
         bytes,
         "bin/init",
@@ -94,7 +94,7 @@ pub(super) fn append(
     Ok(())
 }
 
-fn build_runner(mut command: Command) -> Result<PathBuf, String> {
+pub(super) fn build_runner(mut command: Command, name: &str) -> Result<PathBuf, String> {
     let output = command.output().map_err(|error| error.to_string())?;
     eprint!("{}", String::from_utf8_lossy(&output.stderr));
     let mut executable = None;
@@ -110,14 +110,14 @@ fn build_runner(mut command: Command) -> Result<PathBuf, String> {
         {
             eprint!("{rendered}");
         }
-        if item["reason"] == "compiler-artifact" && item["target"]["name"] == "program" {
+        if item["reason"] == "compiler-artifact" && item["target"]["name"] == name {
             executable = item["executable"].as_str().map(PathBuf::from);
         }
     }
     if !output.status.success() {
-        return Err(format!("Linux test build failed: {}", output.status));
+        return Err(format!("{name} test build failed: {}", output.status));
     }
-    executable.ok_or_else(|| "missing Linux test executable".to_owned())
+    executable.ok_or_else(|| format!("missing {name} test executable"))
 }
 
 fn build_guest(

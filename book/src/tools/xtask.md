@@ -35,7 +35,10 @@ cargo xtask package-init riscv64 --rootfs ./rootfs
 ```
 
 Without `--net`, QEMU starts without a NIC.
-The option attaches a NIC with MAC `52:54:00:12:34:56` and does not configure an IP address or start a network socket service.
+The option attaches a NIC with MAC `52:54:00:12:34:56`.
+The network service starts in either case and provides loopback sockets.
+Ethernet attachment and IP configuration are not implemented yet.
+QEMU also receives a modern VirtIO RNG for network service startup.
 
 `package-linux-test` uses a test entry point in place of the normal init, adds the compatibility test programs and data, and outputs `initramfs-linux-test.cpio`.
 Normal boot and tests each keep their own archive file.
@@ -83,3 +86,11 @@ The default Rust output paths are as follows, where `PROFILE` is `debug` or `rel
 The directory contains the kernel `arch`, the service ELFs, and the archive.
 On success, `package-init` and `package-linux-test` print the full path of the archive.
 When any external build or run command fails, xtask returns a non-zero status.
+
+## Native Network Scenarios
+
+`cargo xtask package-net-test riscv64 --release` packages the network service with separate native client Tasks.
+The resulting archive is `target/riscv64gc-unknown-none-elf/release/initramfs-net-test.cpio`.
+Use `loongarch64` for the other architecture and omit `--release` for debug builds.
+Run the archive with the interrupt test image, a modern VirtIO RNG, and the `net-service` suite.
+These loopback scenarios do not require `--net` or an Ethernet device.

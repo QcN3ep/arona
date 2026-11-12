@@ -3106,7 +3106,12 @@ lwip_getsockopt_impl(int s, int level, int optname, void *optval, socklen_t *opt
 
         case SO_ERROR:
           LWIP_SOCKOPT_CHECK_OPTLEN(sock, *optlen, int);
-          *(int *)optval = err_to_errno(netconn_err(sock->conn));
+          {
+            err_t pending = netconn_err(sock->conn);
+            *(int *)optval = pending == ERR_RST && sock->conn->connect_refused
+              ? ECONNREFUSED : err_to_errno(pending);
+            sock->conn->connect_refused = 0;
+          }
           LWIP_DEBUGF(SOCKETS_DEBUG, ("lwip_getsockopt(%d, SOL_SOCKET, SO_ERROR) = %d\n",
                                       s, *(int *)optval));
           break;
