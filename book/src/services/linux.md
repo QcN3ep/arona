@@ -19,6 +19,7 @@ The loading process proceeds in stages:
 5. Create a Task supervised by the TrapPort and an initial thread, set the registers, and start it.
 
 ELF checks include segment boundaries, non-overlapping page ranges, and the entry lying in an executable region.
+A file starting with `#!` is treated as a script: the service parses the interpreter and optional argument, then opens the interpreter with the script path and original arguments.
 The initial stack has a guard page, and the data area contains the argument strings, environment, program header location, and auxiliary vector.
 When a random number session is available, 16 bytes of random data are also generated for the startup stack and handed over as `AT_RANDOM`.
 

@@ -2,8 +2,6 @@
 
 //! Asynchronous reads of executable files and startup entropy.
 
-// TODO: Parse script interpreters and construct interpreter startup arguments.
-
 use crate::{Error, Services, elf::PAGE_SIZE};
 use alloc::vec::Vec;
 use fs::ReadAt;
@@ -31,6 +29,7 @@ enum Stage<'a> {
 pub(crate) struct Loaded {
     pub bytes: Vec<u8>,
     pub random: Option<[u8; 16]>,
+    pub script: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 struct Reading<'a> {
@@ -98,18 +97,7 @@ impl<'a> Executable<'a> {
             Stage::Read(read) => {
                 if read.poll()? {
                     let bytes = core::mem::take(&mut read.bytes);
-                    self.stage = if let Some(source) = &services.entropy {
-                        Stage::Entropy {
-                            bytes,
-                            request: source.start_read(16)?,
-                            random: Vec::new(),
-                        }
-                    } else {
-                        Stage::Ready(Loaded {
-                            bytes,
-                            random: None,
-                        })
-                    };
+                    self.stage = next_stage(bytes, services)?;
                 }
             }
             Stage::Entropy {
@@ -123,6 +111,7 @@ impl<'a> Executable<'a> {
                         self.stage = Stage::Ready(Loaded {
                             bytes: core::mem::take(bytes),
                             random: Some(random.as_slice().try_into().unwrap()),
+                            script: None,
                         });
                     } else {
                         *request = services
@@ -145,6 +134,7 @@ impl<'a> Executable<'a> {
                 Stage::Ready(Loaded {
                     bytes: Vec::new(),
                     random: None,
+                    script: None,
                 }),
             ) else {
                 unreachable!()
@@ -199,4 +189,58 @@ impl<'a> Reading<'a> {
         )?;
         Ok(false)
     }
+}
+
+fn next_stage<'a>(bytes: Vec<u8>, services: &Services<'_>) -> Result<Stage<'a>, Error> {
+    let script = parse_script(&bytes);
+    if script.is_some() {
+        return Ok(Stage::Ready(Loaded {
+            bytes,
+            random: None,
+            script,
+        }));
+    }
+    if let Some(source) = &services.entropy {
+        return Ok(Stage::Entropy {
+            bytes,
+            request: source.start_read(16)?,
+            random: Vec::new(),
+        });
+    }
+    Ok(Stage::Ready(Loaded {
+        bytes,
+        random: None,
+        script: None,
+    }))
+}
+
+fn parse_script(bytes: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let line = bytes.strip_prefix(b"#!")?;
+    let end = line
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(line.len())
+        .min(256);
+    let mut line = &line[..end];
+    while line
+        .first()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+    {
+        line = &line[1..];
+    }
+    while line
+        .last()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'\r'))
+    {
+        line = &line[..line.len() - 1];
+    }
+    let split = line
+        .iter()
+        .position(|byte| matches!(byte, b' ' | b'\t'))
+        .unwrap_or(line.len());
+    let (interpreter, argument) = line.split_at(split);
+    if interpreter.is_empty() {
+        return None;
+    }
+    Some((interpreter.to_vec(), argument.to_vec()))
 }

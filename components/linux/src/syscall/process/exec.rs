@@ -20,6 +20,7 @@ use runtime::{Call, Handle, Rights, thread::UserEntry};
 pub(in crate::syscall) struct Pending<'a> {
     executable: Executable<'a>,
     arguments: Arguments,
+    depth: usize,
     _anchor: Option<Rc<crate::file::OpenFileDescription<'a>>>,
 }
 
@@ -44,6 +45,7 @@ pub(in crate::syscall) fn start<'a>(
         Ok(Pending {
             executable: Executable::new(files, lookup.directory(), &lookup.name).map_err(error)?,
             arguments,
+            depth: 0,
             _anchor: lookup.anchor,
         })
     })();
@@ -93,6 +95,29 @@ fn strings(process: &Process<'_>, mut address: usize) -> Result<Vec<Vec<u8>>, Er
 }
 
 impl<'a> Pending<'a> {
+    fn start_interpreter(
+        &mut self,
+        interpreter: Vec<u8>,
+        argument: Vec<u8>,
+        files: &fs::Client<'a>,
+    ) -> Result<(), Errno> {
+        if self.depth >= 4 {
+            return Err(ENOEXEC);
+        }
+        self.depth += 1;
+        let script = core::mem::replace(&mut self.arguments.path, interpreter);
+        let mut argv = Vec::new();
+        argv.push(self.arguments.path.clone());
+        if !argument.is_empty() {
+            argv.push(argument);
+        }
+        argv.push(script);
+        argv.extend(self.arguments.argv.drain(1..));
+        self.arguments.argv = argv;
+        self.executable = Executable::new(files, None, &self.arguments.path).map_err(error)?;
+        Ok(())
+    }
+
     pub fn call(&self) -> Option<&Handle<Call>> {
         self.executable.call()
     }
@@ -101,6 +126,7 @@ impl<'a> Pending<'a> {
         &mut self,
         process: &mut Process<'a>,
         index: usize,
+        files: &fs::Client<'a>,
         services: &Services<'_>,
     ) -> Option<Result<(), Errno>> {
         let loaded = match self.executable.poll(services) {
@@ -108,6 +134,12 @@ impl<'a> Pending<'a> {
             Ok(None) => return None,
             Err(err) => return Some(Err(error(err))),
         };
+        if let Some((interpreter, argument)) = loaded.script {
+            return match self.start_interpreter(interpreter, argument, files) {
+                Ok(()) => None,
+                Err(error) => Some(Err(error)),
+            };
+        }
         Some((|| {
             let image = Image::parse(&loaded.bytes, process.machine).map_err(error)?;
             let (space, stack) = AddressSpace::load(

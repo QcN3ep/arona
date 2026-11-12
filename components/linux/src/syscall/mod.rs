@@ -183,7 +183,7 @@ pub(crate) fn poll<'a>(
         return Ok(true);
     }
     if let Operation::Exec(exec) = &mut pending.operation {
-        match exec.poll(process, index, services) {
+        match exec.poll(process, index, files, services) {
             None => {
                 process.threads[index].pending = Some(pending);
                 return Ok(false);
