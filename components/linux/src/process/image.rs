@@ -4,13 +4,17 @@
 
 // TODO: Parse script interpreters and construct interpreter startup arguments.
 
-use crate::{Error, Services, elf::PAGE_SIZE};
+use crate::{
+    Error, Services,
+    elf::{Image, Machine, PAGE_SIZE},
+};
 use alloc::vec::Vec;
 use fs::ReadAt;
 use runtime::{Call, Handle};
 
 pub(crate) struct Executable<'a> {
     stage: Stage<'a>,
+    random: bool,
 }
 
 enum Stage<'a> {
@@ -33,10 +37,68 @@ pub(crate) struct Loaded {
     pub random: Option<[u8; 16]>,
 }
 
+pub(crate) struct Images {
+    pub main: Loaded,
+    pub interpreter: Option<Loaded>,
+}
+
+/// Reads an executable and its PT_INTERP interpreter in sequence.
+pub(crate) struct Chain<'a> {
+    executable: Executable<'a>,
+    main: Option<Loaded>,
+    interpreter: Option<Executable<'a>>,
+}
+
 struct Reading<'a> {
     file: fs::File<'a>,
     pending: fs::client::PendingRead,
     bytes: Vec<u8>,
+}
+
+impl<'a> Chain<'a> {
+    pub fn new(executable: Executable<'a>) -> Self {
+        Self {
+            executable,
+            main: None,
+            interpreter: None,
+        }
+    }
+
+    pub fn poll(
+        &mut self,
+        files: &fs::Client<'a>,
+        machine: Machine,
+        services: &Services<'_>,
+    ) -> Result<Option<Images>, Error> {
+        if self.main.is_none() {
+            let Some(loaded) = self.executable.poll(services)? else {
+                return Ok(None);
+            };
+            let image = Image::parse(&loaded.bytes, machine)?;
+            if let Some(path) = image.interpreter {
+                self.interpreter = Some(Executable::interpreter(files, path)?);
+            }
+            self.main = Some(loaded);
+        }
+        let interpreter = match &mut self.interpreter {
+            Some(executable) => match executable.poll(services)? {
+                Some(loaded) => Some(loaded),
+                None => return Ok(None),
+            },
+            None => None,
+        };
+        Ok(Some(Images {
+            main: self.main.take().ok_or(Error::InvalidExecutable)?,
+            interpreter,
+        }))
+    }
+
+    pub fn call(&self) -> Option<&Handle<Call>> {
+        self.interpreter
+            .as_ref()
+            .and_then(Executable::call)
+            .or_else(|| self.executable.call())
+    }
 }
 
 impl<'a> Executable<'a> {
@@ -44,6 +106,19 @@ impl<'a> Executable<'a> {
         files: &fs::Client<'a>,
         directory: Option<&fs::Directory<'a>>,
         path: &[u8],
+    ) -> Result<Self, Error> {
+        Self::open(files, directory, path, true)
+    }
+
+    pub fn interpreter(files: &fs::Client<'a>, path: &[u8]) -> Result<Self, Error> {
+        Self::open(files, None, path, false)
+    }
+
+    fn open(
+        files: &fs::Client<'a>,
+        directory: Option<&fs::Directory<'a>>,
+        path: &[u8],
+        random: bool,
     ) -> Result<Self, Error> {
         let request = files.start_open_at(
             directory,
@@ -60,6 +135,7 @@ impl<'a> Executable<'a> {
         )?;
         Ok(Self {
             stage: Stage::Open(request),
+            random,
         })
     }
 
@@ -74,6 +150,7 @@ impl<'a> Executable<'a> {
     }
 
     pub fn poll(&mut self, services: &Services<'_>) -> Result<Option<Loaded>, Error> {
+        let random = self.random;
         match &mut self.stage {
             Stage::Open(request) => {
                 if let Some(node) = completed(request.try_complete())? {
@@ -98,7 +175,7 @@ impl<'a> Executable<'a> {
             Stage::Read(read) => {
                 if read.poll()? {
                     let bytes = core::mem::take(&mut read.bytes);
-                    self.stage = if let Some(source) = &services.entropy {
+                    self.stage = if random && let Some(source) = &services.entropy {
                         Stage::Entropy {
                             bytes,
                             request: source.start_read(16)?,

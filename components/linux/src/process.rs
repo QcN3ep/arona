@@ -19,7 +19,7 @@ use signal::{Signals, ThreadSignals, delivery};
 
 use crate::{
     Error, ExitStatus,
-    elf::{Image, Machine},
+    elf::{ImageSet, Machine},
     file::FileTable,
     memory::AddressSpace,
     protocol::Arguments,
@@ -104,18 +104,19 @@ impl<'a> Process<'a> {
     pub fn start(
         parent: &'a Handle<Task>,
         port: &Rc<Handle<TrapPort>>,
-        image: &Image<'_>,
+        images: &ImageSet<'_>,
         arguments: &Arguments,
         terminal: alloc::rc::Rc<crate::file::terminal::Terminal>,
         random: Option<&[u8; 16]>,
         namespace: Rc<PidNamespace>,
     ) -> Result<Self, Error> {
         let pid = namespace.allocate().ok_or(Error::NoMemory)?;
-        let machine = image.machine;
-        let (address_space, stack) = AddressSpace::load(parent, port, image, arguments, random)?;
+        let machine = images.image.machine;
+        let entry = images.entry();
+        let (address_space, stack) = AddressSpace::load(parent, port, images, arguments, random)?;
         let native = address_space.native.create_thread(
             UserEntry {
-                pc: image.entry as u64,
+                pc: entry as u64,
                 stack_pointer: stack as u64,
                 thread_pointer: 0,
                 argument: 0,
@@ -126,7 +127,7 @@ impl<'a> Process<'a> {
                 | Rights::TERMINATE
                 | Rights::INTERRUPT,
         )?;
-        native.set_user_state(&machine.initial(image.entry, stack))?;
+        native.set_user_state(&machine.initial(entry, stack))?;
         let id = native.id()?;
         let files = FileTable::new(alloc::rc::Rc::clone(&terminal));
         native.start()?;

@@ -4,9 +4,12 @@
 
 use crate::{
     Error, Services,
-    elf::Image,
+    elf::{Image, ImageSet},
     memory::AddressSpace,
-    process::{Process, Thread, image::Executable},
+    process::{
+        Process, Thread,
+        image::{Chain, Executable},
+    },
     protocol::Arguments,
     syscall::{
         Operation, Outcome,
@@ -14,11 +17,11 @@ use crate::{
         file::{filesystem_error, path::Lookup},
     },
 };
-use alloc::{rc::Rc, vec::Vec};
+use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use runtime::{Call, Handle, Rights, thread::UserEntry};
 
 pub(in crate::syscall) struct Pending<'a> {
-    executable: Executable<'a>,
+    executable: Chain<'a>,
     arguments: Arguments,
     _anchor: Option<Rc<crate::file::OpenFileDescription<'a>>>,
 }
@@ -42,13 +45,15 @@ pub(in crate::syscall) fn start<'a>(
             envp,
         };
         Ok(Pending {
-            executable: Executable::new(files, lookup.directory(), &lookup.name).map_err(error)?,
+            executable: Chain::new(
+                Executable::new(files, lookup.directory(), &lookup.name).map_err(error)?,
+            ),
             arguments,
             _anchor: lookup.anchor,
         })
     })();
     match result {
-        Ok(pending) => Outcome::Pending(Operation::Exec(pending)),
+        Ok(pending) => Outcome::Pending(Operation::Exec(Box::new(pending))),
         Err(error) => Outcome::Complete(Err(error)),
     }
 }
@@ -101,81 +106,106 @@ impl<'a> Pending<'a> {
         &mut self,
         process: &mut Process<'a>,
         index: usize,
+        files: &fs::Client<'a>,
         services: &Services<'_>,
     ) -> Option<Result<(), Errno>> {
-        let loaded = match self.executable.poll(services) {
+        let loaded = match self.executable.poll(files, process.machine, services) {
             Ok(Some(loaded)) => loaded,
             Ok(None) => return None,
             Err(err) => return Some(Err(error(err))),
         };
         Some((|| {
-            let image = Image::parse(&loaded.bytes, process.machine).map_err(error)?;
-            let (space, stack) = AddressSpace::load(
-                process.supervisor,
-                &process.port,
-                &image,
-                &self.arguments,
-                loaded.random.as_ref(),
-            )
-            .map_err(error)?;
-            let native = space
-                .native
-                .create_thread(
-                    UserEntry {
-                        pc: image.entry as u64,
-                        stack_pointer: stack as u64,
-                        thread_pointer: 0,
-                        argument: 0,
-                    },
-                    Rights::WAIT
-                        | Rights::START
-                        | Rights::SET_STATE
-                        | Rights::TERMINATE
-                        | Rights::INTERRUPT,
-                )
-                .map_err(super::error)?;
-            native
-                .set_user_state(&process.machine.initial(image.entry, stack))
-                .map_err(super::error)?;
-            let native_id = native.id().map_err(super::error)?;
-            native.start().map_err(super::error)?;
-            let thread_signals = Rc::clone(&process.threads[index].signals);
-            for thread in &process.threads {
-                process.namespace.remove_thread(thread.tid);
-            }
-            process.threads.clear();
-            process.signals.borrow_mut().exec();
-            process.signal_return = None;
+            let image = Image::parse(&loaded.main.bytes, process.machine).map_err(error)?;
+            let interpreter = loaded
+                .interpreter
+                .as_ref()
+                .map(|loaded| Image::parse_at(&loaded.bytes, process.machine, image.end()))
+                .transpose()
+                .map_err(error)?;
+            if interpreter
+                .as_ref()
+                .is_some_and(|interpreter| interpreter.interpreter.is_some())
             {
-                let mut signals = thread_signals.borrow_mut();
-                signals.altstack = Default::default();
-                signals.suspended_mask = None;
+                return Err(ENOEXEC);
             }
-            process
-                .namespace
-                .register_thread(process.pid, process.pid, &thread_signals);
-            process.address_space = space;
-            process.threads.push(Thread {
-                native,
-                native_id,
-                tid: process.pid,
-                clear_tid: 0,
-                pending: None,
-                signals: thread_signals,
-                held: None,
-                vfork: None,
-                interrupt_requested: false,
-            });
-            process.files.close_on_exec();
-            process.program.clone_from(&self.arguments.path);
-            process.argv.clone_from(&self.arguments.argv);
-            process.namespace.exec(process.pid);
-            if let Some(vfork) = process.vfork.take() {
-                vfork.release();
-            }
-            Ok(())
+            replace(
+                process,
+                index,
+                &ImageSet { image, interpreter },
+                &self.arguments,
+                loaded.main.random.as_ref(),
+            )
         })())
     }
+}
+
+fn replace(
+    process: &mut Process<'_>,
+    index: usize,
+    images: &ImageSet<'_>,
+    arguments: &Arguments,
+    random: Option<&[u8; 16]>,
+) -> Result<(), Errno> {
+    let entry = images.entry();
+    let (space, stack) =
+        AddressSpace::load(process.supervisor, &process.port, images, arguments, random)
+            .map_err(error)?;
+    let native = space
+        .native
+        .create_thread(
+            UserEntry {
+                pc: entry as u64,
+                stack_pointer: stack as u64,
+                thread_pointer: 0,
+                argument: 0,
+            },
+            Rights::WAIT
+                | Rights::START
+                | Rights::SET_STATE
+                | Rights::TERMINATE
+                | Rights::INTERRUPT,
+        )
+        .map_err(super::error)?;
+    native
+        .set_user_state(&process.machine.initial(entry, stack))
+        .map_err(super::error)?;
+    let native_id = native.id().map_err(super::error)?;
+    native.start().map_err(super::error)?;
+    let thread_signals = Rc::clone(&process.threads[index].signals);
+    for thread in &process.threads {
+        process.namespace.remove_thread(thread.tid);
+    }
+    process.threads.clear();
+    process.signals.borrow_mut().exec();
+    process.signal_return = None;
+    {
+        let mut signals = thread_signals.borrow_mut();
+        signals.altstack = Default::default();
+        signals.suspended_mask = None;
+    }
+    process
+        .namespace
+        .register_thread(process.pid, process.pid, &thread_signals);
+    process.address_space = space;
+    process.threads.push(Thread {
+        native,
+        native_id,
+        tid: process.pid,
+        clear_tid: 0,
+        pending: None,
+        signals: thread_signals,
+        held: None,
+        vfork: None,
+        interrupt_requested: false,
+    });
+    process.files.close_on_exec();
+    process.program.clone_from(&arguments.path);
+    process.argv.clone_from(&arguments.argv);
+    process.namespace.exec(process.pid);
+    if let Some(vfork) = process.vfork.take() {
+        vfork.release();
+    }
+    Ok(())
 }
 
 fn error(error: Error) -> Errno {

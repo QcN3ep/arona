@@ -129,6 +129,8 @@ fn writable(
         b"Virtual",
         b"Control",
         b"Exec",
+        b"z-pie",
+        b"j-interp",
         b"writable",
         b"vector",
     ] {

@@ -12,6 +12,7 @@ mod signal;
 mod system;
 mod wait;
 
+use alloc::boxed::Box;
 use runtime::trap::{Trap, UserState};
 
 use crate::{Error, elf::Machine, process::Process};
@@ -41,7 +42,7 @@ enum Outcome<'a> {
 }
 
 enum Operation<'a> {
-    Exec(process::exec::Pending<'a>),
+    Exec(Box<process::exec::Pending<'a>>),
     WaitChild(process::wait::Pending),
     Futex(process::futex::Pending),
     Signal(signal::Pending),
@@ -193,7 +194,7 @@ pub(crate) fn poll<'a>(
         return Ok(true);
     }
     if let Operation::Exec(exec) = &mut pending.operation {
-        match exec.poll(process, index, services) {
+        match exec.poll(process, index, files, services) {
             None => {
                 process.threads[index].pending = Some(pending);
                 return Ok(false);

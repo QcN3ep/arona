@@ -90,6 +90,22 @@ exec_failure:
     addi.d $a0, $s8, 100
     invoke 94
     b exec_failure
+.global exec_pie
+exec_pie:
+    la.pcrel $a0, pie
+    addi.d $a1, $sp, 8
+    li.d $a2, 0
+    invoke 221
+    li.d $a0, 100
+    invoke 94
+.global exec_interp
+exec_interp:
+    la.pcrel $a0, dynamic
+    addi.d $a1, $sp, 8
+    li.d $a2, 0
+    invoke 221
+    li.d $a0, 100
+    invoke 94
 .section .rodata
 executable: .asciz "/bin/linux-test"
 replaced: .asciz "Z"
@@ -97,4 +113,6 @@ environment: .asciz "ARONA_TEST=yes"
 noexec: .asciz "/bin/linux-noexec"
 malformed_exec: .asciz "/bin/linux-truncated"
 exec_data: .asciz "/etc/linux-data"
+pie: .asciz "/bin/linux-pie"
+dynamic: .asciz "/bin/linux-dynamic"
 .section .note.GNU-stack,"",@progbits
