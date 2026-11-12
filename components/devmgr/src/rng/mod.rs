@@ -59,7 +59,7 @@ impl<'a> Rng<'a> {
     ) -> Result<Self, Error> {
         let mut transport = Transport::open(configuration.transport, grant)?;
         transport.negotiate(0)?;
-        let queue = Queue::new(domain, task, &mut transport)?;
+        let queue = Queue::new(domain, task, &mut transport, 0)?;
         let buffer = domain.allocate(task, 1, DmaDirection::FromDevice)?;
         match ipc::wait_many(&[WaitItem::new(event, 1)], WaitMode::Poll) {
             Ok(_) | Err(runtime::Error::Kernel(runtime::KernelError::WouldBlock)) => {}
@@ -101,7 +101,7 @@ impl<'a> Rng<'a> {
             }],
         )?;
         self.requested = length;
-        self.transport.notify()
+        self.queue.notify(&mut self.transport)
     }
 
     pub fn poll(&mut self, output: &mut [u8]) -> Result<Option<usize>, Error> {

@@ -54,7 +54,9 @@ fn exercise_device(devices: &Handle<DeviceSet>, id: u32) -> bool {
         .unwrap();
     let mut rng = Rng::new(configuration, &grant, &domain, &event, process::task()).unwrap();
     exercise_driver(&mut rng, &event);
+    rng.request(rng::MAX_BYTES).unwrap();
     rng.stop().unwrap();
+    assert_eq!(rng.request(1), Err(Error::Unavailable));
     drop(rng);
     exercise_service(configuration, id, grant, domain, event);
     true
@@ -64,19 +66,22 @@ fn exercise_driver(rng: &mut Rng<'_>, event: &runtime::Handle<runtime::Event>) {
     let mut bytes = [0; 128];
     assert_eq!(rng.request(0), Err(Error::InvalidRequest));
     assert_eq!(rng.request(rng::MAX_BYTES + 1), Err(Error::InvalidRequest));
-    rng.request(bytes.len()).unwrap();
-    assert_eq!(rng.request(1), Err(Error::Busy));
-    loop {
-        if let Some(length) = rng.poll(&mut bytes).unwrap() {
-            assert!(length > 0);
-            break;
+    // Cross ring wrap even when the device offers 256 entries.
+    for _ in 0..260 {
+        rng.request(bytes.len()).unwrap();
+        assert_eq!(rng.request(1), Err(Error::Busy));
+        loop {
+            if let Some(length) = rng.poll(&mut bytes).unwrap() {
+                assert!(length > 0 && length <= bytes.len());
+                break;
+            }
+            runtime::ipc::wait_many(
+                &[runtime::ipc::WaitItem::new(event, 1)],
+                WaitMode::Until(deadline()),
+            )
+            .unwrap();
+            rng.acknowledge_interrupt().unwrap();
         }
-        runtime::ipc::wait_many(
-            &[runtime::ipc::WaitItem::new(event, 1)],
-            WaitMode::Until(deadline()),
-        )
-        .unwrap();
-        rng.acknowledge_interrupt().unwrap();
     }
     assert!(bytes.iter().any(|byte| *byte != 0));
 }

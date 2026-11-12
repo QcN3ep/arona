@@ -58,11 +58,27 @@ On exit, it unbinds, disables UART interrupts, and reclaims the MMIO.
 The modern VirtIO transport handles reset, feature negotiation, queue configuration, notification, and device state checks.
 The PCI transport reads configuration capabilities and BARs, while the MMIO transport uses the register regions published by the firmware.
 The driver negotiates `VIRTIO_F_VERSION_1` and the corresponding device features.
+PCI probing validates the common, notification, and ISR regions independently of the device type.
+The device configuration region can be absent when the driver does not need configuration fields.
+Each configuration read checks the field's range and alignment.
+The block driver always reads capacity and reads the block size only when that feature was negotiated.
 
 Queues use a split virtqueue.
-On submission, the driver describes buffers with descriptors, places the descriptors in the available ring, and notifies the device; after the device finishes processing it writes to the used ring, and the driver collects the results from there.
+Queue creation takes an explicit queue index and selects that queue when checking its size and programming its descriptor, available, and used ring addresses.
+Each Queue retains its own size, ring positions, pending descriptors, and notification information.
+Configuring another queue does not replace the notification state of an existing queue.
+PCI notifications use the selected queue's notification offset and carry its queue index.
+MMIO notifications write the queue index to the notification register.
+
+On submission, the driver describes buffers with descriptors, places the chain's head in the available ring, and notifies the device.
+After the device finishes processing the chain, it writes a completion to the used ring, where the driver collects the result.
+The used length counts bytes written by the device, so a chain containing only device-readable buffers must complete with zero bytes.
+A chain containing device-writable buffers must report a nonzero length within their total capacity.
+The device driver then checks the result against its operation's requirements.
+
 Queue page frames and data buffers obtain bus addresses through the runtime's DMA interface, with synchronization performed before and after submission.
 The driver holds the running queues and buffers and releases the DMA resources after the device has stopped and been reset.
+Block and RNG currently use queue 0.
 
 The block device transfers at most 4096 bytes at a time and maintains at most 16 requests.
 The client submits reads and writes with a request identity, queries or waits for completion, and then ACKs to release the corresponding result.

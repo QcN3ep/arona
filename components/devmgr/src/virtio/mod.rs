@@ -35,6 +35,13 @@ pub(crate) enum Transport<'a> {
     Pci(Box<pci::Pci<'a>>),
 }
 
+/// Queue notification address and value, valid until the transport is reset.
+#[derive(Clone, Copy)]
+pub(crate) struct Notification {
+    index: u16,
+    offset: usize,
+}
+
 pub(crate) fn probe(
     device: &DeviceDescription<'_>,
     device_type: u16,
@@ -121,9 +128,9 @@ impl<'a> Transport<'a> {
     transport!(set_status(value: u8) -> ());
     transport!(features() -> u64);
     transport!(accept_features(value: u64) -> ());
-    transport!(queue_size() -> u16);
-    transport!(configure_queue(size: u16, descriptor: u64, available: u64, used: u64) -> ());
-    transport!(notify() -> ());
+    transport!(queue_size(index: u16) -> u16);
+    transport!(configure_queue(index: u16, size: u16, descriptor: u64, available: u64, used: u64) -> Notification);
+    transport!(notify(queue: Notification) -> ());
     transport!(interrupt_status() -> u8);
     transport!(generation() -> u8);
     transport!(config_word(offset: usize) -> u32);
