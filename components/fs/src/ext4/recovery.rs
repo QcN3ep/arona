@@ -3,7 +3,7 @@
 //! Mount recovery and orphan inode reclamation.
 
 use super::{half, inode::Inode, journal::Journal, volume::Volume, word};
-use crate::{Error, block::BLOCK_SIZE};
+use crate::Error;
 use alloc::{collections::BTreeSet, vec::Vec};
 
 impl Volume {
@@ -19,7 +19,7 @@ impl Volume {
             return Err(Error::Unsupported);
         }
         let inode = self.inode(8)?;
-        if inode.directory() || !inode.size.is_multiple_of(BLOCK_SIZE as u64) {
+        if inode.directory() || !inode.size.is_multiple_of(self.block_size as u64) {
             return Err(Error::InvalidData);
         }
         let mut locations = Vec::new();
@@ -29,11 +29,18 @@ impl Volume {
             }
             locations.extend(extent.physical..extent.physical + extent.length);
         }
-        if locations.len() as u64 * BLOCK_SIZE as u64 != inode.size {
+        if locations.len() as u64 * self.block_size as u64 != inode.size {
             return Err(Error::InvalidData);
         }
         let nodes = self.extent_blocks(&inode.root)?;
-        let mut journal = Journal::open(&self.disk, self.start, locations, nodes, &sb[104..120])?;
+        let mut journal = Journal::open(
+            &self.disk,
+            self.start,
+            locations,
+            nodes,
+            &sb[104..120],
+            self.block_size,
+        )?;
         if !recover && journal.pending() {
             return Err(Error::InvalidData);
         }
@@ -56,19 +63,19 @@ impl Volume {
 
     // REFERENCE: https://www.kernel.org/doc/html/v6.12/filesystems/ext4/orphan.html
     pub fn add_orphan(&mut self, inode: &Inode) -> Result<(), Error> {
-        let next = word(&self.block(0)?[..], 1024 + 232);
+        let next = self.superblock_word(232)?;
         self.edit_inode(inode.number, |bytes| {
             bytes[20..24].copy_from_slice(&next.to_le_bytes());
             Ok(())
         })?;
-        self.edit(0, |bytes| {
-            bytes[1024 + 232..1024 + 236].copy_from_slice(&inode.number.to_le_bytes());
+        self.edit_superblock(|bytes| {
+            bytes[232..236].copy_from_slice(&inode.number.to_le_bytes());
             Ok(())
         })
     }
 
     pub fn remove_orphan(&mut self, inode: &Inode) -> Result<(), Error> {
-        let mut number = word(&self.block(0)?[..], 1024 + 232);
+        let mut number = self.superblock_word(232)?;
         let mut previous = None;
         let mut visited = BTreeSet::new();
         while number != 0 {
@@ -82,8 +89,8 @@ impl Volume {
                         Ok(())
                     })
                 } else {
-                    self.edit(0, |bytes| {
-                        bytes[1256..1260].copy_from_slice(&inode.orphan_next.to_le_bytes());
+                    self.edit_superblock(|bytes| {
+                        bytes[232..236].copy_from_slice(&inode.orphan_next.to_le_bytes());
                         Ok(())
                     })
                 };
@@ -97,7 +104,7 @@ impl Volume {
     fn recover_orphans(&mut self) -> Result<(), Error> {
         let mut visited = BTreeSet::new();
         let mut orphans = Vec::new();
-        let mut number = word(&self.block(0)?[..], 1256);
+        let mut number = self.superblock_word(232)?;
         while number != 0 {
             if number < 11 || !visited.insert(number) {
                 return Err(Error::InvalidData);

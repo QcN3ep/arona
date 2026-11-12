@@ -4,7 +4,7 @@ use super::FileIdentity;
 use super::{half, inode::Inode, journal::Journal, word};
 use crate::{
     Error,
-    block::{BLOCK_SIZE, Disk},
+    block::{Disk, MAX_BLOCK_SIZE},
 };
 use alloc::{
     collections::BTreeMap,
@@ -12,11 +12,18 @@ use alloc::{
     vec::Vec,
 };
 
+pub(super) const SUPERBLOCK_OFFSET: usize = 1024;
+pub(super) const SUPERBLOCK_SIZE: usize = 1024;
+
 pub(super) struct Volume {
     pub device: u64,
     pub mount: u64,
     pub disk: Rc<Disk>,
     pub start: u64,
+    pub block_size: usize,
+    pub first_data_block: u32,
+    pub descriptors_per_block: u32,
+    pub descriptor_blocks: u32,
     pub(super) dirty: bool,
     pub(super) closed: bool,
     pub(super) journal: Option<Journal>,
@@ -29,8 +36,8 @@ pub(super) struct Volume {
     pub inode_size: usize,
     pub groups: Vec<Group>,
     sparse: bool,
-    pub(super) cache: BTreeMap<u32, Rc<[u8; BLOCK_SIZE]>>,
-    pub(super) pending: BTreeMap<u32, Rc<[u8; BLOCK_SIZE]>>,
+    pub(super) cache: BTreeMap<u32, Rc<[u8; MAX_BLOCK_SIZE]>>,
+    pub(super) pending: BTreeMap<u32, Rc<[u8; MAX_BLOCK_SIZE]>>,
     pub(super) failure: Option<Error>,
     pub(super) open: BTreeMap<u32, Weak<FileIdentity>>,
 }
@@ -41,25 +48,24 @@ pub(super) struct Group {
     pub inode_table: u32,
 }
 
-impl Volume {
-    // TODO: Extend ext4 block size and disk feature support.
-    // REFERENCE: https://www.kernel.org/doc/html/v6.12/filesystems/ext4/super.html
-    pub fn mount(disk: Rc<Disk>, start: u64, length: u64) -> Result<Self, Error> {
-        if !start.is_multiple_of(BLOCK_SIZE as u64)
-            || length < 3 * BLOCK_SIZE as u64
-            || start
-                .checked_add(length)
-                .is_none_or(|end| end > disk.capacity())
-        {
-            return Err(Error::InvalidData);
-        }
-        let mut block = [0; BLOCK_SIZE];
-        disk.read(start, &mut block)?;
-        let sb = &block[1024..2048];
-        if half(sb, 56) != 0xef53
-            || word(sb, 24) != 2
-            || word(sb, 28) != 2
-            || word(sb, 20) != 0
+struct Superblock {
+    block_size: usize,
+    first_data_block: u32,
+    blocks: u32,
+    inodes: u32,
+    blocks_per_group: u32,
+    inodes_per_group: u32,
+    inode_size: usize,
+    sparse: bool,
+}
+
+impl Superblock {
+    fn parse(sb: &[u8], length: u64) -> Result<Self, Error> {
+        let log_block_size = word(sb, 24);
+        if log_block_size > 2
+            || half(sb, 56) != 0xef53
+            || word(sb, 20) != u32::from(log_block_size == 0)
+            || word(sb, 28) != log_block_size
             || word(sb, 76) != 1
             || word(sb, 92) & !4 != 0
             || word(sb, 96) & !0x46 != 0
@@ -71,24 +77,62 @@ impl Volume {
         {
             return Err(Error::Unsupported);
         }
+        let block_size = 1024usize << log_block_size;
+        let first_data_block = word(sb, 20);
         let blocks = word(sb, 4);
         let inodes = word(sb, 0);
         let blocks_per_group = word(sb, 32);
         let inodes_per_group = word(sb, 40);
-        if blocks < 3
-            || u64::from(blocks) * BLOCK_SIZE as u64 > length
+        if blocks <= first_data_block
+            || u64::from(blocks) * block_size as u64 > length
             || inodes < 11
             || blocks_per_group == 0
-            || blocks_per_group > 32768
+            || u64::from(blocks_per_group) > block_size as u64 * 8
             || inodes_per_group == 0
-            || inodes_per_group > 32768
+            || u64::from(inodes_per_group) > block_size as u64 * 8
         {
             return Err(Error::InvalidData);
         }
-        let count = blocks.div_ceil(blocks_per_group);
-        if inodes.div_ceil(inodes_per_group) != count {
+        Ok(Self {
+            block_size,
+            first_data_block,
+            blocks,
+            inodes,
+            blocks_per_group,
+            inodes_per_group,
+            inode_size: usize::from(half(sb, 88)),
+            sparse: word(sb, 100) & 1 != 0,
+        })
+    }
+}
+
+impl Volume {
+    // TODO: Extend ext4 disk feature support beyond block sizes 1024, 2048, and 4096.
+    // REFERENCE: https://www.kernel.org/doc/html/v6.12/filesystems/ext4/super.html
+    pub fn mount(disk: Rc<Disk>, start: u64, length: u64) -> Result<Self, Error> {
+        if !start.is_multiple_of(512)
+            || length < MAX_BLOCK_SIZE as u64
+            || start
+                .checked_add(length)
+                .is_none_or(|end| end > disk.capacity())
+        {
             return Err(Error::InvalidData);
         }
+        let mut block = [0; MAX_BLOCK_SIZE];
+        disk.read(start, &mut block)?;
+        let sb = &block[SUPERBLOCK_OFFSET..SUPERBLOCK_OFFSET + SUPERBLOCK_SIZE];
+        let superblock = Superblock::parse(sb, length)?;
+        if !start.is_multiple_of(superblock.block_size as u64) {
+            return Err(Error::InvalidData);
+        }
+        let count =
+            (superblock.blocks - superblock.first_data_block).div_ceil(superblock.blocks_per_group);
+        if superblock.inodes.div_ceil(superblock.inodes_per_group) != count {
+            return Err(Error::InvalidData);
+        }
+        let descriptors_per_block = (superblock.block_size / 32) as u32;
+        let descriptor_blocks =
+            (u64::from(count) * 32).div_ceil(superblock.block_size as u64) as u32;
         let device = crate::metadata::device_identity()?;
         let mount = crate::metadata::mount_identity()?;
         disk.claim(start, length)?;
@@ -97,18 +141,22 @@ impl Volume {
             mount,
             disk,
             start,
+            block_size: superblock.block_size,
+            first_data_block: superblock.first_data_block,
+            descriptors_per_block,
+            descriptor_blocks,
             dirty: false,
             closed: false,
             journal: None,
-            blocks,
+            blocks: superblock.blocks,
             reserved_blocks: word(sb, 8),
             allocation_hint: 0,
-            inodes,
-            blocks_per_group,
-            inodes_per_group,
-            inode_size: usize::from(half(sb, 88)),
+            inodes: superblock.inodes,
+            blocks_per_group: superblock.blocks_per_group,
+            inodes_per_group: superblock.inodes_per_group,
+            inode_size: superblock.inode_size,
             groups: Vec::new(),
-            sparse: word(sb, 100) & 1 != 0,
+            sparse: superblock.sparse,
             cache: BTreeMap::new(),
             pending: BTreeMap::new(),
             failure: None,
@@ -125,26 +173,70 @@ impl Volume {
         Ok(volume)
     }
 
+    pub(super) fn superblock_offset(&self) -> usize {
+        SUPERBLOCK_OFFSET % self.block_size
+    }
+
+    pub(super) fn superblock(&mut self) -> Result<Rc<[u8; MAX_BLOCK_SIZE]>, Error> {
+        self.block(self.first_data_block)
+    }
+
+    pub(super) fn superblock_word(&mut self, offset: usize) -> Result<u32, Error> {
+        let base = self.superblock_offset();
+        Ok(word(&self.superblock()?[..], base + offset))
+    }
+
+    pub(super) fn edit_superblock(
+        &mut self,
+        operation: impl FnOnce(&mut [u8]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let base = self.superblock_offset();
+        self.edit(self.first_data_block, |bytes| {
+            operation(&mut bytes[base..base + SUPERBLOCK_SIZE])
+        })
+    }
+
+    pub(super) fn empty_block(&self) -> Rc<[u8; MAX_BLOCK_SIZE]> {
+        Rc::new([0; MAX_BLOCK_SIZE])
+    }
+
+    pub(super) fn group_start(&self, index: u32) -> u32 {
+        self.first_data_block + index * self.blocks_per_group
+    }
+
+    pub(super) fn group_index(&self, number: u32) -> Result<u32, Error> {
+        number
+            .checked_sub(self.first_data_block)
+            .map(|offset| offset / self.blocks_per_group)
+            .ok_or(Error::InvalidData)
+    }
+
     fn load_groups(&mut self) -> Result<(), Error> {
-        for index in 0..self.blocks.div_ceil(self.blocks_per_group) {
-            let descriptor = self.block(1 + index / 128)?;
-            let offset = (index as usize % 128) * 32;
+        let count = self
+            .blocks
+            .saturating_sub(self.first_data_block)
+            .div_ceil(self.blocks_per_group);
+        let tables = (u64::from(self.inodes_per_group) * self.inode_size as u64)
+            .div_ceil(self.block_size as u64) as u32;
+        for index in 0..count {
+            let descriptor =
+                self.block(self.first_data_block + 1 + index / self.descriptors_per_block)?;
+            let offset = (index % self.descriptors_per_block) as usize * 32;
             let group = Group {
                 block_bitmap: word(&descriptor[..], offset),
                 inode_bitmap: word(&descriptor[..], offset + 4),
                 inode_table: word(&descriptor[..], offset + 8),
             };
-            let first = index * self.blocks_per_group;
+            let first = self.group_start(index);
             let last = first.saturating_add(self.blocks_per_group).min(self.blocks);
-            let tables = (u64::from(self.inodes_per_group) * self.inode_size as u64)
-                .div_ceil(BLOCK_SIZE as u64) as u32;
             let reserved_end = first
                 + if self.has_super(index) {
-                    1 + self.blocks.div_ceil(self.blocks_per_group).div_ceil(128)
+                    1 + self.descriptor_blocks
                 } else {
                     0
                 };
-            if half(&descriptor[..], offset + 18) & !4 != 0
+            if last <= first
+                || half(&descriptor[..], offset + 18) & !4 != 0
                 || group.block_bitmap < reserved_end
                 || group.block_bitmap >= last
                 || group.inode_bitmap < reserved_end
@@ -170,14 +262,19 @@ impl Volume {
         let mut free_files = 0;
         for index in 0..self.groups.len() {
             let bitmap = self.block(self.groups[index].block_bitmap)?;
-            free_blocks += count_free(&bitmap[..], index, self.blocks_per_group, self.blocks);
+            free_blocks += count_free(
+                &bitmap[..],
+                index,
+                self.blocks_per_group,
+                self.blocks - self.first_data_block,
+            );
             let bitmap = self.block(self.groups[index].inode_bitmap)?;
             free_files += count_free(&bitmap[..], index, self.inodes_per_group, self.inodes);
         }
         Ok(crate::Statistics {
             kind: 0xef53,
             device: self.device,
-            block_size: BLOCK_SIZE as u64,
+            block_size: self.block_size as u64,
             blocks: u64::from(self.blocks),
             free_blocks,
             available_blocks: free_blocks.saturating_sub(u64::from(self.reserved_blocks)),
@@ -188,7 +285,7 @@ impl Volume {
         })
     }
 
-    pub fn block(&mut self, number: u32) -> Result<Rc<[u8; BLOCK_SIZE]>, Error> {
+    pub fn block(&mut self, number: u32) -> Result<Rc<[u8; MAX_BLOCK_SIZE]>, Error> {
         if self.closed {
             return Err(Error::Unavailable);
         }
@@ -204,10 +301,10 @@ impl Volume {
         if let Some(bytes) = self.cache.get(&number) {
             return Ok(Rc::clone(bytes));
         }
-        let mut bytes = [0; BLOCK_SIZE];
+        let mut bytes = [0; MAX_BLOCK_SIZE];
         self.disk.read(
-            self.start + u64::from(number) * BLOCK_SIZE as u64,
-            &mut bytes,
+            self.start + u64::from(number) * self.block_size as u64,
+            &mut bytes[..self.block_size],
         )?;
         if self.cache.len() == 64 {
             self.cache.pop_first();
@@ -218,7 +315,8 @@ impl Volume {
     }
 
     pub fn data_block(&self, number: u32) -> bool {
-        if number >= self.blocks
+        if number < self.first_data_block
+            || number >= self.blocks
             || self
                 .journal
                 .as_ref()
@@ -226,14 +324,16 @@ impl Volume {
         {
             return false;
         }
-        let index = number / self.blocks_per_group;
-        let group = &self.groups[index as usize];
-        let first = index * self.blocks_per_group;
+        let index = (number - self.first_data_block) / self.blocks_per_group;
+        let Some(group) = self.groups.get(index as usize) else {
+            return false;
+        };
+        let first = self.group_start(index);
         let tables = (u64::from(self.inodes_per_group) * self.inode_size as u64)
-            .div_ceil(BLOCK_SIZE as u64) as u32;
+            .div_ceil(self.block_size as u64) as u32;
         let reserved_end = first
             + if self.has_super(index) {
-                1 + (self.groups.len() as u32).div_ceil(128)
+                1 + self.descriptor_blocks
             } else {
                 0
             };
@@ -263,8 +363,9 @@ impl Volume {
         if !self.data_block(number) {
             return Ok(false);
         }
-        let group = number / self.blocks_per_group;
-        let bit = number % self.blocks_per_group;
+        let group = self.group_index(number)?;
+        let first = self.group_start(group);
+        let bit = number - first;
         let bitmap = self.block(self.groups[group as usize].block_bitmap)?;
         Ok(bitmap[bit as usize / 8] & (1 << (bit % 8)) != 0)
     }
@@ -280,11 +381,11 @@ impl Volume {
             return Err(Error::InvalidData);
         }
         let offset = bit as usize * self.inode_size;
-        let bytes =
-            self.block(self.groups[group as usize].inode_table + (offset / BLOCK_SIZE) as u32)?;
+        let bytes = self
+            .block(self.groups[group as usize].inode_table + (offset / self.block_size) as u32)?;
         Inode::parse(
             number,
-            &bytes[offset % BLOCK_SIZE..offset % BLOCK_SIZE + self.inode_size],
+            &bytes[offset % self.block_size..offset % self.block_size + self.inode_size],
         )
     }
 }

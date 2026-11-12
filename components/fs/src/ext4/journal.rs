@@ -6,18 +6,18 @@
 
 use crate::{
     Error,
-    block::{BLOCK_SIZE, Disk},
+    block::{Disk, MAX_BLOCK_SIZE},
 };
 use alloc::{
-    boxed::Box,
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
+    vec,
     vec::Vec,
 };
 
 const MAGIC: u32 = 0xc03b3998;
 const CSUM_V3: u32 = 0x10;
-const TAGS: usize = (BLOCK_SIZE - 12 - 16 - 4) / 16;
+
 const CRC32C: [u32; 256] = {
     let mut table = [0; 256];
     let mut index = 0;
@@ -37,7 +37,8 @@ const CRC32C: [u32; 256] = {
 pub(super) struct Journal {
     locations: Vec<u32>,
     reserved: BTreeSet<u32>,
-    superblock: Box<[u8; BLOCK_SIZE]>,
+    superblock: Vec<u8>,
+    block_size: usize,
     first: u32,
     length: u32,
     sequence: u32,
@@ -46,7 +47,7 @@ pub(super) struct Journal {
 }
 
 struct Transaction {
-    writes: BTreeMap<u32, Rc<[u8; BLOCK_SIZE]>>,
+    writes: BTreeMap<u32, Rc<[u8; MAX_BLOCK_SIZE]>>,
     revoked: BTreeSet<u32>,
 }
 
@@ -57,27 +58,28 @@ impl Journal {
         locations: Vec<u32>,
         nodes: Vec<u32>,
         uuid: &[u8],
+        block_size: usize,
     ) -> Result<Self, Error> {
         let number = *locations.first().ok_or(Error::InvalidData)?;
-        let mut bytes = Box::new([0; BLOCK_SIZE]);
-        disk.read(start + u64::from(number) * BLOCK_SIZE as u64, &mut bytes)?;
-        let first = be(&bytes[..], 20);
-        let length = be(&bytes[..], 16);
-        let features = be(&bytes[..], 40);
+        let mut bytes = vec![0; block_size];
+        disk.read(start + u64::from(number) * block_size as u64, &mut bytes)?;
+        let first = be(&bytes, 20);
+        let length = be(&bytes, 16);
+        let features = be(&bytes, 40);
         let checksummed = features & CSUM_V3 != 0;
-        if be(&bytes[..], 0) != MAGIC
-            || be(&bytes[..], 4) != 4
-            || be(&bytes[..], 12) != BLOCK_SIZE as u32
+        if be(&bytes, 0) != MAGIC
+            || be(&bytes, 4) != 4
+            || be(&bytes, 12) != block_size as u32
             || first == 0
             || length as usize > locations.len()
             || first >= length
-            || be(&bytes[..], 28) != 0 && !(first..length).contains(&be(&bytes[..], 28))
-            || be(&bytes[..], 32) != 0
-            || be(&bytes[..], 36) != 0
+            || be(&bytes, 28) != 0 && !(first..length).contains(&be(&bytes, 28))
+            || be(&bytes, 32) != 0
+            || be(&bytes, 36) != 0
             || features & !(1 | CSUM_V3) != 0
-            || be(&bytes[..], 44) != 0
+            || be(&bytes, 44) != 0
             || bytes[48..64] != *uuid
-            || be(&bytes[..], 64) != 1
+            || be(&bytes, 64) != 1
         {
             return Err(Error::Unsupported);
         }
@@ -97,7 +99,8 @@ impl Journal {
             reserved,
             first,
             length,
-            sequence: be(&bytes[..], 24),
+            block_size,
+            sequence: be(&bytes, 24),
             seed: crc32c(!0, uuid),
             checksummed,
             superblock: bytes,
@@ -109,12 +112,16 @@ impl Journal {
     }
 
     pub fn pending(&self) -> bool {
-        be(&self.superblock[..], 28) != 0
+        be(&self.superblock, 28) != 0
+    }
+
+    fn tags(&self) -> usize {
+        (self.block_size - 12 - 16 - 4) / 16
     }
 
     pub fn check_capacity(&self, count: usize) -> Result<(), Error> {
         if count
-            .checked_add(count.div_ceil(TAGS))
+            .checked_add(count.div_ceil(self.tags()))
             .and_then(|n| n.checked_add(1))
             .is_none_or(|n| n >= (self.length - self.first) as usize)
         {
@@ -127,29 +134,29 @@ impl Journal {
         &mut self,
         disk: &Disk,
         start: u64,
-        pending: &BTreeMap<u32, Rc<[u8; BLOCK_SIZE]>>,
+        pending: &BTreeMap<u32, Rc<[u8; MAX_BLOCK_SIZE]>>,
     ) -> Result<(), Error> {
         self.check_capacity(pending.len())?;
         let entries: Vec<_> = pending.iter().collect();
         let mut position = self.first;
-        for chunk in entries.chunks(TAGS) {
-            let mut descriptor = header(1, self.sequence);
+        for chunk in entries.chunks(self.tags()) {
+            let mut descriptor = header(1, self.sequence, self.block_size);
             let mut tag = 12;
             for (index, &(number, bytes)) in chunk.iter().enumerate() {
-                let escaped = be(&bytes[..], 0) == MAGIC;
+                let escaped = be(&bytes[..self.block_size], 0) == MAGIC;
                 let flags = u32::from(escaped)
                     | if index != 0 { 2 } else { 0 }
                     | if index + 1 == chunk.len() { 8 } else { 0 };
-                put(&mut descriptor[..], tag, *number);
-                put(&mut descriptor[..], tag + 4, flags);
-                let mut data = Box::new(**bytes);
+                put(&mut descriptor, tag, *number);
+                put(&mut descriptor, tag + 4, flags);
+                let mut data = bytes[..self.block_size].to_vec();
                 if escaped {
                     data[..4].fill(0);
                 }
                 put(
-                    &mut descriptor[..],
+                    &mut descriptor,
                     tag + 12,
-                    crc32c(crc32c(self.seed, &self.sequence.to_be_bytes()), &data[..]),
+                    crc32c(crc32c(self.seed, &self.sequence.to_be_bytes()), &data),
                 );
                 tag += 16;
                 if index == 0 {
@@ -158,29 +165,32 @@ impl Journal {
                 }
                 self.write(disk, start, position + 1 + index as u32, &data)?;
             }
-            seal(&mut descriptor[..], BLOCK_SIZE - 4, self.seed);
+            seal(&mut descriptor, self.block_size - 4, self.seed);
             self.write(disk, start, position, &descriptor)?;
             position += chunk.len() as u32 + 1;
         }
-        self.write(disk, start, position, &[0; BLOCK_SIZE])?;
+        self.write(disk, start, position, &vec![0; self.block_size])?;
         self.checksummed = true;
-        let features = be(&self.superblock[..], 40) | CSUM_V3;
-        put(&mut self.superblock[..], 40, features);
+        let features = be(&self.superblock, 40) | CSUM_V3;
+        put(&mut self.superblock, 40, features);
         self.superblock[80] = 4;
         self.update(disk, start, self.first, self.sequence)?;
-        let mut commit = header(2, self.sequence);
-        seal(&mut commit[..], 16, self.seed);
+        let mut commit = header(2, self.sequence, self.block_size);
+        seal(&mut commit, 16, self.seed);
         self.write(disk, start, position, &commit)?;
         disk.flush()?;
         for (&number, bytes) in pending {
-            disk.write(start + u64::from(number) * BLOCK_SIZE as u64, bytes)?;
+            disk.write(
+                start + u64::from(number) * self.block_size as u64,
+                &bytes[..self.block_size],
+            )?;
         }
         disk.flush()?;
         self.update(disk, start, 0, self.sequence.wrapping_add(1))
     }
 
     pub fn recover(&mut self, disk: &Disk, start: u64, blocks: u32) -> Result<(), Error> {
-        let position = be(&self.superblock[..], 28);
+        let position = be(&self.superblock, 28);
         if position == 0 {
             return Ok(());
         }
@@ -211,7 +221,10 @@ impl Journal {
         for (index, transaction) in transactions.into_iter().enumerate() {
             for (number, bytes) in transaction.writes {
                 if revoked.get(&number).is_none_or(|last| *last < index) {
-                    disk.write(start + u64::from(number) * BLOCK_SIZE as u64, &bytes)?;
+                    disk.write(
+                        start + u64::from(number) * self.block_size as u64,
+                        &bytes[..self.block_size],
+                    )?;
                 }
             }
         }
@@ -219,15 +232,9 @@ impl Journal {
         self.update(disk, start, 0, sequence)
     }
 
-    fn write(
-        &self,
-        disk: &Disk,
-        start: u64,
-        position: u32,
-        bytes: &[u8; BLOCK_SIZE],
-    ) -> Result<(), Error> {
+    fn write(&self, disk: &Disk, start: u64, position: u32, bytes: &[u8]) -> Result<(), Error> {
         disk.write(
-            start + u64::from(self.locations[position as usize]) * BLOCK_SIZE as u64,
+            start + u64::from(self.locations[position as usize]) * self.block_size as u64,
             bytes,
         )
     }
@@ -239,8 +246,8 @@ impl Journal {
         position: u32,
         sequence: u32,
     ) -> Result<(), Error> {
-        put(&mut self.superblock[..], 24, sequence);
-        put(&mut self.superblock[..], 28, position);
+        put(&mut self.superblock, 24, sequence);
+        put(&mut self.superblock, 28, position);
         if self.checksummed {
             seal(&mut self.superblock[..1024], 252, !0);
         }
@@ -272,30 +279,31 @@ impl Replay<'_> {
                 return Ok(None);
             }
             let bytes = self.next()?;
-            if be(&bytes[..], 0) != MAGIC || be(&bytes[..], 8) != self.sequence {
+            if be(&bytes, 0) != MAGIC || be(&bytes, 8) != self.sequence {
                 return Ok(None);
             }
-            match be(&bytes[..], 4) {
+            match be(&bytes, 4) {
                 1 => self.descriptor(&bytes, &mut transaction)?,
                 2 => {
-                    if self.journal.checksummed && !verify(&bytes[..], 16, self.journal.seed) {
+                    if self.journal.checksummed && !verify(&bytes, 16, self.journal.seed) {
                         return Ok(None);
                     }
                     return Ok(Some(transaction));
                 }
                 5 => {
-                    let end = be(&bytes[..], 12) as usize;
-                    let limit = BLOCK_SIZE - if self.journal.checksummed { 4 } else { 0 };
+                    let end = be(&bytes, 12) as usize;
+                    let limit =
+                        self.journal.block_size - if self.journal.checksummed { 4 } else { 0 };
                     if end < 16
                         || end > limit
                         || !end.is_multiple_of(4)
                         || self.journal.checksummed
-                            && !verify(&bytes[..], BLOCK_SIZE - 4, self.journal.seed)
+                            && !verify(&bytes, self.journal.block_size - 4, self.journal.seed)
                     {
                         return Err(Error::InvalidData);
                     }
                     for offset in (16..end).step_by(4) {
-                        let number = be(&bytes[..], offset);
+                        let number = be(&bytes, offset);
                         self.validate_target(number)?;
                         transaction.revoked.insert(number);
                     }
@@ -305,14 +313,12 @@ impl Replay<'_> {
         }
     }
 
-    fn descriptor(
-        &mut self,
-        bytes: &[u8; BLOCK_SIZE],
-        transaction: &mut Transaction,
-    ) -> Result<(), Error> {
+    fn descriptor(&mut self, bytes: &[u8], transaction: &mut Transaction) -> Result<(), Error> {
         let size = if self.journal.checksummed { 16 } else { 8 };
-        let limit = BLOCK_SIZE - if self.journal.checksummed { 4 } else { 0 };
-        if self.journal.checksummed && !verify(bytes, BLOCK_SIZE - 4, self.journal.seed) {
+        let limit = self.journal.block_size - if self.journal.checksummed { 4 } else { 0 };
+        if self.journal.checksummed
+            && !verify(bytes, self.journal.block_size - 4, self.journal.seed)
+        {
             return Err(Error::InvalidData);
         }
         let mut offset = 12;
@@ -350,20 +356,22 @@ impl Replay<'_> {
                 return Err(Error::InvalidData);
             }
             first = false;
-            let mut data = self.next()?;
+            let data = self.next()?;
             if self.journal.checksummed
                 && checksum
                     != crc32c(
                         crc32c(self.journal.seed, &self.sequence.to_be_bytes()),
-                        &data[..],
+                        &data,
                     )
             {
                 return Err(Error::InvalidData);
             }
+            let mut block = [0; MAX_BLOCK_SIZE];
+            block[..self.journal.block_size].copy_from_slice(&data);
             if flags & 1 != 0 {
-                data[..4].copy_from_slice(&MAGIC.to_be_bytes());
+                block[..4].copy_from_slice(&MAGIC.to_be_bytes());
             }
-            transaction.writes.insert(number, Rc::new(*data));
+            transaction.writes.insert(number, Rc::new(block));
             if flags & 8 != 0 {
                 return Ok(());
             }
@@ -378,14 +386,14 @@ impl Replay<'_> {
         Ok(())
     }
 
-    fn next(&mut self) -> Result<Box<[u8; BLOCK_SIZE]>, Error> {
+    fn next(&mut self) -> Result<Vec<u8>, Error> {
         if self.consumed >= self.journal.length - self.journal.first {
             return Err(Error::InvalidData);
         }
-        let mut bytes = Box::new([0; BLOCK_SIZE]);
+        let mut bytes = vec![0; self.journal.block_size];
         let number = self.journal.locations[self.position as usize];
         self.disk.read(
-            self.start + u64::from(number) * BLOCK_SIZE as u64,
+            self.start + u64::from(number) * self.journal.block_size as u64,
             &mut bytes,
         )?;
         self.consumed += 1;
@@ -397,11 +405,11 @@ impl Replay<'_> {
     }
 }
 
-fn header(kind: u32, sequence: u32) -> Box<[u8; BLOCK_SIZE]> {
-    let mut bytes = Box::new([0; BLOCK_SIZE]);
-    put(&mut bytes[..], 0, MAGIC);
-    put(&mut bytes[..], 4, kind);
-    put(&mut bytes[..], 8, sequence);
+fn header(kind: u32, sequence: u32, block_size: usize) -> Vec<u8> {
+    let mut bytes = vec![0; block_size];
+    put(&mut bytes, 0, MAGIC);
+    put(&mut bytes, 4, kind);
+    put(&mut bytes, 8, sequence);
     bytes
 }
 

@@ -2,8 +2,8 @@
 
 //! File content, length, and extent tree updates.
 
-use super::{extent::Extent, inode::Inode, volume::Volume, word};
-use crate::{Error, block::BLOCK_SIZE};
+use super::{extent::Extent, inode::Inode, volume::Volume};
+use crate::{Error, block::MAX_BLOCK_SIZE};
 use alloc::{rc::Rc, vec::Vec};
 
 impl Volume {
@@ -27,7 +27,7 @@ impl Volume {
         let mut length = input.len();
         loop {
             match self.write_blocks(&inode, offset, &input[..length], &extents) {
-                Err(Error::NoSpace) if length > BLOCK_SIZE => length /= 2,
+                Err(Error::NoSpace) if length > self.block_size => length /= 2,
                 result => return result,
             }
         }
@@ -49,9 +49,9 @@ impl Volume {
             let mut done = 0;
             while done < input.len() {
                 let position = offset + done;
-                let logical = (position / BLOCK_SIZE) as u32;
-                let inside = position % BLOCK_SIZE;
-                let length = (BLOCK_SIZE - inside).min(input.len() - done);
+                let logical = (position / volume.block_size) as u32;
+                let inside = position % volume.block_size;
+                let length = (volume.block_size - inside).min(input.len() - done);
                 let existing = extents.iter().position(|extent| {
                     (extent.logical..extent.logical + extent.length).contains(&logical)
                 });
@@ -81,7 +81,7 @@ impl Volume {
                             length: 1,
                             unwritten: false,
                         });
-                        volume.stage(physical, Rc::new([0; BLOCK_SIZE]));
+                        volume.stage(physical, volume.empty_block());
                     }
                     physical
                 } else {
@@ -108,8 +108,8 @@ impl Volume {
     }
 
     fn check_space(&mut self, extents: &[Extent], offset: usize, end: usize) -> Result<(), Error> {
-        let first = (offset / BLOCK_SIZE) as u32;
-        let last = end.div_ceil(BLOCK_SIZE) as u32;
+        let first = (offset / self.block_size) as u32;
+        let last = end.div_ceil(self.block_size) as u32;
         let allocated: u32 = extents
             .iter()
             .map(|extent| {
@@ -118,7 +118,7 @@ impl Volume {
                     .saturating_sub(extent.logical.max(first))
             })
             .sum();
-        let free = word(&self.block(0)?[..], 1024 + 12);
+        let free = self.superblock_word(12)?;
         if last - first - allocated > free {
             return Err(Error::NoSpace);
         }
@@ -127,15 +127,16 @@ impl Volume {
 
     fn zero_tail(&mut self, inode: &Inode, end: usize) -> Result<(), Error> {
         let start = inode.size as usize;
-        if start.is_multiple_of(BLOCK_SIZE) {
+        if start.is_multiple_of(self.block_size) {
             return Ok(());
         }
-        let logical = (start / BLOCK_SIZE) as u32;
+        let logical = (start / self.block_size) as u32;
         if let Some(extent) = self.extents(&inode.root)?.into_iter().find(|extent| {
             !extent.unwritten && (extent.logical..extent.logical + extent.length).contains(&logical)
         }) {
+            let block_size = self.block_size;
             self.edit(extent.physical + logical - extent.logical, |bytes| {
-                bytes[start % BLOCK_SIZE..(end - logical as usize * BLOCK_SIZE).min(BLOCK_SIZE)]
+                bytes[start % block_size..(end - logical as usize * block_size).min(block_size)]
                     .fill(0);
                 Ok(())
             })?;
@@ -159,7 +160,8 @@ impl Volume {
 
     pub fn resize(&mut self, inode: &mut Inode, size: usize) -> Result<(), Error> {
         let mut extents = self.extents(&inode.root)?;
-        let keep = size.div_ceil(BLOCK_SIZE) as u32;
+        let block_size = self.block_size;
+        let keep = size.div_ceil(block_size) as u32;
         if (size as u64) < inode.size {
             for extent in &mut extents {
                 let remaining = keep.saturating_sub(extent.logical).min(extent.length);
@@ -169,14 +171,14 @@ impl Volume {
                 extent.length = remaining;
             }
             extents.retain(|extent| extent.length != 0);
-            if !size.is_multiple_of(BLOCK_SIZE)
+            if !size.is_multiple_of(block_size)
                 && let Some(extent) = extents.iter().find(|extent| {
                     !extent.unwritten
                         && (extent.logical..extent.logical + extent.length).contains(&(keep - 1))
                 })
             {
                 self.edit(extent.physical + keep - 1 - extent.logical, |bytes| {
-                    bytes[size % BLOCK_SIZE..].fill(0);
+                    bytes[size % block_size..block_size].fill(0);
                     Ok(())
                 })?;
             }
@@ -213,14 +215,15 @@ impl Volume {
             }
         }
         let data_blocks: u64 = merged.iter().map(|extent| u64::from(extent.length)).sum();
+        let entries = (self.block_size - 12) / 12;
         let mut leaves = Vec::new();
         let mut depth = 0;
         let mut tree_blocks = 0;
         if merged.len() > 4 {
-            for chunk in merged.chunks(340) {
+            for chunk in merged.chunks(entries) {
                 let number = self.allocate_block()?;
-                let mut bytes = Rc::new([0; BLOCK_SIZE]);
-                extent_header(&mut Rc::make_mut(&mut bytes)[..], chunk.len(), 340, 0);
+                let mut bytes = Rc::new([0; MAX_BLOCK_SIZE]);
+                extent_header(&mut Rc::make_mut(&mut bytes)[..], chunk.len(), entries, 0);
                 for (index, extent) in chunk.iter().enumerate() {
                     extent_entry(&mut Rc::make_mut(&mut bytes)[..], 12 + index * 12, extent);
                 }
@@ -231,10 +234,15 @@ impl Volume {
             depth = 1;
             while leaves.len() > 4 {
                 let mut parents = Vec::new();
-                for chunk in leaves.chunks(340) {
+                for chunk in leaves.chunks(entries) {
                     let number = self.allocate_block()?;
-                    let mut bytes = Rc::new([0; BLOCK_SIZE]);
-                    extent_header(&mut Rc::make_mut(&mut bytes)[..], chunk.len(), 340, depth);
+                    let mut bytes = Rc::new([0; MAX_BLOCK_SIZE]);
+                    extent_header(
+                        &mut Rc::make_mut(&mut bytes)[..],
+                        chunk.len(),
+                        entries,
+                        depth,
+                    );
                     for (index, &(logical, child)) in chunk.iter().enumerate() {
                         extent_index(
                             &mut Rc::make_mut(&mut bytes)[..],
@@ -263,7 +271,7 @@ impl Volume {
                 extent_index(&mut inode.root, 12 + index * 12, logical, child);
             }
         }
-        inode.sectors = (data_blocks + tree_blocks) * 8;
+        inode.sectors = (data_blocks + tree_blocks) * (self.block_size as u64 / 512);
         Ok(())
     }
 

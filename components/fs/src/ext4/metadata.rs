@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use super::{inode::Entry, volume::Volume};
-use crate::{Attributes, Error};
+use crate::{Attributes, Error, block::MAX_BLOCK_SIZE};
 use alloc::vec::Vec;
 
 impl Volume {
@@ -40,7 +40,7 @@ impl Volume {
     }
 
     pub fn symlink(&mut self, target: &[u8], path: &[u8]) -> Result<(), Error> {
-        if target.is_empty() || target.len() >= 4096 || target.contains(&0) {
+        if target.is_empty() || target.len() > self.block_size || target.contains(&0) {
             return Err(Error::InvalidRequest);
         }
         let (mut parent, name) = self.parent(path)?;
@@ -70,7 +70,7 @@ impl Volume {
                 inode.root[..target.len()].copy_from_slice(target);
             } else {
                 let physical = volume.allocate_block()?;
-                let mut bytes = [0; crate::block::BLOCK_SIZE];
+                let mut bytes = [0; MAX_BLOCK_SIZE];
                 bytes[..target.len()].copy_from_slice(target);
                 volume.stage(physical, alloc::rc::Rc::new(bytes));
                 volume.replace_extents(
@@ -99,7 +99,7 @@ impl Volume {
         if !inode.symlink() {
             return Err(Error::InvalidRequest);
         }
-        if inode.size > 4096 {
+        if inode.size > self.block_size as u64 {
             return Err(Error::InvalidData);
         }
         let mut bytes = alloc::vec![0; inode.size as usize];

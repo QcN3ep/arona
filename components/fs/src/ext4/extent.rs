@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use super::{half, volume::Volume, word};
-use crate::{Error, block::BLOCK_SIZE};
+use crate::Error;
 use alloc::{collections::BTreeSet, vec::Vec};
 
 #[derive(Clone)]
@@ -96,7 +96,7 @@ impl Volume {
                 if length == 0
                     || half(bytes, offset + 6) != 0
                     || end > last
-                    || end > 524288
+                    || end > 2 * 1024 * 1024 * 1024 / self.block_size as u64
                     || physical
                         .checked_add(length)
                         .is_none_or(|limit| limit > self.blocks)
@@ -132,7 +132,7 @@ impl Volume {
                 }
                 let child = self.block(block)?;
                 self.extent_node(
-                    &child[..BLOCK_SIZE],
+                    &child[..self.block_size],
                     depth - 1,
                     logical.into(),
                     next,

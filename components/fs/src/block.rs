@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Fixed-length disk access over block device sessions.
+//! Bounded disk access over block device sessions.
 
 use alloc::vec::Vec;
 use core::cell::RefCell;
@@ -9,11 +9,13 @@ use runtime::{FrameAllocation, Handle, Rights, Task, thread};
 
 use crate::Error;
 
-pub const BLOCK_SIZE: usize = 4096;
+/// Largest transfer a single frame-backed disk operation can carry.
+pub const MAX_BLOCK_SIZE: usize = 4096;
 
 pub struct Disk {
     state: RefCell<State>,
     capacity: u64,
+    block_size: u64,
     read_only: bool,
     flush: bool,
     volumes: RefCell<Vec<(u64, u64)>>,
@@ -38,6 +40,7 @@ impl Disk {
                 failed: false,
             }),
             capacity: info.capacity,
+            block_size: u64::from(info.block_size),
             read_only: info.read_only,
             flush: info.flush,
             volumes: RefCell::new(Vec::new()),
@@ -87,17 +90,11 @@ impl Disk {
         state.complete(id, 0)
     }
 
-    pub fn write(&self, offset: u64, input: &[u8; BLOCK_SIZE]) -> Result<(), Error> {
+    pub fn write(&self, offset: u64, input: &[u8]) -> Result<(), Error> {
         if self.read_only {
             return Err(Error::ReadOnly);
         }
-        if !offset.is_multiple_of(BLOCK_SIZE as u64)
-            || offset
-                .checked_add(BLOCK_SIZE as u64)
-                .is_none_or(|end| end > self.capacity)
-        {
-            return Err(Error::InvalidRequest);
-        }
+        self.validate(offset, input.len())?;
         let mut state = self.state.borrow_mut();
         if state.failed {
             return Err(Error::Unavailable);
@@ -108,18 +105,12 @@ impl Disk {
         state.failed = true;
         state
             .session
-            .write(id, offset, &state.buffer, 0, BLOCK_SIZE)?;
-        state.complete(id, BLOCK_SIZE)
+            .write(id, offset, &state.buffer, 0, input.len())?;
+        state.complete(id, input.len())
     }
 
-    pub fn read(&self, offset: u64, output: &mut [u8; BLOCK_SIZE]) -> Result<(), Error> {
-        if !offset.is_multiple_of(BLOCK_SIZE as u64)
-            || offset
-                .checked_add(BLOCK_SIZE as u64)
-                .is_none_or(|end| end > self.capacity)
-        {
-            return Err(Error::InvalidRequest);
-        }
+    pub fn read(&self, offset: u64, output: &mut [u8]) -> Result<(), Error> {
+        self.validate(offset, output.len())?;
         let mut state = self.state.borrow_mut();
         if state.failed {
             return Err(Error::Unavailable);
@@ -129,9 +120,23 @@ impl Disk {
         state.failed = true;
         state
             .session
-            .read(id, offset, &state.buffer, 0, BLOCK_SIZE)?;
-        state.complete(id, BLOCK_SIZE)?;
+            .read(id, offset, &state.buffer, 0, output.len())?;
+        state.complete(id, output.len())?;
         state.buffer.read(0, output)?;
+        Ok(())
+    }
+
+    fn validate(&self, offset: u64, length: usize) -> Result<(), Error> {
+        if length == 0
+            || length > MAX_BLOCK_SIZE
+            || !offset.is_multiple_of(self.block_size)
+            || !(length as u64).is_multiple_of(self.block_size)
+            || offset
+                .checked_add(length as u64)
+                .is_none_or(|end| end > self.capacity)
+        {
+            return Err(Error::InvalidRequest);
+        }
         Ok(())
     }
 }

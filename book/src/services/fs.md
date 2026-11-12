@@ -56,7 +56,7 @@ Cross-volume links or renames, busy mount points, and type mismatches have separ
 ## Block Device Access
 
 `Disk` wraps devmgr's block device Session and stores the capacity, read-only state, flush capability, and occupied volume ranges.
-The file system block size is 4096 bytes.
+Disk transfers follow the device’s block alignment and use buffers of up to 4096 bytes.
 Each disk read or write submits a request using a page frame buffer, waits for completion and ACKs, then verifies the status and actual byte count.
 
 Disk requests carry an increasing identity.
@@ -66,7 +66,7 @@ Mounting and unmounting a volume register and release its disk range respectivel
 ## ext4 Disk Structure
 
 Mounting starts from the superblock and checks the capacity, block size, feature bits, group layout, and inode size.
-Currently it accepts 4096-byte blocks and 128- or 256-byte inodes, using extents and typed directory entries.
+It accepts 1024-, 2048-, and 4096-byte blocks and 128- or 256-byte inodes, using extents and typed directory entries.
 Recognized features include the internal journal, recovery flag, sparse superblock, and large file.
 
 A volume stores block groups, block and inode bitmaps, the inode table, the block cache, and the identities of open nodes.
