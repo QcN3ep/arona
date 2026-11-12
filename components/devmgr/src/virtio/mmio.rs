@@ -84,6 +84,13 @@ impl<'a> Mmio<'a> {
         Ok(self.0.read_u32(0xfc)? as u8)
     }
 
+    pub(super) fn config_byte(&mut self, offset: usize) -> Result<u8, Error> {
+        if offset >= self.0.len() - 0x100 {
+            return Err(Error::InvalidConfiguration);
+        }
+        Ok(self.0.read_u8(0x100 + offset)?)
+    }
+
     pub(super) fn config_word(&mut self, offset: usize) -> Result<u32, Error> {
         if !offset.is_multiple_of(4)
             || offset

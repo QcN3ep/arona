@@ -8,6 +8,7 @@ use devmgr::{
     Error,
     block::{self, Block},
     device::{DeviceDescription, DiscoveryRequest, DriverKind, OpenRequest},
+    net::{self, Net},
     power::{self, Power},
     rng::{self, Rng},
     rtc::{self, Rtc},
@@ -26,6 +27,7 @@ enum Configuration {
     Uart(uart::Configuration),
     Block(block::Configuration),
     Rng(rng::Configuration),
+    Net(net::Configuration),
     Rtc(rtc::Configuration),
     Power(power::Configuration),
 }
@@ -158,6 +160,7 @@ impl DeviceManager {
                         | (Ok((_, Configuration::Rng(_))), DriverKind::Rng)
                         | (Ok((_, Configuration::Rtc(_))), DriverKind::Rtc)
                         | (Ok((_, Configuration::Power(_))), DriverKind::Power)
+                        | (Ok((_, Configuration::Net(_))), DriverKind::Net)
                 )
             })
             .map(|instance| instance.id).min();
@@ -344,6 +347,17 @@ fn serve(
             rng::service::run(&mut rng, event, server, id)?;
             return Ok(domain.revoke()?);
         }
+        Configuration::Net(configuration) => {
+            let domain = grant.create_dma(
+                id,
+                Rights::READ | Rights::DMA_MAP | Rights::DEVICE_CONTROL | Rights::REVOKE,
+            )?;
+            let mut net = Net::new(configuration, grant, &domain, event, process::task())?;
+            ready.store(true, Ordering::Release);
+            wake.signal(1)?;
+            net::service::run(&mut net, event, server, id)?;
+            return Ok(domain.revoke()?);
+        }
         Configuration::Uart(_) => {}
     }
     let Configuration::Uart(configuration) = configuration else {
@@ -371,6 +385,9 @@ fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Error>
     }
     if let Some(configuration) = rng::probe(device)? {
         return Ok(Some(Configuration::Rng(configuration)));
+    }
+    if let Some(configuration) = net::probe(device)? {
+        return Ok(Some(Configuration::Net(configuration)));
     }
     if let Some(configuration) = rtc::probe(device)? {
         return Ok(Some(Configuration::Rtc(configuration)));

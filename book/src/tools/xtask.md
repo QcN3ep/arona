@@ -23,15 +23,19 @@ cargo xtask help
 |---|---|---|
 | `--release` | Not enabled | Select the release build for the kernel and components |
 | `--initramfs embedded\|external` | `embedded` | Choose an embedded or standalone archive; takes effect when building and starting the kernel |
+| `--net` | Not enabled | Attach a modern VirtIO PCI NIC with QEMU user networking when running |
 | `--rootfs PATH` | None | Append the files, directories, and symbolic links from a host directory to the archive |
 
 For example:
 
 ```sh
 cargo xtask build riscv64 --release
-cargo xtask run loongarch64 --release --initramfs external
+cargo xtask run loongarch64 --release --initramfs external --net
 cargo xtask package-init riscv64 --rootfs ./rootfs
 ```
+
+Without `--net`, QEMU starts without a NIC.
+The option attaches a NIC with MAC `52:54:00:12:34:56` and does not configure an IP address or start a network socket service.
 
 `package-linux-test` uses a test entry point in place of the normal init, adds the compatibility test programs and data, and outputs `initramfs-linux-test.cpio`.
 Normal boot and tests each keep their own archive file.
