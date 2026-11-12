@@ -25,6 +25,7 @@ Early logs go directly to the UART, and from this point records also enter the k
 `Dtb` provides a read-only view of the firmware DTB and uses the `fdt` library to read nodes and properties.
 `Dtb::dump` writes information such as CPUs, memory, devices, register ranges, interrupt topology, PCI hosts, and consoles into `HardwareInfo`.
 Parsing uses fixed-capacity storage and stops the boot on error.
+A system controller with poweroff or reboot operations publishes the parsed register operations under the `power` property namespace, and becomes available to the device management service.
 
 DTB node identifiers and device instance identifiers in the hardware information are used to establish parent-child relationships, interrupt controller references, and resource references.
 The memory description handles available and reserved ranges in units of pages, and pages occupied by firmware data are reserved in their entirety.

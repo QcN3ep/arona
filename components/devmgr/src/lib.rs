@@ -9,10 +9,10 @@ extern crate alloc;
 
 // TODO: Implement transmission, reception, and link state management for VirtIO network devices.
 // TODO: Implement bus width adaptation, read, program, and erase for CFI Flash.
-// TODO: Support platform shutdown and reboot devices.
 
 pub mod block;
 pub mod device;
+pub mod power;
 pub mod rng;
 pub mod rtc;
 pub mod uart;

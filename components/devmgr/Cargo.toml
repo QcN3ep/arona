@@ -48,5 +48,11 @@ path = "tests/rtc/mod.rs"
 harness = false
 required-features = ["baremetal"]
 
+[[test]]
+name = "power"
+path = "tests/power/mod.rs"
+harness = false
+required-features = ["baremetal"]
+
 [dependencies]
 runtime = { package = "arona-runtime", path = "../runtime" }

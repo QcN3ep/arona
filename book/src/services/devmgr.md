@@ -16,6 +16,7 @@ The device manager stores the device instance identity, resource group, driver c
 | Block device | modern VirtIO MMIO or PCI block | capacity, read/write, flush, request cancellation and acknowledgment |
 | Random numbers | modern VirtIO PCI RNG | read device random bytes |
 | RTC | Goldfish RTC, Loongson LS7A RTC | read Unix time |
+| Power | Device Tree `syscon` with poweroff/reboot operations | capability query, shutdown, reboot |
 
 The manager returns ready instances by device type and cursor.
 Devices in the same group share the resource authorization holder, and each instance has its own control channel, event, and worker thread.
@@ -70,6 +71,20 @@ When the device supports the FLUSH feature, the service provides the correspondi
 
 The RNG driver submits a writable DMA buffer; after the device completes, it reads the random bytes and returns them to the client.
 The RTC driver reads seconds and nanoseconds through its registers, and the LS7A path converts the calendar registers into Unix time.
+
+## Power Operations
+
+The architecture layer parses `syscon-poweroff` and `syscon-reboot` nodes and publishes the selected
+register operations on the referenced system controller under the `power` property namespace.
+A controller that provides at least one operation becomes assignable and is marked as having no DMA,
+so the driver can claim its resource group and map the registers.
+
+The driver reads the operation as an offset, mask, and value, then updates the register with
+`(old & !mask) | (value & mask)` using the configured access width and byte order.
+The capability query reports whether shutdown and reboot are available.
+An action that the controller does not describe returns `Unsupported`.
+The QEMU `virt` machine exposes both operations through its `sifive,test0` system controller.
+
 
 ## Failure Handling and Cleanup
 

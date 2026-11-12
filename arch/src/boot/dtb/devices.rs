@@ -37,6 +37,7 @@ pub(super) fn parse(dtb: &Dtb<'_>, hardware: &mut HardwareInfo) -> Result<()> {
     let mut nodes = const { ArrayVec::new_const() };
     collect_nodes(dtb, &mut nodes)?;
     parse_devices(dtb, hardware, &nodes)?;
+    syscon::capture(hardware)?;
     hardware.console = serial::console(dtb, &nodes).unwrap_or_default();
     for (index, device) in hardware.devices.iter().enumerate() {
         validate_addresses(hardware, index, device)?;
