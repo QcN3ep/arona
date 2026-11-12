@@ -6,7 +6,7 @@ pub(crate) mod delivery;
 pub(crate) mod frame;
 
 use crate::syscall::abi::{ENOMEM, Errno};
-use alloc::collections::VecDeque;
+use alloc::{collections::VecDeque, vec::Vec};
 
 pub const KILL: u8 = 9;
 pub const STOP: u8 = 19;
@@ -163,6 +163,8 @@ pub struct ThreadSignals {
     pub pending: Queue,
     pub altstack: AltStack,
     pub suspended_mask: Option<u64>,
+    pub(crate) restart: Option<crate::syscall::Restart>,
+    pub(crate) restart_frames: Vec<(usize, crate::syscall::Restart)>,
 }
 
 pub const fn bit(number: u8) -> u64 {

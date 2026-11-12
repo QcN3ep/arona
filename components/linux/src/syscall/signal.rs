@@ -341,13 +341,19 @@ impl Pending {
 }
 
 fn restore<'a>(process: &mut Process<'a>, index: usize, context: &mut Context) -> Outcome<'a> {
-    match frame::restore(
-        &process.address_space,
-        process.machine,
-        frame::stack_pointer(process.machine, &context.state),
-    ) {
+    let frame_address = frame::stack_pointer(process.machine, &context.state);
+    match frame::restore(&process.address_space, process.machine, frame_address) {
         Ok(restored) => {
             let mut signals = process.threads[index].signals.borrow_mut();
+            signals.restart = signals
+                .restart_frames
+                .iter()
+                .rposition(|(address, _)| *address == frame_address)
+                .map(|position| {
+                    let restart = signals.restart_frames[position].1;
+                    signals.restart_frames.truncate(position);
+                    restart
+                });
             signals.mask = restored.mask & !signal::UNBLOCKABLE;
             signals.altstack = restored.altstack;
             context.state = restored.state;

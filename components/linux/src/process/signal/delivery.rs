@@ -198,6 +198,17 @@ fn install(
         },
     )
     .map_err(|_| runtime::Error::Kernel(runtime::KernelError::BadAddress))?;
+    let frame = frame::stack_pointer(process.machine, &context.state);
+    thread
+        .restart_frames
+        .retain(|(address, _)| *address != frame);
+    if let Some(restart) = thread.restart.take() {
+        thread
+            .restart_frames
+            .try_reserve(1)
+            .map_err(|_| runtime::Error::Kernel(runtime::KernelError::NoMemory))?;
+        thread.restart_frames.push((frame, restart));
+    }
     thread.mask |= action.mask
         | if action.flags & NODEFER == 0 {
             bit(info.number)

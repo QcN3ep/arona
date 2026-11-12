@@ -21,7 +21,7 @@ pub(super) fn dispatch<'a>(
     services: &crate::Services<'_>,
 ) -> Option<Outcome<'a>> {
     if number == abi::FUTEX {
-        return Some(futex::start(process, services, args));
+        return Some(futex::start(process, index, services, args));
     }
     if matches!(number, abi::WAIT4 | abi::WAITID) {
         return Some(wait::start(process, number, args));
