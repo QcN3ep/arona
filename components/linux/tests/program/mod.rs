@@ -124,6 +124,7 @@ fn writable(
         b"HardwareThreads",
         b"Join",
         b"Kin",
+        b"Vfork",
         b"Identity",
         b"Control",
         b"Exec",
