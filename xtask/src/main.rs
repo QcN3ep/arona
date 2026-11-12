@@ -180,6 +180,9 @@ fn package_init(options: &BuildOptions, linux_test: bool) -> Result<PathBuf, Str
             "bin/linux-truncated",
             "bin/linux-foreign",
             "bin/linux-writable-code",
+            "bin/linux-pie",
+            "bin/linux-interp",
+            "bin/linux-dynamic",
             "etc/linux-data",
         ]);
     }

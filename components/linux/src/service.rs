@@ -27,6 +27,11 @@ struct Running<'a> {
     reply: Option<Handle<Reply>>,
 }
 
+struct Guests<'a> {
+    loading: Vec<Loading<'a>>,
+    running: Vec<Running<'a>>,
+}
+
 pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
     let mut startup = control.receive(WaitMode::Forever)?;
     let reply = startup.take_reply().ok_or(Error::InvalidRequest)?;
@@ -41,22 +46,24 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
     let namespace = alloc::rc::Rc::new(crate::process::namespace::PidNamespace::new());
     let port = alloc::rc::Rc::new(task.trap_port(Rights::READ | Rights::WAIT)?);
     reply.send(&mut Message::new(0, &[])?)?;
-    let mut loading: Vec<Loading<'_>> = Vec::new();
-    let mut running: Vec<Running<'_>> = Vec::new();
+    let mut guests = Guests {
+        loading: Vec::new(),
+        running: Vec::new(),
+    };
     loop {
         let mut progress = poll_loading(
-            &mut loading,
-            &mut running,
+            &mut guests,
             task,
             &port,
+            &files,
             machine,
             &services,
             &namespace,
         )?;
-        progress |= poll_running(&mut running, &files, &services)?;
+        progress |= poll_running(&mut guests.running, &files, &services)?;
         match port.receive(WaitMode::Poll) {
             Ok(trap) => {
-                if let Some(owner) = running.iter_mut().find(|running| {
+                if let Some(owner) = guests.running.iter_mut().find(|running| {
                     running
                         .process
                         .threads
@@ -74,7 +81,7 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
                     match Loading::new(&files, request, reply) {
-                        Ok(request) => loading.push(request),
+                        Ok(request) => guests.loading.push(request),
                         Err((error, reply)) => reply_error(reply, error)?,
                     }
                 }
@@ -87,7 +94,7 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
             Err(error) => return Err(error.into()),
         }
         if !progress {
-            wait(&control, &port, &loading, &running)?;
+            wait(&control, &port, &guests.loading, &guests.running)?;
         }
     }
 }
@@ -146,21 +153,21 @@ fn reply_error(reply: Handle<Reply>, error: Error) -> Result<(), Error> {
 }
 
 fn poll_loading<'a>(
-    loading: &mut Vec<Loading<'a>>,
-    running: &mut Vec<Running<'a>>,
+    guests: &mut Guests<'a>,
     task: &'a Handle<Task>,
     port: &alloc::rc::Rc<Handle<runtime::TrapPort>>,
+    files: &fs::Client<'a>,
     machine: Machine,
     services: &Services<'_>,
     namespace: &alloc::rc::Rc<crate::process::namespace::PidNamespace>,
 ) -> Result<bool, Error> {
     let mut progress = false;
     let mut index = 0;
-    while index < loading.len() {
-        match loading[index].poll(task, port, machine, services, namespace) {
+    while index < guests.loading.len() {
+        match guests.loading[index].poll(task, port, files, machine, services, namespace) {
             Ok(Some(process)) => {
-                let pending = loading.swap_remove(index);
-                running.push(Running {
+                let pending = guests.loading.swap_remove(index);
+                guests.running.push(Running {
                     process,
                     reply: Some(pending.reply),
                 });
@@ -170,7 +177,7 @@ fn poll_loading<'a>(
                 continue;
             }
             Err(error) => {
-                reply_error(loading.swap_remove(index).reply, error)?;
+                reply_error(guests.loading.swap_remove(index).reply, error)?;
             }
         }
         progress = true;

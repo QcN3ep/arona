@@ -13,12 +13,15 @@ The execution request contains the program path, argv, envp, and terminal sessio
 The loading process proceeds in stages:
 
 1. Open the program through the file service and query its metadata, checking executable permission.
-2. Read the file and verify the ELF64 `ET_EXEC` matching the current machine.
+2. Read the file and verify an ELF64 `ET_EXEC` or `ET_DYN` image matching the current machine.
 3. Allocate page frames for the loadable segments and copy the data, establishing R, RW, or RX mappings.
 4. Construct argc, argv, envp, and the auxiliary vector on the user stack.
 5. Create a Task supervised by the TrapPort and an initial thread, set the registers, and start it.
 
 ELF checks include segment boundaries, non-overlapping page ranges, and the entry lying in an executable region.
+Position-independent `ET_DYN` images receive an aligned load address.
+If the image requests a `PT_INTERP` interpreter, the service loads it at a separate address and starts at its entry point.
+The auxiliary vector describes the main program and the interpreter base, so the guest loader can process `PT_DYNAMIC`, relocate the images, and load shared libraries.
 The initial stack has a guard page, and the data area contains the argument strings, environment, program header location, and auxiliary vector.
 When a random number session is available, 16 bytes of random data are also generated for the startup stack and handed over as `AT_RANDOM`.
 

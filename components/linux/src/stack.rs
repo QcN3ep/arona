@@ -17,12 +17,13 @@ const STACK_SIZE: usize = 64 * 1024;
 pub(crate) fn build(
     space: &AddressSpace,
     image: &Image<'_>,
+    interpreter_base: usize,
     arguments: &Arguments,
     random: Option<&[u8; 16]>,
 ) -> Result<usize, Error> {
     let task = &space.native;
     let (phdr, top) = load_headers(space, image)?;
-    let auxv = auxiliary(image, phdr);
+    let auxv = auxiliary(image, phdr, interpreter_base);
     let strings = core::iter::once(&arguments.path)
         .chain(&arguments.argv)
         .chain(&arguments.envp);
@@ -126,13 +127,13 @@ fn load_headers(space: &AddressSpace, image: &Image<'_>) -> Result<(usize, usize
     })
 }
 
-fn auxiliary(image: &Image<'_>, phdr: usize) -> [(usize, usize); 7] {
+fn auxiliary(image: &Image<'_>, phdr: usize, interpreter_base: usize) -> [(usize, usize); 7] {
     [
         (3, phdr),
         (4, 56),
         (5, image.headers.len() / 56),
         (6, PAGE_SIZE),
-        (7, 0),
+        (7, interpreter_base),
         (8, 0),
         (9, image.entry),
     ]

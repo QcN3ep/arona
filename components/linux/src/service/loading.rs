@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use crate::process::image::Executable;
+use crate::process::image::{Chain, Executable};
 use crate::{
     Error, Services,
-    elf::{Image, Machine},
+    elf::{Image, ImageSet, Machine},
     file::terminal::Terminal,
     process::Process,
     protocol::{self, Arguments},
@@ -18,7 +18,7 @@ pub(super) struct Loading<'a> {
     pub reply: Handle<Reply>,
     arguments: Arguments,
     terminal: Rc<Terminal>,
-    executable: Executable<'a>,
+    executable: Chain<'a>,
 }
 
 impl<'a> Loading<'a> {
@@ -64,7 +64,7 @@ impl<'a> Loading<'a> {
                         .map_err(|_| Error::InvalidRequest)?,
                 )?)
             };
-            let stage = Executable::new(files, None, &arguments.path)?;
+            let stage = Chain::new(Executable::new(files, None, &arguments.path)?);
             Ok((arguments, Rc::new(Terminal::new(output, input)), stage))
         })();
         match decoded {
@@ -82,21 +82,31 @@ impl<'a> Loading<'a> {
         &mut self,
         task: &'a Handle<Task>,
         port: &Rc<Handle<TrapPort>>,
+        files: &fs::Client<'a>,
         machine: Machine,
         services: &Services<'_>,
         namespace: &Rc<crate::process::namespace::PidNamespace>,
     ) -> Result<Option<Process<'a>>, Error> {
-        if let Some(loaded) = self.executable.poll(services)? {
-            let bytes = &loaded.bytes;
-            let random = &loaded.random;
-            let image = Image::parse(bytes, machine)?;
+        if let Some(loaded) = self.executable.poll(files, machine, services)? {
+            let image = Image::parse(&loaded.main.bytes, machine)?;
+            let interpreter = loaded
+                .interpreter
+                .as_ref()
+                .map(|loaded| Image::parse_at(&loaded.bytes, machine, image.end()))
+                .transpose()?;
+            if interpreter
+                .as_ref()
+                .is_some_and(|interpreter| interpreter.interpreter.is_some())
+            {
+                return Err(Error::InvalidExecutable);
+            }
             return Process::start(
                 task,
                 port,
-                &image,
+                &ImageSet { image, interpreter },
                 &self.arguments,
                 Rc::clone(&self.terminal),
-                random.as_ref(),
+                loaded.main.random.as_ref(),
                 Rc::clone(namespace),
             )
             .map(Some);

@@ -10,7 +10,7 @@ use runtime::{
 
 use crate::{
     Error,
-    elf::{Image, PAGE_SIZE},
+    elf::{ImageSet, PAGE_SIZE},
     protocol::Arguments,
 };
 
@@ -39,22 +39,27 @@ impl AddressSpace {
     pub fn load(
         parent: &Handle<Task>,
         port: &Handle<TrapPort>,
-        image: &Image<'_>,
+        images: &ImageSet<'_>,
         arguments: &Arguments,
         random: Option<&[u8; 16]>,
     ) -> Result<(Self, usize), Error> {
-        let start = image
-            .segments
-            .last()
-            .ok_or(Error::InvalidExecutable)?
-            .pages()
-            .end;
+        let mut segments: Vec<&crate::elf::Segment<'_>> = images.image.segments.iter().collect();
+        if let Some(interpreter) = &images.interpreter {
+            segments.extend(interpreter.segments.iter());
+        }
+        segments.sort_unstable_by_key(|segment| segment.memory.start);
+        for pair in segments.windows(2) {
+            if pair[0].pages().end > pair[1].pages().start {
+                return Err(Error::InvalidExecutable);
+            }
+        }
+        let start = segments.last().ok_or(Error::InvalidExecutable)?.pages().end;
         let address_space = Self {
             native: SupervisedTask::new(parent, port)?,
             heap: start..start,
             pages: RefCell::new(BTreeMap::new()),
         };
-        for segment in &image.segments {
+        for segment in segments {
             let range = segment.pages();
             let count = (range.len() / PAGE_SIZE) as u64;
             let mut frames =
@@ -69,7 +74,13 @@ impl AddressSpace {
                 PageBacking::File,
             )?;
         }
-        let stack = crate::stack::build(&address_space, image, arguments, random)?;
+        let stack = crate::stack::build(
+            &address_space,
+            &images.image,
+            images.interpreter.as_ref().map_or(0, |image| image.base),
+            arguments,
+            random,
+        )?;
         Ok((address_space, stack))
     }
 

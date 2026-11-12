@@ -48,6 +48,9 @@ pub(super) fn append(
         }
     }
     append_entry(bytes, "bin/linux-writable-code", 0o100755, &writable)?;
+    for (name, image) in fixtures(options, root, target_directory)? {
+        append_entry(bytes, name, 0o100755, &image)?;
+    }
     let mut data = b"0123456789abcdef".repeat(512);
     data.push(b'Z');
     append_entry(bytes, "etc/linux-data", 0o100644, &data)?;
@@ -173,4 +176,120 @@ fn build_guest(
         directory.join("linux-test"),
         directory.join("linux-compact"),
     ))
+}
+
+const FIXTURE_ENTRY: usize = 0x100;
+const FIXTURE_PATH: usize = 0x200;
+const FIXTURE_INTERPRETER: &[u8] = b"/bin/linux-interp";
+/// Illegal instruction bytes; a PT_INTERP image must never enter its main entry.
+const UNUSED_CODE: [u8; 4] = [0; 4];
+
+/// Build the PT_INTERP handoff fixtures used by the exec scenarios.
+fn fixtures(
+    options: &BuildOptions,
+    root: &Path,
+    target: &Path,
+) -> Result<[(&'static str, Vec<u8>); 3], String> {
+    let (isa, triple, machine) = match options.target {
+        Target::Riscv64 => ("riscv64", "riscv64-unknown-linux-gnu", 243),
+        Target::LoongArch64 => ("loongarch64", "loongarch64-unknown-linux-gnu", 258),
+    };
+    let pie = assemble_fixture(options, root, target, isa, triple, "program/pie")?;
+    let interpreter = assemble_fixture(options, root, target, isa, triple, "program/interp")?;
+    Ok([
+        ("bin/linux-pie", image(machine, &pie, None)),
+        ("bin/linux-interp", image(machine, &interpreter, None)),
+        (
+            "bin/linux-dynamic",
+            image(machine, &UNUSED_CODE, Some(FIXTURE_INTERPRETER)),
+        ),
+    ])
+}
+
+fn assemble_fixture(
+    options: &BuildOptions,
+    root: &Path,
+    target: &Path,
+    isa: &str,
+    triple: &str,
+    module: &str,
+) -> Result<Vec<u8>, String> {
+    let directory = target
+        .join(options.target.triple())
+        .join(options.profile())
+        .join("linux-tests");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let name = module.replace('/', "-");
+    let object = directory.join(format!("{name}.o"));
+    let mut assemble = Command::new("clang");
+    assemble
+        .arg(format!("--target={triple}"))
+        .args(["-c", "-x", "assembler"]);
+    if isa == "riscv64" {
+        assemble.arg("-mno-relax");
+    }
+    assemble
+        .arg(root.join(format!("components/linux/tests/{module}/{isa}.S")))
+        .arg("-o")
+        .arg(&object);
+    execute(assemble)?;
+    let binary = directory.join(format!("{name}.bin"));
+    let mut link = Command::new("ld.lld");
+    link.args(["--oformat=binary", "--image-base=0", "-Ttext=0"])
+        .arg(&object)
+        .arg("-o")
+        .arg(&binary);
+    execute(link)?;
+    fs::read(binary).map_err(|error| error.to_string())
+}
+
+/// Wrap position-independent code in an ET_DYN image with an optional PT_INTERP.
+fn image(machine: u16, code: &[u8], interpreter: Option<&[u8]>) -> Vec<u8> {
+    let path_size = interpreter.map_or(0, |path| path.len() + 1);
+    let dynamic = (FIXTURE_ENTRY + code.len())
+        .max(FIXTURE_PATH + path_size)
+        .next_multiple_of(16);
+    let length = dynamic + 16;
+    let mut bytes = vec![0; length];
+    // e_ident: ELF64, little endian, version 1.
+    bytes[..4].copy_from_slice(b"\x7fELF");
+    bytes[4] = 2;
+    bytes[5] = 1;
+    bytes[6] = 1;
+    // e_type is ET_DYN, followed by e_machine, e_version, e_entry, and e_phoff.
+    bytes[16..18].copy_from_slice(&3u16.to_le_bytes());
+    bytes[18..20].copy_from_slice(&machine.to_le_bytes());
+    bytes[20..24].copy_from_slice(&1u32.to_le_bytes());
+    bytes[24..32].copy_from_slice(&(FIXTURE_ENTRY as u64).to_le_bytes());
+    bytes[32..40].copy_from_slice(&64u64.to_le_bytes());
+    bytes[52..54].copy_from_slice(&64u16.to_le_bytes());
+    bytes[54..56].copy_from_slice(&56u16.to_le_bytes());
+    bytes[56..58].copy_from_slice(&(if interpreter.is_some() { 3u16 } else { 2 }).to_le_bytes());
+    program_header(&mut bytes[64..120], 1, 5, 0, length, 4096);
+    if let Some(interpreter) = interpreter {
+        program_header(&mut bytes[120..176], 3, 4, FIXTURE_PATH, path_size, 1);
+        bytes[FIXTURE_PATH..FIXTURE_PATH + interpreter.len()].copy_from_slice(interpreter);
+    }
+    let header = if interpreter.is_some() { 176 } else { 120 };
+    program_header(&mut bytes[header..header + 56], 2, 4, dynamic, 16, 8);
+    bytes[FIXTURE_ENTRY..FIXTURE_ENTRY + code.len()].copy_from_slice(code);
+    bytes
+}
+
+fn program_header(
+    output: &mut [u8],
+    kind: u32,
+    flags: u32,
+    offset: usize,
+    file_size: usize,
+    alignment: usize,
+) {
+    output[..4].copy_from_slice(&kind.to_le_bytes());
+    output[4..8].copy_from_slice(&flags.to_le_bytes());
+    output[8..16].copy_from_slice(&(offset as u64).to_le_bytes());
+    output[16..24].copy_from_slice(&(offset as u64).to_le_bytes());
+    output[24..32].copy_from_slice(&(offset as u64).to_le_bytes());
+    output[32..40].copy_from_slice(&(file_size as u64).to_le_bytes());
+    output[40..48].copy_from_slice(&(file_size as u64).to_le_bytes());
+    output[48..56].copy_from_slice(&(alignment as u64).to_le_bytes());
 }
