@@ -77,6 +77,9 @@ Statistics distinguish the read-only boot archive from mounted ext4 volumes and 
 Virtual device descriptors do not yet provide filesystem statistics.
 For example, for an ordinary file read, the compatibility service submits the offset and output buffer to fs, writes the data to the target Task after obtaining the result, and updates the open file's offset according to the actual completed length.
 
+The `F_GETPIPE_SZ` and `F_SETPIPE_SZ` commands query and resize a pipe through either endpoint.
+Resizing preserves queued bytes and rejects a capacity below the amount already queued.
+
 ## Address Space
 
 The compatibility layer's AddressSpace records program mappings and their backing page frames and operates the native address space through the supervised Task.

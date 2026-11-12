@@ -220,6 +220,8 @@ pub(super) fn fcntl(
             descriptor.description.set_flags(flags);
             Ok(0)
         }
+        1031 => pipe::set_capacity(&descriptor.description, argument as u32 as usize),
+        1032 => pipe::capacity(&descriptor.description),
         // TODO: Integrate file locks and the remaining fcntl operations.
         _ => Err(EOPNOTSUPP),
     }

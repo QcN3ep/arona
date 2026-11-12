@@ -4,13 +4,15 @@
 
 use super::super::{
     Outcome,
-    abi::{EAGAIN, EBADF, EFAULT, EINVAL, EMFILE, ENOMEM, EPIPE, ESPIPE, SyscallResult},
+    abi::{
+        EAGAIN, EBADF, EBUSY, EFAULT, EINVAL, EMFILE, ENOMEM, EPERM, EPIPE, ESPIPE, SyscallResult,
+    },
 };
 use super::{Buffer, O_CLOEXEC, Pending, buffer::IoVectors, fd, outcome};
 use crate::{
     file::{
         Descriptor, O_NONBLOCK, OpenFileDescription,
-        pipe::{PIPE_BUF, PipeEnd},
+        pipe::{CapacityError, PIPE_BUF, PipeEnd},
     },
     process::Process,
 };
@@ -56,6 +58,24 @@ pub(super) fn create(process: &mut Process<'_>, address: usize, flags: usize) ->
         return Err(EFAULT);
     }
     Ok(0)
+}
+
+pub(super) fn capacity(description: &OpenFileDescription<'_>) -> SyscallResult {
+    match description {
+        OpenFileDescription::Pipe { end, .. } => Ok(end.capacity()),
+        _ => Err(EBADF),
+    }
+}
+
+pub(super) fn set_capacity(description: &OpenFileDescription<'_>, size: usize) -> SyscallResult {
+    let OpenFileDescription::Pipe { end, .. } = description else {
+        return Err(EBADF);
+    };
+    end.set_capacity(size).map_err(|error| match error {
+        CapacityError::TooLarge => EPERM,
+        CapacityError::Busy => EBUSY,
+        CapacityError::NoMemory => ENOMEM,
+    })
 }
 
 pub(super) fn start<'a>(
