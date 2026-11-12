@@ -272,7 +272,9 @@ fn write_stat(process: &Process<'_>, address: usize, info: fs::Metadata) -> Resu
 
 // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/linux/stat.h?h=v6.12
 fn write_statx(process: &Process<'_>, address: usize, info: fs::Metadata) -> SyscallResult {
-    // TODO: Add birth time and mount ID.
+    let known = info.birth != fs::Timestamp::default();
+    let mounted = info.mount != 0;
+    let mask = 0x7ff | u32::from(known) << 11 | u32::from(mounted) << 12;
     let mut bytes = [0; 256];
     let major = ((info.device >> 8) & 0xfff | (info.device >> 32) & 0xffff_f000) as u32;
     let minor = (info.device & 0xff | (info.device >> 12) & 0xffff_ff00) as u32;
@@ -280,7 +282,7 @@ fn write_statx(process: &Process<'_>, address: usize, info: fs::Metadata) -> Sys
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
     }
     for (offset, value) in [
-        (0, 0x7ff),
+        (0, mask),
         (4, 4096),
         (16, info.links),
         (20, info.uid),
@@ -291,8 +293,10 @@ fn write_statx(process: &Process<'_>, address: usize, info: fs::Metadata) -> Sys
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
     bytes[28..30].copy_from_slice(&(info.mode as u16).to_le_bytes());
+    bytes[144..152].copy_from_slice(&info.mount.to_le_bytes());
     for (offset, time) in [
         (64, info.accessed),
+        (80, info.birth),
         (96, info.changed),
         (112, info.modified),
     ] {

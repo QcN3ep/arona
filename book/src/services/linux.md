@@ -64,6 +64,7 @@ Virtual character descriptions implement `/dev/null` and `/dev/zero`, while `/de
 
 Path operations convert the current directory or dirfd into a file service directory anchor.
 Permission modes, umask, and open flags are interpreted in the compatibility layer, while the actual file content and persistence are handled by the file service.
+`statx` also reports the filesystem mount identity and the creation timestamp when the stored inode provides it.
 For example, for an ordinary file read, the compatibility service submits the offset and output buffer to fs, writes the data to the target Task after obtaining the result, and updates the open file's offset according to the actual completed length.
 
 ## Address Space

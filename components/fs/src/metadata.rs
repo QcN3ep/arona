@@ -4,12 +4,21 @@ use crate::Error;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_DEVICE: AtomicU64 = AtomicU64::new(1);
+static NEXT_MOUNT: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn device_identity() -> Result<u64, Error> {
-    let mut id = NEXT_DEVICE.load(Ordering::Relaxed);
+    identity(&NEXT_DEVICE)
+}
+
+pub(crate) fn mount_identity() -> Result<u64, Error> {
+    identity(&NEXT_MOUNT)
+}
+
+fn identity(counter: &AtomicU64) -> Result<u64, Error> {
+    let mut id = counter.load(Ordering::Relaxed);
     loop {
         let next = id.checked_add(1).ok_or(Error::NoSpace)?;
-        match NEXT_DEVICE.compare_exchange_weak(id, next, Ordering::Relaxed, Ordering::Relaxed) {
+        match counter.compare_exchange_weak(id, next, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => return Ok(id),
             Err(current) => id = current,
         }
@@ -25,6 +34,7 @@ pub struct Timestamp {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Metadata {
     pub device: u64,
+    pub mount: u64,
     pub inode: u64,
     pub size: u64,
     pub blocks: u64,
@@ -35,10 +45,11 @@ pub struct Metadata {
     pub accessed: Timestamp,
     pub modified: Timestamp,
     pub changed: Timestamp,
+    pub birth: Timestamp,
 }
 
 impl Metadata {
-    pub const SIZE: usize = 84;
+    pub const SIZE: usize = 104;
 
     pub fn encode(self) -> [u8; Self::SIZE] {
         let mut bytes = [0; Self::SIZE];
@@ -59,15 +70,17 @@ impl Metadata {
         {
             chunk.copy_from_slice(&word.to_le_bytes());
         }
-        for (chunk, time) in bytes[40..76].as_chunks_mut::<12>().0.iter_mut().zip([
+        for (chunk, time) in bytes[40..88].as_chunks_mut::<12>().0.iter_mut().zip([
             self.accessed,
             self.modified,
             self.changed,
+            self.birth,
         ]) {
             chunk[..8].copy_from_slice(&time.seconds.to_le_bytes());
             chunk[8..].copy_from_slice(&time.nanoseconds.to_le_bytes());
         }
-        bytes[76..84].copy_from_slice(&self.device.to_le_bytes());
+        bytes[88..96].copy_from_slice(&self.device.to_le_bytes());
+        bytes[96..].copy_from_slice(&self.mount.to_le_bytes());
         bytes
     }
 
@@ -81,7 +94,8 @@ impl Metadata {
             nanoseconds: half(offset + 8),
         };
         let info = Self {
-            device: word(76),
+            device: word(88),
+            mount: word(96),
             inode: word(0),
             size: word(8),
             blocks: word(16),
@@ -92,6 +106,7 @@ impl Metadata {
             accessed: time(40),
             modified: time(52),
             changed: time(64),
+            birth: time(76),
         };
         info.validate()?;
         Ok(info)
@@ -100,7 +115,7 @@ impl Metadata {
     pub(crate) fn validate(&self) -> Result<(), Error> {
         if !matches!(self.mode & 0o170000, 0o040000 | 0o100000 | 0o120000)
             || self.mode & !0o177777 != 0
-            || [self.accessed, self.modified, self.changed]
+            || [self.accessed, self.modified, self.changed, self.birth]
                 .iter()
                 .any(|time| time.nanoseconds >= 1_000_000_000)
         {

@@ -14,6 +14,7 @@ use alloc::{
 
 pub(super) struct Volume {
     pub device: u64,
+    pub mount: u64,
     pub disk: Rc<Disk>,
     pub start: u64,
     pub(super) dirty: bool,
@@ -88,9 +89,11 @@ impl Volume {
             return Err(Error::InvalidData);
         }
         let device = crate::metadata::device_identity()?;
+        let mount = crate::metadata::mount_identity()?;
         disk.claim(start, length)?;
         let mut volume = Self {
             device,
+            mount,
             disk,
             start,
             dirty: false,

@@ -13,6 +13,7 @@ const HEADER_SIZE: usize = 110;
 
 pub struct Archive {
     device: u64,
+    mount: u64,
     frames: Rc<Handle<FrameAllocation>>,
     length: usize,
     entries: BTreeMap<Vec<u8>, Entry>,
@@ -60,6 +61,7 @@ impl Archive {
         }
         let mut archive = Self {
             device: crate::metadata::device_identity()?,
+            mount: crate::metadata::mount_identity()?,
             frames: Rc::new(frames),
             length,
             entries: BTreeMap::new(),
@@ -168,6 +170,7 @@ impl Archive {
                         range: data_start..data_end,
                         metadata: crate::Metadata {
                             device: self.device,
+                            mount: self.mount,
                             inode: field(&header, 6)? as u64,
                             size: size as u64,
                             blocks: (size as u64).div_ceil(512),
@@ -235,6 +238,7 @@ impl Archive {
                             range: 0..0,
                             metadata: crate::Metadata {
                                 device: self.device,
+                                mount: self.mount,
                                 inode: synthetic,
                                 mode: 0o040755,
                                 links: 2,

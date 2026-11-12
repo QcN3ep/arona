@@ -18,6 +18,7 @@ pub(super) struct Inode {
     pub accessed: crate::Timestamp,
     pub modified: crate::Timestamp,
     pub changed: crate::Timestamp,
+    pub birth: crate::Timestamp,
     pub flags: u32,
 }
 
@@ -57,10 +58,11 @@ impl Inode {
             accessed: timestamp(bytes, 8, 140),
             modified: timestamp(bytes, 16, 136),
             changed: timestamp(bytes, 12, 132),
+            birth: timestamp(bytes, 144, 148),
             flags: word(bytes, 32),
         };
         inode
-            .metadata(0)
+            .metadata(0, 0)
             .validate()
             .map_err(|_| Error::InvalidData)?;
         Ok(inode)
@@ -84,9 +86,10 @@ impl Inode {
         }
     }
 
-    pub fn metadata(&self, device: u64) -> crate::Metadata {
+    pub fn metadata(&self, device: u64, mount: u64) -> crate::Metadata {
         crate::Metadata {
             device,
+            mount,
             inode: u64::from(self.number),
             size: self.size,
             blocks: self.sectors,
@@ -97,11 +100,18 @@ impl Inode {
             accessed: self.accessed,
             modified: self.modified,
             changed: self.changed,
+            birth: self.birth,
         }
     }
 }
 
+// REFERENCE: https://www.kernel.org/doc/html/v6.12/filesystems/ext4/inodes.html
 fn timestamp(bytes: &[u8], offset: usize, extra: usize) -> crate::Timestamp {
+    if offset >= 128
+        && (bytes.len() < offset + 4 || usize::from(half(bytes, 128)) < offset + 4 - 128)
+    {
+        return crate::Timestamp::default();
+    }
     let extended = if bytes.len() >= extra + 4 && usize::from(half(bytes, 128)) >= extra + 4 - 128 {
         word(bytes, extra)
     } else {
