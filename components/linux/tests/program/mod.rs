@@ -126,6 +126,7 @@ fn writable(
         b"Kin",
         b"Vfork",
         b"Identity",
+        b"Virtual",
         b"Control",
         b"Exec",
         b"writable",

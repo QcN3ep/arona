@@ -2,7 +2,6 @@
 
 //! Linux filesystem calls and asynchronous completion.
 
-// TODO: Integrate /proc and /sys virtual files.
 // TODO: Support statfs and file change notifications.
 
 mod buffer;
@@ -14,6 +13,7 @@ pub(in crate::syscall) mod path;
 mod pipe;
 mod poll;
 mod terminal;
+mod virtual_file;
 
 use super::{
     Outcome, abi,

@@ -5,7 +5,7 @@
 pub(crate) mod pipe;
 pub(crate) mod terminal;
 
-use alloc::{collections::BTreeMap, rc::Rc};
+use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::cell::Cell;
 
 pub(crate) const O_APPEND: u32 = 0x400;
@@ -52,6 +52,12 @@ pub(crate) enum OpenFileDescription<'a> {
     Virtual {
         kind: Virtual,
         flags: Cell<u32>,
+    },
+    VirtualFile {
+        data: Vec<u8>,
+        inode: u64,
+        flags: Cell<u32>,
+        offset: Cell<usize>,
     },
 }
 
@@ -163,6 +169,18 @@ impl<'a> Descriptor<'a> {
         }
     }
 
+    pub fn snapshot(data: Vec<u8>, inode: u64, flags: u32, close_on_exec: bool) -> Self {
+        Self {
+            description: Rc::new(OpenFileDescription::VirtualFile {
+                data,
+                inode,
+                flags: Cell::new(flags),
+                offset: Cell::new(0),
+            }),
+            close_on_exec,
+        }
+    }
+
     pub fn duplicate(&self, close_on_exec: bool) -> Self {
         Self {
             description: Rc::clone(&self.description),
@@ -178,7 +196,8 @@ impl<'a> OpenFileDescription<'a> {
             | Self::Terminal { flags, .. }
             | Self::Directory { flags, .. }
             | Self::Regular { flags, .. }
-            | Self::Virtual { flags, .. } => flags.get(),
+            | Self::Virtual { flags, .. }
+            | Self::VirtualFile { flags, .. } => flags.get(),
         }
     }
 
@@ -187,7 +206,8 @@ impl<'a> OpenFileDescription<'a> {
         | Self::Terminal { flags, .. }
         | Self::Directory { flags, .. }
         | Self::Regular { flags, .. }
-        | Self::Virtual { flags, .. }) = self;
+        | Self::Virtual { flags, .. }
+        | Self::VirtualFile { flags, .. }) = self;
         flags.set((flags.get() & !(O_APPEND | O_NONBLOCK)) | (value & (O_APPEND | O_NONBLOCK)));
     }
 

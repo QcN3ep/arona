@@ -55,6 +55,9 @@ pub(in crate::syscall) fn read<'a>(
     offset: Option<usize>,
     services: &crate::Services<'_>,
 ) -> Outcome<'a> {
+    if super::virtual_file::is_virtual(process, fd_raw) {
+        return Outcome::Complete(super::virtual_file::read(process, fd_raw, buffer, offset));
+    }
     if process
         .files
         .get(fd_raw as i32 as usize)
@@ -99,7 +102,9 @@ pub(in crate::syscall) fn read<'a>(
         match descriptor.description.as_ref() {
             OpenFileDescription::Pipe { .. } => unreachable!(),
             OpenFileDescription::Terminal { .. } => unreachable!(),
-            OpenFileDescription::Virtual { .. } => unreachable!(),
+            OpenFileDescription::Virtual { .. } | OpenFileDescription::VirtualFile { .. } => {
+                unreachable!()
+            }
             OpenFileDescription::Directory { .. } => return Err(EISDIR),
             OpenFileDescription::Regular { .. } => {
                 if descriptor.description.flags() & 3 == 1 {
@@ -176,6 +181,9 @@ pub(in crate::syscall) fn write<'a>(
     buffer: Buffer,
     offset: Option<usize>,
 ) -> Outcome<'a> {
+    if super::virtual_file::is_virtual(process, fd_raw) {
+        return Outcome::Complete(super::virtual_file::write(process, fd_raw));
+    }
     if process
         .files
         .get(fd_raw as i32 as usize)
@@ -228,7 +236,9 @@ pub(in crate::syscall) fn write<'a>(
         let description = Rc::clone(&descriptor.description);
         Ok(Some(match description.as_ref() {
             OpenFileDescription::Terminal { .. } => unreachable!(),
-            OpenFileDescription::Virtual { .. } => unreachable!(),
+            OpenFileDescription::Virtual { .. } | OpenFileDescription::VirtualFile { .. } => {
+                unreachable!()
+            }
             OpenFileDescription::Regular { .. } => Pending::Write(Write {
                 description,
                 input,
@@ -276,7 +286,8 @@ pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome
             OpenFileDescription::Directory { session, .. } => session.start_fsync(),
             OpenFileDescription::Terminal { .. }
             | OpenFileDescription::Pipe { .. }
-            | OpenFileDescription::Virtual { .. } => {
+            | OpenFileDescription::Virtual { .. }
+            | OpenFileDescription::VirtualFile { .. } => {
                 return Err(EINVAL);
             }
         }
@@ -295,6 +306,9 @@ pub(in crate::syscall) fn seek<'a>(
     offset: usize,
     whence: usize,
 ) -> Outcome<'a> {
+    if super::virtual_file::is_virtual(process, fd_raw) {
+        return Outcome::Complete(super::virtual_file::seek(process, fd_raw, offset, whence));
+    }
     if process
         .files
         .get(fd_raw as i32 as usize)
@@ -317,7 +331,9 @@ pub(in crate::syscall) fn seek<'a>(
             OpenFileDescription::Terminal { .. } | OpenFileDescription::Pipe { .. } => {
                 return Err(ESPIPE);
             }
-            OpenFileDescription::Virtual { .. } => unreachable!(),
+            OpenFileDescription::Virtual { .. } | OpenFileDescription::VirtualFile { .. } => {
+                unreachable!()
+            }
             OpenFileDescription::Directory { .. } if whence as u32 == 2 => return Err(EINVAL),
             OpenFileDescription::Directory { .. } => {}
             OpenFileDescription::Regular { .. } => {}

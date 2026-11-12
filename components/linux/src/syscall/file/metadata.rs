@@ -40,6 +40,20 @@ fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) ->
     let request = match description.as_ref() {
         OpenFileDescription::Regular { file, .. } => file.start_metadata(),
         OpenFileDescription::Directory { session, .. } => session.start_metadata(),
+        OpenFileDescription::VirtualFile { data, inode, .. } => {
+            return Outcome::Complete(buffer.write(
+                process,
+                fs::Metadata {
+                    device: 4,
+                    inode: *inode,
+                    size: data.len() as u64,
+                    blocks: (data.len() as u64).div_ceil(512),
+                    links: 1,
+                    mode: 0o100444,
+                    ..fs::Metadata::default()
+                },
+            ));
+        }
         OpenFileDescription::Terminal { .. } => {
             return Outcome::Complete(buffer.write(
                 process,

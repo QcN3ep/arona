@@ -142,6 +142,7 @@ fn build_guest(
         ("syscall/file/pipe", "file-pipe"),
         ("syscall/file/poll", "file-poll"),
         ("syscall/file/terminal", "file-terminal"),
+        ("syscall/file/virtual", "file-virtual"),
         ("syscall/memory", "file-mappings"),
     ] {
         let object = directory.join(format!("{name}.o"));
