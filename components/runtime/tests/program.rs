@@ -16,6 +16,8 @@ use runtime::{Channel, Handle, ipc::Message, thread};
 mod ipc;
 mod logger;
 mod process;
+#[path = "sync/mod.rs"]
+mod sync;
 
 static TLS_DROPS: AtomicUsize = AtomicUsize::new(0);
 
@@ -150,6 +152,7 @@ fn main() {
     } else {
         ipc::run();
         run_threads();
+        sync::run();
     }
 }
 
