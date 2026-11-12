@@ -2,6 +2,8 @@
 
 # Paths relative to this crate; the adapter build consumes this explicit list.
 sources = [
+    "src/bridge.c",
+    "src/libc.c",
     "src/api/api_lib.c",
     "src/api/api_msg.c",
     "src/api/err.c",

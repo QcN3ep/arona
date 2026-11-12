@@ -17,6 +17,7 @@ Reading from the bottom up, `abi` defines handover types, `kernel` provides reso
 | `components/logger/` | `arona-logger` | User logging service and client |
 | `components/fs/` | `arona-fs` | File interfaces, clients, service, and file system implementations |
 | `components/linux/` | `arona-linux` | Linux program execution and ABI compatibility service |
+| `components/net/lwip/` | `arona-lwip` | Maintained lwIP C stack and its Rust adapter |
 | `xtask/` | `xtask` | Host build, packaging, and run tooling |
 
 Several crates use short Rust library names.
@@ -62,10 +63,16 @@ The implementation follows these rules:
 | kernel implementation, kernel-tests, abi | Forbidden | Forbidden |
 | `kernel/tests/` | Allowed | Forbidden |
 | `components/runtime/` | Allowed | Allowed |
+| `components/net/lwip/` | Allowed for the C adapter | Allowed for native platform selection |
 | Other `components/` | Forbidden | Forbidden |
 | `arch/` | Allowed | Allowed |
 
 See the [Contribution Guidelines](guidelines.md) for safety preconditions and comment rules in Rust implementations.
+
+The lwIP child crate owns the C build, OS callbacks, allocation, and FFI lifetime handling.
+Its safe Rust interface owns socket descriptors and accepts typed endpoints and slices.
+This keeps C pointers and layouts inside the child crate.
+The adapter uses the runtime's generic facilities without making the runtime depend on lwIP.
 
 Integration tests that can run on the host go in the `tests/` directory of the corresponding crate.
 Tests that require real page tables, exception entry points, thread switching, or devices are carried by architecture test images and component programs; general kernel scenarios go in `kernel-tests`.

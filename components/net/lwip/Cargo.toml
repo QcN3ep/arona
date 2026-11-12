@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
+
+[package]
+name = "arona-lwip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+autotests = false
+
+[lints]
+workspace = true
+
+[features]
+baremetal = ["runtime/program", "dep:rand_chacha", "dep:rand_core", "dep:siphasher"]
+
+[lib]
+name = "lwip"
+path = "lib.rs"
+test = false
+bench = false
+
+[[test]]
+name = "loopback"
+path = "tests/loopback/mod.rs"
+harness = false
+required-features = ["baremetal"]
+
+[dependencies]
+runtime = { package = "arona-runtime", path = "../../runtime" }
+log = { version = "0.4.34", default-features = false }
+rand_chacha = { version = "0.9", default-features = false, optional = true }
+rand_core = { version = "0.9", default-features = false, optional = true }
+siphasher = { version = "1", default-features = false, optional = true }
+
+[dev-dependencies]
+devmgr = { package = "arona-devmgr", path = "../../devmgr" }
+
+[build-dependencies]
+toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }

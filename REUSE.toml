@@ -13,7 +13,7 @@ SPDX-FileCopyrightText = "2022 Tom Milligan"
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
-path = ["components/net/lwip/src/**", "components/net/lwip/COPYING"]
+path = ["components/net/lwip/src/core/**", "components/net/lwip/src/api/**", "components/net/lwip/src/netif/**", "components/net/lwip/src/include/lwip/**", "components/net/lwip/src/include/netif/**", "components/net/lwip/COPYING"]
 precedence = "override"
 SPDX-FileCopyrightText = "The lwIP contributors (see the original notices in each file)"
 SPDX-License-Identifier = "BSD-3-Clause"

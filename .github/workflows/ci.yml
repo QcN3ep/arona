@@ -34,6 +34,9 @@ jobs:
     name: Build (${{ matrix.target }})
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      ARONA_CC: clang-18
+      ARONA_AR: llvm-ar-18
     strategy:
       fail-fast: false
       matrix:
@@ -47,8 +50,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           rustflags: ""
-      - name: Install linker
-        run: sudo apt-get update && sudo apt-get install -y clang lld
+      - name: Install C compiler, archiver, and linker
+        run: sudo apt-get update && sudo apt-get install -y clang-18 llvm-18 lld
       - run: cargo xtask build ${{ matrix.target }}
       - name: Clippy bare-metal libraries and binaries
         env:
@@ -56,7 +59,7 @@ jobs:
         run: >-
           cargo clippy --locked --workspace --exclude xtask --lib --bins
           --target ${{ matrix.triple }}
-          --features arona-arch/baremetal,arona-arch/embedded-initramfs,arona-runtime/program,arona-init/baremetal,arona-devmgr/baremetal,arona-logger/baremetal,arona-fs/baremetal,arona-linux/baremetal
+          --features arona-arch/baremetal,arona-arch/embedded-initramfs,arona-runtime/program,arona-init/baremetal,arona-devmgr/baremetal,arona-logger/baremetal,arona-fs/baremetal,arona-linux/baremetal,arona-lwip/baremetal
           -Zbuild-std=core,alloc,compiler_builtins
           -Zbuild-std-features=compiler-builtins-mem
           -- -D warnings --force-warn clippy::too_many_lines
@@ -71,14 +74,23 @@ jobs:
       - name: Clippy user-space tests
         run: >-
           cargo clippy --locked --tests
-          -p arona-runtime -p arona-devmgr -p arona-logger -p arona-fs -p arona-linux
-          --features arona-runtime/program,arona-devmgr/baremetal,arona-logger/baremetal,arona-fs/baremetal,arona-linux/baremetal
+          -p arona-runtime -p arona-devmgr -p arona-logger -p arona-fs -p arona-linux -p arona-lwip
+          --features arona-runtime/program,arona-devmgr/baremetal,arona-logger/baremetal,arona-fs/baremetal,arona-linux/baremetal,arona-lwip/baremetal
           --target ${{ matrix.triple }}
           -Zbuild-std=core,alloc,compiler_builtins
           -Zbuild-std-features=compiler-builtins-mem
           -- -D warnings --force-warn clippy::too_many_lines
       - run: cargo xtask build ${{ matrix.target }} --release
       - run: cargo xtask package-linux-test ${{ matrix.target }} --release
+      - name: Link lwIP loopback programs
+        run: |
+          for profile in '' --release; do
+            cargo rustc --locked -p arona-lwip --features baremetal --test loopback \
+              --target ${{ matrix.triple }} $profile \
+              -Zbuild-std=core,alloc,compiler_builtins \
+              -Zbuild-std-features=compiler-builtins-mem \
+              -- -Cstrip=symbols -Clink-arg=-zmax-page-size=4096
+          done
 
   book:
     name: Book

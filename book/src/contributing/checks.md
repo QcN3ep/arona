@@ -28,6 +28,7 @@ The project follows these rules by directory:
 | `kernel/tests/` | Allowed | Forbidden |
 | `kernel-tests/`, `abi/` | Forbidden | Forbidden |
 | `components/runtime/` | Allowed | Allowed |
+| `components/net/lwip/` | Allowed for the C adapter | Allowed for native platform selection |
 | Other `components/` | Forbidden | Forbidden |
 
 Architecture implementations live in `arch/` and may use `unsafe` and conditional compilation corresponding to hardware operations.

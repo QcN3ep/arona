@@ -654,8 +654,9 @@ tcpip_callback_wait(tcpip_callback_fn function, void *ctx)
  *
  * @param initfunc a function to call when tcpip_thread is running and finished initializing
  * @param arg argument to pass to initfunc
+ * @return ERR_OK on startup, or ERR_MEM after mailbox or thread creation fails
  */
-void
+err_t
 tcpip_init(tcpip_init_done_fn initfunc, void *arg)
 {
   lwip_init();
@@ -663,15 +664,23 @@ tcpip_init(tcpip_init_done_fn initfunc, void *arg)
   tcpip_init_done = initfunc;
   tcpip_init_done_arg = arg;
   if (sys_mbox_new(&tcpip_mbox, TCPIP_MBOX_SIZE) != ERR_OK) {
-    LWIP_ASSERT("failed to create tcpip_thread mbox", 0);
+    return ERR_MEM;
   }
 #if LWIP_TCPIP_CORE_LOCKING
   if (sys_mutex_new(&lock_tcpip_core) != ERR_OK) {
-    LWIP_ASSERT("failed to create lock_tcpip_core", 0);
+    sys_mbox_free(&tcpip_mbox);
+    return ERR_MEM;
   }
 #endif /* LWIP_TCPIP_CORE_LOCKING */
 
-  sys_thread_new(TCPIP_THREAD_NAME, tcpip_thread, NULL, TCPIP_THREAD_STACKSIZE, TCPIP_THREAD_PRIO);
+  if (!sys_thread_new(TCPIP_THREAD_NAME, tcpip_thread, NULL, TCPIP_THREAD_STACKSIZE, TCPIP_THREAD_PRIO)) {
+#if LWIP_TCPIP_CORE_LOCKING
+    sys_mutex_free(&lock_tcpip_core);
+#endif
+    sys_mbox_free(&tcpip_mbox);
+    return ERR_MEM;
+  }
+  return ERR_OK;
 }
 
 /**

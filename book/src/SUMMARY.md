@@ -40,6 +40,7 @@
 - [Logging Service](services/logger.md)
 - [File Service](services/fs.md)
 - [Linux Compatibility Service](services/linux.md)
+- [Network Stack](services/net.md)
 
 # Development Tools
 
