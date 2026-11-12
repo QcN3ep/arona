@@ -34,7 +34,9 @@ pub(super) fn dispatch<'a>(
             process.threads[index].clear_tid = args[0];
             Ok(process.threads[index].tid)
         }
-        abi::CLONE if args[0] & 0x10000 == 0 => child::fork(process, index, context, args),
+        abi::CLONE if args[0] & 0x10000 == 0 => {
+            return Some(child::fork(process, index, context, args));
+        }
         abi::CLONE => thread::clone(process, index, context, args),
         abi::SCHED_YIELD => runtime::thread::yield_now().map(|()| 0).map_err(error),
         _ => identity::dispatch(process, number, args)?,
@@ -55,6 +57,9 @@ pub(super) fn exit<'a>(
     index: usize,
     code: usize,
 ) -> Result<Outcome<'a>, Error> {
+    if process.threads.len() == 1 {
+        process.release_vfork();
+    }
     process.threads[index].native.terminate(
         ExitStatus {
             code: code as u8,
@@ -66,6 +71,7 @@ pub(super) fn exit<'a>(
 }
 
 pub(super) fn exit_group<'a>(process: &Process<'a>, code: usize) -> Result<Outcome<'a>, Error> {
+    process.release_vfork();
     let status = ExitStatus {
         code: code as u8,
         signal: 0,

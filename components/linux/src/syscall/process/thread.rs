@@ -96,6 +96,7 @@ pub(super) fn clone(
                 pending: None,
                 signals,
                 held: None,
+                vfork: None,
                 interrupt_requested: false,
             });
             Ok(tid)

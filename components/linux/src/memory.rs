@@ -527,6 +527,24 @@ impl AddressSpace {
         parent: &Handle<Task>,
         port: &Handle<TrapPort>,
     ) -> Result<Self, runtime::Error> {
+        self.clone_space(parent, port, false)
+    }
+
+    /// Create a second address space that maps the same frames without copying them.
+    pub fn fork_shared(
+        &self,
+        parent: &Handle<Task>,
+        port: &Handle<TrapPort>,
+    ) -> Result<Self, runtime::Error> {
+        self.clone_space(parent, port, true)
+    }
+
+    fn clone_space(
+        &self,
+        parent: &Handle<Task>,
+        port: &Handle<TrapPort>,
+        share: bool,
+    ) -> Result<Self, runtime::Error> {
         let child = Self {
             native: SupervisedTask::new(parent, port)?,
             heap: self.heap.clone(),
@@ -552,7 +570,7 @@ impl AddressSpace {
                 .query(address)?
                 .and_then(|info| info.permissions)
                 .ok_or(runtime::Error::Protocol)?;
-            let (frames, offset) = if matches!(page.backing, PageBacking::Shared) {
+            let (frames, offset) = if share || matches!(page.backing, PageBacking::Shared) {
                 (Rc::clone(&page.frames), page.offset)
             } else {
                 let mut bytes = [0; PAGE_SIZE];

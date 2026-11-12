@@ -32,6 +32,9 @@ pub(crate) struct Pending<'a> {
 enum Outcome<'a> {
     Complete(SyscallResult),
     Pending(Operation<'a>),
+    Vfork {
+        wait: alloc::rc::Rc<crate::process::Vfork>,
+    },
     Terminated,
     Restored,
     Restart,
@@ -156,6 +159,12 @@ pub(crate) fn dispatch<'a>(
             process.threads[index].pending = Some(Pending { context, operation });
             Ok(())
         }
+        Outcome::Vfork { wait } => {
+            // The parent thread resumes only after the child execs or exits.
+            process.threads[index].vfork = Some(wait);
+            process.threads[index].held = Some(context);
+            Ok(())
+        }
         Outcome::Terminated => Ok(()),
     }
 }
@@ -218,7 +227,7 @@ impl Context {
         }
     }
 
-    fn complete(
+    pub(crate) fn complete(
         mut self,
         process: &mut Process<'_>,
         index: usize,

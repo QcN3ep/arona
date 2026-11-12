@@ -58,6 +58,7 @@ fn take(process: &Process<'_>, index: usize, number: u8) {
 }
 
 pub fn terminate(process: &Process<'_>, signal: u8) -> Result<(), Error> {
+    process.release_vfork();
     for thread in &process.threads {
         thread
             .native
@@ -76,6 +77,19 @@ fn stop(process: &Process<'_>, signal: u8) {
 }
 
 pub fn poll(process: &mut Process<'_>, index: usize) -> Result<bool, Error> {
+    if let Some(vfork) = process.threads[index].vfork.clone() {
+        if !vfork.done() {
+            return Ok(false);
+        }
+        let child = vfork.child();
+        process.threads[index].vfork = None;
+        let context = process.threads[index]
+            .held
+            .take()
+            .ok_or(Error::Runtime(runtime::Error::Protocol))?;
+        context.complete(process, index, Ok(child))?;
+        return Ok(true);
+    }
     let selected = next(process, index);
     if let Some((info, action)) = selected {
         if info.number == KILL || action.handler == 0 && !matches!(info.number, STOP | 20 | 21 | 22)

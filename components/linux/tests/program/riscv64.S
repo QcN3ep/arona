@@ -99,6 +99,8 @@ auxv_done:
     beq s3, t1, identity_replaced
     li t1, 75
     beq s3, t1, fork_process
+    li t1, 86
+    beq s3, t1, vfork_process
     li t1, 74
     beq s3, t1, futex_basics
     li t1, 72

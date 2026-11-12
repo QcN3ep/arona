@@ -163,10 +163,14 @@ impl<'a> Pending<'a> {
                 pending: None,
                 signals: thread_signals,
                 held: None,
+                vfork: None,
                 interrupt_requested: false,
             });
             process.files.close_on_exec();
             process.namespace.exec(process.pid);
+            if let Some(vfork) = process.vfork.take() {
+                vfork.release();
+            }
             Ok(())
         })())
     }

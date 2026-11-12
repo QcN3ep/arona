@@ -7,7 +7,7 @@ pub(crate) mod signal;
 pub(crate) mod terminal;
 
 use alloc::{rc::Rc, vec::Vec};
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use namespace::PidNamespace;
 use runtime::{
     Handle, Rights, Task, TrapPort,
@@ -34,7 +34,36 @@ pub(crate) struct Thread<'a> {
     pub pending: Option<Pending<'a>>,
     pub signals: Rc<RefCell<ThreadSignals>>,
     pub held: Option<syscall::Context>,
+    pub vfork: Option<Rc<Vfork>>,
     pub interrupt_requested: bool,
+}
+
+/// Completion state shared by a vfork parent and the child that owns its suspended context.
+pub(crate) struct Vfork {
+    child: usize,
+    done: Cell<bool>,
+}
+
+impl Vfork {
+    pub fn new(child: usize) -> Rc<Self> {
+        Rc::new(Self {
+            child,
+            done: Cell::new(false),
+        })
+    }
+
+    pub fn child(&self) -> usize {
+        self.child
+    }
+
+    pub fn done(&self) -> bool {
+        self.done.get()
+    }
+
+    /// Resume the parent after the child replaces its address space or exits.
+    pub fn release(&self) {
+        self.done.set(true);
+    }
 }
 
 pub(crate) struct Process<'a> {
@@ -51,6 +80,7 @@ pub(crate) struct Process<'a> {
     pub terminal: alloc::rc::Rc<crate::file::terminal::Terminal>,
     pub cwd: Option<alloc::rc::Rc<crate::file::OpenFileDescription<'a>>>,
     pub machine: Machine,
+    pub vfork: Option<Rc<Vfork>>,
     pub umask: u16,
     pub status: ExitStatus,
 }
@@ -111,12 +141,14 @@ impl<'a> Process<'a> {
                 pending: None,
                 signals: thread_signals,
                 held: None,
+                vfork: None,
                 interrupt_requested: false,
             }],
             files,
             terminal,
             cwd: None,
             machine,
+            vfork: None,
             umask: 0o022,
             status: ExitStatus { code: 0, signal: 0 },
         })
@@ -204,7 +236,17 @@ impl<'a> Process<'a> {
             }
             index += 1;
         }
+        if self.threads.is_empty() {
+            self.release_vfork();
+        }
         Ok(progress)
+    }
+
+    /// Resume a suspended vfork parent once this process replaces its address space or exits.
+    pub fn release_vfork(&self) {
+        if let Some(vfork) = &self.vfork {
+            vfork.release();
+        }
     }
 
     pub fn waits<'b>(&'b self, items: &mut Vec<WaitItem<'b>>) {

@@ -107,7 +107,86 @@ child_failure:
     addi.d $a0, $s8, 100
     invoke 94
     b child_failure
+.section .text
+.global vfork_process
+vfork_process:
+    addi.d $sp, $sp, -64
+    la.pcrel $s4, private_word
+    li.d $t0, 1
+    st.d $t0, $s4, 0
+    li.d $a0, 0x4111
+    li.d $a1, 0
+    li.d $a2, 0
+    li.d $a3, 0
+    li.d $a4, 0
+    invoke 220
+    beqz $a0, vfork_shared_child
+    bltz $a0, child_failure
+    move $s5, $a0
+    ld.d $t0, $s4, 0
+    li.d $t1, 2
+    bne $t0, $t1, child_failure
+    move $a0, $s5
+    addi.d $a1, $sp, 24
+    li.d $a2, 0
+    li.d $a3, 0
+    invoke 260
+    bne $a0, $s5, child_failure
+    ld.w $t0, $sp, 24
+    li.d $t1, 5888
+    bne $t0, $t1, child_failure
+    li.d $a0, 0x4111
+    li.d $a1, 0
+    li.d $a2, 0
+    li.d $a3, 0
+    li.d $a4, 0
+    invoke 220
+    beqz $a0, vfork_exec_child
+    bltz $a0, child_failure
+    move $s6, $a0
+    ld.d $t0, $s4, 0
+    li.d $t1, 2
+    bne $t0, $t1, child_failure
+    move $a0, $s6
+    addi.d $a1, $sp, 24
+    li.d $a2, 0
+    li.d $a3, 0
+    invoke 260
+    bne $a0, $s6, child_failure
+    ld.w $t0, $sp, 24
+    bnez $t0, child_failure
+    li.d $a0, 42
+    invoke 94
+vfork_shared_child:
+    la.pcrel $t0, private_word
+    li.d $t1, 2
+    st.d $t1, $t0, 0
+    li.d $a0, 23
+    invoke 94
+vfork_exec_child:
+    la.pcrel $t0, vfork_path
+    la.pcrel $t1, vfork_argv
+    st.d $t0, $t1, 0
+    la.pcrel $t0, vfork_mode
+    st.d $t0, $t1, 8
+    st.d $zero, $t1, 16
+    la.pcrel $t0, vfork_environment
+    la.pcrel $t1, vfork_envp
+    st.d $t0, $t1, 0
+    st.d $zero, $t1, 8
+    la.pcrel $a0, vfork_path
+    la.pcrel $a1, vfork_argv
+    la.pcrel $a2, vfork_envp
+    invoke 221
+    li.d $a0, 99
+    invoke 94
+.section .rodata
+vfork_path: .asciz "/bin/linux-test"
+vfork_mode: .asciz "O"
+vfork_environment: .asciz "ARONA_TEST=yes"
 .section .bss
 .balign 8
 private_word: .skip 8
+vfork_argv: .skip 24
+vfork_envp: .skip 16
 .section .note.GNU-stack,"",@progbits
