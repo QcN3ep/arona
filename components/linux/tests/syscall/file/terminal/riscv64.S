@@ -22,6 +22,126 @@ files_terminal:
     lw t0, 12(sp)
     andi t0, t0, 2
     beqz t0, terminal_failure
+    li t0, 17664
+    sw t0, 0(sp)
+    li a0, 0
+    li a1, 0x5402
+    mv a2, sp
+    invoke 29
+    expect 0
+    li a0, 1
+    la a1, utf8_prompt
+    li a2, 20
+    invoke 64
+    expect 20
+    li a0, 0
+    addi a1, sp, 128
+    li a2, 32
+    invoke 63
+    expect 3
+    lbu t0, 128(sp)
+    li t1, 65
+    bne t0, t1, terminal_failure
+    lbu t0, 129(sp)
+    li t1, 66
+    bne t0, t1, terminal_failure
+    lbu t0, 130(sp)
+    li t1, 10
+    bne t0, t1, terminal_failure
+    li t0, 1280
+    sw t0, 0(sp)
+    li a0, 0
+    li a1, 0x5402
+    mv a2, sp
+    invoke 29
+    expect 0
+    li a0, 1
+    la a1, bytes_prompt
+    li a2, 21
+    invoke 64
+    expect 21
+    li a0, 0
+    addi a1, sp, 128
+    li a2, 32
+    invoke 63
+    expect 5
+    lbu t0, 128(sp)
+    li t1, 65
+    bne t0, t1, terminal_failure
+    lbu t0, 129(sp)
+    li t1, 226
+    bne t0, t1, terminal_failure
+    lbu t0, 130(sp)
+    li t1, 130
+    bne t0, t1, terminal_failure
+    lbu t0, 131(sp)
+    li t1, 66
+    bne t0, t1, terminal_failure
+    lbu t0, 132(sp)
+    li t1, 10
+    bne t0, t1, terminal_failure
+    li t0, 17664
+    sw t0, 0(sp)
+    li a0, 0
+    li a1, 0x5402
+    mv a2, sp
+    invoke 29
+    expect 0
+    li a0, 1
+    la a1, invalid_prompt
+    li a2, 23
+    invoke 64
+    expect 23
+    li a0, 0
+    addi a1, sp, 128
+    li a2, 32
+    invoke 63
+    expect 4
+    lbu t0, 128(sp)
+    li t1, 65
+    bne t0, t1, terminal_failure
+    lbu t0, 129(sp)
+    li t1, 226
+    bne t0, t1, terminal_failure
+    lbu t0, 130(sp)
+    li t1, 66
+    bne t0, t1, terminal_failure
+    lbu t0, 131(sp)
+    li t1, 10
+    bne t0, t1, terminal_failure
+    li t0, 1280
+    sw t0, 0(sp)
+    li a0, 0
+    li a1, 0x5402
+    mv a2, sp
+    invoke 29
+    expect 0
+    li a0, 1
+    la a1, reprint_prompt
+    li a2, 23
+    invoke 64
+    expect 23
+    li a0, 0
+    addi a1, sp, 128
+    li a2, 32
+    invoke 63
+    expect 3
+    lbu t0, 128(sp)
+    li t1, 97
+    bne t0, t1, terminal_failure
+    lbu t0, 129(sp)
+    li t1, 98
+    bne t0, t1, terminal_failure
+    lbu t0, 130(sp)
+    li t1, 10
+    bne t0, t1, terminal_failure
+    li t0, 0x500
+    sw t0, 0(sp)
+    li a0, 0
+    li a1, 0x5402
+    mv a2, sp
+    invoke 29
+    expect 0
     li a0, 0
     li a1, 0x5413
     addi a2, sp, 64
@@ -370,6 +490,11 @@ terminal_failure:
     invoke 94
     j terminal_failure
 .section .rodata
+utf8_prompt: .ascii "Linux terminal utf8\n"
+bytes_prompt: .ascii "Linux terminal bytes\n"
+invalid_prompt: .ascii "Linux terminal invalid\n"
+reprint_prompt: .ascii "Linux terminal reprint\n"
+
 canonical_prompt: .ascii "Linux terminal canonical\n"
 raw_prompt: .ascii "Linux terminal raw\n"
 
