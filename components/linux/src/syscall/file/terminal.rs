@@ -2,13 +2,19 @@
 
 //! Terminal input and terminal ioctl.
 
-use super::{Buffer, Pending, buffer::IoVectors, fd, outcome};
+use super::{Buffer, O_CLOEXEC, Pending, buffer::IoVectors, fd, outcome};
 use crate::{
-    file::{O_NONBLOCK, OpenFileDescription, terminal::Terminal},
+    file::{
+        Descriptor, O_NONBLOCK, OpenFileDescription,
+        terminal::{Side, Terminal},
+    },
     process::{Process, terminal::Access},
     syscall::{
         Outcome,
-        abi::{EAGAIN, EBADF, EFAULT, EINVAL, EIO, ENOTTY, ESPIPE, Errno, SyscallResult},
+        abi::{
+            EAGAIN, EBADF, EFAULT, EINVAL, EIO, EMFILE, ENOENT, ENOTTY, ESPIPE, Errno,
+            SyscallResult,
+        },
     },
 };
 use alloc::{rc::Rc, vec::Vec};
@@ -69,12 +75,14 @@ pub(super) fn write_output<'a>(
         let OpenFileDescription::Terminal { terminal, .. } = description.as_ref() else {
             unreachable!()
         };
-        if !process.namespace.terminal_access(
-            process.pid,
-            process.threads[index].tid,
-            terminal,
-            Access::Write,
-        )? {
+        if !terminal.is_master()
+            && !process.namespace.terminal_access(
+                process.pid,
+                process.threads[index].tid,
+                terminal,
+                Access::Write,
+            )?
+        {
             return Ok(Outcome::Restart);
         }
         let input = buffer
@@ -82,6 +90,12 @@ pub(super) fn write_output<'a>(
             .gather(process, devmgr::uart::MAX_BYTES)?;
         if input.is_empty() {
             return Ok(Outcome::Complete(Ok(0)));
+        }
+        if terminal.is_pty() {
+            return Ok(outcome(Ok(Pending::TerminalWrite(Write {
+                description,
+                bytes: input,
+            }))));
         }
         if terminal.stopped() {
             if description.flags() & O_NONBLOCK != 0 {
@@ -96,7 +110,10 @@ pub(super) fn write_output<'a>(
         }
         let (bytes, consumed) = terminal.output(&input);
         Ok(outcome(Ok(Pending::Output {
-            request: terminal.output.start_write(&bytes).map_err(|_| EIO)?,
+            request: terminal
+                .uart_output()
+                .start_write(&bytes)
+                .map_err(|_| EIO)?,
             consumed,
             _description: description,
         })))
@@ -134,7 +151,7 @@ impl Output {
             }
             let (bytes, consumed) = self.terminal.output(&self.input);
             self.consumed = consumed;
-            let request = match self.terminal.output.start_write(&bytes) {
+            let request = match self.terminal.uart_output().start_write(&bytes) {
                 Ok(request) => request,
                 Err(_) => return Some(Err(EIO)),
             };
@@ -159,13 +176,15 @@ impl Read<'_> {
             unreachable!()
         };
         let terminal = Rc::clone(terminal);
-        match process
-            .namespace
-            .terminal_access(process.pid, self.tid, &terminal, Access::Read)
-        {
-            Ok(true) => {}
-            Ok(false) => return None,
-            Err(error) => return Some(Err(error)),
+        if !terminal.is_master() {
+            match process
+                .namespace
+                .terminal_access(process.pid, self.tid, &terminal, Access::Read)
+            {
+                Ok(true) => {}
+                Ok(false) => return None,
+                Err(error) => return Some(Err(error)),
+            }
         }
         let nonblocking = self.description.flags() & O_NONBLOCK != 0;
         let settings = terminal.termios();
@@ -182,7 +201,7 @@ impl Read<'_> {
             self.deadline = None;
         }
         let available = terminal.available();
-        let ready = if mode == ReadMode::Canonical {
+        let ready = if terminal.is_master() || mode == ReadMode::Canonical {
             terminal.readable()
         } else {
             match self.raw_ready(process, &terminal, available, nonblocking) {
@@ -199,7 +218,13 @@ impl Read<'_> {
             );
         }
         if terminal.failed() {
-            return Some(Ok(0));
+            // A master whose slave side is gone reports I/O failure, while a
+            // slave whose master closed observes end-of-file.
+            return Some(if terminal.is_master() {
+                Err(EIO)
+            } else {
+                Ok(0)
+            });
         }
         if nonblocking {
             return Some(Err(EAGAIN));
@@ -211,12 +236,13 @@ impl Read<'_> {
         let OpenFileDescription::Terminal { terminal, .. } = self.description.as_ref() else {
             unreachable!()
         };
-        let foreground = process
-            .namespace
-            .foreground(process.pid, terminal)
-            .map_or(true, |(_, group)| {
-                group == process.namespace.group(process.pid)
-            });
+        let foreground = terminal.is_master()
+            || process
+                .namespace
+                .foreground(process.pid, terminal)
+                .map_or(true, |(_, group)| {
+                    group == process.namespace.group(process.pid)
+                });
         if foreground && terminal.termios()[12] & 2 == 0 && terminal.available() != 0 {
             let mut bytes = terminal.snapshot(self.buffers.length());
             return (
@@ -279,19 +305,31 @@ impl Read<'_> {
 }
 
 pub(in crate::syscall) struct Change {
-    request: devmgr::device::Pending<()>,
+    request: Option<devmgr::device::Pending<()>>,
     terminal: Rc<Terminal>,
     settings: Option<[u8; 36]>,
     flush: bool,
 }
 
 impl Change {
-    pub fn call(&self) -> &runtime::Handle<runtime::Call> {
-        self.request.call()
+    pub fn call(&self) -> Option<&runtime::Handle<runtime::Call>> {
+        Some(self.request.as_ref()?.call())
     }
 
     pub fn poll(&mut self) -> Option<SyscallResult> {
-        match self.request.try_complete() {
+        if self.terminal.is_pty() {
+            if self.terminal.output_pending() {
+                return None;
+            }
+            if self.flush {
+                self.terminal.flush(0);
+            }
+            if let Some(settings) = self.settings.take() {
+                self.terminal.set_termios(settings, false);
+            }
+            return Some(Ok(0));
+        }
+        match self.request.as_mut()?.try_complete() {
             Err(devmgr::Error::Runtime(runtime::Error::Kernel(
                 runtime::KernelError::WouldBlock,
             ))) => None,
@@ -307,12 +345,15 @@ impl Change {
 }
 
 pub(super) fn start<'a>(
-    process: &Process<'a>,
+    process: &mut Process<'a>,
     index: usize,
     raw: usize,
     command: usize,
     address: usize,
 ) -> Outcome<'a> {
+    if command as u32 == 0x5441 {
+        return Outcome::Complete(open_peer(process, raw, address));
+    }
     if process
         .files
         .get(raw as i32 as usize)
@@ -340,25 +381,39 @@ pub(super) fn start<'a>(
     if !matches!(command as u32, 0x5403 | 0x5404 | 0x5409 | 0x5425) {
         return Outcome::Complete(ioctl(process, raw, command, address));
     }
-    outcome((|| {
+    start_change(process, raw, command as u32, address)
+}
+
+fn start_change<'a>(
+    process: &Process<'a>,
+    raw: usize,
+    command: u32,
+    address: usize,
+) -> Outcome<'a> {
+    let operation = (|| {
         let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
         let OpenFileDescription::Terminal { terminal, .. } = descriptor.description.as_ref() else {
             return Err(ENOTTY);
         };
         // Drain requests complete after the output queue empties; the attribute requests
         // apply their settings afterwards, while break-only requests apply nothing.
-        let settings = match command as u32 {
+        let settings = match command {
             0x5403 | 0x5404 => Some(settings(process, address)?),
             _ => None,
         };
-        let request = terminal.output.start_flush().map_err(|_| EIO)?;
+        let request = if terminal.is_pty() {
+            None
+        } else {
+            Some(terminal.uart_output().start_flush().map_err(|_| EIO)?)
+        };
         Ok(Pending::TerminalChange(Change {
             request,
             terminal: Rc::clone(terminal),
             settings,
-            flush: command as u32 == 0x5404,
+            flush: command == 0x5404,
         }))
-    })())
+    })();
+    outcome(operation)
 }
 
 fn settings(process: &Process<'_>, address: usize) -> Result<[u8; 36], Errno> {
@@ -418,6 +473,9 @@ fn terminal_ioctl(
     command: u32,
     address: usize,
 ) -> SyscallResult {
+    if let Some(result) = pty_ioctl(process, terminal, command, address) {
+        return result;
+    }
     match command {
         0x540e => process
             .namespace
@@ -471,7 +529,11 @@ fn terminal_ioctl(
         }
         0x540b => match address {
             0 | 2 => {
-                terminal.set_termios(terminal.termios(), true);
+                terminal.flush(address as u32);
+                Ok(0)
+            }
+            1 if terminal.is_pty() => {
+                terminal.flush(1);
                 Ok(0)
             }
             1 => Ok(0),
@@ -525,6 +587,102 @@ fn terminal_ioctl(
         // No break signal exists on the console device; accept the requests without one.
         0x5427 | 0x5428 => Ok(0),
         _ => Err(ENOTTY),
+    }
+}
+
+pub(in crate::syscall) struct Write<'a> {
+    description: Rc<OpenFileDescription<'a>>,
+    bytes: Vec<u8>,
+}
+
+impl Write<'_> {
+    pub fn poll(&self) -> Option<SyscallResult> {
+        let OpenFileDescription::Terminal { terminal, .. } = self.description.as_ref() else {
+            unreachable!()
+        };
+        if terminal.failed() && terminal.is_slave() {
+            return Some(Err(EIO));
+        }
+        if terminal.stopped() && terminal.is_slave() {
+            return if self.description.flags() & O_NONBLOCK != 0 {
+                Some(Err(EAGAIN))
+            } else {
+                None
+            };
+        }
+        let count = terminal.write_pty(&self.bytes);
+        if count != 0 {
+            return Some(Ok(count));
+        }
+        if self.description.flags() & O_NONBLOCK != 0 {
+            Some(Err(EAGAIN))
+        } else {
+            None
+        }
+    }
+}
+
+/// Opens the slave peer of a pseudo-terminal master without a path lookup.
+///
+/// The argument carries the descriptor flags, of which only the access mode,
+/// `O_NONBLOCK`, and `O_CLOEXEC` are meaningful.
+fn open_peer(process: &mut Process<'_>, raw: usize, address: usize) -> Result<usize, Errno> {
+    let terminal = {
+        let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
+        let OpenFileDescription::Terminal { terminal, .. } = descriptor.description.as_ref() else {
+            return Err(ENOTTY);
+        };
+        if !terminal.is_master() {
+            return Err(ENOTTY);
+        }
+        Rc::clone(terminal)
+    };
+    let number = terminal.pty_number().ok_or(ENOTTY)?;
+    let flags = u32::try_from(address).map_err(|_| EINVAL)?;
+    if flags & !(3 | O_NONBLOCK | O_CLOEXEC | 0x100) != 0 || flags & 3 == 3 {
+        return Err(EINVAL);
+    }
+    let pair = process.namespace.ptys.slave(number).ok_or(ENOENT)?;
+    if !pair.unlocked() {
+        return Err(EIO);
+    }
+    process
+        .files
+        .insert(
+            Descriptor::terminal(
+                Rc::new(Terminal::pty(pair, Side::Slave)),
+                flags & (3 | O_NONBLOCK),
+                flags & O_CLOEXEC != 0,
+            ),
+            0,
+        )
+        .ok_or(EMFILE)
+}
+
+/// Handles the pseudo-terminal ioctls that only the master accepts.
+fn pty_ioctl(
+    process: &Process<'_>,
+    terminal: &Rc<Terminal>,
+    command: u32,
+    address: usize,
+) -> Option<SyscallResult> {
+    if !terminal.is_master() {
+        return matches!(command, 0x80045430 | 0x40045431).then_some(Err(ENOTTY));
+    }
+    match command {
+        0x80045430 => match terminal.pty_number() {
+            Some(number) => Some(write(process, address, &number.to_le_bytes())),
+            None => Some(Err(ENOTTY)),
+        },
+        0x40045431 => {
+            let mut bytes = [0; 4];
+            if process.address_space.read(address, &mut bytes).is_err() {
+                return Some(Err(EFAULT));
+            }
+            terminal.set_unlocked(i32::from_le_bytes(bytes) == 0);
+            Some(Ok(0))
+        }
+        _ => None,
     }
 }
 

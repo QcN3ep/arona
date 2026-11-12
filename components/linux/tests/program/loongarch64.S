@@ -134,6 +134,8 @@ auxv_done:
     beq $s3, $t1, files_terminal
     li.d $t1, 80
     beq $s3, $t1, files_pipe
+    li.d $t1, 88
+    beq $s3, $t1, files_pty
     li.d $t1, 82
     beq $s3, $t1, files_poll
     li.d $t1, 76

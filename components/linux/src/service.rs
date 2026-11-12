@@ -292,7 +292,9 @@ fn wait(
     for terminal in terminals.values() {
         // One wake covers every writer the terminal holds stopped; the loop re-polls
         // all pendings and each writer re-checks the stop state itself.
-        items.push(WaitItem::new(terminal.resume_event(), 1));
+        if let Some(event) = terminal.resume_event() {
+            items.push(WaitItem::new(event, 1));
+        }
     }
     for pending in loading {
         pending.waits(&mut items);

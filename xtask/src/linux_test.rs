@@ -187,6 +187,7 @@ fn build_guest(
         ("syscall/file/pipe", "file-pipe"),
         ("syscall/file/poll", "file-poll"),
         ("syscall/file/terminal", "file-terminal"),
+        ("syscall/file/pty", "file-pty"),
         ("syscall/file/virtual", "file-virtual"),
         ("syscall/memory", "file-mappings"),
     ] {
@@ -308,8 +309,8 @@ fn compile_guest(
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let source_directory = root.join("components/linux/tests").join(directory_name);
     let mut objects = Vec::new();
-    for name in sources {
-        let object = directory.join(format!("{executable_name}-{name}.o"));
+    for (index, name) in sources.iter().enumerate() {
+        let object = directory.join(format!("{executable_name}-{index}.o"));
         let mut compile = Command::new("clang");
         compile.arg(format!("--target={triple}"));
         if name.ends_with(".S") {
@@ -422,7 +423,7 @@ fn fs_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<u8
         target,
         "syscall/file/mount",
         "linux-fs-test",
-        &["fs.c"],
+        &["fs.c", "../pty/limits.c"],
         isa,
     )
 }

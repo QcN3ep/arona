@@ -9,15 +9,18 @@ use runtime::{Call, Handle};
 use super::super::{
     Outcome,
     abi::{
-        EBUSY, EFAULT, EINVAL, EISDIR, EMFILE, ENAMETOOLONG, ENOENT, ENOTDIR, EOPNOTSUPP,
-        EOVERFLOW, EROFS, Errno, SyscallResult,
+        EBUSY, EFAULT, EINVAL, EIO, EISDIR, EMFILE, ENAMETOOLONG, ENOENT, ENOMEM, ENOTDIR,
+        EOPNOTSUPP, EOVERFLOW, EROFS, Errno, SyscallResult,
     },
 };
 use super::{O_CLOEXEC, Pending, completion, filesystem_error, outcome, virtual_file};
 use crate::{
     Services,
     elf::PAGE_SIZE,
-    file::{Descriptor, O_APPEND, O_DSYNC, O_NONBLOCK, O_PATH, OpenFileDescription, Virtual},
+    file::{
+        Descriptor, O_APPEND, O_DSYNC, O_NONBLOCK, O_PATH, OpenFileDescription, Virtual,
+        terminal::{Side, Terminal},
+    },
     process::Process,
 };
 
@@ -101,6 +104,12 @@ pub(in crate::syscall) fn openat<'a>(
         }
         if name == b"/dev/console" {
             return open_terminal(process, flags, true).map(|fd| Outcome::Complete(Ok(fd)));
+        }
+        if name == b"/dev/ptmx" {
+            return open_pty(process, None, flags).map(|fd| Outcome::Complete(Ok(fd)));
+        }
+        if let Some(number) = pty_slave_number(&name) {
+            return open_pty(process, Some(number), flags).map(|fd| Outcome::Complete(Ok(fd)));
         }
         match name.as_slice() {
             b"/dev/null" => {
@@ -236,6 +245,32 @@ fn open_terminal(process: &mut Process<'_>, flags: u32, console: bool) -> Result
         .ok_or(EMFILE)
 }
 
+fn open_pty(process: &mut Process<'_>, slave: Option<u32>, flags: u32) -> Result<usize, Errno> {
+    if flags & O_DIRECTORY != 0 {
+        return Err(ENOTDIR);
+    }
+    let terminal = match slave {
+        Some(number) => {
+            let pair = process.namespace.ptys.slave(number).ok_or(ENOENT)?;
+            if !pair.unlocked() {
+                return Err(EIO);
+            }
+            Rc::new(Terminal::pty(pair, Side::Slave))
+        }
+        None => {
+            let pair = process.namespace.ptys.create().map_err(|()| ENOMEM)?;
+            Rc::new(Terminal::pty(pair, Side::Master))
+        }
+    };
+    process
+        .files
+        .insert(
+            Descriptor::terminal(terminal, flags & (3 | O_NONBLOCK), flags & O_CLOEXEC != 0),
+            0,
+        )
+        .ok_or(EMFILE)
+}
+
 /// Descriptor flags kept from an open: an `O_PATH` descriptor holds only its path identity,
 /// dropping every I/O mode bit.
 fn status_flags(flags: u32, mask: u32) -> u32 {
@@ -244,6 +279,23 @@ fn status_flags(flags: u32, mask: u32) -> u32 {
     } else {
         flags & mask
     }
+}
+
+fn pty_slave_number(name: &[u8]) -> Option<u32> {
+    let mut number = 0u32;
+    let digits = name.strip_prefix(b"/dev/pts/")?;
+    if digits.is_empty() {
+        return None;
+    }
+    for &byte in digits {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        number = number
+            .checked_mul(10)?
+            .checked_add(u32::from(byte - b'0'))?;
+    }
+    Some(number)
 }
 
 impl<'a> Open<'a> {

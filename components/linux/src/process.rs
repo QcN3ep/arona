@@ -310,6 +310,7 @@ impl<'a> Process<'a> {
         let mut progress = timer::poll(self)?;
         progress |= self.enforce_cpu_limit();
         progress |= self.terminal.poll();
+        progress |= self.namespace.poll_terminals();
         if self.terminal.failed() {
             progress |= self.namespace.hangup_terminal(&self.terminal);
         }

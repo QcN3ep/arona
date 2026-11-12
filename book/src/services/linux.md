@@ -455,13 +455,25 @@ The reprint character redraws the pending input line when extended processing an
 In canonical mode, input characters first enter the line buffer, and a line is delivered to the read request only after a carriage return ends it, while backspace modifies the line being edited.
 Raw mode handles characters directly according to the termios settings, and read timing is determined by parameters such as `VMIN` and `VTIME`.
 
+A terminal session either uses the console UART sessions or a pseudo-terminal pair.
+Opening `/dev/ptmx` allocates a pair in the process namespace, and `TIOCGPTN` reports its number.
+The slave is exposed as `/dev/pts/N`; opening it while the pair is locked returns `EIO`, and `TIOCSPTLCK` unlocks it.
+`TIOCGPTPEER` returns a slave descriptor directly from the master once the pair is unlocked, avoiding a path lookup.
+Numbers are reused after both ends of a pair close.
+
+The two ends share the termios state, line buffer, window size, signal queue, and controlling-terminal record, while each data direction keeps its own bounded queue.
+Writes to the master enter the line discipline and are echoed back to the master, whereas writes to the slave are translated by the output flags and queued for master reads.
+Closing the master flushes the slave input queue, makes pending slave reads observe end-of-file, and sends `SIGHUP` followed by `SIGCONT` to the foreground process group.
+After every slave closes, master reads drain the remaining queued data and then report `EIO`, and blocked `poll` waiters observe `POLLHUP`.
+
 Terminal ioctls query and modify attributes, window, and controlling terminal state.
 Exclusive mode blocks new opens of the controlling terminal, and injected input follows the line discipline.
 Stopping output blocks ordinary writers until it resumes and makes nonblocking writes return `EAGAIN`.
 Drain and POSIX break requests wait for queued output.
 The UART interface does not generate a break signal.
+The master cannot become a controlling terminal, so the shared session and foreground group are attached through the slave.
 The foreground process group determines the recipients of terminal control character signals, and the session and process group state work with the Shell to complete job control.
-Terminal output is finally submitted through devmgr's UART session.
+Console output is submitted through devmgr's UART session, while pseudo-terminal output stays in the pair's queues.
 
 ## Time and System Information
 

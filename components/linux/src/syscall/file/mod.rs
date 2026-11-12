@@ -46,6 +46,7 @@ pub(super) enum Pending<'a> {
     TerminalChange(terminal::Change),
     Terminal(terminal::Read<'a>),
     TerminalOutput(terminal::Output),
+    TerminalWrite(terminal::Write<'a>),
     Pipe(pipe::PipeIo<'a>),
     Poll(poll::Poll<'a>),
     Open(open::Open<'a>),
@@ -304,9 +305,11 @@ impl<'a> Pending<'a> {
         match self {
             Self::Terminal(read) => Some(read.interrupt(process)),
             Self::TerminalOutput(output) => output.interrupt(),
-            Self::Pipe(_) | Self::Eventfd(_) | Self::Timerfd(_) | Self::Signalfd(_) => {
-                Some((true, Err(abi::EINTR)))
-            }
+            Self::TerminalWrite(_)
+            | Self::Pipe(_)
+            | Self::Eventfd(_)
+            | Self::Timerfd(_)
+            | Self::Signalfd(_) => Some((true, Err(abi::EINTR))),
             Self::Poll(poll) => Some((false, poll.interrupt(process))),
             _ => None,
         }
@@ -327,9 +330,13 @@ impl<'a> Pending<'a> {
 
     pub fn call(&self) -> Option<&Handle<Call>> {
         match self {
-            Self::Terminal(_) | Self::Eventfd(_) | Self::Timerfd(_) | Self::Signalfd(_) => None,
+            Self::Terminal(_)
+            | Self::TerminalWrite(_)
+            | Self::Eventfd(_)
+            | Self::Timerfd(_)
+            | Self::Signalfd(_) => None,
             Self::TerminalOutput(output) => output.call(),
-            Self::TerminalChange(change) => Some(change.call()),
+            Self::TerminalChange(change) => change.call(),
             Self::Pipe(_) | Self::Poll(_) => None,
             Self::Open(open) => Some(open.call()),
             Self::Mount(mount) => Some(mount.call()),
@@ -359,6 +366,7 @@ impl<'a> Pending<'a> {
         match self {
             Self::Terminal(read) => read.poll(process),
             Self::TerminalOutput(output) => output.poll(),
+            Self::TerminalWrite(write) => write.poll(),
             Self::Eventfd(read) => read.poll(process),
             Self::Timerfd(read) => read.poll(process),
             Self::Signalfd(read) => read.poll(process, index),

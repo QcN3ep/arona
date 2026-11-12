@@ -5,6 +5,7 @@
 use super::signal::{self, Info, Signals, ThreadSignals};
 use crate::{
     ExitStatus,
+    file::terminal::PtyRegistry,
     syscall::abi::{EACCES, EINVAL, EPERM, ESRCH, Errno},
 };
 use alloc::{
@@ -20,6 +21,7 @@ pub(crate) struct PidNamespace {
     pub(super) threads: RefCell<BTreeMap<usize, ThreadRecord>>,
     pub futexes: Rc<super::futex::Futexes>,
     pub mqueues: Rc<super::mqueue::Queues>,
+    pub ptys: PtyRegistry,
 }
 
 pub(crate) struct ProcessRecord {
@@ -85,6 +87,7 @@ impl PidNamespace {
             threads: RefCell::new(BTreeMap::new()),
             futexes: Rc::default(),
             mqueues: Rc::new(super::mqueue::Queues::new()),
+            ptys: PtyRegistry::default(),
         }
     }
     pub fn allocate(&self) -> Option<usize> {

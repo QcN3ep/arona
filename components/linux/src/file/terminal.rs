@@ -1,22 +1,159 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Terminal sessions, line discipline, and input buffering.
+//! Terminal sessions, line discipline, pseudo-terminals, and input buffering.
 
-// TODO: Support pseudo-terminals and multiple independent terminal sessions.
+// TODO: Support pseudo-terminal packet mode and full session handover.
 
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    rc::{Rc, Weak},
+    vec::Vec,
+};
 use core::cell::{Cell, Ref, RefCell};
 use runtime::{Call, Event, Handle, Rights};
 
+/// Capacity of each pseudo-terminal data direction in bytes.
+const PTY_CAPACITY: usize = 4096;
+
 pub(crate) struct Terminal {
-    pub output: devmgr::uart::Session,
-    source: Option<devmgr::uart::Session>,
+    exclusive: Rc<Cell<bool>>,
+    stopped: Rc<Cell<bool>>,
+    resume: Option<Handle<Event>>,
+    backend: Backend,
+    state: Rc<RefCell<State>>,
+    control: Rc<Cell<Option<(usize, usize)>>>,
     input: RefCell<Option<Input>>,
-    state: RefCell<State>,
-    control: Cell<Option<(usize, usize)>>,
-    exclusive: Cell<bool>,
-    stopped: Cell<bool>,
-    resume: Handle<Event>,
+}
+
+enum Backend {
+    Console {
+        output: devmgr::uart::Session,
+        source: Option<devmgr::uart::Session>,
+    },
+    Pty {
+        pair: Rc<PtyPair>,
+        side: Side,
+    },
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Side {
+    Master,
+    Slave,
+}
+
+/// The two ends and the shared line discipline of a pseudo-terminal.
+pub(crate) struct PtyPair {
+    id: u32,
+    unlocked: Cell<bool>,
+    exclusive: Rc<Cell<bool>>,
+    stopped: Rc<Cell<bool>>,
+    state: Rc<RefCell<State>>,
+    control: Rc<Cell<Option<(usize, usize)>>>,
+    open: RefCell<PtyOpen>,
+}
+
+#[derive(Default)]
+struct PtyOpen {
+    master: bool,
+    slaves: usize,
+    slave_opened: bool,
+}
+
+/// Allocates pseudo-terminal numbers and tracks live pairs.
+#[derive(Default)]
+pub(crate) struct PtyRegistry {
+    entries: RefCell<BTreeMap<u32, Weak<PtyPair>>>,
+}
+
+impl PtyRegistry {
+    pub fn create(&self) -> Result<Rc<PtyPair>, ()> {
+        let mut entries = self.entries.borrow_mut();
+        entries.retain(|_, pair| pair.strong_count() != 0);
+        let mut id = 0;
+        while entries.contains_key(&id) {
+            id = id.checked_add(1).ok_or(())?;
+        }
+        let pair = Rc::new(PtyPair::new(id));
+        entries.insert(id, Rc::downgrade(&pair));
+        Ok(pair)
+    }
+
+    pub fn slave(&self, id: u32) -> Option<Rc<PtyPair>> {
+        self.entries.borrow().get(&id)?.upgrade()
+    }
+
+    pub fn live(&self) -> Vec<Rc<PtyPair>> {
+        self.entries
+            .borrow()
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect()
+    }
+}
+
+impl PtyPair {
+    fn new(id: u32) -> Self {
+        Self {
+            id,
+            unlocked: Cell::new(false),
+            exclusive: Rc::default(),
+            stopped: Rc::default(),
+            state: Rc::new(RefCell::new(State::new())),
+            control: Rc::default(),
+            open: RefCell::new(PtyOpen::default()),
+        }
+    }
+
+    pub fn number(&self) -> u32 {
+        self.id
+    }
+
+    pub fn unlocked(&self) -> bool {
+        self.unlocked.get()
+    }
+
+    pub fn set_unlocked(&self, value: bool) {
+        self.unlocked.set(value);
+    }
+
+    pub fn control(&self) -> Option<(usize, usize)> {
+        self.control.get()
+    }
+
+    pub fn take_signal(&self) -> Option<u8> {
+        self.state.borrow_mut().signals.pop_front()
+    }
+
+    fn master_closed(&self) -> bool {
+        !self.open.borrow().master
+    }
+
+    fn slave_closed(&self) -> bool {
+        let open = self.open.borrow();
+        open.slave_opened && open.slaves == 0
+    }
+
+    fn input_free(&self) -> usize {
+        let state = self.state.borrow();
+        let used = state.line.len()
+            + state
+                .ready
+                .iter()
+                .map(|line| line.len().max(1))
+                .sum::<usize>();
+        PTY_CAPACITY.saturating_sub(used)
+    }
+
+    fn master_free(&self) -> usize {
+        PTY_CAPACITY.saturating_sub(self.state.borrow().master.len())
+    }
+
+    fn write_master(&self, bytes: &[u8]) {
+        let mut state = self.state.borrow_mut();
+        let space = PTY_CAPACITY - state.master.len();
+        state.master.extend(bytes.iter().copied().take(space));
+    }
 }
 
 struct State {
@@ -28,6 +165,31 @@ struct State {
     signals: VecDeque<u8>,
     received: u64,
     literal: bool,
+    master: VecDeque<u8>,
+}
+
+impl State {
+    fn new() -> Self {
+        // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/termbits.h?h=v6.12
+        let mut termios = [0; 36];
+        termios[..4].copy_from_slice(&0x500u32.to_le_bytes());
+        termios[4..8].copy_from_slice(&5u32.to_le_bytes());
+        termios[8..12].copy_from_slice(&0xbfu32.to_le_bytes());
+        termios[12..16].copy_from_slice(&0x823bu32.to_le_bytes());
+        termios[17..34]
+            .copy_from_slice(&[3, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22, 0]);
+        Self {
+            termios,
+            window: [24, 0, 80, 0, 0, 0, 0, 0],
+            ready: VecDeque::new(),
+            line: Vec::new(),
+            failed: false,
+            signals: VecDeque::new(),
+            received: 0,
+            literal: false,
+            master: VecDeque::new(),
+        }
+    }
 }
 
 pub(crate) struct Input {
@@ -42,61 +204,114 @@ impl Terminal {
         output: devmgr::uart::Session,
         input: Option<devmgr::uart::Session>,
     ) -> Result<Self, runtime::Error> {
-        // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/termbits.h?h=v6.12
-        let mut termios = [0; 36];
-        termios[..4].copy_from_slice(&0x500u32.to_le_bytes());
-        termios[4..8].copy_from_slice(&5u32.to_le_bytes());
-        termios[8..12].copy_from_slice(&0xbfu32.to_le_bytes());
-        termios[12..16].copy_from_slice(&0x823bu32.to_le_bytes());
-        termios[17..34]
-            .copy_from_slice(&[3, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22, 0]);
-        let window = [24, 0, 80, 0, 0, 0, 0, 0];
         Ok(Self {
-            output,
-            control: Cell::new(None),
-            source: input,
+            exclusive: Rc::default(),
+            stopped: Rc::default(),
+            resume: Some(task.event(Rights::WAIT | Rights::SIGNAL)?),
+            backend: Backend::Console {
+                output,
+                source: input,
+            },
+            state: Rc::new(RefCell::new(State::new())),
+            control: Rc::default(),
             input: RefCell::new(None),
-            state: RefCell::new(State {
-                termios,
-                window,
-                ready: VecDeque::new(),
-                line: Vec::new(),
-                failed: false,
-                signals: VecDeque::new(),
-                received: 0,
-                literal: false,
-            }),
-            exclusive: Cell::new(false),
-            stopped: Cell::new(false),
-            resume: task.event(Rights::WAIT | Rights::SIGNAL)?,
         })
     }
 
-    pub fn failed(&self) -> bool {
-        self.state.borrow().failed
+    pub fn pty(pair: Rc<PtyPair>, side: Side) -> Self {
+        match side {
+            Side::Master => pair.open.borrow_mut().master = true,
+            Side::Slave => {
+                let mut open = pair.open.borrow_mut();
+                open.slaves += 1;
+                open.slave_opened = true;
+            }
+        }
+        Self {
+            exclusive: Rc::clone(&pair.exclusive),
+            stopped: Rc::clone(&pair.stopped),
+            resume: None,
+            state: Rc::clone(&pair.state),
+            control: Rc::clone(&pair.control),
+            backend: Backend::Pty { pair, side },
+            input: RefCell::new(None),
+        }
     }
+
+    pub fn is_pty(&self) -> bool {
+        matches!(self.backend, Backend::Pty { .. })
+    }
+
+    pub fn is_master(&self) -> bool {
+        matches!(
+            self.backend,
+            Backend::Pty {
+                side: Side::Master,
+                ..
+            }
+        )
+    }
+
+    pub fn is_slave(&self) -> bool {
+        matches!(
+            self.backend,
+            Backend::Pty {
+                side: Side::Slave,
+                ..
+            }
+        )
+    }
+
+    pub fn failed(&self) -> bool {
+        if self.state.borrow().failed {
+            return true;
+        }
+        match &self.backend {
+            Backend::Console { .. } => false,
+            Backend::Pty { pair, side } => match side {
+                Side::Master => pair.slave_closed(),
+                Side::Slave => pair.master_closed(),
+            },
+        }
+    }
+
     pub fn control(&self) -> Option<(usize, usize)> {
         self.control.get()
     }
+
     pub fn set_control(&self, control: Option<(usize, usize)>) {
         self.control.set(control);
     }
-    pub fn exclusive(&self) -> bool {
-        self.exclusive.get()
-    }
-    pub fn set_exclusive(&self, value: bool) {
-        self.exclusive.set(value);
-    }
+
     pub fn disconnect(&self) {
         self.state.borrow_mut().failed = true;
     }
 
     pub fn has_input(&self) -> bool {
-        self.source.is_some()
+        matches!(&self.backend, Backend::Console { source, .. } if source.is_some())
     }
+
+    pub fn pty_number(&self) -> Option<u32> {
+        match &self.backend {
+            Backend::Pty { pair, .. } => Some(pair.number()),
+            Backend::Console { .. } => None,
+        }
+    }
+
+    pub fn set_unlocked(&self, value: bool) -> Option<()> {
+        match &self.backend {
+            Backend::Pty { pair, .. } => {
+                pair.set_unlocked(value);
+                Some(())
+            }
+            Backend::Console { .. } => None,
+        }
+    }
+
     pub fn termios(&self) -> [u8; 36] {
         self.state.borrow().termios
     }
+
     pub fn set_termios(&self, value: [u8; 36], flush: bool) {
         let mut state = self.state.borrow_mut();
         state.termios = value;
@@ -112,9 +327,41 @@ impl Terminal {
             state.line.clear();
         }
     }
+
+    /// Discards queued pseudo-terminal data for one or both directions.
+    ///
+    /// `queue` follows `TCFLSH`: zero clears input, one clears output, and any
+    /// other value clears both.
+    pub fn flush(&self, queue: u32) {
+        if !self.is_pty() {
+            self.set_termios(self.termios(), true);
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        let input = queue != 1;
+        let output = queue != 0;
+        if input {
+            if self.is_master() {
+                state.master.clear();
+            } else {
+                state.line.clear();
+                state.ready.clear();
+            }
+        }
+        if output {
+            if self.is_master() {
+                state.line.clear();
+                state.ready.clear();
+            } else {
+                state.master.clear();
+            }
+        }
+    }
+
     pub fn window(&self) -> [u8; 8] {
         self.state.borrow().window
     }
+
     pub fn set_window(&self, value: [u8; 8]) {
         let mut state = self.state.borrow_mut();
         if state.window != value {
@@ -122,17 +369,29 @@ impl Terminal {
             state.signals.push_back(28);
         }
     }
+
     pub fn available(&self) -> usize {
-        self.state.borrow().ready.iter().map(VecDeque::len).sum()
+        let state = self.state.borrow();
+        if self.is_master() {
+            state.master.len()
+        } else {
+            state.ready.iter().map(VecDeque::len).sum()
+        }
     }
+
     pub fn received(&self) -> u64 {
         self.state.borrow().received
     }
+
     pub fn take_signal(&self) -> Option<u8> {
         self.state.borrow_mut().signals.pop_front()
     }
+
     pub fn readable(&self) -> bool {
         let state = self.state.borrow();
+        if self.is_master() {
+            return !state.master.is_empty();
+        }
         if state.termios[12] & 2 != 0 {
             !state.ready.is_empty()
         } else {
@@ -144,8 +403,12 @@ impl Terminal {
             state.ready.iter().map(VecDeque::len).sum::<usize>() >= minimum
         }
     }
+
     pub fn snapshot(&self, length: usize) -> Vec<u8> {
         let state = self.state.borrow();
+        if self.is_master() {
+            return state.master.iter().copied().take(length).collect();
+        }
         let lines = if state.termios[12] & 2 != 0 {
             1
         } else {
@@ -160,8 +423,14 @@ impl Terminal {
             .take(length)
             .collect()
     }
+
     pub fn consume(&self, mut length: usize) {
         let mut state = self.state.borrow_mut();
+        if self.is_master() {
+            let count = length.min(state.master.len());
+            state.master.drain(..count);
+            return;
+        }
         while let Some(line) = state.ready.front_mut() {
             let count = length.min(line.len());
             line.drain(..count);
@@ -180,7 +449,11 @@ impl Terminal {
     }
 
     pub fn poll(&self) -> bool {
-        let Some(source) = &self.source else {
+        let Backend::Console {
+            source: Some(source),
+            ..
+        } = &self.backend
+        else {
             return false;
         };
         if self.failed() {
@@ -207,12 +480,55 @@ impl Terminal {
     }
 
     pub fn output(&self, bytes: &[u8]) -> (Vec<u8>, usize) {
+        self.translate(bytes, devmgr::uart::MAX_BYTES)
+    }
+
+    /// Accepts bytes written to either pseudo-terminal end.
+    pub fn write_pty(&self, bytes: &[u8]) -> usize {
+        let Backend::Pty { pair, side } = &self.backend else {
+            return 0;
+        };
+        match side {
+            Side::Master => {
+                let mut count = 0;
+                for &byte in bytes {
+                    let (canonical, line_length) = {
+                        let state = self.state.borrow();
+                        (state.termios[12] & 2 != 0, state.line.len())
+                    };
+                    if pair.input_free() == 0 {
+                        break;
+                    }
+                    if canonical && line_length != 0 && pair.input_free() == 1 {
+                        let state = self.state.borrow();
+                        let control =
+                            byte == b'\n' || byte == b'\r' || state.termios[17..].contains(&byte);
+                        if !control {
+                            count += 1;
+                            continue;
+                        }
+                    }
+                    let echo = self.receive(alloc::vec![byte]);
+                    pair.write_master(&echo);
+                    count += 1;
+                }
+                count
+            }
+            Side::Slave => {
+                let (output, count) = self.translate(bytes, pair.master_free());
+                pair.write_master(&output);
+                count
+            }
+        }
+    }
+
+    fn translate(&self, bytes: &[u8], limit: usize) -> (Vec<u8>, usize) {
         let flags = u32::from_le_bytes(self.state.borrow().termios[4..8].try_into().unwrap());
         let mut output = Vec::new();
         let mut count = 0;
         for &byte in bytes {
             let newline = flags & 5 == 5 && byte == b'\n';
-            if output.len() + 1 + usize::from(newline) > devmgr::uart::MAX_BYTES {
+            if output.len() + 1 + usize::from(newline) > limit {
                 break;
             }
             if newline {
@@ -236,17 +552,52 @@ impl Terminal {
     /// Resumes terminal output and wakes the service, which then re-polls stopped writers.
     pub fn start_output(&self) {
         self.stopped.set(false);
-        let _ = self.resume.signal(1);
+        if let Some(resume) = &self.resume {
+            let _ = resume.signal(1);
+        }
     }
 
-    pub fn resume_event(&self) -> &Handle<Event> {
-        &self.resume
+    pub fn resume_event(&self) -> Option<&Handle<Event>> {
+        self.resume.as_ref()
     }
 
-    /// Simulates terminal input: the byte passes through the line discipline, so it is
-    /// echoed, completes lines, and raises control character signals like typed input.
+    pub fn exclusive(&self) -> bool {
+        self.exclusive.get()
+    }
+    pub fn set_exclusive(&self, value: bool) {
+        self.exclusive.set(value);
+    }
+    pub fn writable(&self) -> bool {
+        match &self.backend {
+            Backend::Console { .. } => !self.stopped(),
+            Backend::Pty {
+                pair,
+                side: Side::Master,
+            } => pair.input_free() != 0,
+            Backend::Pty {
+                pair,
+                side: Side::Slave,
+            } => !self.stopped() && !pair.master_closed() && pair.master_free() >= 2,
+        }
+    }
+
+    pub fn output_pending(&self) -> bool {
+        match &self.backend {
+            Backend::Console { .. } => false,
+            Backend::Pty {
+                side: Side::Slave, ..
+            } => !self.state.borrow().master.is_empty(),
+            Backend::Pty {
+                side: Side::Master, ..
+            } => false,
+        }
+    }
     pub fn inject(&self, byte: u8) -> Result<(), devmgr::Error> {
         let echo = self.receive(alloc::vec![byte]);
+        if let Backend::Pty { pair, .. } = &self.backend {
+            pair.write_master(&echo);
+            return Ok(());
+        }
         if echo.is_empty() {
             return Ok(());
         }
@@ -255,22 +606,27 @@ impl Terminal {
             current.echo.extend(echo);
             return Ok(());
         }
-        if self.source.is_none() {
-            // Without an input session nothing drives the echo queue; submit it directly.
-            self.output.write_all(&echo)?;
-            self.output.flush()?;
+        let Backend::Console { output, source } = &self.backend else {
+            unreachable!()
+        };
+        let Some(source) = source else {
+            output.write_all(&echo)?;
+            output.flush()?;
             return Ok(());
-        }
+        };
         *input = Some(Input {
-            request: self
-                .source
-                .as_ref()
-                .unwrap()
-                .start_read(devmgr::uart::MAX_BYTES)?,
+            request: source.start_read(devmgr::uart::MAX_BYTES)?,
             echo_request: None,
             echo: echo.into(),
         });
         Ok(())
+    }
+
+    pub fn uart_output(&self) -> &devmgr::uart::Session {
+        match &self.backend {
+            Backend::Console { output, .. } => output,
+            Backend::Pty { .. } => unreachable!(),
+        }
     }
 
     // TODO: Support software flow control.
@@ -318,6 +674,36 @@ impl Terminal {
             }
         }
         echo
+    }
+}
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        let Backend::Pty { pair, side } = &self.backend else {
+            return;
+        };
+        let mut open = pair.open.borrow_mut();
+        let closed = match side {
+            Side::Master => {
+                open.master = false;
+                true
+            }
+            Side::Slave => {
+                open.slaves = open.slaves.saturating_sub(1);
+                false
+            }
+        };
+        drop(open);
+        if closed {
+            let mut state = pair.state.borrow_mut();
+            // Closing the master hangs up the slave: discard its pending input
+            // so blocked readers observe end-of-file rather than stale data.
+            state.line.clear();
+            state.ready.clear();
+            for number in [1, crate::process::signal::CONT] {
+                state.signals.push_back(number);
+            }
+        }
     }
 }
 
@@ -473,7 +859,7 @@ impl Input {
                 .copied()
                 .take(devmgr::uart::MAX_BYTES)
                 .collect();
-            self.echo_request = Some(terminal.output.start_write(&bytes)?);
+            self.echo_request = Some(terminal.uart_output().start_write(&bytes)?);
             progress = true;
         }
         Ok(progress)

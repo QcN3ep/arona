@@ -469,6 +469,7 @@ fn writable(
         b"FileMappings",
         b"Xremap",
         b"Pipe",
+        b"Xterm",
         b"Readiness",
         b"System",
         b"Notifications",

@@ -206,7 +206,7 @@ fn readiness(description: &OpenFileDescription<'_>, process: &Process<'_>, index
             }) | if counter.get() > 0 { INPUT } else { 0 }
         }
         OpenFileDescription::Terminal { terminal, .. } => {
-            (if terminal.stopped() { 0 } else { OUTPUT })
+            (if terminal.writable() { OUTPUT } else { 0 })
                 | if terminal.readable() { INPUT } else { 0 }
                 | if terminal.failed() { ERROR | HANGUP } else { 0 }
         }

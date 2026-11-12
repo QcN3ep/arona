@@ -4,6 +4,8 @@
 
 #include "fs.h"
 
+extern void pty_limits(void);
+
 #define AT_FDCWD (-100)
 #define AT_REMOVEDIR 0x200
 #define O_RDONLY 0
@@ -697,6 +699,7 @@ int fs_main(int argc, char **argv) {
         denied_mount();
         return 42;
     }
+    pty_limits();
     temporary();
     hugepages();
     huge_release_accounting();

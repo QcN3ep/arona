@@ -29,6 +29,9 @@ impl PidNamespace {
     }
 
     pub fn attach_terminal(&self, pid: usize, terminal: &Rc<Terminal>) -> Result<(), Errno> {
+        if terminal.is_master() {
+            return Err(ENOTTY);
+        }
         let mut records = self.processes.borrow_mut();
         let record = records.get_mut(&pid).ok_or(ESRCH)?;
         if record.session != pid
@@ -98,6 +101,20 @@ impl PidNamespace {
         {
             self.hangup_terminal(&terminal);
         }
+    }
+
+    /// Delivers pending pseudo-terminal signals to their foreground groups.
+    pub fn poll_terminals(&self) -> bool {
+        let mut progress = false;
+        for pair in self.ptys.live() {
+            while let Some(number) = pair.take_signal() {
+                if let Some((session, group)) = pair.control() {
+                    self.signal_group(session, group, number);
+                    progress = true;
+                }
+            }
+        }
+        progress
     }
 
     pub fn hangup_terminal(&self, terminal: &Rc<Terminal>) -> bool {
