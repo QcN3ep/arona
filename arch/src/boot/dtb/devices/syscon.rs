@@ -2,10 +2,21 @@
 
 //! Interpret system controller registers and poweroff/reboot operations on demand.
 
-use kernel::{HardwareDeviceInfo, HardwareInfo};
+use arrayvec::ArrayVec;
+use kernel::{
+    DeviceProperty, DeviceUsePolicy, DmaCapability, HardwareDeviceInfo, HardwareDeviceInstanceId,
+    HardwareInfo, boot::MAX_DEVICES,
+};
 
 use super::super::Result;
 use super::{RegisterEndian, attribute, resolve};
+
+const POWER_NAMESPACE: &str = "power";
+const POWEROFF: &str = "poweroff";
+const REBOOT: &str = "reboot";
+const REGISTER_WIDTH: &str = "register-width";
+const BIG_ENDIAN: &str = "big-endian";
+const OPERATION_BYTES: usize = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SysconInfo {
@@ -137,4 +148,69 @@ fn operation(
         return Err("invalid system control register operation".into());
     }
     Ok((device.instance_id, write))
+}
+
+/// Publish power operations and the register layout on their system controller.
+///
+/// Device drivers need the operation data to reach the controller before they can act on it. The
+/// properties are derived from the same parse used by [`SysconInfo::from_device`], and a controller
+/// with at least one operation becomes assignable so a device service can map its registers.
+/// Malformed optional operations are ignored instead of rejecting the boot description.
+pub(super) fn capture(hardware: &mut HardwareInfo) -> Result<()> {
+    let mut controls = ArrayVec::<(HardwareDeviceInstanceId, SysconInfo), MAX_DEVICES>::new();
+    for device in &hardware.devices {
+        let Ok(Some(info)) = SysconInfo::from_device(device, hardware) else {
+            continue;
+        };
+        if info.poweroff.is_none() && info.reboot.is_none() {
+            continue;
+        }
+        controls
+            .try_push((device.instance_id, info))
+            .map_err(|_| "too many system controllers")?;
+    }
+    for (device, info) in controls {
+        let width = u32::from(info.register_width).to_be_bytes();
+        property(hardware, device, REGISTER_WIDTH, &width)?;
+        if info.endian == RegisterEndian::Big {
+            property(hardware, device, BIG_ENDIAN, &[])?;
+        }
+        for (name, write) in [(POWEROFF, info.poweroff), (REBOOT, info.reboot)] {
+            if let Some(write) = write {
+                property(hardware, device, name, &encode(write))?;
+            }
+        }
+        let Some(entry) = hardware
+            .devices
+            .iter_mut()
+            .find(|entry| entry.instance_id == device)
+        else {
+            continue;
+        };
+        // The controller provides register operations only and never initiates DMA.
+        entry.use_policy = DeviceUsePolicy::UserAssignable;
+        entry.dma = DmaCapability::None;
+    }
+    Ok(())
+}
+
+fn property(
+    hardware: &mut HardwareInfo,
+    device: HardwareDeviceInstanceId,
+    name: &str,
+    value: &[u8],
+) -> Result<()> {
+    hardware
+        .device_properties
+        .try_push(DeviceProperty::new(device, POWER_NAMESPACE, name, value)?)
+        .map_err(|_| "too many device properties")?;
+    Ok(())
+}
+
+fn encode(write: RegisterWrite) -> [u8; OPERATION_BYTES] {
+    let mut bytes = [0; OPERATION_BYTES];
+    bytes[..4].copy_from_slice(&write.offset.to_be_bytes());
+    bytes[4..8].copy_from_slice(&write.mask.to_be_bytes());
+    bytes[8..].copy_from_slice(&write.value.to_be_bytes());
+    bytes
 }

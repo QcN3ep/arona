@@ -429,6 +429,25 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
         ),
         (2, 0x42)
     );
+    assert_eq!(syscon.use_policy, DeviceUsePolicy::UserAssignable);
+    assert_eq!(syscon.dma, DmaCapability::None);
+    assert!(
+        hardware
+            .device_property(syscon.instance_id, "power", "big-endian")
+            .is_none()
+    );
+    assert_eq!(
+        hardware.device_property(syscon.instance_id, "power", "register-width"),
+        Some([0, 0, 0, 1].as_slice())
+    );
+    assert_eq!(
+        hardware.device_property(syscon.instance_id, "power", "poweroff"),
+        Some([0, 0, 0, 0, 0, 0, 0, 0xff, 0, 0, 0, 0x34].as_slice())
+    );
+    assert_eq!(
+        hardware.device_property(syscon.instance_id, "power", "reboot"),
+        Some([0, 0, 0, 2, 0, 0, 0, 0xff, 0, 0, 0, 0x42].as_slice())
+    );
     let HardwareDeviceLocation::PciHostBridge { windows, .. } = &pci.location else {
         panic!("missing PCI host")
     };
@@ -567,6 +586,31 @@ fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
     assert_eq!(control.register_width, 4);
     assert_eq!(control.poweroff.unwrap().value, 0x5555);
     assert_eq!(control.reboot.unwrap().value, 0x7777);
+    assert_eq!(syscon.use_policy, DeviceUsePolicy::UserAssignable);
+    assert_eq!(syscon.dma, DmaCapability::None);
+    assert!(
+        hardware
+            .device_property(syscon.instance_id, "power", "big-endian")
+            .is_none()
+    );
+    assert_eq!(
+        hardware.device_property(syscon.instance_id, "power", "register-width"),
+        Some([0, 0, 0, 4].as_slice())
+    );
+    assert_eq!(
+        hardware.device_property(syscon.instance_id, "power", "poweroff"),
+        Some([0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0x55, 0x55].as_slice())
+    );
+    assert_eq!(
+        hardware.device_property(syscon.instance_id, "power", "reboot"),
+        Some([0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0, 0, 0x77, 0x77].as_slice())
+    );
+    let controller = hardware
+        .devices
+        .iter()
+        .find(|device| device.has_identity("devicetree", "sifive,plic-1.0.0"))
+        .unwrap();
+    assert_eq!(controller.use_policy, DeviceUsePolicy::KernelReserved);
     assert_eq!(hardware.pci.interrupts.len(), 16);
     assert!(hardware.pci.msi_maps.is_empty());
     let pci = hardware

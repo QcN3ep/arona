@@ -8,6 +8,7 @@ use devmgr::{
     Error,
     block::{self, Block},
     device::{DeviceDescription, DiscoveryRequest, DriverKind, OpenRequest},
+    power::{self, Power},
     rng::{self, Rng},
     rtc::{self, Rtc},
     uart::{self, Settings, Uart},
@@ -26,6 +27,7 @@ enum Configuration {
     Block(block::Configuration),
     Rng(rng::Configuration),
     Rtc(rtc::Configuration),
+    Power(power::Configuration),
 }
 
 pub struct DeviceManager {
@@ -155,6 +157,7 @@ impl DeviceManager {
                         | (Ok((_, Configuration::Block(_))), DriverKind::Block)
                         | (Ok((_, Configuration::Rng(_))), DriverKind::Rng)
                         | (Ok((_, Configuration::Rtc(_))), DriverKind::Rtc)
+                        | (Ok((_, Configuration::Power(_))), DriverKind::Power)
                 )
             })
             .map(|instance| instance.id).min();
@@ -313,6 +316,12 @@ fn serve(
             wake.signal(1)?;
             return rtc::service::run(&mut rtc, server, id);
         }
+        Configuration::Power(configuration) => {
+            let mut power = Power::new(configuration, grant)?;
+            ready.store(true, Ordering::Release);
+            wake.signal(1)?;
+            return power::service::run(&mut power, server, id);
+        }
         Configuration::Block(configuration) => {
             let domain = grant.create_dma(
                 id,
@@ -363,5 +372,8 @@ fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Error>
     if let Some(configuration) = rng::probe(device)? {
         return Ok(Some(Configuration::Rng(configuration)));
     }
-    Ok(rtc::probe(device)?.map(Configuration::Rtc))
+    if let Some(configuration) = rtc::probe(device)? {
+        return Ok(Some(Configuration::Rtc(configuration)));
+    }
+    Ok(power::probe(device)?.map(Configuration::Power))
 }

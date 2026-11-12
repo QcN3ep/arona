@@ -365,6 +365,29 @@ fn unsupported_optional_information_does_not_prevent_boot() {
             .unwrap();
         assert_eq!(control.poweroff.is_none(), path == "/poweroff");
         assert_eq!(control.reboot.is_none(), path == "/reboot");
+        let syscon = hardware
+            .devices
+            .iter()
+            .find(|device| device.has_identity("devicetree", "syscon"))
+            .unwrap();
+        let (invalid, valid) = if path == "/poweroff" {
+            ("poweroff", "reboot")
+        } else {
+            ("reboot", "poweroff")
+        };
+        assert!(
+            hardware
+                .device_property(syscon.instance_id, "power", invalid)
+                .is_none(),
+            "{path}"
+        );
+        assert_eq!(
+            hardware
+                .device_property(syscon.instance_id, "power", valid)
+                .map(|value| value.len()),
+            Some(12),
+            "{path}"
+        );
     }
     for stdout in [
         b"missing:115200n8r".as_slice(),

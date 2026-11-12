@@ -150,7 +150,7 @@ fn run_program(
 ) {
     if matches!(
         suite,
-        "dma" | "dma-drop" | "dma-revoke" | "block" | "fs" | "rng" | "rtc" | "service"
+        "dma" | "dma-drop" | "dma-revoke" | "block" | "fs" | "rng" | "power" | "rtc" | "service"
     ) {
         kernel::logger::init(kernel::log::LevelFilter::Info).unwrap();
         kernel::logger::LOGGER.add_sink(&TestLog).unwrap();
@@ -254,6 +254,7 @@ fn select_program() -> &'static str {
                 b"dma" => "dma",
                 b"block" => "block",
                 b"rng" => "rng",
+                b"power" => "power",
                 b"rtc" => "rtc",
                 b"fs" => "fs",
                 b"dma-drop" => "dma-drop",
