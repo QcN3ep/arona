@@ -179,6 +179,29 @@ impl MemoryManager {
         Ok(allocation)
     }
 
+    /// Allocates a physically contiguous block of `frames` page frames aligned to `alignment` bytes.
+    ///
+    /// `frames` and `alignment` must be powers of two, and `alignment` must be a multiple of the
+    /// page size. The returned block is aligned to at least its own size, and every page frame is
+    /// zeroed before it is returned.
+    pub fn allocate_contiguous(
+        &self,
+        owner: FrameOwner,
+        purpose: FramePurpose,
+        frames: u64,
+        alignment: u64,
+    ) -> Result<FrameAllocation, MemoryError> {
+        let head = self
+            .allocator()
+            .lock()
+            .allocate_contiguous(owner, purpose, frames, alignment)?;
+        let allocation = FrameAllocation { head };
+        for frame in allocation.frames() {
+            crate::hardware::mmu().zero_frame(frame.address())?;
+        }
+        Ok(allocation)
+    }
+
     fn reference(
         &self,
         head: u64,

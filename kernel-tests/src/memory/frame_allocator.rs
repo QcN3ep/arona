@@ -9,6 +9,7 @@ pub(super) fn run(regions: &[MemoryRegion]) {
     requests();
     pools(regions);
     fragmented();
+    contiguous();
 }
 
 fn reserved(regions: &[MemoryRegion]) {
@@ -173,5 +174,71 @@ fn fragmented() {
     assert!(!scattered.contains(first_frame(&middle)));
     assert!(expected[1].address() - expected[0].address() > PAGE);
     drop((scattered, middle, held));
+    assert_eq!(manager.stats(), initial);
+}
+
+fn contiguous() {
+    let manager = memory::manager();
+    let initial = manager.stats();
+    for (frames, alignment) in [
+        (0, PAGE),
+        (3, PAGE),
+        (4, 0),
+        (4, 1),
+        (4, 3 * PAGE),
+        (4, PAGE + 1),
+    ] {
+        assert!(matches!(
+            manager.allocate_contiguous(FrameOwner::User(1), FramePurpose::Data, frames, alignment),
+            Err(MemoryError::InvalidRequest)
+        ));
+    }
+    assert!(matches!(
+        manager.allocate_contiguous(FrameOwner::User(1), FramePurpose::PageTable, 1, PAGE),
+        Err(MemoryError::InvalidRequest)
+    ));
+    let oversized = (initial.user.free_frames + 1).next_power_of_two();
+    assert!(matches!(
+        manager.allocate_contiguous(FrameOwner::User(1), FramePurpose::Data, oversized, PAGE),
+        Err(MemoryError::NoMemory)
+    ));
+    assert_eq!(manager.stats(), initial);
+
+    let alignment = 64 * 1024;
+    let allocation = manager
+        .allocate_contiguous(FrameOwner::User(1), FramePurpose::Data, 16, alignment)
+        .unwrap();
+    assert_eq!(allocation.info().frames, 16);
+    let mut previous = None;
+    let mut count = 0;
+    for frame in allocation.frames() {
+        match previous {
+            None => assert!(frame.address().is_multiple_of(alignment)),
+            Some(previous) => assert_eq!(frame.address(), previous + PAGE),
+        }
+        previous = Some(frame.address());
+        count += 1;
+    }
+    assert_eq!(count, 16);
+    drop(allocation);
+    assert_eq!(manager.stats(), initial);
+
+    // The preceding scenarios exhausted and released the pool, so a large aligned block also
+    // requires the buddy merge path to succeed.
+    let wide_alignment = 128 * 1024;
+    let wide = manager
+        .allocate_contiguous(FrameOwner::User(1), FramePurpose::Data, 8, wide_alignment)
+        .unwrap();
+    assert_eq!(wide.info().frames, 8);
+    assert!(first_frame(&wide).address().is_multiple_of(wide_alignment));
+    drop(wide);
+    assert_eq!(manager.stats(), initial);
+
+    let block = manager
+        .allocate_contiguous(FrameOwner::User(1), FramePurpose::Data, 32, 32 * PAGE)
+        .unwrap();
+    assert_eq!(block.info().frames, 32);
+    assert!(first_frame(&block).address().is_multiple_of(32 * PAGE));
+    drop(block);
     assert_eq!(manager.stats(), initial);
 }

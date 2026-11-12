@@ -9,11 +9,15 @@ use crate::hardware::{self, mmu::PAGE_SIZE};
 pub(super) const KERNEL_POOL_FRAMES: u64 = 32 * 1024 * 1024 / PAGE_SIZE as u64;
 
 const END: u64 = u64::MAX;
-const WORDS: usize = 12;
-const REGION_WORDS: usize = 5;
+const WORDS: usize = 13;
+const REGION_WORDS: usize = 6;
 const REGIONS_PER_FRAME: usize = PAGE_SIZE / (REGION_WORDS * size_of::<u64>());
 const DIRECTORY_FRAMES: usize = MAX_MEMORY_REGIONS.div_ceil(REGIONS_PER_FRAME);
 const RECORDS_PER_FRAME: u64 = (PAGE_SIZE / (WORDS * size_of::<u64>())) as u64;
+const PAGE_BITS: usize = PAGE_SIZE.trailing_zeros() as usize;
+const ORDERS: usize = u64::BITS as usize - PAGE_BITS;
+const POOLS: usize = 2;
+const LIST_WORDS: usize = POOLS * ORDERS;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PoolStats {
@@ -29,10 +33,10 @@ pub struct MemoryStats {
     pub metadata_frames: u64,
 }
 
-// TODO: Introduce a buddy allocator to support contiguous and aligned physical block allocation.
+/// Free page frames are grouped into buddy blocks per managed region, pool, and order.
+/// A block of order `n` covers `1 << n` contiguous, naturally aligned page frames.
 pub(super) struct FrameAllocator {
     metadata: FrameMetadata,
-    free: [u64; 2],
     pools: [PoolStats; 2],
     reserved_frames: u64,
 }
@@ -43,33 +47,39 @@ struct ManagedRegion {
     state: MemoryRegionState,
     first: u64,
     available_first: u64,
+    lists: u64,
 }
 
 struct FrameMetadata {
     directory: [u64; DIRECTORY_FRAMES],
     region_count: usize,
     directory_frames: u64,
+    list_frames: u64,
     frames: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FrameState {
-    Free,
-    Owned,
-    Referenced,
-    Reserved,
-    Metadata,
+    /// Interior page of a free buddy block; only block heads are linked into free lists.
+    Interior = 0,
+    Free = 1,
+    Owned = 2,
+    Referenced = 3,
+    Reserved = 4,
+    Metadata = 5,
 }
 
 #[derive(Clone, Copy)]
 struct FrameRecord {
     next: u64,
+    previous: u64,
     allocation: u64,
     owner: u64,
     state: FrameState,
     pool: FramePool,
     purpose: FramePurpose,
     frames: u64,
+    order: u64,
     references: [u64; 3],
     writers: [u64; 3],
     executors: u64,
@@ -80,39 +90,53 @@ impl FrameAllocator {
         let metadata = FrameMetadata::new(regions)?;
         let mut allocator = Self {
             metadata,
-            free: [END; 2],
             pools: [PoolStats::default(); 2],
             reserved_frames: 0,
         };
         let mut kernel_frames = KERNEL_POOL_FRAMES;
-        for region in allocator.metadata.regions() {
+        for region_index in 0..allocator.metadata.region_count {
+            let region = allocator.metadata.region(region_index);
+            if region.state == MemoryRegionState::BootReserved {
+                for offset in 0..region.frame_count() {
+                    allocator.reserved_frames += 1;
+                    allocator.metadata.write(
+                        region.first + offset,
+                        FrameRecord::new(FrameState::Reserved, FramePool::Kernel),
+                    );
+                }
+                continue;
+            }
             let metadata_frames = allocator
                 .metadata
                 .frames
                 .saturating_sub(region.available_first)
                 .min(region.frame_count());
-            for offset in 0..region.frame_count() {
-                let index = region.first + offset;
-                let record = if region.state == MemoryRegionState::BootReserved {
-                    allocator.reserved_frames += 1;
-                    FrameRecord::new(FrameState::Reserved, FramePool::Kernel)
-                } else if offset < metadata_frames {
-                    FrameRecord::new(FrameState::Metadata, FramePool::Kernel)
+            for offset in 0..metadata_frames {
+                allocator.metadata.write(
+                    region.first + offset,
+                    FrameRecord::new(FrameState::Metadata, FramePool::Kernel),
+                );
+            }
+            let mut offset = metadata_frames;
+            while offset < region.frame_count() {
+                let address = region.range.start + offset * PAGE_SIZE as u64;
+                let remaining = region.frame_count() - offset;
+                let mut order = block_order(address, remaining);
+                let pool = if kernel_frames == 0 {
+                    FramePool::User
                 } else {
-                    let pool = if kernel_frames != 0 {
-                        kernel_frames -= 1;
-                        FramePool::Kernel
-                    } else {
-                        FramePool::User
-                    };
-                    allocator.pools[pool as usize].total_frames += 1;
-                    let mut record = FrameRecord::new(FrameState::Free, pool);
-                    record.next = allocator.free[pool as usize];
-                    allocator.free[pool as usize] = index;
-                    allocator.pools[pool as usize].free_frames += 1;
-                    record
+                    let limit = kernel_frames.trailing_zeros() as usize;
+                    order = order.min(limit);
+                    FramePool::Kernel
                 };
-                allocator.metadata.write(index, record);
+                let frames = 1u64 << order;
+                if pool == FramePool::Kernel {
+                    kernel_frames -= frames;
+                }
+                allocator.pools[pool as usize].total_frames += frames;
+                allocator.pools[pool as usize].free_frames += frames;
+                allocator.insert_free(region, pool, order, region.first + offset);
+                offset += frames;
             }
         }
         Ok(allocator)
@@ -145,12 +169,13 @@ impl FrameAllocator {
         }
         let mut head = END;
         for _ in 0..frames {
-            let index = self.free[pool as usize];
-            let mut record = self.metadata.read(index);
-            self.free[pool as usize] = record.next;
+            let Some(index) = self.take_frame(pool) else {
+                self.free_chain(head, pool);
+                return Err(MemoryError::NoMemory);
+            };
             self.pools[pool as usize].free_frames -= 1;
+            let mut record = FrameRecord::new(FrameState::Owned, pool);
             record.next = head;
-            record.state = FrameState::Owned;
             record.owner = match owner {
                 FrameOwner::Kernel => 0,
                 FrameOwner::User(id) => id,
@@ -169,6 +194,71 @@ impl FrameAllocator {
             self.metadata.write(index, record);
             index = record.next;
         }
+        Ok(head)
+    }
+
+    /// Allocates `frames` physically contiguous page frames aligned to `alignment` bytes.
+    ///
+    /// `frames` and `alignment` must be powers of two, and `alignment` must be a multiple of
+    /// the page size. The returned allocation is aligned to at least its own size.
+    pub fn allocate_contiguous(
+        &mut self,
+        owner: FrameOwner,
+        purpose: FramePurpose,
+        frames: u64,
+        alignment: u64,
+    ) -> Result<u64, MemoryError> {
+        if frames == 0
+            || !frames.is_power_of_two()
+            || frames.checked_mul(PAGE_SIZE as u64).is_none()
+            || alignment < PAGE_SIZE as u64
+            || !alignment.is_power_of_two()
+            || (purpose == FramePurpose::PageTable && owner != FrameOwner::Kernel)
+        {
+            return Err(MemoryError::InvalidRequest);
+        }
+        let order = frames.trailing_zeros() as usize;
+        let alignment_order = (alignment / PAGE_SIZE as u64).trailing_zeros() as usize;
+        let required = order.max(alignment_order);
+        if required >= ORDERS {
+            return Err(MemoryError::InvalidRequest);
+        }
+        let pool = owner.pool();
+        if frames > self.pools[pool as usize].free_frames {
+            return Err(MemoryError::NoMemory);
+        }
+        let mut block = None;
+        for candidate in required..ORDERS {
+            if let Some((region, head)) = self.take_block(pool, candidate) {
+                block = Some((region, head, candidate));
+                break;
+            }
+        }
+        let Some((region, head, mut current)) = block else {
+            return Err(MemoryError::NoMemory);
+        };
+        while current > order {
+            current -= 1;
+            self.insert_free(region, pool, current, head + (1u64 << current));
+        }
+        for offset in 0..frames {
+            let mut record = FrameRecord::new(FrameState::Owned, pool);
+            record.next = if offset + 1 < frames {
+                head + offset + 1
+            } else {
+                END
+            };
+            record.allocation = head;
+            record.owner = match owner {
+                FrameOwner::Kernel => 0,
+                FrameOwner::User(id) => id,
+            };
+            record.purpose = purpose;
+            record.frames = if offset == 0 { frames } else { 0 };
+            record.order = if offset == 0 { order as u64 } else { 0 };
+            self.metadata.write(head + offset, record);
+        }
+        self.pools[pool as usize].free_frames -= frames;
         Ok(head)
     }
 
@@ -273,17 +363,163 @@ impl FrameAllocator {
         }
     }
 
-    fn recycle(&mut self, mut index: u64) {
+    fn recycle(&mut self, head: u64) {
+        let record = self.metadata.read(head);
+        let pool = record.pool;
+        if record.order != 0 {
+            let frames = 1u64 << record.order;
+            for offset in 0..frames {
+                self.metadata
+                    .write(head + offset, FrameRecord::new(FrameState::Interior, pool));
+            }
+            self.free_block(head, record.order as usize, pool);
+            self.pools[pool as usize].free_frames += frames;
+        } else {
+            self.free_chain(head, pool);
+        }
+    }
+
+    fn free_chain(&mut self, mut index: u64, pool: FramePool) {
         while index != END {
             let record = self.metadata.read(index);
-            let pool = record.pool as usize;
-            let mut free = FrameRecord::new(FrameState::Free, record.pool);
-            free.next = self.free[pool];
-            self.metadata.write(index, free);
-            self.free[pool] = index;
-            self.pools[pool].free_frames += 1;
-            index = record.next;
+            let next = record.next;
+            self.free_block(index, 0, pool);
+            self.pools[pool as usize].free_frames += 1;
+            index = next;
         }
+    }
+
+    fn take_frame(&mut self, pool: FramePool) -> Option<u64> {
+        for order in 0..ORDERS {
+            let Some((region, head)) = self.take_block(pool, order) else {
+                continue;
+            };
+            let mut current = order;
+            while current > 0 {
+                current -= 1;
+                self.insert_free(region, pool, current, head + (1u64 << current));
+            }
+            return Some(head);
+        }
+        None
+    }
+
+    fn take_block(&mut self, pool: FramePool, order: usize) -> Option<(ManagedRegion, u64)> {
+        for region_index in 0..self.metadata.region_count {
+            let region = self.metadata.region(region_index);
+            let head = self.list_head(region, pool, order);
+            if head == END {
+                continue;
+            }
+            let record = self.metadata.read(head);
+            let next = record.next;
+            self.set_list_head(region, pool, order, next);
+            if next != END {
+                let mut record = self.metadata.read(next);
+                record.previous = END;
+                self.metadata.write(next, record);
+            }
+            return Some((region, head));
+        }
+        None
+    }
+
+    fn insert_free(&mut self, region: ManagedRegion, pool: FramePool, order: usize, index: u64) {
+        let head = self.list_head(region, pool, order);
+        let mut record = FrameRecord::new(FrameState::Free, pool);
+        record.order = order as u64;
+        record.next = head;
+        if head != END {
+            let mut next = self.metadata.read(head);
+            next.previous = index;
+            self.metadata.write(head, next);
+        }
+        self.metadata.write(index, record);
+        self.set_list_head(region, pool, order, index);
+    }
+
+    fn free_block(&mut self, index: u64, order: usize, pool: FramePool) {
+        let region = self.metadata.region_of(index);
+        let mut address = region.range.start + (index - region.first) * PAGE_SIZE as u64;
+        let mut head = index;
+        let mut current = order;
+        let mut record = FrameRecord::new(FrameState::Free, pool);
+        record.order = current as u64;
+        self.metadata.write(index, record);
+        loop {
+            if current + 1 >= ORDERS {
+                break;
+            }
+            let block = 1u64 << (current + PAGE_BITS);
+            if !address.is_multiple_of(block) {
+                break;
+            }
+            let buddy = address ^ block;
+            let end = buddy.checked_add(block);
+            if buddy < region.range.start || end.is_none_or(|end| end > region.range.end) {
+                break;
+            }
+            let buddy_index = region.first + (buddy - region.range.start) / PAGE_SIZE as u64;
+            let buddy_record = self.metadata.read(buddy_index);
+            if buddy_record.state != FrameState::Free
+                || buddy_record.order != current as u64
+                || buddy_record.pool != pool
+            {
+                break;
+            }
+            self.unlink_free(region, pool, current, buddy_record);
+            let (next_head, next_address) = if buddy < address {
+                (buddy_index, buddy)
+            } else {
+                (head, address)
+            };
+            self.metadata.write(
+                if buddy < address { head } else { buddy_index },
+                FrameRecord::new(FrameState::Interior, pool),
+            );
+            head = next_head;
+            address = next_address;
+            current += 1;
+            let mut record = FrameRecord::new(FrameState::Free, pool);
+            record.order = current as u64;
+            self.metadata.write(head, record);
+        }
+        self.insert_free(region, pool, current, head);
+    }
+
+    fn unlink_free(
+        &mut self,
+        region: ManagedRegion,
+        pool: FramePool,
+        order: usize,
+        record: FrameRecord,
+    ) {
+        if record.previous != END {
+            let mut previous = self.metadata.read(record.previous);
+            previous.next = record.next;
+            self.metadata.write(record.previous, previous);
+        } else {
+            self.set_list_head(region, pool, order, record.next);
+        }
+        if record.next != END {
+            let mut next = self.metadata.read(record.next);
+            next.previous = record.previous;
+            self.metadata.write(record.next, next);
+        }
+    }
+
+    fn list_head(&self, region: ManagedRegion, pool: FramePool, order: usize) -> u64 {
+        let mut words = [0];
+        hardware::mmu()
+            .read_frame(region.lists, pool as usize * ORDERS + order, &mut words)
+            .expect("failed to read free list");
+        words[0]
+    }
+
+    fn set_list_head(&self, region: ManagedRegion, pool: FramePool, order: usize, head: u64) {
+        hardware::mmu()
+            .write_frame(region.lists, pool as usize * ORDERS + order, &[head])
+            .expect("failed to write free list");
     }
 
     pub fn allocation_of(&self, frame: Frame) -> Result<u64, MemoryError> {
@@ -323,6 +559,7 @@ impl FrameAllocator {
         }
         record.next = other;
         record.frames += source.frames;
+        record.order = 0;
         self.metadata.write(head, record);
     }
 
@@ -343,13 +580,16 @@ impl FrameAllocator {
             if record.next == index {
                 let mut detached = self.metadata.read(index);
                 record.next = detached.next;
+                record.order = 0;
                 self.metadata.write(previous, record);
                 let mut allocation = self.metadata.read(head);
                 allocation.frames -= 1;
+                allocation.order = 0;
                 self.metadata.write(head, allocation);
                 detached.next = END;
                 detached.allocation = index;
                 detached.frames = 1;
+                detached.order = 0;
                 self.metadata.write(index, detached);
                 return index;
             }
@@ -412,10 +652,7 @@ impl FrameAllocator {
         }
         for address in Self::range_frames(range)? {
             let index = self.metadata.index(address)?;
-            let mut record = FrameRecord::new(FrameState::Free, pool);
-            record.next = self.free[pool as usize];
-            self.metadata.write(index, record);
-            self.free[pool as usize] = index;
+            self.free_block(index, 0, pool);
             self.pools[pool as usize].total_frames += 1;
             self.pools[pool as usize].free_frames += 1;
             self.reserved_frames -= 1;
@@ -428,12 +665,14 @@ impl FrameRecord {
     fn new(state: FrameState, pool: FramePool) -> Self {
         Self {
             next: END,
+            previous: END,
             allocation: END,
             owner: 0,
             state,
             pool,
             purpose: FramePurpose::Data,
             frames: 0,
+            order: 0,
             references: [0; 3],
             writers: [0; 3],
             executors: 0,
@@ -486,7 +725,10 @@ impl FrameRecord {
         [
             self.next,
             self.owner,
-            self.state as u64 | (self.pool as u64) << 8 | (self.purpose as u64) << 16,
+            self.state as u64
+                | (self.pool as u64) << 8
+                | (self.purpose as u64) << 16
+                | (self.order & 0xff) << 24,
             self.frames,
             self.references[0],
             self.references[1],
@@ -496,16 +738,18 @@ impl FrameRecord {
             self.writers[1],
             self.writers[2],
             self.executors,
+            self.previous,
         ]
     }
 
     fn from_words(words: [u64; WORDS]) -> Self {
         let state = match words[2] & 0xff {
-            0 => FrameState::Free,
-            1 => FrameState::Owned,
-            2 => FrameState::Referenced,
-            3 => FrameState::Reserved,
-            4 => FrameState::Metadata,
+            0 => FrameState::Interior,
+            1 => FrameState::Free,
+            2 => FrameState::Owned,
+            3 => FrameState::Referenced,
+            4 => FrameState::Reserved,
+            5 => FrameState::Metadata,
             _ => panic!("invalid frame state"),
         };
         let pool = match (words[2] >> 8) & 0xff {
@@ -513,7 +757,7 @@ impl FrameRecord {
             1 => FramePool::User,
             _ => panic!("invalid frame pool"),
         };
-        let purpose = match words[2] >> 16 {
+        let purpose = match (words[2] >> 16) & 0xff {
             0 => FramePurpose::Data,
             1 => FramePurpose::PageTable,
             2 => FramePurpose::Stack,
@@ -527,9 +771,11 @@ impl FrameRecord {
             pool,
             purpose,
             frames: words[3],
+            order: (words[2] >> 24) & 0xff,
             references: [words[4], words[5], words[6]],
             writers: [words[8], words[9], words[10]],
             executors: words[11],
+            previous: words[12],
         }
     }
 }
@@ -539,6 +785,29 @@ impl FrameMetadata {
         if regions.len() > MAX_MEMORY_REGIONS {
             return Err(MemoryError::InvalidRequest);
         }
+        Self::validate(regions)?;
+        let (region_count, count, available) = Self::usage(regions)?;
+        let directory_frames = region_count.div_ceil(REGIONS_PER_FRAME) as u64;
+        let list_frames = region_count as u64;
+        let frames = directory_frames
+            .checked_add(list_frames)
+            .and_then(|frames| frames.checked_add(count.div_ceil(RECORDS_PER_FRAME)))
+            .ok_or(MemoryError::InvalidRequest)?;
+        if available.saturating_sub(frames) < KERNEL_POOL_FRAMES {
+            return Err(MemoryError::NoMemory);
+        }
+        let mut metadata = Self {
+            directory: [0; DIRECTORY_FRAMES],
+            region_count,
+            directory_frames,
+            list_frames,
+            frames,
+        };
+        metadata.initialize(regions)?;
+        Ok(metadata)
+    }
+
+    fn validate(regions: &[MemoryRegion]) -> Result<(), MemoryError> {
         let mut previous_end = 0;
         for region in regions {
             let range = region.range;
@@ -551,6 +820,10 @@ impl FrameMetadata {
             }
             previous_end = range.end;
         }
+        Ok(())
+    }
+
+    fn usage(regions: &[MemoryRegion]) -> Result<(usize, u64, u64), MemoryError> {
         let mut region_count = 0usize;
         let mut count = 0u64;
         let mut available = 0u64;
@@ -563,18 +836,17 @@ impl FrameMetadata {
                 available += region.frame_count();
             }
         }
-        let directory_frames = region_count.div_ceil(REGIONS_PER_FRAME) as u64;
-        let frames = directory_frames + count.div_ceil(RECORDS_PER_FRAME);
-        if available.saturating_sub(frames) < KERNEL_POOL_FRAMES {
-            return Err(MemoryError::NoMemory);
-        }
-        let mut metadata = Self {
-            directory: [0; DIRECTORY_FRAMES],
-            region_count,
-            directory_frames,
-            frames,
-        };
-        let mut remaining = frames;
+        Ok((region_count, count, available))
+    }
+
+    fn initialize(&mut self, regions: &[MemoryRegion]) -> Result<(), MemoryError> {
+        self.zero(regions)?;
+        self.write_regions(regions)?;
+        self.initialize_lists()
+    }
+
+    fn zero(&mut self, regions: &[MemoryRegion]) -> Result<(), MemoryError> {
+        let mut remaining = self.frames;
         let mut first = 0;
         for region in Self::input_regions(regions) {
             if region.state != MemoryRegionState::Available {
@@ -583,26 +855,42 @@ impl FrameMetadata {
             let prefix = remaining.min(region.frame_count());
             for offset in 0..prefix {
                 let address = region.range.start + offset * PAGE_SIZE as u64;
-                if first < directory_frames {
-                    metadata.directory[first as usize] = address;
+                if first < self.directory_frames {
+                    self.directory[first as usize] = address;
                 }
                 hardware::mmu().zero_frame(address)?;
                 first += 1;
             }
             remaining -= prefix;
         }
+        Ok(())
+    }
+
+    fn write_regions(&self, regions: &[MemoryRegion]) -> Result<(), MemoryError> {
         let mut first = 0;
         let mut available_first = 0;
         for (index, mut region) in Self::input_regions(regions).enumerate() {
             region.first = first;
             region.available_first = available_first;
+            region.lists = 0;
             first += region.frame_count();
             if region.state == MemoryRegionState::Available {
                 available_first += region.frame_count();
             }
-            metadata.write_region(index, region)?;
+            self.write_region(index, region)?;
         }
-        Ok(metadata)
+        Ok(())
+    }
+
+    fn initialize_lists(&self) -> Result<(), MemoryError> {
+        for index in 0..self.region_count {
+            let lists = self.metadata_address(self.directory_frames + index as u64);
+            let mut region = self.region(index);
+            region.lists = lists;
+            self.write_region(index, region)?;
+            hardware::mmu().write_frame(lists, 0, &[END; LIST_WORDS])?;
+        }
+        Ok(())
     }
 
     fn input_regions(regions: &[MemoryRegion]) -> impl Iterator<Item = ManagedRegion> + '_ {
@@ -625,6 +913,7 @@ impl FrameMetadata {
                 state: region.state,
                 first: 0,
                 available_first: 0,
+                lists: 0,
             })
         })
     }
@@ -639,13 +928,10 @@ impl FrameMetadata {
                 region.first,
                 u64::from(region.state == MemoryRegionState::BootReserved),
                 region.available_first,
+                region.lists,
             ],
         )?;
         Ok(())
-    }
-
-    fn regions(&self) -> impl Iterator<Item = ManagedRegion> + '_ {
-        (0..self.region_count).map(|index| self.region(index))
     }
 
     fn region(&self, index: usize) -> ManagedRegion {
@@ -664,6 +950,7 @@ impl FrameMetadata {
             },
             first: words[2],
             available_first: words[4],
+            lists: words[5],
             state: if words[3] == 0 {
                 MemoryRegionState::Available
             } else {
@@ -672,7 +959,10 @@ impl FrameMetadata {
         }
     }
 
-    fn find_region(&self, before: impl Fn(ManagedRegion) -> bool) -> Option<ManagedRegion> {
+    fn find_region(
+        &self,
+        before: impl Fn(ManagedRegion) -> bool,
+    ) -> Option<(usize, ManagedRegion)> {
         let mut start = 0;
         let mut end = self.region_count;
         while start < end {
@@ -684,7 +974,7 @@ impl FrameMetadata {
                 end = middle;
             }
         }
-        (start < self.region_count).then(|| self.region(start))
+        (start < self.region_count).then(|| (start, self.region(start)))
     }
 
     fn index(&self, address: u64) -> Result<u64, MemoryError> {
@@ -692,21 +982,26 @@ impl FrameMetadata {
             return Err(MemoryError::InvalidFrame);
         }
         self.find_region(|region| region.range.end <= address)
-            .filter(|region| region.range.start <= address)
-            .map(|region| region.first + (address - region.range.start) / PAGE_SIZE as u64)
+            .filter(|(_, region)| region.range.start <= address)
+            .map(|(_, region)| region.first + (address - region.range.start) / PAGE_SIZE as u64)
             .ok_or(MemoryError::InvalidFrame)
     }
 
     fn physical_address(&self, index: u64) -> u64 {
-        let region = self
+        let (_, region) = self
             .find_region(|region| region.first + region.frame_count() <= index)
             .expect("frame index is outside managed memory");
         region.range.start + (index - region.first) * PAGE_SIZE as u64
     }
 
-    fn location(&self, index: u64) -> (u64, usize) {
-        let frame = self.directory_frames + index / RECORDS_PER_FRAME;
-        let region = self
+    fn region_of(&self, index: u64) -> ManagedRegion {
+        self.find_region(|region| region.first + region.frame_count() <= index)
+            .map(|(_, region)| region)
+            .expect("frame index is outside managed memory")
+    }
+
+    fn metadata_address(&self, frame: u64) -> u64 {
+        let (_, region) = self
             .find_region(|region| {
                 let available = if region.state == MemoryRegionState::Available {
                     region.frame_count()
@@ -715,11 +1010,14 @@ impl FrameMetadata {
                 };
                 region.available_first + available <= frame
             })
-            .expect("frame metadata is missing");
-        (
-            region.range.start + (frame - region.available_first) * PAGE_SIZE as u64,
-            (index % RECORDS_PER_FRAME) as usize * WORDS,
-        )
+            .expect("metadata frame is missing");
+        region.range.start + (frame - region.available_first) * PAGE_SIZE as u64
+    }
+
+    fn location(&self, index: u64) -> (u64, usize) {
+        let frame = self.directory_frames + self.list_frames + index / RECORDS_PER_FRAME;
+        let address = self.metadata_address(frame);
+        (address, (index % RECORDS_PER_FRAME) as usize * WORDS)
     }
 
     fn read(&self, index: u64) -> FrameRecord {
@@ -743,4 +1041,10 @@ impl ManagedRegion {
     fn frame_count(&self) -> u64 {
         (self.range.end - self.range.start) / PAGE_SIZE as u64
     }
+}
+
+fn block_order(address: u64, maximum: u64) -> usize {
+    let alignment = (address.trailing_zeros() as usize).saturating_sub(PAGE_BITS);
+    let capacity = (u64::BITS - maximum.leading_zeros()) as usize - 1;
+    alignment.min(capacity).min(ORDERS - 1)
 }
