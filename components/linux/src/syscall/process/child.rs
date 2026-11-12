@@ -112,6 +112,8 @@ fn spawn<'a>(
         files: process.files.fork(),
         terminal: Rc::clone(&process.terminal),
         cwd: process.cwd.clone(),
+        program: process.program.clone(),
+        argv: process.argv.clone(),
         machine: process.machine,
         vfork: waiting.clone(),
         umask: process.umask,

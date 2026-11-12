@@ -167,6 +167,8 @@ impl<'a> Pending<'a> {
                 interrupt_requested: false,
             });
             process.files.close_on_exec();
+            process.program.clone_from(&self.arguments.path);
+            process.argv.clone_from(&self.arguments.argv);
             process.namespace.exec(process.pid);
             if let Some(vfork) = process.vfork.take() {
                 vfork.release();

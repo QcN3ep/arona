@@ -156,6 +156,7 @@ fn readiness(description: &OpenFileDescription<'_>) -> u16 {
         OpenFileDescription::Regular { .. } | OpenFileDescription::Directory { .. } => {
             INPUT | OUTPUT
         }
+        OpenFileDescription::VirtualFile { .. } => INPUT,
         OpenFileDescription::Terminal { terminal, .. } => {
             OUTPUT
                 | if terminal.readable() { INPUT } else { 0 }

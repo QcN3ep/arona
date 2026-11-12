@@ -118,6 +118,8 @@ auxv_done:
     beq $s3, $t1, files_pipe
     li.d $t1, 82
     beq $s3, $t1, files_poll
+    li.d $t1, 86
+    beq $s3, $t1, files_virtual
     li.d $t1, 77
     beq $s3, $t1, mapping_bus_fault
     li.d $t1, 70

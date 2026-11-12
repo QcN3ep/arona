@@ -50,6 +50,8 @@ Arguments, flags, and error conversions of recognized calls are checked by their
 The FileTable maps Linux fds to open file descriptions.
 A description holds a file service File, Directory, pipe end, or terminal, and duplicated fds share the corresponding open state.
 Each fd also stores descriptor attributes such as close-on-exec.
+Selected files under `/proc` and `/sys` expose read-only snapshots taken when the descriptor is opened.
+These include process status and arguments, mount information, the release version, and the online CPU list.
 Virtual character descriptions implement `/dev/null` and `/dev/zero`, while `/dev/random` and `/dev/urandom` read from the configured random number session.
 
 | Operation group | Implemented calls |
