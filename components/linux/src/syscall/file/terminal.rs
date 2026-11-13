@@ -11,7 +11,7 @@ use crate::{
         abi::{EAGAIN, EBADF, EFAULT, EINVAL, EIO, ENOTTY, ESPIPE, Errno, SyscallResult},
     },
 };
-use alloc::rc::Rc;
+use alloc::{rc::Rc, vec::Vec};
 
 pub(in crate::syscall) struct Read<'a> {
     description: Rc<OpenFileDescription<'a>>,
@@ -82,6 +82,14 @@ pub(super) fn write_output<'a>(
         if input.is_empty() {
             return Ok(Outcome::Complete(Ok(0)));
         }
+        if terminal.stopped() {
+            return Ok(outcome(Ok(Pending::TerminalOutput(Output {
+                terminal: Rc::clone(terminal),
+                input,
+                request: None,
+                consumed: 0,
+            }))));
+        }
         let (bytes, consumed) = terminal.output(&input);
         Ok(outcome(Ok(Pending::Output {
             request: terminal.output.start_write(&bytes).map_err(|_| EIO)?,
@@ -90,6 +98,52 @@ pub(super) fn write_output<'a>(
         })))
     })();
     operation.unwrap_or_else(|error| Outcome::Complete(Err(error)))
+}
+
+/// A terminal write stopped by output flow control; it submits once output resumes.
+pub(in crate::syscall) struct Output {
+    terminal: Rc<Terminal>,
+    input: Vec<u8>,
+    request: Option<devmgr::device::Pending<usize, usize>>,
+    consumed: usize,
+}
+
+impl Output {
+    pub fn call(&self) -> Option<&runtime::Handle<runtime::Call>> {
+        Some(self.request.as_ref()?.call())
+    }
+
+    /// The service registers one resume wait per terminal, so a stopped write waits on
+    /// nothing itself. Once the write is submitted it can no longer be interrupted,
+    /// like an ordinary terminal write.
+    pub fn interrupt(&self) -> Option<(bool, SyscallResult)> {
+        if self.request.is_none() {
+            return Some((true, Err(super::super::abi::EINTR)));
+        }
+        None
+    }
+
+    pub fn poll(&mut self) -> Option<SyscallResult> {
+        if self.request.is_none() {
+            if self.terminal.stopped() {
+                return None;
+            }
+            let (bytes, consumed) = self.terminal.output(&self.input);
+            self.consumed = consumed;
+            let request = match self.terminal.output.start_write(&bytes) {
+                Ok(request) => request,
+                Err(_) => return Some(Err(EIO)),
+            };
+            self.request = Some(request);
+        }
+        match self.request.as_mut().unwrap().try_complete() {
+            Err(devmgr::Error::Runtime(runtime::Error::Kernel(
+                runtime::KernelError::WouldBlock,
+            ))) => None,
+            Err(_) => Some(Err(EIO)),
+            Ok(_) => Some(Ok(self.consumed)),
+        }
+    }
 }
 
 impl Read<'_> {
@@ -223,7 +277,7 @@ impl Read<'_> {
 pub(in crate::syscall) struct Change {
     request: devmgr::device::Pending<()>,
     terminal: Rc<Terminal>,
-    settings: [u8; 36],
+    settings: Option<[u8; 36]>,
     flush: bool,
 }
 
@@ -239,7 +293,9 @@ impl Change {
             ))) => None,
             Err(_) => Some(Err(EIO)),
             Ok(()) => {
-                self.terminal.set_termios(self.settings, self.flush);
+                if let Some(settings) = self.settings.take() {
+                    self.terminal.set_termios(settings, self.flush);
+                }
                 Some(Ok(0))
             }
         }
@@ -253,8 +309,10 @@ pub(super) fn start<'a>(
     command: usize,
     address: usize,
 ) -> Outcome<'a> {
-    if matches!(command as u32, 0x5402..=0x5404 | 0x540b | 0x5410)
-        && let Some(descriptor) = process.files.get(raw as i32 as usize)
+    if matches!(
+        command as u32,
+        0x5402..=0x5404 | 0x5409 | 0x540a | 0x540b | 0x5410 | 0x5425
+    ) && let Some(descriptor) = process.files.get(raw as i32 as usize)
         && let OpenFileDescription::Terminal { terminal, .. } = descriptor.description.as_ref()
     {
         match process.namespace.terminal_access(
@@ -268,7 +326,7 @@ pub(super) fn start<'a>(
             Err(error) => return Outcome::Complete(Err(error)),
         }
     }
-    if !matches!(command as u32, 0x5403 | 0x5404) {
+    if !matches!(command as u32, 0x5403 | 0x5404 | 0x5409 | 0x5425) {
         return Outcome::Complete(ioctl(process, raw, command, address));
     }
     outcome((|| {
@@ -276,7 +334,12 @@ pub(super) fn start<'a>(
         let OpenFileDescription::Terminal { terminal, .. } = descriptor.description.as_ref() else {
             return Err(ENOTTY);
         };
-        let settings = settings(process, address)?;
+        // Drain requests complete after the output queue empties; the attribute requests
+        // apply their settings afterwards, while break-only requests apply nothing.
+        let settings = match command as u32 {
+            0x5403 | 0x5404 => Some(settings(process, address)?),
+            _ => None,
+        };
         let request = terminal.output.start_flush().map_err(|_| EIO)?;
         Ok(Pending::TerminalChange(Change {
             request,
@@ -400,7 +463,53 @@ fn terminal_ioctl(
             1 => Ok(0),
             _ => Err(EINVAL),
         },
-        // TODO: Integrate the remaining terminal control operations.
+        0x540c => {
+            terminal.set_exclusive(true);
+            Ok(0)
+        }
+        0x540d => {
+            terminal.set_exclusive(false);
+            Ok(0)
+        }
+        0x540a => match address {
+            0 => {
+                terminal.stop_output();
+                Ok(0)
+            }
+            1 => {
+                terminal.start_output();
+                Ok(0)
+            }
+            // Input flow control sends start and stop characters when IXON is enabled,
+            // which the discipline currently ignores.
+            2 | 3 => Ok(0),
+            _ => Err(EINVAL),
+        },
+        // TIOCOUTQ: the discipline hands output straight to the UART session and queues none.
+        0x5411 => write(process, address, &0i32.to_le_bytes()),
+        0x5412 => {
+            let mut byte = [0; 1];
+            process
+                .address_space
+                .read(address, &mut byte)
+                .map_err(|_| EFAULT)?;
+            if !Rc::ptr_eq(
+                &process.namespace.controlling_terminal(process.pid)?,
+                terminal,
+            ) {
+                return Err(EIO);
+            }
+            terminal.inject(byte[0]).map_err(|_| EIO)?;
+            Ok(0)
+        }
+        // TIOCGEXCL is `_IOR('T', 0x40, int)`, unlike the plain-number commands above.
+        0x8004_5440 => write(
+            process,
+            address,
+            &i32::from(terminal.exclusive()).to_le_bytes(),
+        ),
+        // No break signal exists on the console device; accept the requests without one.
+        0x5427 | 0x5428 => Ok(0),
         _ => Err(ENOTTY),
     }
 }

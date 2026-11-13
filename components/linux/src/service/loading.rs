@@ -24,6 +24,7 @@ pub(super) struct Loading<'a> {
 
 impl<'a> Loading<'a> {
     pub fn new(
+        task: &Handle<Task>,
         files: &fs::Client<'a>,
         mut request: ReceivedMessage,
         reply: Handle<Reply>,
@@ -66,7 +67,11 @@ impl<'a> Loading<'a> {
                 )?)
             };
             let stage = Chain::new(Executable::new(files, None, &arguments.path)?);
-            Ok((arguments, Rc::new(Terminal::new(output, input)), stage))
+            Ok((
+                arguments,
+                Rc::new(Terminal::new(task, output, input)?),
+                stage,
+            ))
         })();
         match decoded {
             Ok((arguments, terminal, stage)) => Ok(Self {

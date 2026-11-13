@@ -105,6 +105,8 @@ impl PidNamespace {
             return false;
         };
         terminal.set_control(None);
+        // Hanging up releases the terminal, ending its exclusive mode like a last close.
+        terminal.set_exclusive(false);
         for record in self.processes.borrow_mut().values_mut() {
             if record
                 .terminal

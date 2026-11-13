@@ -38,6 +38,7 @@ pub(super) const O_CLOEXEC: u32 = 0x80000;
 pub(super) enum Pending<'a> {
     TerminalChange(terminal::Change),
     Terminal(terminal::Read<'a>),
+    TerminalOutput(terminal::Output),
     Pipe(pipe::PipeIo<'a>),
     Poll(poll::Poll<'a>),
     Open(open::Open<'a>),
@@ -266,6 +267,7 @@ impl<'a> Pending<'a> {
     pub fn interrupt(&self, process: &Process<'_>) -> Option<(bool, SyscallResult)> {
         match self {
             Self::Terminal(read) => Some(read.interrupt(process)),
+            Self::TerminalOutput(output) => output.interrupt(),
             Self::Pipe(_) | Self::Eventfd(_) | Self::Timerfd(_) | Self::Signalfd(_) => {
                 Some((true, Err(abi::EINTR)))
             }
@@ -289,6 +291,7 @@ impl<'a> Pending<'a> {
     pub fn call(&self) -> Option<&Handle<Call>> {
         match self {
             Self::Terminal(_) | Self::Eventfd(_) | Self::Timerfd(_) | Self::Signalfd(_) => None,
+            Self::TerminalOutput(output) => output.call(),
             Self::TerminalChange(change) => Some(change.call()),
             Self::Pipe(_) | Self::Poll(_) => None,
             Self::Open(open) => Some(open.call()),
@@ -313,6 +316,7 @@ impl<'a> Pending<'a> {
     ) -> Option<SyscallResult> {
         match self {
             Self::Terminal(read) => read.poll(process),
+            Self::TerminalOutput(output) => output.poll(),
             Self::Eventfd(read) => read.poll(process),
             Self::Timerfd(read) => read.poll(process),
             Self::Signalfd(read) => read.poll(process, index),

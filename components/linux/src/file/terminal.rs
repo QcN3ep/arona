@@ -6,7 +6,7 @@
 
 use alloc::{collections::VecDeque, vec::Vec};
 use core::cell::{Cell, Ref, RefCell};
-use runtime::{Call, Handle};
+use runtime::{Call, Event, Handle, Rights};
 
 pub(crate) struct Terminal {
     pub output: devmgr::uart::Session,
@@ -14,6 +14,9 @@ pub(crate) struct Terminal {
     input: RefCell<Option<Input>>,
     state: RefCell<State>,
     control: Cell<Option<(usize, usize)>>,
+    exclusive: Cell<bool>,
+    stopped: Cell<bool>,
+    resume: Handle<Event>,
 }
 
 struct State {
@@ -38,7 +41,11 @@ enum InputRequest {
 }
 
 impl Terminal {
-    pub fn new(output: devmgr::uart::Session, input: Option<devmgr::uart::Session>) -> Self {
+    pub fn new(
+        task: &Handle<runtime::Task>,
+        output: devmgr::uart::Session,
+        input: Option<devmgr::uart::Session>,
+    ) -> Result<Self, runtime::Error> {
         // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/termbits.h?h=v6.12
         let mut termios = [0; 36];
         termios[..4].copy_from_slice(&0x500u32.to_le_bytes());
@@ -48,7 +55,7 @@ impl Terminal {
         termios[17..34]
             .copy_from_slice(&[3, 28, 127, 21, 4, 0, 1, 0, 17, 19, 26, 0, 18, 15, 23, 22, 0]);
         let window = [24, 0, 80, 0, 0, 0, 0, 0];
-        Self {
+        Ok(Self {
             output,
             control: Cell::new(None),
             source: input,
@@ -63,7 +70,10 @@ impl Terminal {
                 received: 0,
                 literal: false,
             }),
-        }
+            exclusive: Cell::new(false),
+            stopped: Cell::new(false),
+            resume: task.event(Rights::WAIT | Rights::SIGNAL)?,
+        })
     }
 
     pub fn failed(&self) -> bool {
@@ -74,6 +84,12 @@ impl Terminal {
     }
     pub fn set_control(&self, control: Option<(usize, usize)>) {
         self.control.set(control);
+    }
+    pub fn exclusive(&self) -> bool {
+        self.exclusive.get()
+    }
+    pub fn set_exclusive(&self, value: bool) {
+        self.exclusive.set(value);
     }
     pub fn disconnect(&self) {
         self.state.borrow_mut().failed = true;
@@ -209,6 +225,52 @@ impl Terminal {
             count += 1;
         }
         (output, count)
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stopped.get()
+    }
+
+    /// Stops terminal output; subsequent writes wait until output resumes.
+    pub fn stop_output(&self) {
+        self.stopped.set(true);
+    }
+
+    /// Resumes terminal output and wakes the service, which then re-polls stopped writers.
+    pub fn start_output(&self) {
+        self.stopped.set(false);
+        let _ = self.resume.signal(1);
+    }
+
+    pub fn resume_event(&self) -> &Handle<Event> {
+        &self.resume
+    }
+
+    /// Simulates terminal input: the byte passes through the line discipline, so it is
+    /// echoed, completes lines, and raises control character signals like typed input.
+    pub fn inject(&self, byte: u8) -> Result<(), devmgr::Error> {
+        let echo = self.receive(alloc::vec![byte]);
+        if echo.is_empty() {
+            return Ok(());
+        }
+        let mut input = self.input.borrow_mut();
+        if let Some(current) = input.as_mut() {
+            current.echo.extend(echo);
+            return Ok(());
+        }
+        if self.source.is_none() {
+            // Without an input session nothing drives the echo queue; submit it directly.
+            self.output.write_all(&echo)?;
+            self.output.flush()?;
+            return Ok(());
+        }
+        let queue: VecDeque<u8> = echo.into();
+        let request = echo_request(&self.output, &queue)?;
+        *input = Some(Input {
+            request,
+            echo: queue,
+        });
+        Ok(())
     }
 
     // TODO: Support software flow control.
@@ -396,14 +458,17 @@ impl Input {
         self.request = if self.echo.is_empty() {
             InputRequest::Read(source.start_read(devmgr::uart::MAX_BYTES)?)
         } else {
-            let bytes: Vec<_> = self
-                .echo
-                .iter()
-                .copied()
-                .take(devmgr::uart::MAX_BYTES)
-                .collect();
-            InputRequest::Echo(terminal.output.start_write(&bytes)?)
+            echo_request(&terminal.output, &self.echo)?
         };
         Ok(true)
     }
+}
+
+/// Submits the first chunk of a pending echo queue for output.
+fn echo_request(
+    output: &devmgr::uart::Session,
+    echo: &VecDeque<u8>,
+) -> Result<InputRequest, devmgr::Error> {
+    let bytes: Vec<_> = echo.iter().copied().take(devmgr::uart::MAX_BYTES).collect();
+    Ok(InputRequest::Echo(output.start_write(&bytes)?))
 }
