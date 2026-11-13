@@ -44,10 +44,18 @@ pub(super) fn probe(
     }
     let mut bytes = [0; 4096];
     device.pci_config(&mut bytes)?;
-    if bytes[..2] != [0xf4, 0x1a]
-        || bytes[2..4] != (VIRTIO_DEVICE_ID_BASE + device_type).to_le_bytes()
-        || bytes[6] & 0x10 == 0
-    {
+    if bytes[..2] != [0xf4, 0x1a] || bytes[6] & 0x10 == 0 {
+        return Err(Error::InvalidConfiguration);
+    }
+    let device_id = u16::from_le_bytes([bytes[2], bytes[3]]);
+    // Transitional devices keep a legacy PCI ID and report the VirtIO device
+    // type through the subsystem device ID, which separates them from
+    // unrelated devices that reuse the same legacy ID.
+    let subsystem_id = u16::from_le_bytes([bytes[0x2e], bytes[0x2f]]);
+    let modern = device_id == VIRTIO_DEVICE_ID_BASE + device_type;
+    let transitional = legacy_device_id(device_type)
+        .is_some_and(|legacy| device_id == legacy && subsystem_id == device_type);
+    if !modern && !transitional {
         return Err(Error::InvalidConfiguration);
     }
     let mut regions = [None; 4];
@@ -102,6 +110,12 @@ pub(super) fn probe(
             }
         }
         offset = usize::from(bytes[offset + 1]);
+    }
+    if regions.iter().all(Option::is_none) {
+        // A legacy-only device exposes no modern capability regions. Its
+        // register block lives in an I/O BAR, and it does not offer the
+        // VIRTIO_F_VERSION_1 feature the transport negotiates.
+        return Err(Error::Unsupported);
     }
     let [Some(common), Some(notify), Some(isr), config] = regions else {
         return Err(Error::InvalidConfiguration);
@@ -244,4 +258,13 @@ impl<'a> Pci<'a> {
 
 fn word(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
+
+fn legacy_device_id(device_type: u16) -> Option<u16> {
+    match device_type {
+        super::NET_DEVICE_TYPE => Some(0x1000),
+        super::BLOCK_DEVICE_TYPE => Some(0x1001),
+        super::RNG_DEVICE_TYPE => Some(0x1005),
+        _ => None,
+    }
 }
