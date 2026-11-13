@@ -65,6 +65,12 @@ path = "tests/interrupt.rs"
 harness = false
 required-features = ["baremetal"]
 
+[[test]]
+name = "perf"
+path = "tests/perf.rs"
+harness = false
+required-features = ["baremetal"]
+
 [dependencies]
 arrayvec = { version = "0.7.6", default-features = false }
 fdt = "0.2.0-alpha3"

@@ -5,6 +5,7 @@
 
 mod linux_test;
 mod net_test;
+mod perf;
 mod rootfs;
 
 use std::{
@@ -68,6 +69,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
         "build" => build(arguments, false),
         "run" => build(arguments, true),
         "book" => book(arguments),
+        "perf" => perf::run(arguments),
         "package-init" => package_init(&BuildOptions::parse(arguments)?, None).map(|_| ()),
         "package-net-test" => {
             package_init(&BuildOptions::parse(arguments)?, Some("net")).map(|_| ())
@@ -103,33 +105,13 @@ fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), Str
     run_cargo_build(&options, &archive)?;
     if run {
         let root = workspace_root()?;
-        let isa = match options.target {
-            Target::Riscv64 => "riscv64",
-            Target::LoongArch64 => "loongarch64",
-        };
-        let mut command = Command::new(format!("qemu-system-{isa}"));
-        command
-            .current_dir(&root)
-            .args([
-                "-M",
-                "virt",
-                "-m",
-                "256M",
-                "-smp",
-                "1",
-                "-nographic",
-                "-monitor",
-                "none",
-                "-nic",
-                "none",
-                "-kernel",
-            ])
-            .arg(
-                target_directory(&root)
-                    .join(options.target.triple())
-                    .join(options.profile())
-                    .join("arch"),
-            );
+        let mut command = qemu_command(options.target, &root);
+        command.arg("-kernel").arg(
+            target_directory(&root)
+                .join(options.target.triple())
+                .join(options.profile())
+                .join("arch"),
+        );
         command.args(["-device", "virtio-rng-pci,disable-legacy=on"]);
         if options.net {
             command.args([
@@ -139,15 +121,37 @@ fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), Str
                 "virtio-net-pci,disable-legacy=on,netdev=net0,mac=52:54:00:12:34:56",
             ]);
         }
-        if matches!(options.target, Target::Riscv64) {
-            command.args(["-bios", "default"]);
-        }
         if matches!(options.initramfs, Initramfs::External) {
             command.arg("-initrd").arg(archive);
         }
         execute(command)?;
     }
     Ok(())
+}
+
+fn qemu_command(target: Target, root: &Path) -> Command {
+    let isa = match target {
+        Target::Riscv64 => "riscv64",
+        Target::LoongArch64 => "loongarch64",
+    };
+    let mut command = Command::new(format!("qemu-system-{isa}"));
+    command.current_dir(root).args([
+        "-M",
+        "virt",
+        "-m",
+        "256M",
+        "-smp",
+        "1",
+        "-nographic",
+        "-monitor",
+        "none",
+        "-nic",
+        "none",
+    ]);
+    if matches!(target, Target::Riscv64) {
+        command.args(["-bios", "default"]);
+    }
+    command
 }
 
 fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, String> {
@@ -391,5 +395,5 @@ fn execute(mut command: Command) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|package-init|package-linux-test|package-net-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH] [--net]\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
+    "usage: cargo xtask <build|run|package-init|package-linux-test|package-net-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH] [--net]\n       cargo xtask perf run <riscv64|loongarch64> --case calibration --mode count [--release] [--timeout SECONDS]\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
 }
