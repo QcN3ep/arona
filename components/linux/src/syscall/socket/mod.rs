@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Linux IPv4 sockets over the native network service.
+//! Linux IP sockets over the native network service.
 
 mod address;
 mod message;
@@ -83,7 +83,8 @@ fn action(
     Ok(match number {
         BIND => {
             let endpoint = address::input(process, args[1], args[2])?;
-            if endpoint.address != [0; 4] && endpoint.address[0] != 127 {
+            address::check_family(endpoint, Socket::state(description))?;
+            if !endpoint.address.is_unspecified() && !endpoint.address.is_loopback() {
                 return Err(EADDRNOTAVAIL);
             }
             Action::Bind(endpoint)
@@ -159,6 +160,7 @@ fn connect(
         return Ok(Action::Disconnect);
     }
     let endpoint = address::input(process, args[1], args[2])?;
+    address::check_family(endpoint, Socket::state(description))?;
     address::route(endpoint)?;
     Ok(Action::Connect {
         endpoint,
@@ -167,9 +169,11 @@ fn connect(
 }
 
 fn create<'a>(services: &crate::Services<'a>, args: [usize; 6]) -> Result<Pending<'a>, Errno> {
-    if args[0] as i32 != 2 {
-        return Err(EAFNOSUPPORT);
-    }
+    let family = match args[0] as i32 {
+        2 => net::AddressFamily::Ipv4,
+        10 => net::AddressFamily::Ipv6,
+        _ => return Err(EAFNOSUPPORT),
+    };
     let flags = args[1] as u32;
     let kind = match (flags & !(O_NONBLOCK | O_CLOEXEC), args[2] as i32) {
         (1, 0 | 6) => net::SocketKind::Tcp,
@@ -180,7 +184,7 @@ fn create<'a>(services: &crate::Services<'a>, args: [usize; 6]) -> Result<Pendin
         .net
         .as_ref()
         .ok_or(ENETUNREACH)?
-        .start_socket(kind)
+        .start_socket_in(kind, family)
         .map_err(error)?;
     Ok(Pending::Create {
         native: Some(native),

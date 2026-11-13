@@ -71,7 +71,9 @@ fn main() {
     output.write_all(b"Network test: devices ready\n").unwrap();
     let (service, net_channel) = launch::launch(&native, machine, rights);
     let control = start_network(net_channel, &channel);
-    native_clients(&control, &client, machine, &output);
+    for family in [0, 2] {
+        native_clients(&control, &client, machine, &output, family);
+    }
     requests::run(&control.connect().unwrap(), &output);
     output
         .write_all(b"Network test: request recovery passed\n")
@@ -112,6 +114,7 @@ fn native_clients(
     client: &[u8],
     machine: linux::elf::Machine,
     output: &devmgr::uart::Session,
+    family: u64,
 ) {
     let rights = launch::RIGHTS;
     let ready = process::task()
@@ -137,14 +140,14 @@ fn native_clients(
             .unwrap();
         endpoint.start_call(&mut request).unwrap()
     };
-    let server_call = begin(0, &server_channel);
+    let server_call = begin(family, &server_channel);
     output
         .write_all(b"Network test: listener starting\n")
         .unwrap();
     ipc::wait_many(&[WaitItem::new(&ready, 1)], until()).unwrap();
     output.write_all(b"Network test: listener ready\n").unwrap();
     let (peer, peer_channel) = launch::launch(client, machine, rights);
-    let peer_call = begin(1, &peer_channel);
+    let peer_call = begin(family + 1, &peer_channel);
     for call in [&server_call, &peer_call] {
         ipc::wait_many(&[WaitItem::new(call, ipc::READABLE)], until()).unwrap();
         assert_eq!(call.try_receive().unwrap().tag, 0);

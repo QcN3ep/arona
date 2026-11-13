@@ -42,7 +42,8 @@ extern "C" fn arona_lwip_random() -> u32 {
 
 /// # Safety
 ///
-/// local and remote must each reference four readable IPv4 address bytes. The
+/// local and remote must each reference length readable address bytes, where
+/// length is 4 for IPv4 or 16 for IPv6. Both addresses have the same family. The
 /// RNG must already be seeded and the call must originate in the protocol thread.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn arona_lwip_isn(
@@ -50,6 +51,7 @@ unsafe extern "C" fn arona_lwip_isn(
     local_port: u16,
     remote: *const u8,
     remote_port: u16,
+    length: usize,
 ) -> u32 {
     let [first, second] = RANDOM
         .lock(WaitMode::Forever)
@@ -58,10 +60,11 @@ unsafe extern "C" fn arona_lwip_isn(
         .expect("unseeded lwIP ISN")
         .isn_key;
     let mut hash = SipHasher24::new_with_keys(first, second);
-    // SAFETY: The protocol call provides complete IPv4 addresses for this call.
+    hash.write_u8(length as u8);
+    // SAFETY: The protocol call provides complete addresses of the stated length.
     unsafe {
-        hash.write(core::slice::from_raw_parts(local, 4));
-        hash.write(core::slice::from_raw_parts(remote, 4));
+        hash.write(core::slice::from_raw_parts(local, length));
+        hash.write(core::slice::from_raw_parts(remote, length));
     }
     hash.write(&local_port.to_be_bytes());
     hash.write(&remote_port.to_be_bytes());

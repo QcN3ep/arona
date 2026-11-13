@@ -3,7 +3,7 @@
 //! One worker owns pending shutdown and close calls. Socket storage also holds
 //! its queue link, so submission and final-reference close need no allocation.
 
-use crate::{Error, Shutdown, Socket, SocketKind, ffi, readiness::Notices, status};
+use crate::{AddressFamily, Error, Shutdown, Socket, SocketKind, ffi, readiness::Notices, status};
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicI32, Ordering};
 use runtime::{
@@ -21,6 +21,7 @@ static WAKE: spin::Once<Handle<Event>> = spin::Once::new();
 pub(super) struct Shared {
     pub(super) fd: AtomicI32,
     pub(super) kind: SocketKind,
+    pub(super) family: AddressFamily,
     pub(super) notices: Notices,
     completion: Handle<Event>,
     operation: spin::Mutex<Operation>,
@@ -41,11 +42,12 @@ struct Queue {
 }
 
 impl Shared {
-    pub(super) fn new(kind: SocketKind) -> Result<Arc<Self>, Error> {
+    pub(super) fn new(kind: SocketKind, family: AddressFamily) -> Result<Arc<Self>, Error> {
         let completion = process::task().event(Rights::WAIT | Rights::SIGNAL)?;
         Arc::try_new(Self {
             fd: AtomicI32::new(-1),
             kind,
+            family,
             notices: Notices::new(),
             completion,
             operation: spin::Mutex::new(Operation::Idle),

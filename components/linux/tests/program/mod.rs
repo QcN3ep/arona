@@ -153,6 +153,7 @@ fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         b"lifecycle",
         b"udp",
         b"options",
+        b"ipv6",
     ] {
         let result = run(mode).wait(WaitMode::Until(
             runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,

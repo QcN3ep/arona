@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use crate::{Endpoint, Error};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use runtime::{
     AnyHandle, Handle, Object, Rights,
     ipc::{Message, ReceivedMessage, Transfer},
@@ -18,6 +19,8 @@ pub const SNAPSHOT: u64 = 6;
 pub const SUBSCRIBE: u64 = 7;
 pub const MAX_STREAM: usize = 65536;
 pub const MAX_DATAGRAM: usize = 65507;
+// lwIP includes the IP header in its 16-bit packet length.
+pub const MAX_DATAGRAM_V6: usize = 65487;
 
 pub const CREATE: u64 = 0;
 pub const BIND: u64 = 1;
@@ -44,16 +47,31 @@ pub const ACCEPTED: u64 = 3;
 pub const ENDPOINT: u64 = 4;
 pub const VALUE: u64 = 5;
 
-pub fn endpoint(value: Endpoint) -> u64 {
-    u64::from(u32::from_be_bytes(value.address)) | (u64::from(value.port) << 32)
+pub fn endpoint(value: Endpoint) -> [u64; 3] {
+    let (family, high, low) = match value.address {
+        IpAddr::V4(address) => (4, 0, u64::from(u32::from(address))),
+        IpAddr::V6(address) => {
+            let value = u128::from(address);
+            (6, (value >> 64) as u64, value as u64)
+        }
+    };
+    [family | (u64::from(value.port) << 16), high, low]
 }
-pub fn decode_endpoint(value: u64) -> Result<Endpoint, Error> {
-    if value >> 48 != 0 {
+pub fn decode_endpoint(words: &[u64]) -> Result<Endpoint, Error> {
+    let [header, high, low] = *words else {
+        return Err(Error::InvalidRequest);
+    };
+    if header >> 32 != 0 || header & 0xff00 != 0 {
         return Err(Error::InvalidRequest);
     }
+    let address = match header & 0xff {
+        4 if high == 0 && low <= u32::MAX as u64 => IpAddr::V4(Ipv4Addr::from(low as u32)),
+        6 => IpAddr::V6(Ipv6Addr::from((u128::from(high) << 64) | u128::from(low))),
+        _ => return Err(Error::InvalidRequest),
+    };
     Ok(Endpoint {
-        address: (value as u32).to_be_bytes(),
-        port: (value >> 32) as u16,
+        address,
+        port: (header >> 16) as u16,
     })
 }
 pub fn push<T: Object>(

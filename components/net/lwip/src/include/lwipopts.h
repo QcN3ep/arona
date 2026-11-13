@@ -25,7 +25,12 @@
 #define LWIP_STATS 0
 
 #define LWIP_IPV4 1
-#define LWIP_IPV6 0
+#define LWIP_IPV6 1
+// TODO: Attach external IPv6 interfaces and validate NDISC, SLAAC/DAD, scopes,
+// MLD, routing, and path MTU when external networking is implemented.
+#define LWIP_IPV6_AUTOCONFIG 0
+#define LWIP_IPV6_MLD 0
+#define LWIP_IPV6_DUP_DETECT_ATTEMPTS 0
 #define LWIP_RAW 0
 #define LWIP_IGMP 0
 #define LWIP_AUTOIP 0

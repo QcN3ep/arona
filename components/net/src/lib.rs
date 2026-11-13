@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Native IPv4 sockets served by a separate network Task.
+//! Native IP sockets served by a separate network Task.
 //!
 //! Each socket permits one outstanding operation. Timeouts preserve that
 //! operation, and `Socket::complete` resumes it without repeating I/O.
@@ -20,5 +20,6 @@ pub use client::{
     Client, Completion, Control, Data, PendingReadiness, PendingSubscription, Socket, Subscription,
 };
 pub use types::{
-    CancelOutcome, Endpoint, Error, OptionName, Readiness, Request, Shutdown, SocketKind,
+    AddressFamily, CancelOutcome, Endpoint, Error, IpAddr, Ipv4Addr, Ipv6Addr, OptionName,
+    Readiness, Request, Shutdown, SocketKind,
 };

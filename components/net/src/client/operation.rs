@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use super::{Completion, Data, Socket};
-use crate::{CancelOutcome, Error, OptionName, Request, Shutdown, SocketKind, protocol as p};
+use crate::{
+    AddressFamily, CancelOutcome, Error, OptionName, Request, Shutdown, SocketKind, protocol as p,
+};
 use runtime::{
     Call, FrameAllocation, Handle, Rights,
     ipc::{self, Message, ReceivedMessage, WaitItem, WaitMode},
@@ -32,7 +34,7 @@ impl<'a> Socket<'a> {
         }
         let id = self.next;
         let next = id.checked_add(1).ok_or(Error::InvalidRequest)?;
-        let mut words = [id, opcode, 0, 0, 0];
+        let mut words = [id, opcode, 0, 0, 0, 0, 0];
         words[2..2 + arguments.len()].copy_from_slice(arguments);
         let mut message = Message::new(p::SUBMIT, &words[..2 + arguments.len()])?;
         if let Some(frames) = frames {
@@ -160,7 +162,7 @@ fn decode(
         .split_first()
         .ok_or(Error::InvalidRequest)?;
     super::status(status)?;
-    let mut fields = [0; 4];
+    let mut fields = [0; 5];
     if words.len() > fields.len() {
         return Err(Error::InvalidRequest);
     }
@@ -170,8 +172,10 @@ fn decode(
         [p::DONE] => Completion::Done,
         [p::COUNT, count] if *count <= p::MAX_STREAM as u64 => Completion::Count(*count as usize),
         [p::VALUE, value] => Completion::Value(*value),
-        [p::ENDPOINT, endpoint] => Completion::Endpoint(p::decode_endpoint(*endpoint)?),
-        [p::DATA, length, has_peer @ 0..=1, peer] if *length <= p::MAX_STREAM as u64 => {
+        [p::ENDPOINT, endpoint @ ..] if endpoint.len() == 3 => {
+            Completion::Endpoint(p::decode_endpoint(endpoint)?)
+        }
+        [p::DATA, length, peer @ ..] if peer.len() == 3 && *length <= p::MAX_STREAM as u64 => {
             let frames = p::take::<FrameAllocation>(&mut response, Rights::READ)?;
             if frames.frames()? * 4096 < *length {
                 return Err(Error::InvalidRequest);
@@ -179,17 +183,25 @@ fn decode(
             Completion::Data(Data {
                 frames,
                 length: *length as usize,
-                peer: if *has_peer == 1 {
-                    Some(p::decode_endpoint(*peer)?)
-                } else {
+                peer: if peer == [0, 0, 0] {
                     None
+                } else {
+                    Some(p::decode_endpoint(peer)?)
                 },
             })
         }
-        [p::ACCEPTED, peer] => Completion::Accepted {
-            socket: Socket::new(task, p::take(&mut response, p::CHANNEL)?, SocketKind::Tcp),
-            peer: p::decode_endpoint(*peer)?,
-        },
+        [p::ACCEPTED, peer @ ..] if peer.len() == 3 => {
+            let peer = p::decode_endpoint(peer)?;
+            Completion::Accepted {
+                socket: Socket::new(
+                    task,
+                    p::take(&mut response, p::CHANNEL)?,
+                    SocketKind::Tcp,
+                    peer.family(),
+                ),
+                peer,
+            }
+        }
         _ => return Err(Error::InvalidRequest),
     };
     if !response.handles().is_empty() {
@@ -200,13 +212,13 @@ fn decode(
 
 pub(super) struct Encoded<'a> {
     pub opcode: u64,
-    pub arguments: [u64; 3],
+    pub arguments: [u64; 5],
     pub length: usize,
     pub bytes: Option<&'a [u8]>,
 }
 impl<'a> Encoded<'a> {
     fn new(opcode: u64, arguments: &[u64], bytes: Option<&'a [u8]>) -> Self {
-        let mut fields = [0; 3];
+        let mut fields = [0; 5];
         fields[..arguments.len()].copy_from_slice(arguments);
         Self {
             opcode,
@@ -216,7 +228,11 @@ impl<'a> Encoded<'a> {
         }
     }
 }
-pub(super) fn encode(request: Request<'_>, kind: SocketKind) -> Result<Encoded<'_>, Error> {
+pub(super) fn encode(
+    request: Request<'_>,
+    kind: SocketKind,
+    family: AddressFamily,
+) -> Result<Encoded<'_>, Error> {
     let option = |option| match option {
         OptionName::ReuseAddress => 0,
         OptionName::NoDelay => 1,
@@ -226,20 +242,24 @@ pub(super) fn encode(request: Request<'_>, kind: SocketKind) -> Result<Encoded<'
         OptionName::KeepCount => 5,
         OptionName::ReceiveBuffer => 6,
         OptionName::SendBuffer => 7,
+        OptionName::Ipv6Only => 8,
     };
     let encoded = match request {
-        Request::Bind(endpoint) => Encoded::new(p::BIND, &[p::endpoint(endpoint)], None),
+        Request::Bind(endpoint) => Encoded::new(p::BIND, &p::endpoint(endpoint), None),
         Request::Listen(backlog) => Encoded::new(p::LISTEN, &[backlog.into()], None),
-        Request::Connect(endpoint) => Encoded::new(p::CONNECT, &[p::endpoint(endpoint)], None),
+        Request::Connect(endpoint) => Encoded::new(p::CONNECT, &p::endpoint(endpoint), None),
         Request::Disconnect if kind == SocketKind::Udp => Encoded::new(p::DISCONNECT, &[], None),
         Request::Disconnect => return Err(Error::InvalidRequest),
         Request::Accept => Encoded::new(p::ACCEPT, &[], None),
         Request::Send(bytes) => Encoded::new(p::SEND, &[0, bytes.len() as u64], Some(bytes)),
-        Request::SendTo(bytes, endpoint) => Encoded::new(
-            p::SEND_TO,
-            &[0, bytes.len() as u64, p::endpoint(endpoint)],
-            Some(bytes),
-        ),
+        Request::SendTo(bytes, endpoint) => {
+            let [header, high, low] = p::endpoint(endpoint);
+            Encoded::new(
+                p::SEND_TO,
+                &[0, bytes.len() as u64, header, high, low],
+                Some(bytes),
+            )
+        }
         Request::Receive(length) if kind == SocketKind::Tcp && length <= p::MAX_STREAM => {
             Encoded::new(p::RECEIVE, &[length as u64], None)
         }
@@ -270,7 +290,13 @@ pub(super) fn encode(request: Request<'_>, kind: SocketKind) -> Result<Encoded<'
         bytes.len()
             > match kind {
                 SocketKind::Tcp => p::MAX_STREAM,
-                SocketKind::Udp => p::MAX_DATAGRAM,
+                SocketKind::Udp => {
+                    if family == AddressFamily::Ipv4 {
+                        p::MAX_DATAGRAM
+                    } else {
+                        p::MAX_DATAGRAM_V6
+                    }
+                }
             }
     }) {
         return Err(Error::InvalidRequest);

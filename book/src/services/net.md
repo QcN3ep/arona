@@ -1,6 +1,6 @@
 # Network Stack
 
-The network service runs as an independent Task and provides native IPv4 TCP and UDP sockets.
+The network service runs as an independent Task and provides native IPv4 and IPv6 TCP and UDP sockets.
 The `arona-net` client communicates with it through channels and does not link lwIP.
 The service links the maintained lwIP adapter in `components/net/lwip`.
 This version provides loopback networking without requiring a network interface.
@@ -14,7 +14,12 @@ A missing or failed entropy source causes startup to fail.
 Init supervises net with the other base services and stops it after Linux during ordered shutdown.
 
 `Control::connect` returns a native client capability.
-A client creates a socket with `Client::socket` or begins creation with `start_socket`.
+A client creates an IPv4 socket with `Client::socket` or begins creation with `start_socket`.
+Use `socket_in` or `start_socket_in` with `AddressFamily::Ipv6` for IPv6.
+`Endpoint` holds a Rust `IpAddr` and a host-order port.
+`Endpoint::loopback` selects `127.0.0.1`, while `loopback_v6` selects `::1`.
+IPv6 sockets are IPv6-only. `Ipv6Only` reads as one and cannot be disabled.
+IPv4-mapped addresses and scoped endpoints are unsupported.
 Each socket has a dedicated channel and a server-owned lwIP socket.
 The native interface exposes no C descriptor, register mapping, or DMA authority.
 
@@ -27,12 +32,14 @@ Options include address reuse, TCP_NODELAY, keepalive and its idle/interval/coun
 `SetOption` takes an integer value. Boolean options accept zero or one.
 UDP receive capacity is adjustable, while TCP capacities and send capacities are fixed.
 Linux I/O timeouts stay in the Linux service because native operations make one nonblocking attempt.
-`Socket::kind` reports the socket type, and `TakeError` reads and clears its pending connection error.
+`Socket::kind` reports the socket type, and `Socket::family` reports its address family.
+`TakeError` reads and clears the pending connection error.
 
 The service performs a nonblocking attempt for each socket operation.
 It returns `WouldBlock` when that attempt cannot make progress and `InProgress` when a connection is still being established.
 A TCP attempt transfers at most 64 KiB and reports its actual byte count.
-A UDP send contains one datagram with at most 65,507 bytes.
+A UDP send contains one datagram with at most 65,507 bytes for IPv4 or 65,487 bytes for IPv6.
+The IPv6 limit accounts for the IP header within lwIP's 16-bit packet length.
 `ReceiveDatagram` returns the whole datagram and its source endpoint, including empty datagrams.
 The client receives payload storage with READ rights through the `Data` result.
 
@@ -80,7 +87,8 @@ Initialization can be attempted only once, so a failed startup requires restarti
 
 After initialization, `Stack::socket` creates an owned TCP or UDP socket in nonblocking mode.
 Socket entries are allocated as needed and are limited by available memory and descriptor numbers.
-Each socket uses an `Endpoint` containing four IPv4 address bytes and a host-order port.
+Use `Stack::socket_in` to select IPv6.
+Each socket uses an `Endpoint` containing a Rust `IpAddr` and a host-order port.
 Binding port zero requests an ephemeral local port.
 
 A TCP server binds a local endpoint and starts listening before accepting connections.
@@ -161,7 +169,8 @@ Each thread has its own errno storage for socket errors.
 These callbacks run on ordinary Arona threads and do not support hardware interrupt context.
 
 The Rust interface keeps C descriptors, pointers, and layouts inside the child crate.
-A small C bridge converts socket addresses and checks the shared endpoint layout against Rust.
+A small C bridge converts socket addresses through a private endpoint layout checked against Rust.
+Native channels encode the family, port, and address in three words and never transmit a Rust or C struct layout.
 This lets other service crates use the stack through safe Rust interfaces.
 
 Socket entries stay at stable addresses in a list ordered by descriptor.
@@ -212,7 +221,7 @@ cargo xtask package-net-test riscv64 --release
 
 Use `loongarch64` for LoongArch, or omit `--release` for a debug build.
 Boot the archive at `target/<triple>/<profile>/initramfs-net-test.cpio` with the architecture test image, attach the VirtIO RNG, and select `net-service` at `Test suite:`.
-The scenarios cover TCP streams between separate Tasks, complete UDP datagrams, request recovery, cancellation, half-close, session failure, and receive allocation failure.
+The scenarios cover IPv4 and IPv6 TCP streams between separate Tasks, complete UDP datagrams, request recovery, cancellation, half-close, session failure, and receive allocation failure.
 The architecture harness checks resource reclamation after the test Tasks exit.
 
 The following commands build the adapter loopback program and its architecture test image with the pinned toolchain:

@@ -5,7 +5,7 @@
 extern crate alloc;
 
 mod socket;
-use net::{Client, Completion, Endpoint, Request, Shutdown, SocketKind};
+use net::{AddressFamily, Client, Completion, Endpoint, Request, Shutdown, SocketKind};
 use runtime::{
     Event,
     ipc::{Message, WaitMode},
@@ -16,7 +16,13 @@ fn main() {
     let bootstrap = process::bootstrap().unwrap();
     let mut startup = bootstrap.receive(WaitMode::Forever).unwrap();
     let reply = startup.take_reply().unwrap();
-    let server = startup.words() == [0];
+    let role = startup.words()[0];
+    let server = role % 2 == 0;
+    let family = if role < 2 {
+        AddressFamily::Ipv4
+    } else {
+        AddressFamily::Ipv6
+    };
     let client = Client::from_channel(
         process::task(),
         startup.take_handle(0).unwrap().downcast().unwrap(),
@@ -24,22 +30,48 @@ fn main() {
     .unwrap();
     let ready = startup.take_handle(0).unwrap().downcast::<Event>().unwrap();
     if server {
-        serve(&client, &ready);
+        serve(&client, &ready, family);
     } else {
-        connect(&client);
+        connect(&client, family);
     }
     reply.send(&mut Message::new(0, &[]).unwrap()).unwrap();
 }
-fn serve(client: &Client<'_>, ready: &runtime::Handle<Event>) {
-    let mut listener = client.socket(SocketKind::Tcp, socket::until()).unwrap();
-    let mut udp = client.socket(SocketKind::Udp, socket::until()).unwrap();
+fn serve(client: &Client<'_>, ready: &runtime::Handle<Event>, family: AddressFamily) {
+    let mut listener = client
+        .socket_in(SocketKind::Tcp, family, socket::until())
+        .unwrap();
+    let mut udp = client
+        .socket_in(SocketKind::Udp, family, socket::until())
+        .unwrap();
+    if family == AddressFamily::Ipv6 {
+        assert!(matches!(
+            listener
+                .perform(
+                    Request::GetOption(net::OptionName::Ipv6Only),
+                    socket::until()
+                )
+                .unwrap(),
+            Completion::Value(1)
+        ));
+        assert!(matches!(
+            listener.perform(
+                Request::SetOption(net::OptionName::Ipv6Only, 0),
+                socket::until()
+            ),
+            Err(net::Error::Unsupported)
+        ));
+        assert!(matches!(
+            listener.perform(Request::Bind(Endpoint::loopback(31000)), socket::until()),
+            Err(net::Error::InvalidRequest)
+        ));
+    }
     listener
-        .perform(Request::Bind(Endpoint::loopback(31000)), socket::until())
+        .perform(Request::Bind(loopback(family, 31000)), socket::until())
         .unwrap();
     listener
         .perform(Request::Listen(4), socket::until())
         .unwrap();
-    udp.perform(Request::Bind(Endpoint::loopback(31001)), socket::until())
+    udp.perform(Request::Bind(loopback(family, 31001)), socket::until())
         .unwrap();
     let (listen, _) = listener.subscribe(socket::deadline()).unwrap();
     ready.signal(1).unwrap();
@@ -61,7 +93,15 @@ fn serve(client: &Client<'_>, ready: &runtime::Handle<Event>) {
         .unwrap();
     let (notice, _) = udp.subscribe(socket::deadline()).unwrap();
     let (other, _) = udp.subscribe(socket::deadline()).unwrap();
-    for length in [0, 1, 65507] {
+    for length in [
+        0,
+        1,
+        if family == AddressFamily::Ipv4 {
+            65507
+        } else {
+            65487
+        },
+    ] {
         let observed = other.snapshot(socket::deadline()).unwrap();
         let data = socket::receive(&mut udp, &notice, true);
         assert_eq!(data.len(), length);
@@ -91,30 +131,49 @@ fn serve(client: &Client<'_>, ready: &runtime::Handle<Event>) {
     udp.perform(Request::Close, socket::until()).unwrap();
     listener.perform(Request::Close, socket::until()).unwrap();
 }
-fn connect(client: &Client<'_>) {
-    let mut stream = client.socket(SocketKind::Tcp, socket::until()).unwrap();
+fn connect(client: &Client<'_>, family: AddressFamily) {
+    let mut stream = client
+        .socket_in(SocketKind::Tcp, family, socket::until())
+        .unwrap();
     let (notice, _) = stream.subscribe(socket::deadline()).unwrap();
-    match stream.perform(Request::Connect(Endpoint::loopback(31000)), socket::until()) {
+    match stream.perform(Request::Connect(loopback(family, 31000)), socket::until()) {
         Ok(Completion::Done) | Err(net::Error::InProgress) => {}
         _ => panic!("connect failed"),
     }
     socket::send_pattern(&mut stream, &notice, 130_000);
     socket::receive_pattern(&mut stream, &notice, 130_000);
     assert!(socket::receive(&mut stream, &notice, false).is_empty());
-    let mut udp = client.socket(SocketKind::Udp, socket::until()).unwrap();
+    let mut udp = client
+        .socket_in(SocketKind::Udp, family, socket::until())
+        .unwrap();
     let (notice, _) = udp.subscribe(socket::deadline()).unwrap();
-    for length in [0, 1, 65507] {
+    for length in [
+        0,
+        1,
+        if family == AddressFamily::Ipv4 {
+            65507
+        } else {
+            65487
+        },
+    ] {
         let bytes: alloc::vec::Vec<_> = (0..length).map(|index| (index % 251) as u8).collect();
         assert!(
-            matches!(udp.perform(Request::SendTo(&bytes, Endpoint::loopback(31001)), socket::until()).unwrap(), Completion::Count(count) if count == length)
+            matches!(udp.perform(Request::SendTo(&bytes, loopback(family, 31001)), socket::until()).unwrap(), Completion::Count(count) if count == length)
         );
         let data = socket::receive(&mut udp, &notice, true);
         let mut received = alloc::vec![0; data.len()];
         data.read(0, &mut received).unwrap();
         assert_eq!(received, bytes);
-        assert_eq!(data.peer, Some(Endpoint::loopback(31001)));
+        assert_eq!(data.peer, Some(loopback(family, 31001)));
     }
     for socket in [&mut stream, &mut udp] {
         socket.perform(Request::Close, socket::until()).unwrap();
+    }
+}
+
+fn loopback(family: AddressFamily, port: u16) -> Endpoint {
+    match family {
+        AddressFamily::Ipv4 => Endpoint::loopback(port),
+        AddressFamily::Ipv6 => Endpoint::loopback_v6(port),
     }
 }

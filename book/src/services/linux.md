@@ -89,9 +89,14 @@ Each read returns complete `signalfd_siginfo` records, and poll/select use the c
 
 ## Network Sockets
 
-Linux programs can communicate through IPv4 TCP and UDP on the local loopback interface.
+Linux programs can communicate through IPv4 and IPv6 TCP and UDP on the local loopback interface.
+`AF_INET` uses `127.0.0.1`, and `AF_INET6` uses `::1`.
 The service translates Linux addresses and flags into requests to net.
-External interfaces, IPv6, and Unix domain sockets remain future work.
+External interfaces and Unix domain sockets remain future work.
+IPv6 sockets are IPv6-only. IPv4-mapped addresses return `EAFNOSUPPORT`, and nonzero scope identifiers return `EINVAL`.
+External destinations return `ENETUNREACH`, and binding an external address returns `EADDRNOTAVAIL`.
+Linux IPv6 addresses use the 28-byte `sockaddr_in6` layout. Endpoint queries report this full length even when the output buffer is shorter.
+Flow information is ignored on input and zero on output.
 
 The socket calls include `socket`, `bind`, `listen`, `accept`, `accept4`, `connect`, `getsockname`, `getpeername`, and `shutdown`.
 Data passes through `read`, `write`, `readv`, `writev`, `sendto`, `recvfrom`, `sendmsg`, or `recvmsg`.
@@ -109,6 +114,7 @@ Reading `SO_ERROR` consumes the pending error, while readiness queries leave it 
 | `SO_RCVBUF` | Set the UDP byte queue limit or query the fixed TCP receive window |
 | `SO_SNDBUF` | Query the fixed TCP send capacity or maximum UDP payload |
 | `SO_RCVTIMEO`, `SO_SNDTIMEO` | Read or change the receive or send timeout as a Linux timeval |
+| `IPV6_V6ONLY` | Read or retain IPv6-only mode. Disabling it returns `EOPNOTSUPP` |
 
 UDP receive buffer requests are doubled with a minimum effective limit of 256 bytes.
 The limit applies to queued payload bytes, and a datagram exceeding the remaining capacity is dropped whole.
@@ -129,7 +135,8 @@ Readiness waits and nonblocking operations use their own waiting rules.
 The service waits for any submitted native attempt to finish before applying a timeout or signal, so a committed transfer cannot be replayed.
 Calls with a configured timeout return `EINTR` on a signal even when its handler uses `SA_RESTART`.
 
-UDP sends preserve one datagram, including an empty payload, and accept at most 65,507 bytes.
+UDP sends preserve one datagram, including an empty payload.
+The payload limit is 65,507 bytes for IPv4 and 65,487 bytes for IPv6 because lwIP stores the IP header within its 16-bit packet length.
 An unconnected socket supplies its destination through `sendto` or `sendmsg`.
 Connecting a UDP socket sets its default peer, and another connect can replace that peer.
 Connecting with `AF_UNSPEC` removes it.

@@ -16,6 +16,7 @@ pub(crate) enum Connection {
 
 pub(crate) struct Socket<'a> {
     pub kind: net::SocketKind,
+    pub family: net::AddressFamily,
     native: RefCell<Option<net::Socket<'a>>>,
     pub connection: Cell<Connection>,
     failed: Cell<bool>,
@@ -50,6 +51,7 @@ impl<'a> Socket<'a> {
     pub fn new(native: net::Socket<'a>, connected: bool) -> Self {
         Self {
             kind: native.kind(),
+            family: native.family(),
             native: RefCell::new(Some(native)),
             connection: Cell::new(if connected {
                 Connection::Connected

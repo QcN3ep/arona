@@ -15,7 +15,7 @@ struct pollfd { int fd; short events, revents; };
 struct timespec { long seconds, nanoseconds; };
 struct iovec { void *base; unsigned long length; };
 struct message {
-    struct address *name;
+    void *name;
     unsigned name_length, padding;
     struct iovec *iov;
     unsigned long iov_length;
