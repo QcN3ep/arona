@@ -81,7 +81,13 @@ static void client(void) {
         CHECK(SC(25, fd, 1, 0) == 1);
         long result = SC(203, fd, P(&address), sizeof(address));
         CHECK(result == 0 || result == -115 || result == -111);
-        if (result == -115) { ready(fd, 4); result = -option(fd, 1, 4); }
+        if (result == -115) {
+            ready(fd, 4);
+            long copy = SC(23, fd);
+            CHECK(copy >= 0);
+            result = SC(203, copy, P(&address), sizeof(address));
+            close_fd(copy);
+        }
         if (result == 0) break;
         CHECK(result == -111);
         close_fd(fd);
@@ -89,6 +95,7 @@ static void client(void) {
         pause_ns(10000000);
     }
     CHECK(fd >= 0);
+    CHECK(SC(203, fd, P(&address), sizeof(address)) == -106);
     CHECK(option(fd, 1, 3) == 1);
     set_option(fd, 6, 1, 1);
     unsigned length = sizeof(address);
@@ -114,7 +121,9 @@ static void client(void) {
     CHECK(SC(63, fd, P(response), 2) == 2);
     CHECK(response[0] == 'O' && response[1] == 'K');
     ready(fd, 1);
-    CHECK(SC(207, fd, P(response), 2, 0, 0, 0) == 0);
+    length = sizeof(address);
+    CHECK(SC(207, fd, P(response), 2, 0, P(&address), P(&length)) == 0);
+    CHECK(length == 0);
     close_fd(fd);
 }
 
@@ -137,6 +146,7 @@ static void server(void) {
         struct iovec output[] = {{payload, 3072}, {payload + 3072, 5120}};
         struct message message = {&address, sizeof(address), 0, output, 2, 0, 0, 0, 0};
         long count = total == 0 ? SC(212, accepted, P(&message), 0) : SC(65, accepted, P(output), 2);
+        if (total == 0) CHECK(message.name_length == 0);
         CHECK(message.flags == 0);
         CHECK(count >= 0);
         if (!count) break;
@@ -160,7 +170,10 @@ static void refused(void) {
     struct address address = loopback(23141);
     long result = SC(203, fd, P(&address), sizeof(address));
     CHECK(result == -115 || result == -111);
-    if (result == -115) { CHECK(ready(fd, 4) & (4 | 8)); CHECK(option(fd, 1, 4) == 111); }
+    if (result == -115) {
+        CHECK(ready(fd, 4) & (4 | 8));
+        CHECK(SC(203, fd, P(&address), sizeof(address)) == -111);
+    }
     CHECK(option(fd, 1, 4) == 0);
     close_fd(fd);
     CHECK(SC(200, 1, P(&address), sizeof(address)) == -88);
@@ -361,10 +374,26 @@ static void lifecycle(void) {
     close_fd(fd);
     CHECK(SC(64, client, P("R"), 1) == 1);
     ready(accepted, 1);
+    CHECK(SC(64, accepted, P("XYZ"), 3) == 3);
+    unsigned length = sizeof(address);
+    CHECK(SC(207, client, 0, 3, 0, P(&address), P(&length)) == -14);
+    CHECK(SC(207, client, P(&byte), 1, 2, P(&address), P(&length)) == 1);
+    CHECK(byte == 'X' && length == 0);
     // Closing with unread data aborts the TCP connection.
     close_fd(accepted);
-    CHECK(SC(63, client, P(&byte), 1) == -104);
-    CHECK(SC(63, client, P(&byte), 1) == 0);
+    CHECK(ready(client, 8) & 8);
+    char bytes[3] = {0};
+    struct iovec output = {bytes, sizeof(bytes)};
+    struct message message = {&address, sizeof(address), 0, &output, 1, 0, 0, 0, 0};
+    CHECK(SC(212, client, P(&message), 0) == 3);
+    CHECK(bytes[0] == 'X' && bytes[1] == 'Y' && bytes[2] == 'Z');
+    CHECK(message.name_length == 0 && message.flags == 0);
+    length = sizeof(address);
+    CHECK(SC(207, client, P(&byte), 1, 0, P(&address), P(&length)) == -104);
+    message.name_length = sizeof(address);
+    CHECK(SC(212, client, P(&message), 0) == 0 && message.name_length == 0);
+    CHECK(SC(207, client, P(&byte), 1, 0, P(&address), P(&length)) == 0);
+    CHECK(length == 0);
     close_fd(client);
     // Final close releases the listening endpoint for a new socket.
     fd = listener(&address);

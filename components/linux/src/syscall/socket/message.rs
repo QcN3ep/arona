@@ -19,7 +19,6 @@ pub(super) const TRUNC: usize = 0x20;
 pub(super) struct Receive {
     pub buffers: IoVectors,
     pub peer: Option<Output>,
-    pub source: Option<net::Endpoint>,
     header: Option<usize>,
     flags: usize,
 }
@@ -45,7 +44,6 @@ impl Receive {
         Ok(Self {
             buffers: buffer.import(process)?,
             peer,
-            source: None,
             header: None,
             flags,
         })
@@ -54,8 +52,6 @@ impl Receive {
     pub fn request(&self, kind: net::SocketKind) -> net::Request<'_> {
         if kind == net::SocketKind::Udp {
             net::Request::ReceiveDatagram
-        } else if self.peer.is_some() && self.source.is_none() {
-            net::Request::PeerEndpoint
         } else {
             net::Request::Receive(self.buffers.total_length().min(MAX_STREAM))
         }
@@ -67,13 +63,10 @@ impl Receive {
         socket: &Socket<'_>,
     ) -> Result<Option<usize>, Errno> {
         let datagram = socket.kind == net::SocketKind::Udp;
-        if !datagram && self.peer.is_some() && self.source.is_none() {
-            return Ok(None);
-        }
         let mut received = socket.received.borrow_mut();
         let Some(pending) = received.as_mut() else {
             if !datagram && socket.read_eof.get() {
-                self.output(process, self.source, false)?;
+                self.output(process, None, false)?;
                 return Ok(Some(0));
             }
             return Ok(None);
@@ -92,15 +85,7 @@ impl Receive {
             return Err(EFAULT);
         }
         let truncated = datagram && count < available;
-        self.output(
-            process,
-            if datagram {
-                pending.data.peer
-            } else {
-                self.source
-            },
-            truncated,
-        )?;
+        self.output(process, pending.data.peer, truncated)?;
         if self.flags & PEEK == 0 {
             pending.offset += count;
             if datagram || pending.offset == pending.data.len() {
@@ -115,7 +100,7 @@ impl Receive {
     }
 
     pub fn empty(&self, process: &Process<'_>) -> Result<(), Errno> {
-        self.output(process, self.source, false)
+        self.output(process, None, false)
     }
 
     fn output(
@@ -125,7 +110,11 @@ impl Receive {
         truncated: bool,
     ) -> Result<(), Errno> {
         if let Some(peer) = &self.peer {
-            peer.endpoint(process, source.ok_or(EIO)?)?;
+            if let Some(source) = source {
+                peer.endpoint(process, source)?;
+            } else {
+                peer.bytes(process, &[])?;
+            }
         }
         if let Some(header) = self.header {
             if self.peer.is_none() {

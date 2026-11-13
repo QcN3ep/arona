@@ -14,6 +14,10 @@ pub(super) fn run(stack: &Stack) {
     let mut incoming = listener.subscribe().unwrap();
     assert!(matches!(listener.accept(), Err(Error::WouldBlock)));
     let mut client = stack.socket(SocketKind::Tcp).unwrap();
+    assert_eq!(
+        client.receive_from(&mut [0; 1]),
+        Err(Error::InvalidArgument)
+    );
     let worker = thread::spawn(move || {
         let mut changes = client.subscribe().unwrap();
         assert!(matches!(
@@ -65,6 +69,9 @@ pub(super) fn run(stack: &Stack) {
 fn transfer(socket: &mut Socket, offset: u8, receive: bool) {
     let mut changes = socket.subscribe().unwrap();
     let mut bytes = [0; 4096];
+    if receive {
+        assert_eq!(socket.receive_from(&mut bytes), Err(Error::InvalidArgument));
+    }
     let mut total = 0;
     while total < LENGTH {
         let size = bytes.len().min(LENGTH - total);
