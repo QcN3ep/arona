@@ -106,6 +106,9 @@ fn build(arguments: impl Iterator<Item = OsString>, run: bool) -> Result<(), Str
     if run {
         let root = workspace_root()?;
         let mut command = qemu_command(options.target, &root);
+        if matches!(options.target, Target::Riscv64) {
+            command.args(["-bios", "default"]);
+        }
         command.arg("-kernel").arg(
             target_directory(&root)
                 .join(options.target.triple())
@@ -148,9 +151,6 @@ fn qemu_command(target: Target, root: &Path) -> Command {
         "-nic",
         "none",
     ]);
-    if matches!(target, Target::Riscv64) {
-        command.args(["-bios", "default"]);
-    }
     command
 }
 
@@ -395,5 +395,5 @@ fn execute(mut command: Command) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|package-init|package-linux-test|package-net-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH] [--net]\n       cargo xtask perf run <riscv64|loongarch64> --case calibration --mode count [--release] [--timeout SECONDS]\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
+    "usage: cargo xtask <build|run|package-init|package-linux-test|package-net-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH] [--net]\n       cargo xtask perf run <riscv64|loongarch64> --case calibration --mode count [--release] [--artifacts DIRECTORY] [--timeout SECONDS]\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
 }

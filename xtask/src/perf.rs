@@ -2,6 +2,8 @@
 
 //! Collects and validates instruction counts from the architecture calibration image.
 
+mod artifacts;
+
 use super::{
     Target, build_std, cargo_command, execute, linux_test, qemu_command, target_directory,
     workspace_root,
@@ -34,7 +36,8 @@ const FAILED: &str = "Perf calibration failed:";
 
 struct Options {
     target: Target,
-    release: bool,
+    release: Option<bool>,
+    artifacts: Option<PathBuf>,
     timeout: Duration,
 }
 
@@ -50,12 +53,21 @@ impl Options {
         let target = Target::parse(&arguments.next().transpose()?.ok_or_else(super::usage)?)?;
         let mut options = Self {
             target,
-            release: false,
+            release: None,
+            artifacts: None,
             timeout: Duration::from_secs(30),
         };
         while let Some(argument) = arguments.next().transpose()? {
             match argument.as_str() {
-                "--release" => options.release = true,
+                "--release" => options.release = Some(true),
+                "--artifacts" => {
+                    options.artifacts = Some(PathBuf::from(
+                        arguments
+                            .next()
+                            .transpose()?
+                            .ok_or("missing artifacts directory")?,
+                    ));
+                }
                 "--case" | "--mode" => {
                     let expected = if argument == "--case" {
                         "calibration"
@@ -102,32 +114,14 @@ pub(super) fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), Strin
     let name = format!("{}-{stamp}-{}", options.target.triple(), std::process::id());
     let directory = target_directory(&root).join("perf").join(&name);
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let executable = build_calibration(&options, &root)?;
-    let windows = read_windows(&executable)?;
-    let plugin = build_plugin(&root, &directory)?;
-    let mut command = qemu_command(options.target, &root);
-    let version = command_output(Command::new(command.get_program()).arg("--version"))?;
-    let control = env::temp_dir().join(format!("arona-perf-{stamp}-{}", std::process::id()));
-    command
-        .arg("-kernel")
-        .arg(&executable)
-        .arg("-plugin")
-        .arg(plugin_options(&plugin, &directory, &windows)?);
-    command
-        .arg("-qmp")
-        .arg(format!("unix:{}/qmp,server=on,wait=off", control.display()));
     let mut metadata = json!({
-        "schema": 1, "status": "running", "target": options.target.triple(),
-        "case": "calibration", "mode": "count", "release": options.release,
-        "elf": executable, "qemu_version": version.trim(), "plugin_api": 7,
-        "command": command.get_program().to_string_lossy(),
-        "arguments": command.get_args().map(|arg| arg.to_string_lossy()).collect::<Vec<_>>(),
+        "schema": 2, "status": "preparing", "target": options.target.triple(),
+        "case": "calibration", "mode": "count", "plugin_api": 7,
         "timeout_seconds": options.timeout.as_secs(),
     });
     save_metadata(&directory, &metadata)?;
     println!("Performance results: {}", directory.display());
-    let outcome = measure(command, control, &directory, options.timeout)
-        .and_then(|()| validate_counts(&directory, &windows));
+    let outcome = collect(&options, &root, &directory, stamp, &mut metadata);
     metadata["status"] = json!(if outcome.is_ok() {
         "complete"
     } else {
@@ -138,7 +132,56 @@ pub(super) fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), Strin
     outcome.map_err(|error| format!("{error}; results: {}", directory.display()))
 }
 
-fn build_calibration(options: &Options, root: &Path) -> Result<PathBuf, String> {
+fn collect(
+    options: &Options,
+    root: &Path,
+    directory: &Path,
+    stamp: u128,
+    metadata: &mut Value,
+) -> Result<(), String> {
+    let manifest = artifacts::prepare(options, root, directory)?;
+    let saved = directory.join("artifacts");
+    let windows = read_windows(&saved.join("symbols.elf"))?;
+    let plugin = build_plugin(root, directory)?;
+    let mut command = qemu_command(options.target, root);
+    let version = command_output(Command::new(command.get_program()).arg("--version"))?;
+    let control = env::temp_dir().join(format!("arona-perf-{stamp}-{}", std::process::id()));
+    if matches!(options.target, Target::Riscv64) {
+        command.arg("-bios").arg(saved.join("firmware.bin"));
+    }
+    command
+        .arg("-kernel")
+        .arg(saved.join("guest.elf"))
+        .arg("-plugin")
+        .arg(plugin_options(&plugin, directory, &windows)?)
+        .arg("-qmp")
+        .arg(format!("unix:{}/qmp,server=on,wait=off", control.display()));
+    metadata["release"] = manifest["release"].clone();
+    metadata["artifacts"] = json!({
+        "manifest": "artifacts/manifest.json",
+        "sha256": artifacts::digest(&saved.join("manifest.json"))?,
+        "reused_from": options.artifacts,
+    });
+    metadata["qemu_version"] = json!(version.trim());
+    metadata["collector"] = json!({
+        "plugin_sha256": artifacts::digest(&plugin)?,
+        "source_sha256": artifacts::digest(&directory.join("count.c"))?,
+        "compiler": command_output(Command::new(env::var_os("CC").unwrap_or_else(|| "cc".into())).arg("--version"))?,
+    });
+    metadata["command"] = json!(command.get_program().to_string_lossy());
+    metadata["arguments"] = json!(
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>()
+    );
+    metadata["status"] = json!("running");
+    save_metadata(directory, metadata)?;
+    measure(command, control, directory, options.timeout)?;
+    validate_counts(directory, &windows)
+}
+
+fn calibration_command(options: &Options, root: &Path) -> Command {
     let mut command = cargo_command(root.to_path_buf());
     build_std(&mut command);
     command.args([
@@ -154,16 +197,25 @@ fn build_calibration(options: &Options, root: &Path) -> Result<PathBuf, String> 
         options.target.triple(),
         "--message-format=json",
     ]);
-    if options.release {
+    let profile = if options.release.unwrap_or(false) {
+        "RELEASE"
+    } else {
+        "DEV"
+    };
+    command.env(format!("CARGO_PROFILE_{profile}_DEBUG"), "2");
+    command.env(format!("CARGO_PROFILE_{profile}_STRIP"), "none");
+    if options.release.unwrap_or(false) {
         command.arg("--release");
     }
-    linux_test::build_runner(command, "perf")
+    command
 }
 
 fn build_plugin(root: &Path, directory: &Path) -> Result<PathBuf, String> {
     let flags =
         command_output(Command::new("pkg-config").args(["--cflags", "--libs", "glib-2.0"]))?;
     let output = directory.join("count.so");
+    fs::copy(root.join("xtask/perf/count.c"), directory.join("count.c"))
+        .map_err(|error| error.to_string())?;
     let mut command = Command::new(env::var_os("CC").unwrap_or_else(|| "cc".into()));
     command
         .args([
@@ -178,7 +230,7 @@ fn build_plugin(root: &Path, directory: &Path) -> Result<PathBuf, String> {
         ])
         .args(["-MD", "-MF"])
         .arg(directory.join("count.d"))
-        .arg(root.join("xtask/perf/count.c"))
+        .arg(directory.join("count.c"))
         .arg("-o")
         .arg(&output)
         .args(flags.split_whitespace());

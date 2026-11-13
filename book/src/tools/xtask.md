@@ -105,7 +105,7 @@ cargo xtask perf run loongarch64 --release --case calibration --mode count
 ```
 
 This command builds and runs a single-vCPU calibration image with a host QEMU plugin.
-It requires a C compiler, `pkg-config`, GLib development files, `llvm-nm`, and QEMU with plugin support.
+It requires a C compiler, `pkg-config`, GLib development files, `sha256sum`, LLVM's `llvm-nm`, `llvm-readobj`, and `llvm-objcopy`, and QEMU with plugin support.
 The installed `qemu-plugin.h` must use plugin API 7, and the QEMU executable must accept that API.
 The plugin is compiled against this header on each run. `CC` selects the host C compiler.
 
@@ -117,6 +117,18 @@ The calibration checks empty intervals, straight-line code, loops, calls, except
 Results are saved under `target/perf/`, or under `perf/` in `CARGO_TARGET_DIR` when set.
 Each run contains `run.json`, `counts.json`, `serial.log`, `qemu.log`, and the compiled plugin.
 The compiler dependency file `count.d` records the headers used to build the plugin.
-`run.json` records the ELF path and QEMU command. The ELF remains in Cargo's build directory.
+The `artifacts/` directory contains the full ELF with symbols and debug information, the stripped runtime ELF, and the RISC-V boot firmware when needed.
+The two ELF files are checked for identical load addresses, permissions, sizes, and contents before QEMU starts.
+`manifest.json` records file checksums, source changes, build options, and tool versions. `run.json` records the QEMU command and completion status.
 A missing or repeated boundary, a count mismatch, a guest failure, or a timeout makes the command fail.
 `--timeout SECONDS` sets the guest run limit, which defaults to 30 seconds.
+
+To rerun a saved experiment, pass its result directory:
+
+```sh
+cargo xtask perf run riscv64 --artifacts target/perf/RUN_DIRECTORY
+```
+
+The saved build profile and guest files are reused without rebuilding the guest, and results go to a new directory.
+Checksums and ELF correspondence are checked again. Missing, damaged, or unsupported artifacts cause an error.
+The host plugin is rebuilt for each run and its source and checksum are recorded.
