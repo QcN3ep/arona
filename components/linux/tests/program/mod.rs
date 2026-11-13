@@ -549,6 +549,24 @@ fn layouts(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
             }
         );
     }
+    // The shebang interpreter receives its option, the script path, and the original argument.
+    assert_eq!(
+        linux
+            .run(
+                Program {
+                    path: b"/bin/linux-script",
+                    arguments: &[b"/bin/linux-script", b"tail"],
+                    environment: &[b"ARONA_TEST=yes"],
+                },
+                output(),
+                until()
+            )
+            .unwrap(),
+        ExitStatus {
+            code: 42,
+            signal: 0
+        }
+    );
 }
 
 fn malformed(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
@@ -556,6 +574,8 @@ fn malformed(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         b"/bin/linux-truncated",
         b"/bin/linux-foreign",
         b"/bin/linux-writable-code",
+        b"/bin/linux-empty-script",
+        b"/bin/linux-script-loop",
     ];
     for path in paths {
         assert_eq!(

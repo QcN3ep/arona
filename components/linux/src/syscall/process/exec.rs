@@ -8,7 +8,7 @@ use crate::{
     memory::AddressSpace,
     process::{
         Process, Thread,
-        image::{Chain, Executable},
+        image::{Chain, Executable, MAX_INTERPRETERS, parse_script, script_arguments},
     },
     protocol::Arguments,
     syscall::{
@@ -107,20 +107,13 @@ impl<'a> Pending<'a> {
         interpreter: &[u8],
         argument: &[u8],
     ) -> Result<(), Errno> {
-        if self.depth >= 4 {
+        if self.depth >= MAX_INTERPRETERS {
             return Err(ELOOP);
         }
         let lookup = Lookup::from_name(process, (-100i32) as usize, interpreter.to_vec())?;
         let executable = Executable::new(files, lookup.directory(), interpreter).map_err(error)?;
         self.depth += 1;
-        let script = core::mem::replace(&mut self.arguments.path, interpreter.to_vec());
-        let mut argv = alloc::vec![interpreter.to_vec()];
-        if !argument.is_empty() {
-            argv.push(argument.to_vec());
-        }
-        argv.push(script);
-        argv.extend(self.arguments.argv.drain(1..));
-        self.arguments.argv = argv;
+        script_arguments(&mut self.arguments, interpreter, argument);
         self.executable = Chain::new(executable);
         self._anchor = lookup.anchor;
         Ok(())
@@ -143,9 +136,11 @@ impl<'a> Pending<'a> {
             Err(err) => return Some(Err(error(err))),
         };
         if loaded.main.bytes.starts_with(b"#!") {
-            return match parse_script(&loaded.main.bytes).and_then(|(interpreter, argument)| {
-                self.start_interpreter(process, files, interpreter, argument)
-            }) {
+            return match parse_script(&loaded.main.bytes).map_err(error).and_then(
+                |(interpreter, argument)| {
+                    self.start_interpreter(process, files, interpreter, argument)
+                },
+            ) {
                 Ok(()) => None,
                 Err(error) => Some(Err(error)),
             };
@@ -255,35 +250,4 @@ fn error(error: Error) -> Errno {
         Error::Filesystem(error) => filesystem_error(error),
         _ => crate::syscall::abi::EIO,
     }
-}
-
-// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/binfmt_script.c?h=v6.12
-fn parse_script(bytes: &[u8]) -> Result<(&[u8], &[u8]), Errno> {
-    let line = &bytes[2..bytes.len().min(256)];
-    let end = line.iter().position(|byte| matches!(byte, b'\n' | 0));
-    let mut line = &line[..end.unwrap_or(line.len())];
-    while line
-        .first()
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        line = &line[1..];
-    }
-    let split = line.iter().position(|byte| matches!(byte, b' ' | b'\t'));
-    if line.is_empty() || end.is_none() && bytes.len() >= 256 && split.is_none() {
-        return Err(ENOEXEC);
-    }
-    let (interpreter, mut argument) = line.split_at(split.unwrap_or(line.len()));
-    while argument
-        .first()
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        argument = &argument[1..];
-    }
-    while argument
-        .last()
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        argument = &argument[..argument.len() - 1];
-    }
-    Ok((interpreter, argument))
 }

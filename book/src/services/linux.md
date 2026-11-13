@@ -22,6 +22,7 @@ ELF checks include segment boundaries, non-overlapping page ranges, and the entr
 Position-independent `ET_DYN` images receive an aligned load address.
 If the image requests a `PT_INTERP` interpreter, the service loads it at a separate address and starts at its entry point.
 The auxiliary vector describes the main program and the interpreter base, so the guest loader can process `PT_DYNAMIC`, relocate the images, and load shared libraries.
+When the program file starts with `#!`, the service instead parses the interpreter path and its optional argument, restarts the load through the interpreter, and rewrites `argv` the same way `execve` does, so service startup runs scripts and their interpreters with the original arguments.
 The initial stack has a guard page, and the data area contains the argument strings, environment, program header location, and auxiliary vector.
 When a random number session is available, 16 bytes of random data are also generated for the startup stack and handed over as `AT_RANDOM`.
 
@@ -184,7 +185,6 @@ exec reads the new image, constructs a new execution environment, and handles th
 The `execve` path also recognizes a `#!` interpreter line.
 It passes the optional argument as one string, followed by the script path and the original arguments after `argv[0]`.
 Interpreter scripts may nest up to four levels.
-Service startup requests currently require ELF images.
 
 ## Processes, Threads, and Signals
 

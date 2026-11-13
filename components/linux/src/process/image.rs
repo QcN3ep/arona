@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Asynchronous reads of executable files and startup entropy.
-
-// TODO: Support script interpreter arguments in service startup requests.
+//! Asynchronous reads of executable files, script interpreters, and startup entropy.
 
 use crate::{
     Error, Services,
     elf::{Image, Machine, PAGE_SIZE},
+    protocol::Arguments,
 };
 use alloc::vec::Vec;
 use fs::ReadAt;
 use runtime::{Call, Handle};
+
+/// The maximum number of nested script interpreters accepted during startup and `execve`.
+pub(crate) const MAX_INTERPRETERS: usize = 4;
 
 pub(crate) struct Executable<'a> {
     stage: Stage<'a>,
@@ -246,6 +248,53 @@ fn completed<T>(result: Result<T, fs::Error>) -> Result<Option<T>, Error> {
         }
         Err(error) => Err(error.into()),
     }
+}
+
+// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/fs/binfmt_script.c?h=v6.12
+pub(crate) fn parse_script(bytes: &[u8]) -> Result<(&[u8], &[u8]), Error> {
+    let line = &bytes[2..bytes.len().min(256)];
+    let end = line.iter().position(|byte| matches!(byte, b'\n' | 0));
+    let mut line = &line[..end.unwrap_or(line.len())];
+    while line
+        .first()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+    {
+        line = &line[1..];
+    }
+    let split = line.iter().position(|byte| matches!(byte, b' ' | b'\t'));
+    if line.is_empty() || end.is_none() && bytes.len() >= 256 && split.is_none() {
+        return Err(Error::InvalidExecutable);
+    }
+    let (interpreter, mut argument) = line.split_at(split.unwrap_or(line.len()));
+    while argument
+        .first()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+    {
+        argument = &argument[1..];
+    }
+    while argument
+        .last()
+        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+    {
+        argument = &argument[..argument.len() - 1];
+    }
+    Ok((interpreter, argument))
+}
+
+/// Rewrites startup arguments for a script interpreter: the interpreter replaces `argv[0]`,
+/// the optional shebang argument and the script path follow it, and the original arguments
+/// continue from index 1.
+///
+/// `argv` must contain at least one entry.
+pub(crate) fn script_arguments(arguments: &mut Arguments, interpreter: &[u8], argument: &[u8]) {
+    let script = core::mem::replace(&mut arguments.path, interpreter.to_vec());
+    let mut argv = alloc::vec![interpreter.to_vec()];
+    if !argument.is_empty() {
+        argv.push(argument.to_vec());
+    }
+    argv.push(script);
+    argv.extend(arguments.argv.drain(1..));
+    arguments.argv = argv;
 }
 
 impl<'a> Reading<'a> {
