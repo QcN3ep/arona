@@ -77,6 +77,14 @@ int arona_lwip_connect(int fd, const struct arona_lwip_endpoint *peer) {
   return lwip_connect(fd, (const struct sockaddr *)&value, sizeof(value));
 }
 
+int arona_lwip_disconnect(int fd) {
+  struct sockaddr value;
+  memset(&value, 0, sizeof(value));
+  value.sa_len = sizeof(value);
+  value.sa_family = AF_UNSPEC;
+  return lwip_connect(fd, &value, sizeof(value));
+}
+
 int arona_lwip_accept(int fd, struct arona_lwip_endpoint *peer) {
   struct sockaddr_in value;
   socklen_t length = sizeof(value);

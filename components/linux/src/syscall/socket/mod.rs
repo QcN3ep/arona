@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Linux TCP sockets over the native network service.
+//! Linux IPv4 sockets over the native network service.
 
 mod address;
+mod message;
 mod operation;
 
 use super::{
@@ -20,6 +21,7 @@ use crate::{
 };
 use address::Output;
 use alloc::{boxed::Box, rc::Rc};
+use message::Receive;
 pub(super) use operation::Pending;
 use operation::{Action, Operation};
 
@@ -49,16 +51,23 @@ pub(super) fn dispatch<'a>(
             | SETSOCKOPT
             | GETSOCKOPT
             | SHUTDOWN
+            | SENDMSG
+            | RECVMSG
     ) {
         return None;
     }
     Some(outcome((|| {
         let description = description(process, args[0])?;
         if number == GETSOCKOPT && args[1] as u32 == 1 && args[2] as u32 == 3 {
-            return Ok(Pending::Value(Output::new(process, args[3], args[4])?, 1));
+            let kind = Socket::state(&description).kind;
+            return Ok(Pending::Value(
+                Output::new(process, args[3], args[4])?,
+                if kind == net::SocketKind::Tcp { 1 } else { 2 },
+            ));
         }
         let action = action(process, &description, number, args)?;
-        let nonblocking = matches!(number, SENDTO | RECVFROM) && args[3] & DONTWAIT != 0;
+        let nonblocking = (matches!(number, SENDTO | RECVFROM) && args[3] & DONTWAIT != 0)
+            || (matches!(number, SENDMSG | RECVMSG) && args[2] & DONTWAIT != 0);
         Ok(Pending::Operation(Box::new(Operation::new(
             description,
             action,
@@ -98,30 +107,35 @@ fn action(
             output: Output::new(process, args[1], args[2])?,
         },
         SENDTO => {
-            check_flags(args[3], DONTWAIT | NOSIGNAL)?;
-            if args[4] != 0 {
-                address::input(process, args[4], args[5])?;
-            }
-            send_action(
+            let peer = address::optional_input(process, args[4], args[5])?;
+            message::send(
                 process,
+                Socket::state(description),
                 Buffer::Slice {
                     address: args[1],
                     length: args[2],
                 },
+                peer,
+                args[3],
             )?
         }
-        RECVFROM => {
-            check_flags(args[3], DONTWAIT)?;
-            Action::Receive {
-                buffers: Buffer::Slice {
-                    address: args[1],
-                    length: args[2],
-                }
-                .import(process)?,
-                peer: peer_output(process, args[4], args[5])?,
-                source: None,
-            }
-        }
+        RECVFROM => Action::Receive(Receive::new(
+            process,
+            Buffer::Slice {
+                address: args[1],
+                length: args[2],
+            },
+            peer_output(process, args[4], args[5])?,
+            args[3],
+            Socket::state(description).kind,
+        )?),
+        SENDMSG | RECVMSG => message::import(
+            process,
+            Socket::state(description),
+            args[1],
+            args[2],
+            number == SENDMSG,
+        )?,
         GETSOCKOPT => Action::GetOption {
             checking: false,
             name: if args[1] as u32 == 1 && args[2] as u32 == 4 {
@@ -154,16 +168,17 @@ fn connect(
     description: &OpenFileDescription<'_>,
     args: [usize; 6],
 ) -> Result<Action, Errno> {
-    match Socket::state(description).connection.get() {
-        Connection::Connecting => return Err(EALREADY),
-        Connection::Connected => return Err(EISCONN),
-        Connection::Initial => {}
+    if Socket::state(description).kind == net::SocketKind::Tcp {
+        match Socket::state(description).connection.get() {
+            Connection::Connecting => return Err(EALREADY),
+            Connection::Connected => return Err(EISCONN),
+            Connection::Initial => {}
+        }
+    } else if (args[2] as i32) >= 2 && wait::read_bytes(process, args[1], 2)? == [0, 0] {
+        return Ok(Action::Disconnect);
     }
     let endpoint = address::input(process, args[1], args[2])?;
-    // TODO: Route non-loopback destinations after external interfaces are attached.
-    if endpoint.address[0] != 127 {
-        return Err(ENETUNREACH);
-    }
+    address::route(endpoint)?;
     Ok(Action::Connect {
         endpoint,
         finishing: false,
@@ -175,15 +190,16 @@ fn create<'a>(services: &crate::Services<'a>, args: [usize; 6]) -> Result<Pendin
         return Err(EAFNOSUPPORT);
     }
     let flags = args[1] as u32;
-    // TODO: Add datagram sockets and message I/O.
-    if flags & !(O_NONBLOCK | O_CLOEXEC) != 1 || !matches!(args[2] as i32, 0 | 6) {
-        return Err(EPROTONOSUPPORT);
-    }
+    let kind = match (flags & !(O_NONBLOCK | O_CLOEXEC), args[2] as i32) {
+        (1, 0 | 6) => net::SocketKind::Tcp,
+        (2, 0 | 17) => net::SocketKind::Udp,
+        _ => return Err(EPROTONOSUPPORT),
+    };
     let native = services
         .net
         .as_ref()
         .ok_or(ENETUNREACH)?
-        .start_socket(net::SocketKind::Tcp)
+        .start_socket(kind)
         .map_err(error)?;
     Ok(Pending::Create {
         native: Some(native),
@@ -198,31 +214,25 @@ pub(super) fn io<'a>(
     offset: Option<usize>,
     write: bool,
 ) -> Outcome<'a> {
-    outcome((|| {
+    (|| {
         let description = description(process, fd)?;
         if offset.is_some() {
             return Err(ESPIPE);
         }
         let action = if write {
-            send_action(process, buffer)?
+            message::send(process, Socket::state(&description), buffer, None, 0)?
         } else {
-            Action::Receive {
-                buffers: buffer.import(process)?,
-                peer: None,
-                source: None,
+            let receive = Receive::new(process, buffer, None, 0, Socket::state(&description).kind)?;
+            // Unlike recv, a zero-length read leaves a pending datagram untouched.
+            if receive.buffers.total_length() == 0 {
+                return Ok(Outcome::Complete(Ok(0)));
             }
+            Action::Receive(receive)
         };
-        Ok(Pending::Operation(Box::new(Operation::new(
-            description,
-            action,
-            false,
-        ))))
-    })())
-}
-
-fn send_action(process: &Process<'_>, buffer: Buffer) -> Result<Action, Errno> {
-    let buffers = buffer.import(process)?;
-    Ok(Action::Send(buffers.gather(process, MAX_STREAM)?))
+        let operation = Operation::new(description, action, false);
+        Ok(outcome(Ok(Pending::Operation(Box::new(operation)))))
+    })()
+    .unwrap_or_else(|error| Outcome::Complete(Err(error)))
 }
 
 fn check_flags(flags: usize, supported: usize) -> Result<(), Errno> {

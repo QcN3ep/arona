@@ -225,6 +225,8 @@ pub(super) fn encode(request: Request<'_>, kind: SocketKind) -> Result<Encoded<'
         Request::Bind(endpoint) => Encoded::new(p::BIND, &[p::endpoint(endpoint)], None),
         Request::Listen(backlog) => Encoded::new(p::LISTEN, &[backlog.into()], None),
         Request::Connect(endpoint) => Encoded::new(p::CONNECT, &[p::endpoint(endpoint)], None),
+        Request::Disconnect if kind == SocketKind::Udp => Encoded::new(p::DISCONNECT, &[], None),
+        Request::Disconnect => return Err(Error::InvalidRequest),
         Request::Accept => Encoded::new(p::ACCEPT, &[], None),
         Request::Send(bytes) => Encoded::new(p::SEND, &[0, bytes.len() as u64], Some(bytes)),
         Request::SendTo(bytes, endpoint) => Encoded::new(

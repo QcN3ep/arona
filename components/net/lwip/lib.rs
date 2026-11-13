@@ -234,6 +234,15 @@ impl Socket {
         })
     }
 
+    /// Remove a UDP peer while retaining the socket and queued datagrams.
+    pub fn disconnect(&mut self) -> Result<(), Error> {
+        if self.shared().kind != SocketKind::Udp {
+            return Err(Error::InvalidArgument);
+        }
+        // SAFETY: The UDP socket is exclusively borrowed for this call.
+        status(unsafe { ffi::arona_lwip_disconnect(self.shared().fd.load(Ordering::Acquire)) })
+    }
+
     /// Reserve observer resources before removing a connection from the listener.
     pub fn accept_with_subscription(&mut self) -> Result<(Self, Subscription, Endpoint), Error> {
         let shared = Shared::new(SocketKind::Tcp)?;
@@ -273,6 +282,10 @@ impl Socket {
     }
 
     pub fn send(&mut self, bytes: &[u8]) -> Result<usize, Error> {
+        if self.shared().kind == SocketKind::Udp {
+            // lwIP otherwise attempts to route the unspecified default address.
+            self.peer_endpoint()?;
+        }
         // SAFETY: The bridge copies readable bytes before returning.
         length(unsafe {
             ffi::arona_lwip_send(

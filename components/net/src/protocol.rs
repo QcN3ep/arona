@@ -35,6 +35,7 @@ pub const GET_OPTION: u64 = 12;
 pub const SET_OPTION: u64 = 13;
 pub const SHUTDOWN: u64 = 14;
 pub const CLOSE: u64 = 15;
+pub const DISCONNECT: u64 = 16;
 
 pub const DONE: u64 = 0;
 pub const COUNT: u64 = 1;

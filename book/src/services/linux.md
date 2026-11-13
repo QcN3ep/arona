@@ -40,7 +40,7 @@ When there is no progress, the relevant Calls, events, thread exits, and ports a
 | Implementation group | Corresponding content |
 |---|---|
 | `syscall/file/` | open, I/O, path, directory, metadata, pipe, poll, and terminal |
-| `syscall/socket/` | TCP sockets, addresses, options, and pending network I/O |
+| `syscall/socket/` | TCP and UDP sockets, messages, addresses, options, and pending network I/O |
 | `syscall/process/` | clone, exec, exit, wait, identity, thread, and futex |
 | `syscall/memory/` | mmap, munmap, mprotect, and related memory operations |
 | `syscall/signal.rs` | signal system calls |
@@ -87,16 +87,31 @@ Their shared timer wakes blocked reads and readiness waits, including after anot
 Signal descriptors expose matching pending signals from the reading thread and its process.
 Each read returns complete `signalfd_siginfo` records, and poll/select use the calling thread when checking readiness.
 
-## TCP Sockets
+## Network Sockets
 
-Linux programs can communicate through IPv4 TCP on the local loopback interface.
+Linux programs can communicate through IPv4 TCP and UDP on the local loopback interface.
 The service translates Linux addresses and flags into requests to net.
-External interfaces, UDP, IPv6, and Unix domain sockets remain future work.
+External interfaces, IPv6, and Unix domain sockets remain future work.
 
 The socket calls include `socket`, `bind`, `listen`, `accept`, `accept4`, `connect`, `getsockname`, `getpeername`, and `shutdown`.
-Stream data passes through `read`, `write`, `sendto`, or `recvfrom`.
+Data passes through `read`, `write`, `readv`, `writev`, `sendto`, `recvfrom`, `sendmsg`, or `recvmsg`.
+The service reads Linux message headers and iovecs field by field and translates addresses separately from native and C layouts.
+Ancillary data and unsupported message flags return `EOPNOTSUPP`.
 The supported socket options are `SO_TYPE`, `SO_ERROR`, `SO_REUSEADDR`, and `TCP_NODELAY`.
 Reading `SO_ERROR` consumes the pending error, while readiness queries leave it available.
+
+UDP sends preserve one datagram, including an empty payload, and accept at most 65,507 bytes.
+An unconnected socket supplies its destination through `sendto` or `sendmsg`.
+Connecting a UDP socket sets its default peer, and another connect can replace that peer.
+Connecting with `AF_UNSPEC` removes it.
+A send without a destination or default peer returns `EDESTADDRREQ`.
+The service copies all send buffers before submitting a datagram, so an invalid input cannot publish a partial packet.
+
+Each UDP receive obtains a whole datagram and its source address.
+A short output buffer discards the remaining payload after a successful copy.
+`MSG_PEEK` keeps the datagram available, and `MSG_TRUNC` returns its full length even when the output buffer is shorter.
+`recvmsg` also reports truncation in its output flags.
+A zero-length `read` or `readv` leaves a queued datagram untouched, while a zero-length receive consumes it unless `MSG_PEEK` is set.
 
 A socket belongs to its open file description.
 Descriptors created by `dup` or inherited through `fork` share the connection and `O_NONBLOCK` flag.
@@ -109,9 +124,13 @@ The dispatcher continues serving other Linux threads while a connection or trans
 A nonblocking connect reports `EINPROGRESS`, and the program can wait for write readiness before checking `SO_ERROR`.
 
 The service collects an in-flight attempt before applying signal interruption, so restarting a call cannot repeat a completed transfer or accept.
-Unread bytes remain in the open file description if copying a received payload reaches an invalid user buffer.
+Received data remains in the open file description if payload delivery fails or if writing the result header or source address fails.
+Receive allocation failures preserve the queued datagram for a later attempt.
+TCP reads retain bytes beyond a successful partial copy.
+UDP reports `EFAULT` if a payload copy faults, including after an earlier iovec was copied, and keeps the whole datagram for a later receive.
+A successful short UDP receive consumes the whole datagram.
 Blocking reads, writes, and accepts support signal interruption and `SA_RESTART`.
-A broken stream write raises `SIGPIPE` unless `sendto` supplies `MSG_NOSIGNAL`.
+A broken stream write raises `SIGPIPE` unless `sendto` or `sendmsg` supplies `MSG_NOSIGNAL`.
 
 ## Address Space
 

@@ -25,6 +25,16 @@ pub(super) fn input(
     })
 }
 
+pub(super) fn optional_input(
+    process: &Process<'_>,
+    address: usize,
+    length: usize,
+) -> Result<Option<net::Endpoint>, Errno> {
+    (address != 0)
+        .then(|| input(process, address, length))
+        .transpose()
+}
+
 pub(in crate::syscall) struct Output {
     address: usize,
     length: usize,
@@ -32,6 +42,14 @@ pub(in crate::syscall) struct Output {
 }
 
 impl Output {
+    pub fn with_capacity(address: usize, length: usize, capacity: usize) -> Self {
+        Self {
+            address,
+            length,
+            capacity,
+        }
+    }
+
     pub fn new(process: &Process<'_>, address: usize, length: usize) -> Result<Self, Errno> {
         let bytes = wait::read_bytes(process, length, 4)?;
         let capacity = i32::from_le_bytes(bytes.try_into().unwrap());
@@ -75,5 +93,14 @@ pub(super) fn option(level: usize, name: usize) -> Result<net::OptionName, Errno
         (6, 1) => Ok(net::OptionName::NoDelay),
         // TODO: Support socket buffers, keepalive, and I/O timeouts.
         _ => Err(ENOPROTOOPT),
+    }
+}
+
+pub(super) fn route(endpoint: net::Endpoint) -> Result<(), Errno> {
+    // TODO: Route non-loopback destinations after external interfaces are attached.
+    if endpoint.address[0] == 127 {
+        Ok(())
+    } else {
+        Err(ENETUNREACH)
     }
 }

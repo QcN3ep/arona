@@ -4,7 +4,7 @@
 
 use alloc::vec::Vec;
 
-use super::super::abi::{EFAULT, EINVAL, Errno, SyscallResult};
+use super::super::abi::{EFAULT, EINVAL, ENOMEM, Errno, SyscallResult};
 use crate::{elf::PAGE_SIZE, process::Process};
 
 // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/linux/uio.h?h=v6.12
@@ -31,21 +31,19 @@ impl Buffer {
                 if length > isize::MAX as usize {
                     return Err(EINVAL);
                 }
-                alloc::vec![IoVector { address, length }]
+                let mut vectors = Vec::new();
+                vectors.try_reserve_exact(1).map_err(|_| ENOMEM)?;
+                vectors.push(IoVector { address, length });
+                vectors
             }
             Self::Vector { address, count } => {
                 if count > IOV_MAX {
                     return Err(EINVAL);
                 }
-                let mut bytes = alloc::vec![0; count * 16];
-                if count != 0 {
-                    process
-                        .address_space
-                        .read(address, &mut bytes)
-                        .map_err(|_| EFAULT)?;
-                }
+                let bytes = super::super::wait::read_bytes(process, address, count * 16)?;
                 let mut total = 0usize;
-                let mut vectors = Vec::with_capacity(count);
+                let mut vectors = Vec::new();
+                vectors.try_reserve_exact(count).map_err(|_| ENOMEM)?;
                 for entry in bytes.as_chunks::<16>().0 {
                     let address = u64::from_le_bytes(entry[..8].try_into().unwrap()) as usize;
                     let length = u64::from_le_bytes(entry[8..].try_into().unwrap()) as usize;
@@ -76,7 +74,10 @@ impl IoVectors {
     }
 
     pub fn gather(&self, process: &Process<'_>, limit: usize) -> Result<Vec<u8>, Errno> {
-        let mut bytes = alloc::vec![0; self.total_length().min(limit)];
+        let length = self.total_length().min(limit);
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length).map_err(|_| ENOMEM)?;
+        bytes.resize(length, 0);
         let count = self.copy(0, &mut bytes, |address, output| {
             process.address_space.read(address, output)
         })?;

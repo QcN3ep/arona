@@ -263,7 +263,8 @@ impl Context {
         result: SyscallResult,
     ) -> Result<(), Error> {
         let (number, arguments) = self.machine.syscall(&self.state);
-        let suppress_sigpipe = number == abi::SENDTO && arguments[3] & 0x4000 != 0;
+        let suppress_sigpipe = (number == abi::SENDTO && arguments[3] & 0x4000 != 0)
+            || (number == abi::SENDMSG && arguments[2] & 0x4000 != 0);
         if matches!(result, Err(error) if error == abi::EPIPE) && !suppress_sigpipe {
             process.threads[index]
                 .signals

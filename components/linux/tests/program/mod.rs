@@ -77,6 +77,7 @@ fn main() {
         .unwrap()
     };
     sockets(&linux, &output);
+    socket_memory(&linux, &files, &output);
     execution(&linux, &output);
     layouts(&linux, &output);
     malformed(&linux, &output);
@@ -102,7 +103,7 @@ fn main() {
 }
 
 fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
-    output().write_all(b"Linux TCP tests started\n").unwrap();
+    output().write_all(b"Linux socket tests started\n").unwrap();
     let run = |mode: &[u8]| {
         linux
             .start_run(
@@ -150,6 +151,7 @@ fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         b"signals",
         b"exec",
         b"lifecycle",
+        b"udp",
     ] {
         let result = run(mode).wait(WaitMode::Until(
             runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
@@ -172,7 +174,76 @@ fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
             }
         );
     }
-    output().write_all(b"Linux TCP tests passed\n").unwrap();
+    output().write_all(b"Linux socket tests passed\n").unwrap();
+}
+
+fn socket_memory(
+    linux: &Control<'_>,
+    files: &fs::Client<'_>,
+    output: &impl Fn() -> devmgr::uart::Session,
+) {
+    let file = files
+        .create("/var/linux-socket-memory", service::deadline())
+        .unwrap();
+    file.write_at(0, &[0], service::deadline()).unwrap();
+    let mut guest = linux
+        .start_run(
+            Program {
+                path: b"/bin/linux-socket",
+                arguments: &[b"/bin/linux-socket", b"memory"],
+                environment: &[],
+            },
+            output(),
+        )
+        .unwrap();
+    let phase = |expected| {
+        let deadline = service::deadline();
+        loop {
+            let mut state = [0];
+            assert_eq!(file.read_at(0, &mut state, deadline).unwrap(), 1);
+            if state == [expected] {
+                break;
+            }
+            assert!(runtime::thread::now_ns().unwrap() < deadline);
+            runtime::thread::yield_now().unwrap();
+        }
+    };
+    phase(1);
+    // Keep enough real frames for file coordination, but fewer than the whole
+    // UDP receive result needs. No allocation failure is injected into services.
+    let mut frames = alloc::vec::Vec::new();
+    frames.try_reserve_exact(4096).unwrap();
+    let spare = process::task().allocate(8, runtime::Rights::READ).unwrap();
+    for count in [1024, 64, 16, 1] {
+        loop {
+            match process::task().allocate(count, runtime::Rights::READ) {
+                Ok(allocation) => {
+                    assert!(frames.len() < frames.capacity());
+                    frames.push(allocation);
+                }
+                Err(runtime::Error::Kernel(runtime::KernelError::NoMemory)) => break,
+                Err(error) => panic!("unexpected allocation error: {error:?}"),
+            }
+        }
+    }
+    drop(spare);
+    file.write_at(0, &[2], service::deadline()).unwrap();
+    phase(3);
+    drop(frames);
+    file.write_at(0, &[4], service::deadline()).unwrap();
+    assert_eq!(
+        guest.wait(until()).unwrap(),
+        ExitStatus {
+            code: 42,
+            signal: 0
+        }
+    );
+    files
+        .unlink("/var/linux-socket-memory", service::deadline())
+        .unwrap();
+    output()
+        .write_all(b"Linux socket memory tests passed\n")
+        .unwrap();
 }
 
 fn writable(

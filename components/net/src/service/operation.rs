@@ -14,6 +14,7 @@ pub(super) enum Command {
     Bind(lwip::Endpoint),
     Listen(u8),
     Connect(lwip::Endpoint),
+    Disconnect,
     Accept,
     Send(Vec<u8>, Option<lwip::Endpoint>),
     Receive(usize, bool),
@@ -103,6 +104,7 @@ impl Command {
             [_, p::BIND, address] => Self::Bind(endpoint(address)?),
             [_, p::LISTEN, backlog] if backlog <= u8::MAX as u64 => Self::Listen(backlog as u8),
             [_, p::CONNECT, address] => Self::Connect(endpoint(address)?),
+            [_, p::DISCONNECT] if kind == Some(net::SocketKind::Udp) => Self::Disconnect,
             [_, p::ACCEPT] => Self::Accept,
             [_, p::SEND | p::SEND_TO, ..] => Self::send(request, kind)?,
             [_, p::RECEIVE, length]
@@ -193,6 +195,10 @@ impl Command {
             }
             Self::Connect(endpoint) => {
                 socket.connect(endpoint).map_err(error)?;
+                Output::done()
+            }
+            Self::Disconnect => {
+                socket.disconnect().map_err(error)?;
                 Output::done()
             }
             Self::Send(bytes, peer) => {

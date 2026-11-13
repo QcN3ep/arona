@@ -40,6 +40,10 @@ unsafe extern "C" {
     pub fn arona_lwip_connect(fd: i32, endpoint: *const Endpoint) -> i32;
     /// # Safety
     ///
+    /// fd must be a live UDP socket with exclusive C API access.
+    pub fn arona_lwip_disconnect(fd: i32) -> i32;
+    /// # Safety
+    ///
     /// fd must be live and exclusively accessed; peer must be exclusively
     /// writable for this call. Success transfers ownership of the new socket.
     pub fn arona_lwip_accept(fd: i32, peer: *mut Endpoint) -> i32;
