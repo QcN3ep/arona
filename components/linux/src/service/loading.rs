@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use crate::process::image::{Chain, Executable};
+use crate::process::image::{Chain, Executable, MAX_INTERPRETERS, parse_script, script_arguments};
 use crate::{
     Error, Services,
     elf::{Image, ImageSet, Machine},
@@ -19,6 +19,7 @@ pub(super) struct Loading<'a> {
     arguments: Arguments,
     terminal: Rc<Terminal>,
     executable: Chain<'a>,
+    interpreters: usize,
 }
 
 impl<'a> Loading<'a> {
@@ -73,6 +74,7 @@ impl<'a> Loading<'a> {
                 arguments,
                 terminal,
                 executable: stage,
+                interpreters: 0,
             }),
             Err(error) => Err((error, reply)),
         }
@@ -88,6 +90,17 @@ impl<'a> Loading<'a> {
         namespace: &Rc<crate::process::namespace::PidNamespace>,
     ) -> Result<Option<Process<'a>>, Error> {
         if let Some(loaded) = self.executable.poll(files, machine, services)? {
+            if loaded.main.bytes.starts_with(b"#!") {
+                if self.interpreters >= MAX_INTERPRETERS {
+                    return Err(Error::InvalidExecutable);
+                }
+                let (interpreter, argument) = parse_script(&loaded.main.bytes)?;
+                let executable = Executable::new(files, None, interpreter)?;
+                script_arguments(&mut self.arguments, interpreter, argument);
+                self.interpreters += 1;
+                self.executable = Chain::new(executable);
+                return Ok(None);
+            }
             let image = Image::parse(&loaded.main.bytes, machine)?;
             let interpreter = loaded
                 .interpreter
