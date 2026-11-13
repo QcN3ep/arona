@@ -13,9 +13,9 @@ The device manager stores the device instance identity, resource group, driver c
 | Driver | Matching and transport | Operations provided |
 |---|---|---|
 | UART | Device Tree `ns16550`, `ns16550a` | configuration, input, output, flush |
-| Block device | modern VirtIO MMIO or PCI block | capacity, read/write, flush, request cancellation and acknowledgment |
-| Ethernet | modern VirtIO PCI net | exclusive copied frame RX/TX, MAC, MTU, link state |
-| Random numbers | modern VirtIO PCI RNG | read device random bytes |
+| Block device | VirtIO MMIO block or VirtIO PCI block | capacity, read/write, flush, request cancellation and acknowledgment |
+| Ethernet | VirtIO PCI net | exclusive copied frame RX/TX, MAC, MTU, link state |
+| Random numbers | VirtIO PCI RNG | read device random bytes |
 | RTC | Goldfish RTC, Loongson LS7A RTC | read Unix time |
 | Power | Device Tree `syscon` with poweroff/reboot operations | capability query, shutdown, reboot |
 
@@ -57,6 +57,8 @@ On exit, it unbinds, disables UART interrupts, and reclaims the MMIO.
 ## VirtIO Queues and DMA
 
 The modern VirtIO transport handles reset, feature negotiation, queue configuration, notification, and device state checks.
+The PCI transport accepts devices by their modern VirtIO ID or by a transitional legacy ID whose subsystem device ID names the VirtIO device type, and drives both through the modern interface.
+Legacy-only devices without modern capability regions are rejected.
 The PCI transport reads configuration capabilities and BARs, while the MMIO transport uses the register regions published by the firmware.
 The driver negotiates `VIRTIO_F_VERSION_1` and the corresponding device features.
 PCI probing validates the common, notification, and ISR regions independently of the device type.

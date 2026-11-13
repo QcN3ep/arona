@@ -25,9 +25,13 @@ impl Dma for QemuDma {
         }
         let supported = match &device.location {
             HardwareDeviceLocation::Pci { .. } => {
+                // Modern 0x1040-series and transitional legacy VirtIO PCI IDs.
                 device.has_identity("pci", "1af4:1041")
                     || device.has_identity("pci", "1af4:1042")
                     || device.has_identity("pci", "1af4:1044")
+                    || device.has_identity("pci", "1af4:1000")
+                    || device.has_identity("pci", "1af4:1001")
+                    || device.has_identity("pci", "1af4:1005")
             }
             HardwareDeviceLocation::Platform => {
                 cfg!(target_arch = "riscv64")

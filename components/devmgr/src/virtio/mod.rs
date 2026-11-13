@@ -47,13 +47,22 @@ pub(crate) fn probe(
     device: &DeviceDescription<'_>,
     device_type: u16,
 ) -> Result<Option<Configuration>, Error> {
-    let identity = match device_type {
-        NET_DEVICE_TYPE => "1af4:1041",
-        BLOCK_DEVICE_TYPE => "1af4:1042",
-        RNG_DEVICE_TYPE => "1af4:1044",
+    // Modern devices identify as 1af4:1040 + device type. Transitional
+    // devices, which are QEMU's default, keep the pre-1.0 PCI IDs.
+    let identities = match device_type {
+        NET_DEVICE_TYPE => ["1af4:1041", "1af4:1000"],
+        BLOCK_DEVICE_TYPE => ["1af4:1042", "1af4:1001"],
+        RNG_DEVICE_TYPE => ["1af4:1044", "1af4:1005"],
         _ => return Err(Error::Unsupported),
     };
-    if device.matches("pci", identity)? {
+    let mut matched = false;
+    for identity in identities {
+        if device.matches("pci", identity)? {
+            matched = true;
+            break;
+        }
+    }
+    if matched {
         return Ok(Some(Configuration::Pci(pci::probe(device, device_type)?)));
     }
     if device_type == BLOCK_DEVICE_TYPE && device.matches("devicetree", "virtio,mmio")? {
