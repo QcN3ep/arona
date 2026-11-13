@@ -6,6 +6,7 @@
 target/
 build/
 output/
+/docs/arona-book.pdf
 *.elf
 *.iso
 *.img

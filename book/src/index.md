@@ -19,6 +19,7 @@ Writing native programs starts with the [Runtime Overview](runtime/overview.md);
 ## Offline Reading and PDF
 
 Running `cargo xtask book` generates HTML and a PDF with chapter bookmarks.
+The published handbook also provides a [PDF download](docs/arona-book.pdf).
 See the [Maintenance Guide](contributing/book.md) for build instructions and output paths.
 
 ## License

@@ -74,6 +74,7 @@ Internal Cargo builds use `--locked` and follow the dependency resolution pinned
 | `PATH` | Locate external programs such as Cargo, QEMU, mdBook, and its plugins |
 
 The handbook output directory is defined as `target/book/` by `book/book.toml`.
+The completed PDF is exported to `docs/arona-book.pdf` and included in the HTML output for download.
 
 ## Build Artifacts
 

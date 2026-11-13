@@ -4,8 +4,11 @@
 title = "The Arona Book"
 description = "Arona usage, architecture, and development guide"
 authors = ["The Arona Authors"]
-language = "zh-CN"
+language = "en"
 src = "src"
+
+[rust]
+edition = "2024"
 
 [build]
 build-dir = "../target/book"
@@ -14,6 +17,9 @@ extra-watch-dirs = ["../CONTRIBUTING.md"]
 
 [output.html]
 additional-css = ["mdbook-admonish.css"]
+additional-js = ["pdf-print-guard.js"]
+git-repository-url = "https://github.com/QcN3ep/arona"
+edit-url-template = "https://github.com/QcN3ep/arona/edit/main/book/{path}"
 
 [output.html.playground]
 runnable = false
@@ -22,9 +28,18 @@ runnable = false
 enable = true
 
 [output.pdf]
+theme = "light"
+paper-width = 8.2677
+paper-height = 11.6929
+margin-top = 0.6
+margin-bottom = 0.6
+margin-left = 0.6
+margin-right = 0.6
+print-background = true
 generate-document-outline = false
 
 [output.pdf-outline]
+command = "./export-pdf.py"
 like-wkhtmltopdf = true
 
 [preprocessor.admonish]
