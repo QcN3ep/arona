@@ -152,9 +152,8 @@ fn connect(
 ) -> Result<Action, Errno> {
     if Socket::state(description).kind == net::SocketKind::Tcp {
         match Socket::state(description).connection.get() {
-            Connection::Connecting => return Err(EALREADY),
             Connection::Connected => return Err(EISCONN),
-            Connection::Initial => {}
+            Connection::Initial | Connection::Connecting => {}
         }
     } else if (args[2] as i32) >= 2 && wait::read_bytes(process, args[1], 2)? == [0, 0] {
         return Ok(Action::Disconnect);

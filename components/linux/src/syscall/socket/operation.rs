@@ -317,7 +317,21 @@ impl<'a> Operation<'a> {
             {
                 match Socket::state(&self.description).connection.get() {
                     Connection::Initial => {}
-                    Connection::Connecting => return Err(EALREADY),
+                    Connection::Connecting => {
+                        let Some(ready) = self
+                            .watch
+                            .poll(Socket::state(&self.description))
+                            .map_err(error)?
+                        else {
+                            return Ok(None);
+                        };
+                        if !self.action.ready(ready) {
+                            return Err(EALREADY);
+                        }
+                        if let Action::Connect { finishing, .. } = &mut self.action {
+                            *finishing = true;
+                        }
+                    }
                     Connection::Connected => return Err(EISCONN),
                 }
             }
@@ -408,10 +422,6 @@ impl<'a> Operation<'a> {
                     true,
                     [state.receive_timeout.get(), state.send_timeout.get()],
                 )?
-            }
-            (Action::Receive(receive), net::Completion::Endpoint(endpoint)) => {
-                receive.source = Some(endpoint);
-                return Ok(None);
             }
             (Action::Receive(receive), net::Completion::Data(data)) => {
                 if data.is_empty() && Socket::state(&self.description).kind == net::SocketKind::Tcp

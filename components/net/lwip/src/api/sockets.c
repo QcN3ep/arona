@@ -1124,12 +1124,11 @@ lwip_sock_make_addr(struct netconn *conn, ip_addr_t *fromaddr, u16_t port,
 static int
 lwip_recv_tcp_from(struct lwip_sock *sock, struct sockaddr *from, socklen_t *fromlen, const char *dbg_fn, int dbg_s, ssize_t dbg_ret)
 {
-  if (sock == NULL) {
+  if ((sock == NULL) || (dbg_ret < 0)) {
     return 0;
   }
   LWIP_UNUSED_ARG(dbg_fn);
   LWIP_UNUSED_ARG(dbg_s);
-  LWIP_UNUSED_ARG(dbg_ret);
 
 #if !SOCKETS_DEBUG
   if (from && fromlen)
@@ -1138,7 +1137,12 @@ lwip_recv_tcp_from(struct lwip_sock *sock, struct sockaddr *from, socklen_t *fro
     /* get remote addr/port from tcp_pcb */
     u16_t port;
     ip_addr_t tmpaddr;
-    netconn_getaddr(sock->conn, &tmpaddr, &port, 0);
+    if (netconn_getaddr(sock->conn, &tmpaddr, &port, 0) != ERR_OK) {
+      if (fromlen) {
+        *fromlen = 0;
+      }
+      return 0;
+    }
     LWIP_DEBUGF(SOCKETS_DEBUG, ("%s(%d):  addr=", dbg_fn, dbg_s));
     ip_addr_debug_print_val(SOCKETS_DEBUG, tmpaddr);
     LWIP_DEBUGF(SOCKETS_DEBUG, (" port=%"U16_F" len=%d\n", port, (int)dbg_ret));

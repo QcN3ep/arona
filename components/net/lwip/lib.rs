@@ -372,7 +372,12 @@ impl Socket {
         })
     }
 
+    /// Receive one UDP datagram and its source address.
+    /// Returns `InvalidArgument` for TCP sockets without consuming stream data.
     pub fn receive_from(&mut self, bytes: &mut [u8]) -> Result<(usize, Endpoint), Error> {
+        if self.kind() != SocketKind::Udp {
+            return Err(Error::InvalidArgument);
+        }
         let mut peer = ffi::Endpoint::empty();
         // SAFETY: The socket and both output regions are exclusively borrowed.
         let count = length(unsafe {

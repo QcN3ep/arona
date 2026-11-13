@@ -150,7 +150,7 @@ ssize_t arona_lwip_receive(int fd, uint8_t *bytes, size_t length,
   socklen_t size = sizeof(value);
   ssize_t result = lwip_recvfrom(fd, bytes, length, 0, (struct sockaddr *)&value, &size);
   arona_lwip_received(fd, result == 0 && length != 0);
-  if (result >= 0) { endpoint(peer, &value); }
+  if (result >= 0 && size != 0) { endpoint(peer, &value); }
   return result;
 }
 
