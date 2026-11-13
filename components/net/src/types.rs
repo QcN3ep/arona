@@ -1,19 +1,40 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+pub use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use runtime::{Error as RuntimeError, KernelError};
 
-/// An IPv4 address and a host-order port.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressFamily {
+    Ipv4,
+    Ipv6,
+}
+
+/// An IP address and a host-order port.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Endpoint {
-    pub address: [u8; 4],
+    pub address: IpAddr,
     pub port: u16,
 }
 
 impl Endpoint {
     pub const fn loopback(port: u16) -> Self {
         Self {
-            address: [127, 0, 0, 1],
+            address: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port,
+        }
+    }
+
+    pub const fn loopback_v6(port: u16) -> Self {
+        Self {
+            address: IpAddr::V6(Ipv6Addr::LOCALHOST),
+            port,
+        }
+    }
+
+    pub const fn family(self) -> AddressFamily {
+        match self.address {
+            IpAddr::V4(_) => AddressFamily::Ipv4,
+            IpAddr::V6(_) => AddressFamily::Ipv6,
         }
     }
 }
@@ -39,6 +60,8 @@ pub enum OptionName {
     KeepCount,
     ReceiveBuffer,
     SendBuffer,
+    /// IPv6-only mode. The value is one and cannot be disabled.
+    Ipv6Only,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,7 +98,8 @@ impl From<RuntimeError> for Error {
 }
 
 /// One nonblocking attempt. A stream transfer is limited to 64 KiB, and a
-/// datagram transfer preserves one whole IPv4 UDP payload, including zero bytes.
+/// datagram transfer preserves one whole UDP payload, including zero bytes.
+/// UDP payload limits are 65,507 bytes for IPv4 and 65,487 bytes for IPv6.
 pub enum Request<'a> {
     Bind(Endpoint),
     Listen(u8),

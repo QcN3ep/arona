@@ -5,6 +5,7 @@
 extern void datagram_main(void);
 extern void datagram_memory(void);
 extern void socket_options(void);
+extern void socket_ipv6(void);
 static unsigned char payload[131072];
 static volatile unsigned signals;
 
@@ -371,7 +372,8 @@ static void lifecycle(void) {
 }
 
 int socket_main(const char *mode) {
-    if (*mode == 'o') socket_options();
+    if (*mode == 'i') socket_ipv6();
+    else if (*mode == 'o') socket_options();
     else if (*mode == 'm') datagram_memory();
     else if (*mode == 'u') datagram_main();
     else if (*mode == 'c') client();

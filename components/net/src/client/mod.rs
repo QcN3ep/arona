@@ -4,7 +4,7 @@ mod operation;
 mod subscription;
 pub use subscription::{PendingReadiness, PendingSubscription, Subscription};
 
-use crate::{Error, Readiness, Request, SocketKind, protocol as p};
+use crate::{AddressFamily, Error, Readiness, Request, SocketKind, protocol as p};
 use runtime::{
     Channel, FrameAllocation, Handle, Rights, Task,
     ipc::{Message, ReceivedMessage, WaitMode},
@@ -54,24 +54,49 @@ impl<'a> Client<'a> {
 
     /// Begin socket creation. The returned socket retains the creation request.
     pub fn start_socket(&self, kind: SocketKind) -> Result<Socket<'a>, Error> {
+        self.start_socket_in(kind, AddressFamily::Ipv4)
+    }
+
+    /// Begin creation in the selected IP family. IPv6 sockets are IPv6-only.
+    pub fn start_socket_in(
+        &self,
+        kind: SocketKind,
+        family: AddressFamily,
+    ) -> Result<Socket<'a>, Error> {
         let (channel, server) = self.task.channel(p::OWNED_CHANNEL, p::OWNED_CHANNEL)?;
         let mut request = Message::new(p::ATTACH, &[])?;
         p::push(&mut request, server, p::OWNED_CHANNEL)?;
         self.channel.send(&mut request, WaitMode::Poll)?;
-        let mut socket = Socket::new(self.task, channel, kind);
+        let mut socket = Socket::new(self.task, channel, kind, family);
         socket.submit(
             p::CREATE,
-            &[match kind {
-                SocketKind::Tcp => 0,
-                SocketKind::Udp => 1,
-            }],
+            &[
+                match kind {
+                    SocketKind::Tcp => 0,
+                    SocketKind::Udp => 1,
+                },
+                match family {
+                    AddressFamily::Ipv4 => 4,
+                    AddressFamily::Ipv6 => 6,
+                },
+            ],
             None,
         )?;
         Ok(socket)
     }
 
     pub fn socket(&self, kind: SocketKind, mode: WaitMode) -> Result<Socket<'a>, Error> {
-        let mut socket = self.start_socket(kind)?;
+        self.socket_in(kind, AddressFamily::Ipv4, mode)
+    }
+
+    /// Create a socket in the selected IP family and wait for its result.
+    pub fn socket_in(
+        &self,
+        kind: SocketKind,
+        family: AddressFamily,
+        mode: WaitMode,
+    ) -> Result<Socket<'a>, Error> {
+        let mut socket = self.start_socket_in(kind, family)?;
         match socket.complete(mode)? {
             Completion::Done => Ok(socket),
             _ => Err(Error::InvalidRequest),
@@ -84,6 +109,7 @@ pub struct Socket<'a> {
     task: &'a Handle<Task>,
     channel: Handle<Channel>,
     kind: SocketKind,
+    family: AddressFamily,
     next: u64,
     pending: Option<alloc::boxed::Box<operation::Pending<'a>>>,
 }
@@ -127,17 +153,26 @@ impl Data {
 }
 
 impl<'a> Socket<'a> {
-    fn new(task: &'a Handle<Task>, channel: Handle<Channel>, kind: SocketKind) -> Self {
+    fn new(
+        task: &'a Handle<Task>,
+        channel: Handle<Channel>,
+        kind: SocketKind,
+        family: AddressFamily,
+    ) -> Self {
         Self {
             task,
             channel,
             kind,
+            family,
             next: 1,
             pending: None,
         }
     }
     pub fn kind(&self) -> SocketKind {
         self.kind
+    }
+    pub fn family(&self) -> AddressFamily {
+        self.family
     }
     pub fn channel(&self) -> &Handle<Channel> {
         &self.channel
@@ -150,7 +185,7 @@ impl<'a> Socket<'a> {
         if self.pending.is_some() {
             return Err(Error::Busy);
         }
-        let encoded = operation::encode(request, self.kind)?;
+        let encoded = operation::encode(request, self.kind, self.family)?;
         let frames = if let Some(bytes) = encoded.bytes {
             let mut frames = self.task.allocate(
                 bytes.len().max(1).div_ceil(4096) as u64,

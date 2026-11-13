@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! lwIP in a native Arona program, with owned sockets and IPv4 endpoints.
+//! lwIP in a native Arona program, with owned sockets and IP endpoints.
 //!
 //! Available with `baremetal` on native `target_os = "none"` targets.
 //! Initialize once with device entropy before creating sockets. Each socket has
@@ -25,6 +25,7 @@ mod random;
 mod sys;
 
 use alloc::sync::Arc;
+pub use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use core::{
     cell::Cell,
     marker::PhantomData,
@@ -76,22 +77,36 @@ impl Error {
     }
 }
 
-/// An IPv4 address and a host-order port, independent of C socket layouts.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Endpoint {
-    pub address: [u8; 4],
-    pub port: u16,
+pub enum AddressFamily {
+    Ipv4,
+    Ipv6,
 }
 
-const _: () = assert!(core::mem::size_of::<Endpoint>() == 6);
-const _: () = assert!(core::mem::align_of::<Endpoint>() == 2);
+/// An IP address and a host-order port, independent of C socket layouts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Endpoint {
+    pub address: IpAddr,
+    pub port: u16,
+}
 
 impl Endpoint {
     pub const fn loopback(port: u16) -> Self {
         Self {
-            address: [127, 0, 0, 1],
+            address: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port,
+        }
+    }
+    pub const fn loopback_v6(port: u16) -> Self {
+        Self {
+            address: IpAddr::V6(Ipv6Addr::LOCALHOST),
+            port,
+        }
+    }
+    pub const fn family(self) -> AddressFamily {
+        match self.address {
+            IpAddr::V4(_) => AddressFamily::Ipv4,
+            IpAddr::V6(_) => AddressFamily::Ipv6,
         }
     }
 }
@@ -112,6 +127,8 @@ pub enum OptionName {
     KeepCount,
     ReceiveBuffer,
     SendBuffer,
+    /// IPv6-only mode. The value is one and cannot be disabled.
+    Ipv6Only,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -150,27 +167,44 @@ impl Stack {
     pub fn socket_with_subscription(
         &self,
         kind: SocketKind,
+        family: AddressFamily,
     ) -> Result<(Socket, Subscription), Error> {
-        let shared = Shared::new(kind)?;
+        let shared = Shared::new(kind, family)?;
         let subscription = Subscription::new(Arc::clone(&shared))?;
         // SAFETY: Startup completed and shared owns preallocated socket state.
         let fd = unsafe {
-            ffi::arona_lwip_socket(match kind {
-                SocketKind::Tcp => 1,
-                SocketKind::Udp => 2,
-            })
+            ffi::arona_lwip_socket(
+                match kind {
+                    SocketKind::Tcp => 1,
+                    SocketKind::Udp => 2,
+                },
+                match family {
+                    AddressFamily::Ipv4 => 4,
+                    AddressFamily::Ipv6 => 6,
+                },
+            )
         };
         Ok((Socket::from_result(fd, shared)?, subscription))
     }
 
     pub fn socket(&self, kind: SocketKind) -> Result<Socket, Error> {
-        let shared = Shared::new(kind)?;
+        self.socket_in(kind, AddressFamily::Ipv4)
+    }
+
+    pub fn socket_in(&self, kind: SocketKind, family: AddressFamily) -> Result<Socket, Error> {
+        let shared = Shared::new(kind, family)?;
         // SAFETY: Initialization completed; the bridge returns a fresh C socket.
         let fd = unsafe {
-            ffi::arona_lwip_socket(match kind {
-                SocketKind::Tcp => 1,
-                SocketKind::Udp => 2,
-            })
+            ffi::arona_lwip_socket(
+                match kind {
+                    SocketKind::Tcp => 1,
+                    SocketKind::Udp => 2,
+                },
+                match family {
+                    AddressFamily::Ipv4 => 4,
+                    AddressFamily::Ipv6 => 6,
+                },
+            )
         };
         Socket::from_result(fd, shared)
     }
@@ -222,8 +256,14 @@ impl Socket {
     }
 
     pub fn bind(&mut self, endpoint: Endpoint) -> Result<(), Error> {
+        self.check_family(endpoint)?;
         // SAFETY: The socket is exclusively borrowed and endpoint is readable.
-        status(unsafe { ffi::arona_lwip_bind(self.shared().fd.load(Ordering::Acquire), &endpoint) })
+        status(unsafe {
+            ffi::arona_lwip_bind(
+                self.shared().fd.load(Ordering::Acquire),
+                &ffi::Endpoint::from(endpoint),
+            )
+        })
     }
 
     pub fn listen(&mut self, backlog: u8) -> Result<(), Error> {
@@ -234,9 +274,13 @@ impl Socket {
     }
 
     pub fn connect(&mut self, endpoint: Endpoint) -> Result<(), Error> {
+        self.check_family(endpoint)?;
         // SAFETY: The socket is exclusively borrowed and endpoint is readable.
         status(unsafe {
-            ffi::arona_lwip_connect(self.shared().fd.load(Ordering::Acquire), &endpoint)
+            ffi::arona_lwip_connect(
+                self.shared().fd.load(Ordering::Acquire),
+                &ffi::Endpoint::from(endpoint),
+            )
         })
     }
 
@@ -251,40 +295,40 @@ impl Socket {
 
     /// Reserve observer resources before removing a connection from the listener.
     pub fn accept_with_subscription(&mut self) -> Result<(Self, Subscription, Endpoint), Error> {
-        let shared = Shared::new(SocketKind::Tcp)?;
+        let shared = Shared::new(SocketKind::Tcp, self.family())?;
         let subscription = Subscription::new(Arc::clone(&shared))?;
-        let mut peer = Endpoint::loopback(0);
+        let mut peer = ffi::Endpoint::empty();
         // SAFETY: The listener is exclusively borrowed and peer is writable.
         let fd =
             unsafe { ffi::arona_lwip_accept(self.shared().fd.load(Ordering::Acquire), &mut peer) };
-        Ok((Self::from_result(fd, shared)?, subscription, peer))
+        Ok((Self::from_result(fd, shared)?, subscription, peer.decode()?))
     }
 
     pub fn accept(&mut self) -> Result<(Self, Endpoint), Error> {
-        let shared = Shared::new(SocketKind::Tcp)?;
-        let mut peer = Endpoint::loopback(0);
+        let shared = Shared::new(SocketKind::Tcp, self.family())?;
+        let mut peer = ffi::Endpoint::empty();
         // SAFETY: The listener is exclusively borrowed; peer is writable.
         let fd =
             unsafe { ffi::arona_lwip_accept(self.shared().fd.load(Ordering::Acquire), &mut peer) };
-        Ok((Self::from_result(fd, shared)?, peer))
+        Ok((Self::from_result(fd, shared)?, peer.decode()?))
     }
 
     pub fn local_endpoint(&mut self) -> Result<Endpoint, Error> {
-        let mut endpoint = Endpoint::loopback(0);
+        let mut endpoint = ffi::Endpoint::empty();
         // SAFETY: The socket is exclusively borrowed; endpoint is writable.
         status(unsafe {
             ffi::arona_lwip_endpoint(self.shared().fd.load(Ordering::Acquire), &mut endpoint, 0)
         })?;
-        Ok(endpoint)
+        endpoint.decode()
     }
 
     pub fn peer_endpoint(&mut self) -> Result<Endpoint, Error> {
-        let mut endpoint = Endpoint::loopback(0);
+        let mut endpoint = ffi::Endpoint::empty();
         // SAFETY: The socket is exclusively borrowed; endpoint is writable.
         status(unsafe {
             ffi::arona_lwip_endpoint(self.shared().fd.load(Ordering::Acquire), &mut endpoint, 1)
         })?;
-        Ok(endpoint)
+        endpoint.decode()
     }
 
     pub fn send(&mut self, bytes: &[u8]) -> Result<usize, Error> {
@@ -304,13 +348,14 @@ impl Socket {
     }
 
     pub fn send_to(&mut self, bytes: &[u8], endpoint: Endpoint) -> Result<usize, Error> {
+        self.check_family(endpoint)?;
         // SAFETY: Both inputs are readable for the call; no pointer is retained.
         length(unsafe {
             ffi::arona_lwip_send(
                 self.shared().fd.load(Ordering::Acquire),
                 bytes.as_ptr(),
                 bytes.len(),
-                &endpoint,
+                &ffi::Endpoint::from(endpoint),
             )
         })
     }
@@ -328,7 +373,7 @@ impl Socket {
     }
 
     pub fn receive_from(&mut self, bytes: &mut [u8]) -> Result<(usize, Endpoint), Error> {
-        let mut peer = Endpoint::loopback(0);
+        let mut peer = ffi::Endpoint::empty();
         // SAFETY: The socket and both output regions are exclusively borrowed.
         let count = length(unsafe {
             ffi::arona_lwip_receive(
@@ -338,7 +383,7 @@ impl Socket {
                 &mut peer,
             )
         })?;
-        Ok((count, peer))
+        Ok((count, peer.decode()?))
     }
 
     pub fn option(&mut self, option: OptionName) -> Result<u32, Error> {
@@ -367,6 +412,12 @@ impl Socket {
             OptionName::KeepCount => (1..=127).contains(&value),
             OptionName::ReceiveBuffer => (1..=i32::MAX as u32).contains(&value),
             OptionName::SendBuffer => return Err(Error::Other(95)),
+            OptionName::Ipv6Only => {
+                if value != 1 {
+                    return Err(Error::Other(95));
+                }
+                self.family() == AddressFamily::Ipv6
+            }
         };
         if !valid {
             return Err(Error::InvalidArgument);
@@ -401,6 +452,19 @@ impl Socket {
     /// Queue final close. Dropping the returned operation leaves it running.
     pub fn close(mut self) -> PendingClose {
         PendingClose::new(self.shared.take().unwrap())
+    }
+
+    pub fn family(&self) -> AddressFamily {
+        self.shared().family
+    }
+    fn check_family(&self, endpoint: Endpoint) -> Result<(), Error> {
+        if endpoint.family() == self.family()
+            && !matches!(endpoint.address, IpAddr::V6(address) if address.to_ipv4_mapped().is_some())
+        {
+            Ok(())
+        } else {
+            Err(Error::InvalidArgument)
+        }
     }
 
     pub fn kind(&self) -> SocketKind {

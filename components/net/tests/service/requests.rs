@@ -101,7 +101,7 @@ fn raw(client: &Client<'_>, target: Endpoint) {
         }
         assert_eq!(call(&mut request).tag, 0);
     };
-    submit(1, p::CREATE, &[1], None);
+    submit(1, p::CREATE, &[1, 4], None);
     assert_eq!(
         call(&mut Message::new(p::RESULT, &[1]).unwrap()).words(),
         [0, p::DONE]
@@ -112,8 +112,9 @@ fn raw(client: &Client<'_>, target: Endpoint) {
         .allocate(1, Rights::READ_WRITE | Rights::TRANSFER)
         .unwrap();
     frames.write(0, b"raw").unwrap();
-    submit(2, p::SEND_TO, &[0, 3, p::endpoint(target)], Some(frames));
-    submit(2, p::SEND_TO, &[0, 3, p::endpoint(target)], None);
+    let [header, high, low] = p::endpoint(target);
+    submit(2, p::SEND_TO, &[0, 3, header, high, low], Some(frames));
+    submit(2, p::SEND_TO, &[0, 3, header, high, low], None);
     let first = call(&mut Message::new(p::RESULT, &[2]).unwrap());
     assert_eq!(first.words(), [0, p::COUNT, 3]);
     assert_eq!(
@@ -134,7 +135,7 @@ fn raw(client: &Client<'_>, target: Endpoint) {
         submit(
             id,
             p::SEND_TO,
-            &[offset, length, p::endpoint(target)],
+            &[offset, length, header, high, low],
             Some(frames),
         );
         assert_eq!(
@@ -144,7 +145,7 @@ fn raw(client: &Client<'_>, target: Endpoint) {
         acknowledge(&channel, id);
     }
     // Cancel may observe either the unexecuted attempt or its retained result.
-    submit(6, p::BIND, &[p::endpoint(Endpoint::loopback(0))], None);
+    submit(6, p::BIND, &p::endpoint(Endpoint::loopback(0)), None);
     let canceled = call(&mut Message::new(p::CANCEL, &[6]).unwrap());
     assert!(matches!(canceled.words(), [0] | [1]));
     let result = call(&mut Message::new(p::RESULT, &[6]).unwrap());

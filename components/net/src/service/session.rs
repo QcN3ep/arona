@@ -210,7 +210,11 @@ impl Session {
                 Err(Error::Busy)
             };
         }
-        let stage = match Command::decode(request, self.kind) {
+        let stage = match Command::decode(
+            request,
+            self.kind,
+            self.socket.as_ref().map(lwip::Socket::family),
+        ) {
             Ok(command) => Stage::Queued(command),
             Err(error) => Stage::Done(Err(error)),
         };

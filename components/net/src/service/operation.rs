@@ -10,7 +10,7 @@ use runtime::{
 };
 
 pub(super) enum Command {
-    Create(lwip::SocketKind),
+    Create(lwip::SocketKind, lwip::AddressFamily),
     Bind(lwip::Endpoint),
     Listen(u8),
     Connect(lwip::Endpoint),
@@ -27,7 +27,7 @@ pub(super) enum Command {
 }
 
 pub(super) struct Output {
-    words: [u64; 4],
+    words: [u64; 5],
     length: usize,
     channel: Option<Handle<Channel>>,
     data: Option<(Handle<FrameAllocation>, Vec<u8>)>,
@@ -35,7 +35,7 @@ pub(super) struct Output {
 impl Output {
     fn new(words: &[u64]) -> Self {
         let mut output = Self {
-            words: [0; 4],
+            words: [0; 5],
             length: words.len(),
             channel: None,
             data: None,
@@ -63,7 +63,7 @@ impl Output {
         }
     }
     fn message(&mut self) -> Result<Message, Error> {
-        let mut words = [0; 5];
+        let mut words = [0; 6];
         words[1..1 + self.length].copy_from_slice(&self.words[..self.length]);
         let mut message = Message::new(0, &words[..1 + self.length])?;
         if let Some(channel) = &self.channel {
@@ -89,6 +89,7 @@ impl Command {
     pub(super) fn decode(
         request: &mut ReceivedMessage,
         kind: Option<net::SocketKind>,
+        family: Option<lwip::AddressFamily>,
     ) -> Result<Self, Error> {
         let option = |raw| match raw {
             0 => Ok(lwip::OptionName::ReuseAddress),
@@ -99,20 +100,28 @@ impl Command {
             5 => Ok(lwip::OptionName::KeepCount),
             6 => Ok(lwip::OptionName::ReceiveBuffer),
             7 => Ok(lwip::OptionName::SendBuffer),
+            8 => Ok(lwip::OptionName::Ipv6Only),
             _ => Err(Error::Unsupported),
         };
         let command = match *request.words() {
-            [_, p::CREATE, value @ 0..=1] if kind.is_none() => Self::Create(if value == 0 {
-                lwip::SocketKind::Tcp
-            } else {
-                lwip::SocketKind::Udp
-            }),
-            [_, p::BIND, address] => Self::Bind(endpoint(address)?),
+            [_, p::CREATE, value @ 0..=1, family @ (4 | 6)] if kind.is_none() => Self::Create(
+                if value == 0 {
+                    lwip::SocketKind::Tcp
+                } else {
+                    lwip::SocketKind::Udp
+                },
+                if family == 4 {
+                    lwip::AddressFamily::Ipv4
+                } else {
+                    lwip::AddressFamily::Ipv6
+                },
+            ),
+            [_, p::BIND, header, high, low] => Self::Bind(endpoint(&[header, high, low])?),
             [_, p::LISTEN, backlog] if backlog <= u8::MAX as u64 => Self::Listen(backlog as u8),
-            [_, p::CONNECT, address] => Self::Connect(endpoint(address)?),
+            [_, p::CONNECT, header, high, low] => Self::Connect(endpoint(&[header, high, low])?),
             [_, p::DISCONNECT] if kind == Some(net::SocketKind::Udp) => Self::Disconnect,
             [_, p::ACCEPT] => Self::Accept,
-            [_, p::SEND | p::SEND_TO, ..] => Self::send(request, kind)?,
+            [_, p::SEND | p::SEND_TO, ..] => Self::send(request, kind, family)?,
             [_, p::RECEIVE, length]
                 if kind == Some(net::SocketKind::Tcp) && length <= p::MAX_STREAM as u64 =>
             {
@@ -142,18 +151,28 @@ impl Command {
         Ok(command)
     }
 
-    fn send(request: &mut ReceivedMessage, kind: Option<net::SocketKind>) -> Result<Self, Error> {
+    fn send(
+        request: &mut ReceivedMessage,
+        kind: Option<net::SocketKind>,
+        family: Option<lwip::AddressFamily>,
+    ) -> Result<Self, Error> {
         let [_, op, offset, length, ..] = *request.words() else {
             return Err(Error::InvalidRequest);
         };
         let peer = match request.words() {
-            [_, p::SEND_TO, _, _, raw] => Some(endpoint(*raw)?),
+            [_, p::SEND_TO, _, _, raw @ ..] if raw.len() == 3 => Some(endpoint(raw)?),
             [_, p::SEND, _, _] => None,
             _ => return Err(Error::InvalidRequest),
         };
         let limit = match kind {
             Some(net::SocketKind::Tcp) => p::MAX_STREAM,
-            Some(net::SocketKind::Udp) => p::MAX_DATAGRAM,
+            Some(net::SocketKind::Udp) => {
+                if family == Some(lwip::AddressFamily::Ipv4) {
+                    p::MAX_DATAGRAM
+                } else {
+                    p::MAX_DATAGRAM_V6
+                }
+            }
             None => return Err(Error::Closed),
         };
         if length > limit as u64
@@ -186,8 +205,10 @@ impl Command {
         stack: &lwip::Stack,
         reserve: Result<(), Error>,
     ) -> Result<(Output, Option<Session>), Error> {
-        if let Self::Create(kind) = self {
-            let (socket, observer) = stack.socket_with_subscription(kind).map_err(error)?;
+        if let Self::Create(kind, family) = self {
+            let (socket, observer) = stack
+                .socket_with_subscription(kind, family)
+                .map_err(error)?;
             session.install(socket, observer);
             return Ok((Output::done(), None));
         }
@@ -226,21 +247,21 @@ impl Command {
                 let (accepted, observer, peer) =
                     socket.accept_with_subscription().map_err(error)?;
                 child.install(accepted, observer);
-                let mut output = Output::new(&[p::ACCEPTED, wire_endpoint(peer)]);
+                let [header, high, low] = wire_endpoint(peer);
+                let mut output = Output::new(&[p::ACCEPTED, header, high, low]);
                 output.channel = Some(client);
                 return Ok((output, Some(child)));
             }
-            Self::Endpoint(peer) => Output::new(&[
-                p::ENDPOINT,
-                wire_endpoint(
-                    if peer {
-                        socket.peer_endpoint()
-                    } else {
-                        socket.local_endpoint()
-                    }
-                    .map_err(error)?,
-                ),
-            ]),
+            Self::Endpoint(peer) => {
+                let value = if peer {
+                    socket.peer_endpoint()
+                } else {
+                    socket.local_endpoint()
+                }
+                .map_err(error)?;
+                let [header, high, low] = wire_endpoint(value);
+                Output::new(&[p::ENDPOINT, header, high, low])
+            }
             Self::TakeError => {
                 socket.take_error().map_err(error)?;
                 Output::done()
@@ -252,12 +273,12 @@ impl Command {
                 socket.set_option(option, value).map_err(error)?;
                 Output::done()
             }
-            Self::Create(_) | Self::Shutdown(_) | Self::Close => unreachable!(),
+            Self::Create(..) | Self::Shutdown(_) | Self::Close => unreachable!(),
         };
         Ok((output, None))
     }
 }
-fn wire_endpoint(value: lwip::Endpoint) -> u64 {
+fn wire_endpoint(value: lwip::Endpoint) -> [u64; 3] {
     p::endpoint(net::Endpoint {
         address: value.address,
         port: value.port,
@@ -272,7 +293,7 @@ fn buffer(length: usize) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn endpoint(raw: u64) -> Result<lwip::Endpoint, Error> {
+fn endpoint(raw: &[u64]) -> Result<lwip::Endpoint, Error> {
     let value = p::decode_endpoint(raw)?;
     Ok(lwip::Endpoint {
         address: value.address,
@@ -281,6 +302,11 @@ fn endpoint(raw: u64) -> Result<lwip::Endpoint, Error> {
 }
 
 fn receive(socket: &mut lwip::Socket, length: usize, datagram: bool) -> Result<Output, Error> {
+    let length = if datagram && socket.family() == lwip::AddressFamily::Ipv6 {
+        p::MAX_DATAGRAM_V6
+    } else {
+        length
+    };
     let mut bytes = buffer(length)?;
     let frames = process::task().allocate(
         length.max(1).div_ceil(4096) as u64,
@@ -293,12 +319,8 @@ fn receive(socket: &mut lwip::Socket, length: usize, datagram: bool) -> Result<O
         (socket.receive(&mut bytes).map_err(error)?, None)
     };
     bytes.truncate(length);
-    let mut output = Output::new(&[
-        p::DATA,
-        length as u64,
-        u64::from(peer.is_some()),
-        peer.map_or(0, wire_endpoint),
-    ]);
+    let [header, high, low] = peer.map_or([0; 3], wire_endpoint);
+    let mut output = Output::new(&[p::DATA, length as u64, header, high, low]);
     output.data = Some((frames, bytes));
     Ok(output)
 }

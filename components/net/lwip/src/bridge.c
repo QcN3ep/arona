@@ -7,10 +7,11 @@
 #include <string.h>
 
 struct arona_lwip_endpoint {
-  uint8_t address[4];
+  uint8_t address[16];
   uint16_t port;
+  uint16_t family;
 };
-_Static_assert(sizeof(struct arona_lwip_endpoint) == 6, "Rust endpoint size");
+_Static_assert(sizeof(struct arona_lwip_endpoint) == 20, "Rust endpoint size");
 _Static_assert(_Alignof(struct arona_lwip_endpoint) == 2, "Rust endpoint alignment");
 _Static_assert(sizeof(ssize_t) == sizeof(ptrdiff_t), "Rust isize result");
 
@@ -36,45 +37,72 @@ int arona_lwip_start(const uint8_t *seed) {
 
 int arona_lwip_last_error(void) { return errno; }
 
-static struct sockaddr_in address(const struct arona_lwip_endpoint *endpoint) {
-  struct sockaddr_in value;
-  memset(&value, 0, sizeof(value));
-  value.sin_len = sizeof(value);
-  value.sin_family = AF_INET;
-  value.sin_port = lwip_htons(endpoint->port);
-  memcpy(&value.sin_addr.s_addr, endpoint->address, 4);
-  return value;
+union socket_address {
+  struct sockaddr base;
+  struct sockaddr_in v4;
+  struct sockaddr_in6 v6;
+};
+
+static socklen_t address(union socket_address *value, const struct arona_lwip_endpoint *input) {
+  memset(value, 0, sizeof(*value));
+  if (input->family == 6) {
+    value->v6.sin6_len = sizeof(value->v6);
+    value->v6.sin6_family = AF_INET6;
+    value->v6.sin6_port = lwip_htons(input->port);
+    memcpy(&value->v6.sin6_addr, input->address, 16);
+    return sizeof(value->v6);
+  }
+  value->v4.sin_len = sizeof(value->v4);
+  value->v4.sin_family = AF_INET;
+  value->v4.sin_port = lwip_htons(input->port);
+  memcpy(&value->v4.sin_addr.s_addr, input->address, 4);
+  return sizeof(value->v4);
 }
 
-static void endpoint(struct arona_lwip_endpoint *output, const struct sockaddr_in *value) {
-  memcpy(output->address, &value->sin_addr.s_addr, 4);
-  output->port = lwip_ntohs(value->sin_port);
+static void endpoint(struct arona_lwip_endpoint *output, const union socket_address *value) {
+  memset(output, 0, sizeof(*output));
+  if (value->base.sa_family == AF_INET6) {
+    memcpy(output->address, &value->v6.sin6_addr, 16);
+    output->port = lwip_ntohs(value->v6.sin6_port);
+    output->family = 6;
+  } else {
+    memcpy(output->address, &value->v4.sin_addr.s_addr, 4);
+    output->port = lwip_ntohs(value->v4.sin_port);
+    output->family = 4;
+  }
 }
 
-static int nonblocking(int fd) {
-  if (fd >= 0 && lwip_fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
-    int error = errno;
+static int nonblocking(int fd, int family) {
+  if (fd < 0) { return fd; }
+  int enabled = 1;
+  if (lwip_fcntl(fd, F_SETFL, O_NONBLOCK) < 0 ||
+      (family == AF_INET6 && lwip_setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY,
+                                           &enabled, sizeof(enabled)) < 0)) {
+    int saved = errno;
     lwip_close(fd);
-    errno = error;
+    errno = saved;
     return -1;
   }
   return fd;
 }
 
-int arona_lwip_socket(int kind) {
-  return nonblocking(lwip_socket(AF_INET, kind, 0));
+int arona_lwip_socket(int kind, int family) {
+  int domain = family == 6 ? AF_INET6 : AF_INET;
+  return nonblocking(lwip_socket(domain, kind, 0), domain);
 }
 
 int arona_lwip_bind(int fd, const struct arona_lwip_endpoint *peer) {
-  struct sockaddr_in value = address(peer);
-  return lwip_bind(fd, (const struct sockaddr *)&value, sizeof(value));
+  union socket_address value;
+  socklen_t length = address(&value, peer);
+  return lwip_bind(fd, &value.base, length);
 }
 
 int arona_lwip_listen(int fd, int backlog) { return lwip_listen(fd, backlog); }
 
 int arona_lwip_connect(int fd, const struct arona_lwip_endpoint *peer) {
-  struct sockaddr_in value = address(peer);
-  return lwip_connect(fd, (const struct sockaddr *)&value, sizeof(value));
+  union socket_address value;
+  socklen_t length = address(&value, peer);
+  return lwip_connect(fd, &value.base, length);
 }
 
 int arona_lwip_disconnect(int fd) {
@@ -86,15 +114,16 @@ int arona_lwip_disconnect(int fd) {
 }
 
 int arona_lwip_accept(int fd, struct arona_lwip_endpoint *peer) {
-  struct sockaddr_in value;
+  union socket_address value;
   socklen_t length = sizeof(value);
-  int accepted = nonblocking(lwip_accept(fd, (struct sockaddr *)&value, &length));
+  int accepted = lwip_accept(fd, &value.base, &length);
+  if (accepted >= 0) { accepted = nonblocking(accepted, value.base.sa_family); }
   if (accepted >= 0) { endpoint(peer, &value); }
   return accepted;
 }
 
 int arona_lwip_endpoint(int fd, struct arona_lwip_endpoint *output, int peer) {
-  struct sockaddr_in value;
+  union socket_address value;
   socklen_t length = sizeof(value);
   int result = peer ? lwip_getpeername(fd, (struct sockaddr *)&value, &length)
                     : lwip_getsockname(fd, (struct sockaddr *)&value, &length);
@@ -105,8 +134,9 @@ int arona_lwip_endpoint(int fd, struct arona_lwip_endpoint *output, int peer) {
 ssize_t arona_lwip_send(int fd, const uint8_t *bytes, size_t length,
                        const struct arona_lwip_endpoint *peer) {
   if (!peer) { return lwip_send(fd, bytes, length, 0); }
-  struct sockaddr_in value = address(peer);
-  return lwip_sendto(fd, bytes, length, 0, (const struct sockaddr *)&value, sizeof(value));
+  union socket_address value;
+  socklen_t size = address(&value, peer);
+  return lwip_sendto(fd, bytes, length, 0, &value.base, size);
 }
 
 ssize_t arona_lwip_receive(int fd, uint8_t *bytes, size_t length,
@@ -116,7 +146,7 @@ ssize_t arona_lwip_receive(int fd, uint8_t *bytes, size_t length,
     arona_lwip_received(fd, result == 0 && length != 0);
     return result;
   }
-  struct sockaddr_in value;
+  union socket_address value;
   socklen_t size = sizeof(value);
   ssize_t result = lwip_recvfrom(fd, bytes, length, 0, (struct sockaddr *)&value, &size);
   arona_lwip_received(fd, result == 0 && length != 0);
@@ -145,6 +175,7 @@ int arona_lwip_option(int fd, int option, int *value, int set) {
     case 3: name = TCP_KEEPIDLE; break;
     case 4: name = TCP_KEEPINTVL; break;
     case 5: name = TCP_KEEPCNT; break;
+    case 8: level = IPPROTO_IPV6; name = IPV6_V6ONLY; break;
     case 6:
     case 7: {
       int type;
@@ -152,7 +183,13 @@ int arona_lwip_option(int fd, int option, int *value, int set) {
       if (lwip_getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &size) < 0) { return -1; }
       if (option == 7 || type == SOCK_STREAM) {
         if (set) { errno = EOPNOTSUPP; return -1; }
-        *value = option == 6 ? TCP_WND : type == SOCK_STREAM ? TCP_SND_BUF : 65507;
+        if (type == SOCK_STREAM) { *value = option == 6 ? TCP_WND : TCP_SND_BUF; }
+        else {
+          union socket_address local;
+          socklen_t length = sizeof(local);
+          if (lwip_getsockname(fd, &local.base, &length) < 0) { return -1; }
+          *value = local.base.sa_family == AF_INET6 ? 65487 : 65507;
+        }
         return 0;
       }
       level = SOL_SOCKET; name = SO_RCVBUF; break;

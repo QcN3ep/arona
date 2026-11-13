@@ -42,6 +42,7 @@ pub(super) fn dispatch<'a>(
         (6, 4) => Some(net::OptionName::KeepIdle),
         (6, 5) => Some(net::OptionName::KeepInterval),
         (6, 6) => Some(net::OptionName::KeepCount),
+        (41, 26) if state.family == net::AddressFamily::Ipv6 => Some(net::OptionName::Ipv6Only),
         _ => return Err(ENOPROTOOPT),
     };
     if level == 6 && state.kind != net::SocketKind::Tcp {
@@ -54,7 +55,7 @@ pub(super) fn dispatch<'a>(
         let bytes = wait::read_bytes(process, args[3], 4)?;
         let value = i32::from_le_bytes(bytes.try_into().unwrap());
         let value = match (level, name) {
-            (1, 2 | 9) | (6, 1) => u32::from(value != 0),
+            (1, 2 | 9) | (6, 1) | (41, 26) => u32::from(value != 0),
             (1, 7) => return Err(EOPNOTSUPP),
             (1, 8) if state.kind == net::SocketKind::Tcp => return Err(EOPNOTSUPP),
             (1, 8) if value >= 0 => (value as u32).saturating_mul(2).clamp(256, i32::MAX as u32),

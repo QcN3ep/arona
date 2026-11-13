@@ -2,8 +2,59 @@
 
 //! Private declarations for the C socket bridge.
 
-use crate::Endpoint;
+use crate::{AddressFamily, Error, IpAddr, Ipv4Addr, Ipv6Addr};
 use core::ffi::c_void;
+
+#[repr(C)]
+pub(super) struct Endpoint {
+    address: [u8; 16],
+    port: u16,
+    family: u16,
+}
+
+const _: () = assert!(core::mem::size_of::<Endpoint>() == 20);
+const _: () = assert!(core::mem::align_of::<Endpoint>() == 2);
+
+impl From<crate::Endpoint> for Endpoint {
+    fn from(value: crate::Endpoint) -> Self {
+        let mut address = [0; 16];
+        match value.address {
+            IpAddr::V4(value) => address[..4].copy_from_slice(&value.octets()),
+            IpAddr::V6(value) => address = value.octets(),
+        }
+        Self {
+            address,
+            port: value.port,
+            family: match value.family() {
+                AddressFamily::Ipv4 => 4,
+                AddressFamily::Ipv6 => 6,
+            },
+        }
+    }
+}
+
+impl Endpoint {
+    pub(super) fn empty() -> Self {
+        Self {
+            address: [0; 16],
+            port: 0,
+            family: 0,
+        }
+    }
+    pub(super) fn decode(&self) -> Result<crate::Endpoint, Error> {
+        let address = match self.family {
+            4 => IpAddr::V4(Ipv4Addr::from(
+                <[u8; 4]>::try_from(&self.address[..4]).unwrap(),
+            )),
+            6 => IpAddr::V6(Ipv6Addr::from(self.address)),
+            _ => return Err(Error::InvalidArgument),
+        };
+        Ok(crate::Endpoint {
+            address,
+            port: self.port,
+        })
+    }
+}
 
 unsafe extern "C" {
     /// # Safety
@@ -17,8 +68,9 @@ unsafe extern "C" {
     pub fn arona_lwip_last_error() -> i32;
     /// # Safety
     ///
-    /// Startup must have completed; kind must be SOCK_STREAM or SOCK_DGRAM.
-    pub fn arona_lwip_socket(kind: i32) -> i32;
+    /// Startup must have completed; kind must be SOCK_STREAM or SOCK_DGRAM,
+    /// and family must be 4 or 6.
+    pub fn arona_lwip_socket(kind: i32, family: i32) -> i32;
     /// # Safety
     ///
     /// fd must be live and exclusively owned. context transfers one raw Arc
@@ -75,7 +127,7 @@ unsafe extern "C" {
     pub fn arona_lwip_take_error(fd: i32) -> i32;
     /// # Safety
     ///
-    /// fd must be live and exclusively accessed. option is in 0..=7, value
+    /// fd must be live and exclusively accessed. option is in 0..=8, value
     /// points to a valid integer, and set is 0 (read) or 1 (write).
     pub fn arona_lwip_option(fd: i32, option: i32, value: *mut i32, set: i32) -> i32;
     /// # Safety

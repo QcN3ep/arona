@@ -15,7 +15,6 @@ use crate::{
 
 pub(super) const PEEK: usize = 2;
 pub(super) const TRUNC: usize = 0x20;
-pub(super) const MAX_DATAGRAM: usize = 65507;
 
 pub(super) struct Receive {
     pub buffers: IoVectors,
@@ -153,14 +152,20 @@ pub(super) fn send(
     check_flags(flags, DONTWAIT | NOSIGNAL)?;
     let datagram = socket.kind == net::SocketKind::Udp;
     if datagram && let Some(peer) = peer {
+        address::check_family(peer, socket)?;
         address::route(peer)?;
     }
     let buffers = buffer.import(process)?;
     let length = buffers.total_length();
-    if datagram && length > MAX_DATAGRAM {
+    let maximum = if socket.family == net::AddressFamily::Ipv4 {
+        65507
+    } else {
+        65487
+    };
+    if datagram && length > maximum {
         return Err(EMSGSIZE);
     }
-    let bytes = buffers.gather(process, if datagram { MAX_DATAGRAM } else { MAX_STREAM })?;
+    let bytes = buffers.gather(process, if datagram { maximum } else { MAX_STREAM })?;
     // A datagram is submitted only after every input byte has been copied.
     if datagram && bytes.len() != length {
         return Err(EFAULT);
