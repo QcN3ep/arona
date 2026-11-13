@@ -614,6 +614,83 @@ files:
     li.d $a2, 0x10000
     invoke 56
     expect -20
+    # An O_PATH descriptor reports status but rejects byte I/O and positioning.
+    open_data 0x200000
+    bltz $a0, file_failure
+    move $s0, $a0
+    move $a0, $s0
+    move $a1, $sp
+    invoke 80
+    expect 0
+    ld.w $t0, $sp, 16
+    li.d $t1, 0100644
+    bne $t0, $t1, file_failure
+    ld.d $t0, $sp, 48
+    li.d $t1, 8193
+    bne $t0, $t1, file_failure
+    move $a0, $s0
+    move $a1, $sp
+    li.d $a2, 4
+    invoke 63
+    expect -9
+    move $a0, $s0
+    la.pcrel $a1, null_data
+    li.d $a2, 3
+    invoke 64
+    expect -9
+    move $a0, $s0
+    li.d $a1, 0
+    li.d $a2, 0
+    invoke 62
+    expect -9
+    move $a0, $s0
+    li.d $a1, 0
+    invoke 46
+    expect -9
+    move $a0, $s0
+    invoke 74
+    expect -9
+    move $a0, $s0
+    invoke 57
+    expect 0
+    # An O_PATH directory anchors relative opens but rejects directory reads.
+    li.d $a0, -100
+    la.pcrel $a1, root_path
+    li.d $a2, 0x210000
+    invoke 56
+    bltz $a0, file_failure
+    move $s0, $a0
+    move $a0, $s0
+    move $a1, $sp
+    li.d $a2, 8
+    invoke 217
+    expect -9
+    move $a0, $s0
+    la.pcrel $a1, relative_path
+    li.d $a2, 0
+    invoke 56
+    bltz $a0, file_failure
+    move $s1, $a0
+    move $a0, $s1
+    invoke 57
+    expect 0
+    move $a0, $s0
+    invoke 57
+    expect 0
+    # O_PATH ignores the access mode, and O_PATH|O_DIRECTORY still rejects files.
+    open_data 0x200003
+    bltz $a0, file_failure
+    move $s0, $a0
+    move $a0, $s0
+    move $a1, $sp
+    li.d $a2, 4
+    invoke 63
+    expect -9
+    move $a0, $s0
+    invoke 57
+    expect 0
+    open_data 0x210000
+    expect -20
     li.d $t0, 8192
     add.d $sp, $sp, $t0
     ld.d $ra, $sp, 0

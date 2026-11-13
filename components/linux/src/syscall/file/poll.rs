@@ -151,6 +151,9 @@ fn select_entries<'a>(
 }
 
 fn readiness(description: &OpenFileDescription<'_>, process: &Process<'_>, index: usize) -> u16 {
+    if description.path_only() {
+        return INVALID;
+    }
     match description {
         OpenFileDescription::Socket { .. } => unreachable!(),
         OpenFileDescription::Pipe { end, .. } => {

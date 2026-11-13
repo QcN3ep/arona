@@ -13,6 +13,7 @@ use runtime::{Event, Handle, Timer};
 pub(crate) const O_APPEND: u32 = 0x400;
 pub(crate) const O_NONBLOCK: u32 = 0x800;
 pub(crate) const O_DSYNC: u32 = 0x1000;
+pub(crate) const O_PATH: u32 = 0x200000;
 
 pub(crate) struct FileTable<'a> {
     entries: BTreeMap<usize, Descriptor<'a>>,
@@ -273,6 +274,12 @@ impl<'a> OpenFileDescription<'a> {
         | Self::Virtual { flags, .. }
         | Self::VirtualFile { flags, .. }) = self;
         flags.set((flags.get() & !(O_APPEND | O_NONBLOCK)) | (value & (O_APPEND | O_NONBLOCK)));
+    }
+
+    /// Whether the description carries only path identity: it answers status queries and
+    /// anchors relative operations but permits no I/O, positioning, or directory reads.
+    pub fn path_only(&self) -> bool {
+        self.flags() & O_PATH != 0
     }
 
     pub fn position(self: &Rc<Self>) -> Option<FilePosition<'a>> {

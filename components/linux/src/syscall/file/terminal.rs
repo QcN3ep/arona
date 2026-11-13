@@ -36,7 +36,8 @@ pub(super) fn read<'a>(
 ) -> Outcome<'a> {
     outcome((|| {
         let description = Rc::clone(&process.files.get(fd(raw)?).ok_or(EBADF)?.description);
-        if description.flags() & 3 == 1 {
+        let flags = description.flags();
+        if flags & 3 == 1 || description.path_only() {
             return Err(EBADF);
         }
         Ok(Pending::Terminal(Read {
@@ -398,6 +399,9 @@ pub(super) fn ioctl(
     let OpenFileDescription::Terminal { terminal, .. } = descriptor.description.as_ref() else {
         return Err(ENOTTY);
     };
+    if descriptor.description.path_only() {
+        return Err(ENOTTY);
+    }
     terminal_ioctl(process, terminal, command as u32, address)
 }
 
