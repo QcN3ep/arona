@@ -21,7 +21,7 @@ pub(super) enum Command {
     Endpoint(bool),
     TakeError,
     GetOption(lwip::OptionName),
-    SetOption(lwip::OptionName, bool),
+    SetOption(lwip::OptionName, u32),
     Shutdown(lwip::Shutdown),
     Close,
 }
@@ -93,6 +93,12 @@ impl Command {
         let option = |raw| match raw {
             0 => Ok(lwip::OptionName::ReuseAddress),
             1 => Ok(lwip::OptionName::NoDelay),
+            2 => Ok(lwip::OptionName::KeepAlive),
+            3 => Ok(lwip::OptionName::KeepIdle),
+            4 => Ok(lwip::OptionName::KeepInterval),
+            5 => Ok(lwip::OptionName::KeepCount),
+            6 => Ok(lwip::OptionName::ReceiveBuffer),
+            7 => Ok(lwip::OptionName::SendBuffer),
             _ => Err(Error::Unsupported),
         };
         let command = match *request.words() {
@@ -119,7 +125,9 @@ impl Command {
             [_, p::PEER] => Self::Endpoint(true),
             [_, p::TAKE_ERROR] => Self::TakeError,
             [_, p::GET_OPTION, name] => Self::GetOption(option(name)?),
-            [_, p::SET_OPTION, name, value @ 0..=1] => Self::SetOption(option(name)?, value != 0),
+            [_, p::SET_OPTION, name, value] if value <= u32::MAX as u64 => {
+                Self::SetOption(option(name)?, value as u32)
+            }
             [_, p::SHUTDOWN, direction @ 0..=2] => Self::Shutdown(match direction {
                 0 => lwip::Shutdown::Read,
                 1 => lwip::Shutdown::Write,

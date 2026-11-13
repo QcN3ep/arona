@@ -21,6 +21,8 @@ pub(crate) struct Socket<'a> {
     failed: Cell<bool>,
     pub received: RefCell<Option<Received>>,
     pub read_eof: Cell<bool>,
+    pub receive_timeout: Cell<Option<u64>>,
+    pub send_timeout: Cell<Option<u64>>,
 }
 
 pub(crate) struct Received {
@@ -57,6 +59,8 @@ impl<'a> Socket<'a> {
             failed: Cell::new(false),
             received: RefCell::new(None),
             read_eof: Cell::new(false),
+            receive_timeout: Cell::new(None),
+            send_timeout: Cell::new(None),
         }
     }
 

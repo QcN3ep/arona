@@ -106,6 +106,12 @@ pub enum SocketKind {
 pub enum OptionName {
     ReuseAddress,
     NoDelay,
+    KeepAlive,
+    KeepIdle,
+    KeepInterval,
+    KeepCount,
+    ReceiveBuffer,
+    SendBuffer,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -335,7 +341,7 @@ impl Socket {
         Ok((count, peer))
     }
 
-    pub fn option(&mut self, option: OptionName) -> Result<bool, Error> {
+    pub fn option(&mut self, option: OptionName) -> Result<u32, Error> {
         let mut value = 0;
         // SAFETY: Exclusive socket access; value is writable for this call.
         status(unsafe {
@@ -346,11 +352,29 @@ impl Socket {
                 0,
             )
         })?;
-        Ok(value != 0)
+        Ok(match option {
+            OptionName::ReuseAddress | OptionName::NoDelay | OptionName::KeepAlive => {
+                u32::from(value != 0)
+            }
+            _ => value as u32,
+        })
     }
 
-    pub fn set_option(&mut self, option: OptionName, enabled: bool) -> Result<(), Error> {
-        let mut value = i32::from(enabled);
+    pub fn set_option(&mut self, option: OptionName, value: u32) -> Result<(), Error> {
+        let valid = match option {
+            OptionName::ReuseAddress | OptionName::NoDelay | OptionName::KeepAlive => value <= 1,
+            OptionName::KeepIdle | OptionName::KeepInterval => (1..=32767).contains(&value),
+            OptionName::KeepCount => (1..=127).contains(&value),
+            OptionName::ReceiveBuffer => (1..=i32::MAX as u32).contains(&value),
+            OptionName::SendBuffer => return Err(Error::Other(95)),
+        };
+        if !valid {
+            return Err(Error::InvalidArgument);
+        }
+        if option == OptionName::ReceiveBuffer && self.kind() != SocketKind::Udp {
+            return Err(Error::Other(95));
+        }
+        let mut value = value as i32;
         // SAFETY: Exclusive socket access; value is readable for this call.
         status(unsafe {
             ffi::arona_lwip_option(

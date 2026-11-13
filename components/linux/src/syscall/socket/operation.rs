@@ -9,7 +9,7 @@ use crate::{
         socket::{Connection, Lease, Received, Socket, Watch},
     },
     process::Process,
-    syscall::abi::*,
+    syscall::{abi::*, wait::Deadline},
 };
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use runtime::ipc::{self, WaitItem};
@@ -21,6 +21,8 @@ pub(in crate::syscall) enum Pending<'a> {
     },
     Operation(Box<Operation<'a>>),
     Value(Output, usize),
+    Bytes(Output, Vec<u8>),
+    Done,
 }
 
 pub(in crate::syscall) struct Operation<'a> {
@@ -32,6 +34,7 @@ pub(in crate::syscall) struct Operation<'a> {
     started: bool,
     progress: bool,
     nonblocking: bool,
+    deadline: Deadline,
 }
 
 pub(super) enum Action {
@@ -60,7 +63,7 @@ pub(super) enum Action {
         output: Output,
         checking: bool,
     },
-    SetOption(net::OptionName, bool),
+    SetOption(net::OptionName, u32),
     Shutdown(net::Shutdown),
 }
 
@@ -75,12 +78,18 @@ impl<'a> Pending<'a> {
     pub fn poll(&mut self, process: &mut Process<'a>) -> Option<SyscallResult> {
         match self {
             Self::Value(output, value) => Some(output.value(process, *value)),
+            Self::Bytes(output, bytes) => Some(output.bytes(process, bytes)),
+            Self::Done => Some(Ok(0)),
             Self::Operation(operation) => operation.poll(process).transpose(),
             Self::Create { native, flags } => match native.as_mut().unwrap().try_complete() {
                 Err(net::Error::WouldBlock) if native.as_ref().unwrap().has_pending() => None,
-                Ok(net::Completion::Done) => {
-                    Some(install(process, native.take().unwrap(), *flags, false))
-                }
+                Ok(net::Completion::Done) => Some(install(
+                    process,
+                    native.take().unwrap(),
+                    *flags,
+                    false,
+                    [None; 2],
+                )),
                 Err(reason) => Some(Err(error(reason))),
                 Ok(_) => Some(Err(EIO)),
             },
@@ -102,7 +111,8 @@ impl<'a> Pending<'a> {
             return None;
         }
         Some((
-            !matches!(operation.action, Action::Connect { .. }),
+            !matches!(operation.action, Action::Connect { .. })
+                && operation.deadline.deadline().is_none(),
             Err(EINTR),
         ))
     }
@@ -118,6 +128,9 @@ impl<'a> Pending<'a> {
                 }
             }
             Self::Operation(operation) => {
+                if operation.lease.is_none() {
+                    operation.deadline.waits(items);
+                }
                 operation.watch.waits(items);
                 if let Some(call) = operation
                     .lease
@@ -191,8 +204,19 @@ impl<'a> Operation<'a> {
         description: Rc<OpenFileDescription<'a>>,
         action: Action,
         nonblocking: bool,
-    ) -> Self {
-        Self {
+        process: &Process<'_>,
+    ) -> Result<Self, Errno> {
+        let socket = Socket::state(&description);
+        let duration = if nonblocking || description.flags() & O_NONBLOCK != 0 {
+            None
+        } else {
+            match action {
+                Action::Receive(_) | Action::Accept { .. } => socket.receive_timeout.get(),
+                Action::Send { .. } | Action::Connect { .. } => socket.send_timeout.get(),
+                _ => None,
+            }
+        };
+        Ok(Self {
             description,
             action,
             lease: None,
@@ -201,7 +225,8 @@ impl<'a> Operation<'a> {
             started: false,
             progress: false,
             nonblocking,
-        }
+            deadline: Deadline::new(process.supervisor, duration)?,
+        })
     }
 
     fn poll(&mut self, process: &mut Process<'a>) -> Result<Option<usize>, Errno> {
@@ -212,6 +237,13 @@ impl<'a> Operation<'a> {
                 return Ok(Some(count));
             }
             if self.lease.is_none() {
+                if self.deadline.expired()? {
+                    return Err(if matches!(self.action, Action::Connect { .. }) {
+                        EINPROGRESS
+                    } else {
+                        EAGAIN
+                    });
+                }
                 if self.action.waitable() {
                     let Some(ready) = self
                         .watch
@@ -368,7 +400,14 @@ impl<'a> Operation<'a> {
                 if let Some(output) = peer {
                     output.endpoint(process, endpoint)?;
                 }
-                install(process, socket, *flags, true)?
+                let state = Socket::state(&self.description);
+                install(
+                    process,
+                    socket,
+                    *flags,
+                    true,
+                    [state.receive_timeout.get(), state.send_timeout.get()],
+                )?
             }
             (Action::Receive(receive), net::Completion::Endpoint(endpoint)) => {
                 receive.source = Some(endpoint);

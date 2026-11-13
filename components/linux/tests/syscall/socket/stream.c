@@ -4,6 +4,7 @@
 
 extern void datagram_main(void);
 extern void datagram_memory(void);
+extern void socket_options(void);
 static unsigned char payload[131072];
 static volatile unsigned signals;
 
@@ -233,7 +234,7 @@ static void exec_socket(const char *mode) {
 
 static void handler(int number) { if (number == 10 || number == 13) ++signals; }
 
-static void signal_socket(unsigned long flags) {
+static void signal_socket(unsigned long flags, int timed) {
     struct { long handler; unsigned long flags, mask; } action = {P(handler), flags, 0};
     CHECK(SC(134, 10, P(&action), 0, 8) == 0);
     CHECK(SC(134, 13, P(&action), 0, 8) == 0);
@@ -263,11 +264,15 @@ static void signal_socket(unsigned long flags) {
     long accepted = SC(202, fd, 0, 0);
     CHECK(accepted >= 0);
     close_fd(fd);
+    if (timed) {
+        long duration[] = {2, 0};
+        CHECK(SC(208, accepted, 1, 20, P(duration), sizeof(duration)) == 0);
+    }
     CHECK(SC(64, pipe[1], P("R"), 1) == 1);
     char byte = 0;
     unsigned previous = signals;
     long result = SC(63, accepted, P(&byte), 1);
-    if (!flags) { CHECK(result == -4); result = SC(63, accepted, P(&byte), 1); }
+    if (!flags || timed) { CHECK(result == -4); result = SC(63, accepted, P(&byte), 1); }
     CHECK(result == 1 && byte == 'S' && signals == previous + 1);
     wait_child(child);
     CHECK(SC(210, accepted, 1) == 0);
@@ -366,7 +371,8 @@ static void lifecycle(void) {
 }
 
 int socket_main(const char *mode) {
-    if (*mode == 'm') datagram_memory();
+    if (*mode == 'o') socket_options();
+    else if (*mode == 'm') datagram_memory();
     else if (*mode == 'u') datagram_main();
     else if (*mode == 'c') client();
     else if (*mode == 'r') refused();
@@ -374,6 +380,6 @@ int socket_main(const char *mode) {
     else if (*mode == 'e') exec_socket(mode);
     else if (*mode == 'l') lifecycle();
     else if (mode[1] == 'e') server();
-    else { signal_socket(0); signal_socket(0x10000000); }
+    else { signal_socket(0, 0); signal_socket(0x10000000, 0); signal_socket(0x10000000, 1); }
     return 42;
 }
