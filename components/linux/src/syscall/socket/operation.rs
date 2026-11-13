@@ -2,14 +2,14 @@
 
 //! Socket attempts, blocking retries, and committed result delivery.
 
-use super::{MAX_STREAM, Output, error, install};
+use super::{Output, error, install, message::Receive};
 use crate::{
     file::{
         O_NONBLOCK, OpenFileDescription,
         socket::{Connection, Lease, Received, Socket, Watch},
     },
     process::Process,
-    syscall::{abi::*, file::buffer::IoVectors},
+    syscall::abi::*,
 };
 use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use runtime::ipc::{self, WaitItem};
@@ -41,16 +41,16 @@ pub(super) enum Action {
         endpoint: net::Endpoint,
         finishing: bool,
     },
+    Disconnect,
     Accept {
         peer: Option<Output>,
         flags: u32,
     },
-    Send(Vec<u8>),
-    Receive {
-        buffers: IoVectors,
-        peer: Option<Output>,
-        source: Option<net::Endpoint>,
+    Send {
+        bytes: Vec<u8>,
+        peer: Option<net::Endpoint>,
     },
+    Receive(Receive),
     Endpoint {
         peer: bool,
         output: Output,
@@ -137,7 +137,7 @@ impl Action {
     fn waitable(&self) -> bool {
         matches!(
             self,
-            Self::Connect { .. } | Self::Accept { .. } | Self::Send(_) | Self::Receive { .. }
+            Self::Connect { .. } | Self::Accept { .. } | Self::Send { .. } | Self::Receive(_)
         )
     }
 
@@ -145,14 +145,15 @@ impl Action {
         ready.error
             || ready.closed
             || match self {
-                Self::Connect { .. } | Self::Send(_) => ready.writable || ready.write_closed,
+                Self::Connect { .. } | Self::Send { .. } => ready.writable || ready.write_closed,
                 _ => ready.readable || ready.read_closed,
             }
     }
 
-    fn request(&self) -> net::Request<'_> {
+    fn request(&self, kind: net::SocketKind) -> net::Request<'_> {
         match self {
             Self::Bind(endpoint) => net::Request::Bind(*endpoint),
+            Self::Disconnect => net::Request::Disconnect,
             Self::Listen(backlog) => net::Request::Listen(*backlog),
             Self::GetOption { checking: true, .. } => net::Request::PeerEndpoint,
             Self::Connect {
@@ -164,15 +165,11 @@ impl Action {
             }
             | Self::GetOption { name: None, .. } => net::Request::TakeError,
             Self::Accept { .. } => net::Request::Accept,
-            Self::Send(bytes) => net::Request::Send(bytes),
-            Self::Receive {
-                peer: Some(_),
-                source: None,
-                ..
-            } => net::Request::PeerEndpoint,
-            Self::Receive { buffers, .. } => {
-                net::Request::Receive(buffers.total_length().min(MAX_STREAM))
-            }
+            Self::Send { bytes, peer } => match peer {
+                Some(peer) => net::Request::SendTo(bytes, *peer),
+                None => net::Request::Send(bytes),
+            },
+            Self::Receive(receive) => receive.request(kind),
             Self::Endpoint { peer, .. } => {
                 if *peer {
                     net::Request::PeerEndpoint
@@ -209,23 +206,10 @@ impl<'a> Operation<'a> {
 
     fn poll(&mut self, process: &mut Process<'a>) -> Result<Option<usize>, Errno> {
         loop {
-            if let Action::Receive {
-                buffers,
-                peer,
-                source,
-            } = &self.action
-                && (peer.is_none() || source.is_some())
-                && let Some(count) = self.buffered(process, buffers)?
+            if let Action::Receive(receive) = &self.action
+                && let Some(count) = receive.buffered(process, Socket::state(&self.description))?
             {
-                if let Some(output) = peer {
-                    output.endpoint(process, source.ok_or(EIO)?)?;
-                }
                 return Ok(Some(count));
-            }
-            if matches!(self.action, Action::Receive { .. })
-                && Socket::state(&self.description).read_eof.get()
-            {
-                return Ok(Some(0));
             }
             if self.lease.is_none() {
                 if self.action.waitable() {
@@ -290,28 +274,34 @@ impl<'a> Operation<'a> {
             lease.recovering = false;
         }
         if !self.started {
-            if matches!(
-                self.action,
-                Action::Connect {
-                    finishing: false,
-                    ..
-                }
-            ) {
+            if Socket::state(&self.description).kind == net::SocketKind::Tcp
+                && matches!(
+                    self.action,
+                    Action::Connect {
+                        finishing: false,
+                        ..
+                    }
+                )
+            {
                 match Socket::state(&self.description).connection.get() {
                     Connection::Initial => {}
                     Connection::Connecting => return Err(EALREADY),
                     Connection::Connected => return Err(EISCONN),
                 }
             }
-            native.start(self.action.request()).map_err(error)?;
+            native
+                .start(self.action.request(Socket::state(&self.description).kind))
+                .map_err(error)?;
             self.started = true;
-            if matches!(
-                self.action,
-                Action::Connect {
-                    finishing: false,
-                    ..
-                }
-            ) {
+            if Socket::state(&self.description).kind == net::SocketKind::Tcp
+                && matches!(
+                    self.action,
+                    Action::Connect {
+                        finishing: false,
+                        ..
+                    }
+                )
+            {
                 Socket::state(&self.description)
                     .connection
                     .set(Connection::Connecting);
@@ -341,7 +331,9 @@ impl<'a> Operation<'a> {
         if matches!(self.action, Action::GetOption { name: None, .. }) {
             return self.socket_error(process, result);
         }
-        if matches!(self.action, Action::Connect { .. }) {
+        if Socket::state(&self.description).kind == net::SocketKind::Tcp
+            && matches!(self.action, Action::Connect { .. })
+        {
             connection.set(if result.is_ok() {
                 Connection::Connected
             } else {
@@ -349,13 +341,18 @@ impl<'a> Operation<'a> {
             });
         }
         let completion = result.map_err(|reason| {
-            if matches!(self.action, Action::Receive { .. })
+            if Socket::state(&self.description).kind == net::SocketKind::Tcp
+                && matches!(self.action, Action::Receive(_))
                 && reason == net::Error::ConnectionReset
             {
                 Socket::state(&self.description).read_eof.set(true);
             }
-            if matches!(self.action, Action::Send(_)) && reason == net::Error::NotConnected {
-                EPIPE
+            if matches!(self.action, Action::Send { .. }) && reason == net::Error::NotConnected {
+                if Socket::state(&self.description).kind == net::SocketKind::Udp {
+                    EDESTADDRREQ
+                } else {
+                    EPIPE
+                }
             } else {
                 error(reason)
             }
@@ -373,32 +370,24 @@ impl<'a> Operation<'a> {
                 }
                 install(process, socket, *flags, true)?
             }
-            (Action::Receive { source, .. }, net::Completion::Endpoint(endpoint)) => {
-                *source = Some(endpoint);
+            (Action::Receive(receive), net::Completion::Endpoint(endpoint)) => {
+                receive.source = Some(endpoint);
                 return Ok(None);
             }
-            (
-                Action::Receive {
-                    buffers,
-                    peer,
-                    source,
-                },
-                net::Completion::Data(data),
-            ) => {
-                if data.is_empty() {
-                    if buffers.total_length() != 0 {
+            (Action::Receive(receive), net::Completion::Data(data)) => {
+                if data.is_empty() && Socket::state(&self.description).kind == net::SocketKind::Tcp
+                {
+                    if receive.buffers.total_length() != 0 {
                         Socket::state(&self.description).read_eof.set(true);
                     }
-                    if let Some(output) = peer {
-                        output.endpoint(process, source.ok_or(EIO)?)?;
-                    }
+                    receive.empty(process)?;
                     return Ok(Some(0));
                 }
                 *Socket::state(&self.description).received.borrow_mut() =
                     Some(Received { data, offset: 0 });
                 return Ok(None);
             }
-            (Action::Send(_), net::Completion::Count(count)) => count,
+            (Action::Send { .. }, net::Completion::Count(count)) => count,
             (Action::Endpoint { output, .. }, net::Completion::Endpoint(endpoint)) => {
                 output.endpoint(process, endpoint)?
             }
@@ -409,6 +398,7 @@ impl<'a> Operation<'a> {
                 Action::Bind(_)
                 | Action::Listen(_)
                 | Action::Connect { .. }
+                | Action::Disconnect
                 | Action::SetOption(_, _)
                 | Action::Shutdown(_),
                 net::Completion::Done,
@@ -458,28 +448,5 @@ impl<'a> Operation<'a> {
             return output.value(process, value).map(Some);
         }
         unreachable!()
-    }
-
-    fn buffered(&self, process: &Process<'_>, buffers: &IoVectors) -> Result<Option<usize>, Errno> {
-        let mut received = Socket::state(&self.description).received.borrow_mut();
-        let Some(pending) = received.as_mut() else {
-            return Ok(None);
-        };
-        let length = buffers
-            .total_length()
-            .min(pending.data.len() - pending.offset);
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(length).map_err(|_| ENOMEM)?;
-        bytes.resize(length, 0);
-        pending
-            .data
-            .read(pending.offset, &mut bytes)
-            .map_err(error)?;
-        let count = buffers.scatter(process, &mut bytes)?;
-        pending.offset += count;
-        if pending.offset == pending.data.len() {
-            *received = None;
-        }
-        Ok(Some(count))
     }
 }

@@ -74,6 +74,8 @@ pub enum Request<'a> {
     Bind(Endpoint),
     Listen(u8),
     Connect(Endpoint),
+    /// Remove a UDP socket's default peer without closing the socket.
+    Disconnect,
     Accept,
     Send(&'a [u8]),
     SendTo(&'a [u8], Endpoint),

@@ -45,6 +45,28 @@ pub fn run(client: &Client<'_>, output: &devmgr::uart::Session) {
     ));
     options(client, &mut sender, output);
     output
+        .write_all(b"Network request: UDP disconnect\n")
+        .unwrap();
+    sender.perform(Request::Connect(target), until()).unwrap();
+    sender.perform(Request::Disconnect, until()).unwrap();
+    assert!(matches!(
+        sender.perform(Request::PeerEndpoint, until()),
+        Err(Error::NotConnected)
+    ));
+    assert!(matches!(
+        sender.perform(Request::Send(b"disconnected"), until()),
+        Err(Error::NotConnected)
+    ));
+    sender.perform(Request::Connect(target), until()).unwrap();
+    assert!(matches!(
+        sender.perform(Request::Send(b""), until()).unwrap(),
+        Completion::Count(0)
+    ));
+    assert!(matches!(
+        udp.perform(Request::ReceiveDatagram, until()).unwrap(),
+        Completion::Data(data) if data.is_empty()
+    ));
+    output
         .write_all(b"Network request: raw protocol\n")
         .unwrap();
     raw(client, target);

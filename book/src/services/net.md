@@ -21,6 +21,8 @@ The native interface exposes no C descriptor, register mapping, or DMA authority
 Use `Socket::start` to submit one `Request`, then call `complete` or `try_complete` to collect its result.
 `perform` combines submission and completion.
 These requests cover bind, listen, accept, connect, send, receive, endpoint queries, options, shutdown, and close.
+For UDP, `Connect` sets or replaces the default peer and `Disconnect` removes it while keeping the socket open.
+`Send` without a default UDP peer returns `NotConnected`.
 The supported options are address reuse and TCP_NODELAY.
 `Socket::kind` reports the socket type, and `TakeError` reads and clears its pending connection error.
 
@@ -85,6 +87,7 @@ The caller can read and clear pending connection errors with `take_error`.
 Once a socket can transfer data, send and receive return the transferred byte count.
 An operation that cannot proceed immediately returns `WouldBlock`.
 For UDP, `receive_from` also returns the sender's address and preserves empty datagrams.
+`disconnect` removes a UDP socket's default peer.
 For TCP, a zero-byte receive into a nonempty buffer indicates EOF.
 A failed send does not consume the input slice.
 

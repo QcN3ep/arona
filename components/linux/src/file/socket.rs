@@ -15,6 +15,7 @@ pub(crate) enum Connection {
 }
 
 pub(crate) struct Socket<'a> {
+    pub kind: net::SocketKind,
     native: RefCell<Option<net::Socket<'a>>>,
     pub connection: Cell<Connection>,
     failed: Cell<bool>,
@@ -46,6 +47,7 @@ pub(crate) struct Watch {
 impl<'a> Socket<'a> {
     pub fn new(native: net::Socket<'a>, connected: bool) -> Self {
         Self {
+            kind: native.kind(),
             native: RefCell::new(Some(native)),
             connection: Cell::new(if connected {
                 Connection::Connected

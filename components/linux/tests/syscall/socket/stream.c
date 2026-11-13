@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-// Real Linux processes exercise the socket ABI without a libc dependency.
-extern long net_syscall(long number, const long arguments[6]);
-#define P(value) ((long)(value))
-#define SC(number, ...) net_syscall(number, (long[6]){__VA_ARGS__})
-#define CHECK(condition) do { if (!(condition)) fail(__LINE__); } while (0)
+#include "socket.h"
 
-struct address { unsigned short family; unsigned char port[2]; unsigned char ip[4]; unsigned char zero[8]; };
-struct pollfd { int fd; short events, revents; };
-struct timespec { long seconds, nanoseconds; };
+extern void datagram_main(void);
+extern void datagram_memory(void);
 static unsigned char payload[131072];
 static volatile unsigned signals;
 
-static void fail(unsigned line) {
+void socket_fail(unsigned line) {
     char text[] = "Socket assertion line 0000\n";
     for (int i = 25; i >= 22; --i) { text[i] = '0' + line % 10; line /= 10; }
     SC(64, 1, P(text), sizeof(text) - 1);
@@ -105,7 +100,10 @@ static void client(void) {
     for (unsigned i = 0; i < sizeof(payload); ++i) payload[i] = i * 37;
     unsigned offset = 0;
     while (offset < sizeof(payload)) {
-        long count = SC(206, fd, P(payload + offset), sizeof(payload) - offset, 0x4000, 0, 0);
+        unsigned remaining = sizeof(payload) - offset;
+        struct iovec input[] = {{payload + offset, remaining / 2}, {payload + offset + remaining / 2, remaining - remaining / 2}};
+        struct message message = {0, 0, 0, input, 2, 0, 0, 0, 0};
+        long count = offset == 0 ? SC(211, fd, P(&message), 0x4000) : SC(66, fd, P(input), 2);
         CHECK(count > 0 && count <= 65536);
         offset += count;
     }
@@ -134,7 +132,10 @@ static void server(void) {
     CHECK(SC(25, accepted, 4, 0) == 0);
     unsigned total = 0;
     for (;;) {
-        long count = SC(207, accepted, P(payload), 8192, 0, P(&address), P(&length));
+        struct iovec output[] = {{payload, 3072}, {payload + 3072, 5120}};
+        struct message message = {&address, sizeof(address), 0, output, 2, 0, 0, 0, 0};
+        long count = total == 0 ? SC(212, accepted, P(&message), 0) : SC(65, accepted, P(output), 2);
+        CHECK(message.flags == 0);
         CHECK(count >= 0);
         if (!count) break;
         for (long i = 0; i < count; ++i) CHECK(payload[i] == (unsigned char)((total + i) * 37));
@@ -203,6 +204,7 @@ static void fork_socket(void) {
     CHECK(readset == (1UL << accepted));
     CHECK(SC(63, accepted, 0, 0) == 0);
     char byte;
+    CHECK(SC(207, accepted, P(&byte), 1, 2, 0, 0) == 1 && byte == 'X');
     CHECK(SC(63, accepted, P(&byte), 1) == 1 && byte == 'X');
     wait_child(child);
     CHECK(SC(63, accepted, P(&byte), 1) == 0);
@@ -270,7 +272,9 @@ static void signal_socket(unsigned long flags) {
     wait_child(child);
     CHECK(SC(210, accepted, 1) == 0);
     previous = signals;
-    CHECK(SC(206, accepted, P("X"), 1, 0x4000, 0, 0) == -32);
+    struct iovec input = {(void *)"X", 1};
+    struct message message = {0, 0, 0, &input, 1, 0, 0, 0, 0};
+    CHECK(SC(211, accepted, P(&message), 0x4000) == -32);
     CHECK(signals == previous);
     CHECK(SC(64, accepted, P("X"), 1) == -32);
     CHECK(signals == previous + 1);
@@ -362,7 +366,9 @@ static void lifecycle(void) {
 }
 
 int socket_main(const char *mode) {
-    if (*mode == 'c') client();
+    if (*mode == 'm') datagram_memory();
+    else if (*mode == 'u') datagram_main();
+    else if (*mode == 'c') client();
     else if (*mode == 'r') refused();
     else if (*mode == 'f') fork_socket();
     else if (*mode == 'e') exec_socket(mode);
