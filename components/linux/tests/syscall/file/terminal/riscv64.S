@@ -317,6 +317,121 @@ raw_read:
     lhu t0, 128(sp)
     li t1, 0x7978
     bne t0, t1, terminal_failure
+    # Injected input passes through the discipline like typed input.
+    li t0, 90
+    sb t0, 112(sp)
+    li a0, 0
+    li a1, 0x5412
+    addi a2, sp, 112
+    invoke 29
+    expect 0
+    li a0, 0
+    addi a1, sp, 128
+    li a2, 1
+    invoke 63
+    expect 1
+    lbu t0, 128(sp)
+    li t1, 90
+    bne t0, t1, terminal_failure
+    # The discipline buffers no pending output of its own.
+    li a0, 0
+    li a1, 0x5411
+    addi a2, sp, 112
+    invoke 29
+    expect 0
+    lw t0, 112(sp)
+    bnez t0, terminal_failure
+    # Exclusive terminals reject further opens of the controlling terminal.
+    li a0, 0
+    li a1, 0x540c
+    li a2, 0
+    invoke 29
+    expect 0
+    li a0, -100
+    la a1, tty_path
+    li a2, 2
+    invoke 56
+    expect -16
+    li a0, 0
+    li a1, 0x80045440
+    addi a2, sp, 112
+    invoke 29
+    expect 0
+    lw t0, 112(sp)
+    li t1, 1
+    bne t0, t1, terminal_failure
+    li a0, 0
+    li a1, 0x540d
+    li a2, 0
+    invoke 29
+    expect 0
+    li a0, -100
+    la a1, tty_path
+    li a2, 2
+    invoke 56
+    bltz a0, terminal_failure
+    invoke 57
+    expect 0
+    # Break and drain requests complete without a break signal.
+    li a0, 0
+    li a1, 0x5409
+    li a2, 1
+    invoke 29
+    expect 0
+    li a0, 0
+    li a1, 0x5427
+    li a2, 0
+    invoke 29
+    expect 0
+    li a0, 0
+    li a1, 0x5428
+    li a2, 0
+    invoke 29
+    expect 0
+    # Stopped output blocks writers until it resumes.
+    li a0, 0
+    li a1, 0x540a
+    li a2, 0
+    invoke 29
+    expect 0
+    li a0, 17
+    li a1, 0
+    li a2, 0
+    li a3, 0
+    li a4, 0
+    invoke 220
+    beqz a0, terminal_stopped_child
+    bltz a0, terminal_failure
+    mv s1, a0
+    mv a0, s1
+    addi a1, sp, 96
+    li a2, 1
+    li a3, 0
+    invoke 260
+    expect 0
+    li a0, 0
+    li a1, 0x540a
+    li a2, 1
+    invoke 29
+    expect 0
+    mv a0, s1
+    addi a1, sp, 96
+    li a2, 0
+    li a3, 0
+    invoke 260
+    bne a0, s1, terminal_failure
+    lw t0, 96(sp)
+    li t1, 0x2a00
+    bne t0, t1, terminal_failure
+    j terminal_controls_done
+terminal_stopped_child:
+    li a0, 1
+    la a1, flow_byte
+    li a2, 1
+    invoke 64
+    li a0, 42
+    invoke 94
+terminal_controls_done:
     li t0, 3
     sw t0, 12(sp)
     li a0, 0
@@ -507,6 +622,8 @@ interbyte_prompt: .ascii "Linux terminal interbyte\n"
 signal_prompt: .ascii "Linux terminal signal\n"
 suspend_prompt: .ascii "Linux terminal suspend\n"
 resume_prompt: .ascii "Linux terminal resume\n"
+tty_path: .asciz "/dev/tty"
+flow_byte: .ascii "!"
 .section .bss
 .balign 8
 terminal_signals: .skip 8

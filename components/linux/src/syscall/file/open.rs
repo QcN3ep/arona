@@ -9,8 +9,8 @@ use runtime::{Call, Handle};
 use super::super::{
     Outcome,
     abi::{
-        EFAULT, EINVAL, EISDIR, EMFILE, ENAMETOOLONG, ENOENT, ENOTDIR, EOPNOTSUPP, EOVERFLOW,
-        EROFS, Errno, SyscallResult,
+        EBUSY, EFAULT, EINVAL, EISDIR, EMFILE, ENAMETOOLONG, ENOENT, ENOTDIR, EOPNOTSUPP,
+        EOVERFLOW, EROFS, Errno, SyscallResult,
     },
 };
 use super::{O_CLOEXEC, Pending, completion, filesystem_error, outcome, virtual_file};
@@ -162,6 +162,9 @@ fn open_terminal(process: &mut Process<'_>, flags: u32) -> Result<usize, Errno> 
         return Err(ENOTDIR);
     }
     let terminal = process.namespace.controlling_terminal(process.pid)?;
+    if terminal.exclusive() {
+        return Err(EBUSY);
+    }
     process
         .files
         .insert(

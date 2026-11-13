@@ -316,6 +316,121 @@ raw_read:
     ld.hu $t0, $sp, 128
     li.d $t1, 0x7978
     bne $t0, $t1, terminal_failure
+    # Injected input passes through the discipline like typed input.
+    li.d $t0, 90
+    st.b $t0, $sp, 112
+    li.d $a0, 0
+    li.d $a1, 0x5412
+    addi.d $a2, $sp, 112
+    invoke 29
+    expect 0
+    li.d $a0, 0
+    addi.d $a1, $sp, 128
+    li.d $a2, 1
+    invoke 63
+    expect 1
+    ld.bu $t0, $sp, 128
+    li.d $t1, 90
+    bne $t0, $t1, terminal_failure
+    # The discipline buffers no pending output of its own.
+    li.d $a0, 0
+    li.d $a1, 0x5411
+    addi.d $a2, $sp, 112
+    invoke 29
+    expect 0
+    ld.w $t0, $sp, 112
+    bnez $t0, terminal_failure
+    # Exclusive terminals reject further opens of the controlling terminal.
+    li.d $a0, 0
+    li.d $a1, 0x540c
+    li.d $a2, 0
+    invoke 29
+    expect 0
+    li.d $a0, -100
+    la.pcrel $a1, tty_path
+    li.d $a2, 2
+    invoke 56
+    expect -16
+    li.d $a0, 0
+    li.d $a1, 0x80045440
+    addi.d $a2, $sp, 112
+    invoke 29
+    expect 0
+    ld.w $t0, $sp, 112
+    li.d $t1, 1
+    bne $t0, $t1, terminal_failure
+    li.d $a0, 0
+    li.d $a1, 0x540d
+    li.d $a2, 0
+    invoke 29
+    expect 0
+    li.d $a0, -100
+    la.pcrel $a1, tty_path
+    li.d $a2, 2
+    invoke 56
+    bltz $a0, terminal_failure
+    invoke 57
+    expect 0
+    # Break and drain requests complete without a break signal.
+    li.d $a0, 0
+    li.d $a1, 0x5409
+    li.d $a2, 1
+    invoke 29
+    expect 0
+    li.d $a0, 0
+    li.d $a1, 0x5427
+    li.d $a2, 0
+    invoke 29
+    expect 0
+    li.d $a0, 0
+    li.d $a1, 0x5428
+    li.d $a2, 0
+    invoke 29
+    expect 0
+    # Stopped output blocks writers until it resumes.
+    li.d $a0, 0
+    li.d $a1, 0x540a
+    li.d $a2, 0
+    invoke 29
+    expect 0
+    li.d $a0, 17
+    li.d $a1, 0
+    li.d $a2, 0
+    li.d $a3, 0
+    li.d $a4, 0
+    invoke 220
+    beqz $a0, terminal_stopped_child
+    bltz $a0, terminal_failure
+    move $s1, $a0
+    move $a0, $s1
+    addi.d $a1, $sp, 96
+    li.d $a2, 1
+    li.d $a3, 0
+    invoke 260
+    expect 0
+    li.d $a0, 0
+    li.d $a1, 0x540a
+    li.d $a2, 1
+    invoke 29
+    expect 0
+    move $a0, $s1
+    addi.d $a1, $sp, 96
+    li.d $a2, 0
+    li.d $a3, 0
+    invoke 260
+    bne $a0, $s1, terminal_failure
+    ld.w $t0, $sp, 96
+    li.d $t1, 0x2a00
+    bne $t0, $t1, terminal_failure
+    b terminal_controls_done
+terminal_stopped_child:
+    li.d $a0, 1
+    la.pcrel $a1, flow_byte
+    li.d $a2, 1
+    invoke 64
+    li.d $a0, 42
+    invoke 94
+terminal_controls_done:
     li.d $t0, 3
     st.w $t0, $sp, 12
     li.d $a0, 0
@@ -506,6 +621,8 @@ interbyte_prompt: .ascii "Linux terminal interbyte\n"
 signal_prompt: .ascii "Linux terminal signal\n"
 suspend_prompt: .ascii "Linux terminal suspend\n"
 resume_prompt: .ascii "Linux terminal resume\n"
+tty_path: .asciz "/dev/tty"
+flow_byte: .ascii "!"
 .section .bss
 .balign 8
 terminal_signals: .skip 8
