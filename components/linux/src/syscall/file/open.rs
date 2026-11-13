@@ -16,7 +16,7 @@ use super::super::{
 use super::{O_CLOEXEC, Pending, completion, filesystem_error, outcome, virtual_file};
 use crate::{
     elf::PAGE_SIZE,
-    file::{Descriptor, O_APPEND, O_DSYNC, O_NONBLOCK, OpenFileDescription, Virtual},
+    file::{Descriptor, O_APPEND, O_DSYNC, O_NONBLOCK, O_PATH, OpenFileDescription, Virtual},
     process::Process,
 };
 
@@ -47,9 +47,6 @@ pub(in crate::syscall) fn openat<'a>(
         if flags & 0x100000 != 0 {
             flags |= O_DSYNC;
         }
-        if flags & 3 == 3 || flags & (O_CREAT | O_DIRECTORY) == O_CREAT | O_DIRECTORY {
-            return Err(EINVAL);
-        }
         let supported = 3
             | O_CREAT
             | O_EXCL
@@ -64,10 +61,19 @@ pub(in crate::syscall) fn openat<'a>(
             | 0x4000
             | O_DIRECTORY
             | O_NOFOLLOW
+            | O_PATH
             | O_CLOEXEC;
         if flags & !supported != 0 {
-            // TODO: Integrate the remaining open options.
+            // TODO: Support anonymous temporary files and signal-driven open options.
             return Err(EOPNOTSUPP);
+        }
+        // An O_PATH request resolves the node without opening it for I/O, so every other
+        // flag — including the access mode — is ignored rather than rejected.
+        if flags & O_PATH != 0 {
+            flags &= O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+        }
+        if flags & 3 == 3 || flags & (O_CREAT | O_DIRECTORY) == O_CREAT | O_DIRECTORY {
+            return Err(EINVAL);
         }
         let name = path(process, address)?;
         if matches!(name.as_slice(), b"/proc" | b"/proc/" | b"/sys" | b"/sys/") {
@@ -136,7 +142,7 @@ fn open_snapshot(process: &mut Process<'_>, name: &[u8], flags: u32) -> Result<u
             Descriptor::snapshot(
                 data,
                 file.inode(),
-                flags & (O_NONBLOCK | O_APPEND),
+                status_flags(flags, O_NONBLOCK | O_APPEND),
                 flags & O_CLOEXEC != 0,
             ),
             0,
@@ -151,7 +157,11 @@ fn open_virtual(process: &mut Process<'_>, flags: u32, kind: Virtual) -> Result<
     process
         .files
         .insert(
-            Descriptor::virtual_file(kind, flags & (3 | O_NONBLOCK), flags & O_CLOEXEC != 0),
+            Descriptor::virtual_file(
+                kind,
+                status_flags(flags, 3 | O_NONBLOCK),
+                flags & O_CLOEXEC != 0,
+            ),
             0,
         )
         .ok_or(EMFILE)
@@ -168,10 +178,24 @@ fn open_terminal(process: &mut Process<'_>, flags: u32) -> Result<usize, Errno> 
     process
         .files
         .insert(
-            Descriptor::terminal(terminal, flags & (3 | O_NONBLOCK), flags & O_CLOEXEC != 0),
+            Descriptor::terminal(
+                terminal,
+                status_flags(flags, 3 | O_NONBLOCK),
+                flags & O_CLOEXEC != 0,
+            ),
             0,
         )
         .ok_or(EMFILE)
+}
+
+/// Descriptor flags kept from an open: an `O_PATH` descriptor holds only its path identity,
+/// dropping every I/O mode bit.
+fn status_flags(flags: u32, mask: u32) -> u32 {
+    if flags & O_PATH != 0 {
+        O_PATH
+    } else {
+        flags & mask
+    }
 }
 
 impl<'a> Open<'a> {
@@ -184,7 +208,7 @@ impl<'a> Open<'a> {
         process: &mut Process<'a>,
         _files: &fs::Client<'a>,
     ) -> Option<SyscallResult> {
-        let flags = self.flags & !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC);
+        let flags = status_flags(self.flags, !(O_CREAT | O_EXCL | O_TRUNC | O_CLOEXEC));
         let close_on_exec = self.flags & O_CLOEXEC != 0;
         let descriptor = match completion(self.request.try_complete())? {
             Ok(fs::client::OpenedNode::File(file)) => {

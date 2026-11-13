@@ -35,6 +35,9 @@ pub(in crate::syscall) fn read<'a>(
         if !matches!(description.as_ref(), OpenFileDescription::Directory { .. }) {
             return Err(ENOTDIR);
         }
+        if description.path_only() {
+            return Err(EBADF);
+        }
         Ok(Pending::Directory(ReadDirectory {
             description,
             position: None,

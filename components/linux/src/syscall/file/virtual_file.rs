@@ -89,7 +89,7 @@ pub(super) fn read(
     else {
         return Err(EBADF);
     };
-    if descriptor.description.flags() & 3 == 1 {
+    if descriptor.description.flags() & 3 == 1 || descriptor.description.path_only() {
         return Err(EBADF);
     }
     if offset.is_some_and(|offset| offset > i64::MAX as usize) {
@@ -125,6 +125,9 @@ pub(super) fn seek(
     else {
         return Err(EBADF);
     };
+    if descriptor.description.path_only() {
+        return Err(EBADF);
+    }
     let base = match whence {
         0 => 0,
         1 => offset.get(),

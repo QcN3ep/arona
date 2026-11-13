@@ -89,7 +89,8 @@ pub(in crate::syscall) fn read<'a>(
         OpenFileDescription::VirtualFile { .. } => unreachable!(),
     }
     let operation = (|| {
-        if descriptor.description.flags() & 3 == 1 {
+        let flags = descriptor.description.flags();
+        if flags & 3 == 1 || descriptor.description.path_only() {
             return Err(EBADF);
         }
         if offset.is_some_and(|offset| offset > i64::MAX as usize) {
@@ -115,7 +116,8 @@ fn virtual_read<'a>(
 ) -> Outcome<'a> {
     let result = (|| {
         let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
-        if descriptor.description.flags() & 3 == 1 {
+        let flags = descriptor.description.flags();
+        if flags & 3 == 1 || descriptor.description.path_only() {
             return Err(EBADF);
         }
         let buffers = buffer.import(process)?;
@@ -226,7 +228,11 @@ pub(in crate::syscall) fn truncate<'a>(
 ) -> Outcome<'a> {
     let operation = (|| {
         let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
-        if length > i64::MAX as usize || descriptor.description.flags() & 3 == 0 {
+        let flags = descriptor.description.flags();
+        if descriptor.description.path_only() {
+            return Err(EBADF);
+        }
+        if length > i64::MAX as usize || flags & 3 == 0 {
             return Err(EINVAL);
         }
         let OpenFileDescription::Regular { file, .. } = descriptor.description.as_ref() else {
@@ -243,6 +249,9 @@ pub(in crate::syscall) fn truncate<'a>(
 pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome<'a> {
     let operation = (|| {
         let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
+        if descriptor.description.path_only() {
+            return Err(EBADF);
+        }
         let request = match descriptor.description.as_ref() {
             OpenFileDescription::Regular { file, .. } => file.start_fsync(),
             OpenFileDescription::Directory { session, .. } => session.start_fsync(),
@@ -305,6 +314,9 @@ pub(in crate::syscall) fn seek<'a>(
     }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
+        if descriptor.description.path_only() {
+            return Err(EBADF);
+        }
         match descriptor.description.as_ref() {
             OpenFileDescription::Socket { .. }
             | OpenFileDescription::Terminal { .. }
