@@ -220,6 +220,12 @@ pub(super) fn encode(request: Request<'_>, kind: SocketKind) -> Result<Encoded<'
     let option = |option| match option {
         OptionName::ReuseAddress => 0,
         OptionName::NoDelay => 1,
+        OptionName::KeepAlive => 2,
+        OptionName::KeepIdle => 3,
+        OptionName::KeepInterval => 4,
+        OptionName::KeepCount => 5,
+        OptionName::ReceiveBuffer => 6,
+        OptionName::SendBuffer => 7,
     };
     let encoded = match request {
         Request::Bind(endpoint) => Encoded::new(p::BIND, &[p::endpoint(endpoint)], None),

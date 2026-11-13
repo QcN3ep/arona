@@ -158,6 +158,7 @@ pub(super) const ENOSPC: Errno = Errno(28);
 pub(super) const ESPIPE: Errno = Errno(29);
 pub(super) const EROFS: Errno = Errno(30);
 pub(super) const EPIPE: Errno = Errno(32);
+pub(super) const EDOM: Errno = Errno(33);
 pub(super) const ERANGE: Errno = Errno(34);
 pub(super) const ENAMETOOLONG: Errno = Errno(36);
 pub(super) const ENOSYS: Errno = Errno(38);

@@ -136,8 +136,29 @@ int arona_lwip_shutdown(int fd, int direction) { return lwip_shutdown(fd, direct
 int arona_lwip_close(int fd) { return lwip_close(fd); }
 
 int arona_lwip_option(int fd, int option, int *value, int set) {
-  int level = option == 0 ? SOL_SOCKET : IPPROTO_TCP;
-  int name = option == 0 ? SO_REUSEADDR : TCP_NODELAY;
+  int level = IPPROTO_TCP;
+  int name;
+  switch (option) {
+    case 0: level = SOL_SOCKET; name = SO_REUSEADDR; break;
+    case 1: name = TCP_NODELAY; break;
+    case 2: level = SOL_SOCKET; name = SO_KEEPALIVE; break;
+    case 3: name = TCP_KEEPIDLE; break;
+    case 4: name = TCP_KEEPINTVL; break;
+    case 5: name = TCP_KEEPCNT; break;
+    case 6:
+    case 7: {
+      int type;
+      socklen_t size = sizeof(type);
+      if (lwip_getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &size) < 0) { return -1; }
+      if (option == 7 || type == SOCK_STREAM) {
+        if (set) { errno = EOPNOTSUPP; return -1; }
+        *value = option == 6 ? TCP_WND : type == SOCK_STREAM ? TCP_SND_BUF : 65507;
+        return 0;
+      }
+      level = SOL_SOCKET; name = SO_RCVBUF; break;
+    }
+    default: errno = ENOPROTOOPT; return -1;
+  }
   if (set) { return lwip_setsockopt(fd, level, name, value, sizeof(*value)); }
   socklen_t size = sizeof(*value);
   return lwip_getsockopt(fd, level, name, value, &size);

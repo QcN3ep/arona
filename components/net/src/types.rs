@@ -33,6 +33,12 @@ pub enum Shutdown {
 pub enum OptionName {
     ReuseAddress,
     NoDelay,
+    KeepAlive,
+    KeepIdle,
+    KeepInterval,
+    KeepCount,
+    ReceiveBuffer,
+    SendBuffer,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,7 +91,7 @@ pub enum Request<'a> {
     PeerEndpoint,
     TakeError,
     GetOption(OptionName),
-    SetOption(OptionName, bool),
+    SetOption(OptionName, u32),
     Shutdown(Shutdown),
     Close,
 }

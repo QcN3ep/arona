@@ -75,7 +75,7 @@ unsafe extern "C" {
     pub fn arona_lwip_take_error(fd: i32) -> i32;
     /// # Safety
     ///
-    /// fd must be live and exclusively accessed. option is 0 or 1, value
+    /// fd must be live and exclusively accessed. option is in 0..=7, value
     /// points to a valid integer, and set is 0 (read) or 1 (write).
     pub fn arona_lwip_option(fd: i32, option: i32, value: *mut i32, set: i32) -> i32;
     /// # Safety

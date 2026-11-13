@@ -177,7 +177,16 @@ fn acknowledge(channel: &Handle<Channel>, id: u64) {
 fn options(client: &Client<'_>, sender: &mut net::Socket<'_>, output: &devmgr::uart::Session) {
     output.write_all(b"Network request: options\n").unwrap();
     sender
-        .perform(Request::SetOption(OptionName::ReuseAddress, true), until())
+        .perform(Request::SetOption(OptionName::ReceiveBuffer, 4096), until())
+        .unwrap();
+    assert!(matches!(
+        sender
+            .perform(Request::GetOption(OptionName::ReceiveBuffer), until())
+            .unwrap(),
+        Completion::Value(4096)
+    ));
+    sender
+        .perform(Request::SetOption(OptionName::ReuseAddress, 1), until())
         .unwrap();
     assert!(matches!(
         sender
@@ -186,7 +195,23 @@ fn options(client: &Client<'_>, sender: &mut net::Socket<'_>, output: &devmgr::u
         Completion::Value(1)
     ));
     let mut tcp = client.socket(SocketKind::Tcp, until()).unwrap();
-    tcp.perform(Request::SetOption(OptionName::NoDelay, true), until())
+    for (name, value) in [
+        (OptionName::KeepAlive, 1),
+        (OptionName::KeepIdle, 7),
+        (OptionName::KeepInterval, 3),
+        (OptionName::KeepCount, 4),
+    ] {
+        tcp.perform(Request::SetOption(name, value), until())
+            .unwrap();
+        assert!(
+            matches!(tcp.perform(Request::GetOption(name), until()).unwrap(), Completion::Value(actual) if actual == u64::from(value))
+        );
+    }
+    assert!(matches!(
+        tcp.perform(Request::SetOption(OptionName::SendBuffer, 4096), until()),
+        Err(Error::Unsupported)
+    ));
+    tcp.perform(Request::SetOption(OptionName::NoDelay, 1), until())
         .unwrap();
     assert!(matches!(
         tcp.perform(Request::GetOption(OptionName::NoDelay), until())

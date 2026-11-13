@@ -76,6 +76,10 @@ impl Output {
         self.copy(process, &bytes[..bytes.len().min(self.capacity)])
     }
 
+    pub fn bytes(&self, process: &Process<'_>, bytes: &[u8]) -> SyscallResult {
+        self.copy(process, &bytes[..bytes.len().min(self.capacity)])
+    }
+
     fn copy(&self, process: &Process<'_>, bytes: &[u8]) -> SyscallResult {
         wait::write_bytes(
             process,
@@ -84,15 +88,6 @@ impl Output {
         )?;
         wait::write_bytes(process, self.length, &(bytes.len() as u32).to_le_bytes())?;
         Ok(0)
-    }
-}
-
-pub(super) fn option(level: usize, name: usize) -> Result<net::OptionName, Errno> {
-    match (level as u32, name as u32) {
-        (1, 2) => Ok(net::OptionName::ReuseAddress),
-        (6, 1) => Ok(net::OptionName::NoDelay),
-        // TODO: Support socket buffers, keepalive, and I/O timeouts.
-        _ => Err(ENOPROTOOPT),
     }
 }
 

@@ -97,8 +97,37 @@ The socket calls include `socket`, `bind`, `listen`, `accept`, `accept4`, `conne
 Data passes through `read`, `write`, `readv`, `writev`, `sendto`, `recvfrom`, `sendmsg`, or `recvmsg`.
 The service reads Linux message headers and iovecs field by field and translates addresses separately from native and C layouts.
 Ancillary data and unsupported message flags return `EOPNOTSUPP`.
-The supported socket options are `SO_TYPE`, `SO_ERROR`, `SO_REUSEADDR`, and `TCP_NODELAY`.
+The supported socket options are listed below.
 Reading `SO_ERROR` consumes the pending error, while readiness queries leave it available.
+
+| Option | Behavior |
+|---|---|
+| `SO_TYPE`, `SO_ERROR` | Read the type or consume the pending error |
+| `SO_REUSEADDR`, `TCP_NODELAY` | Read or change the boolean setting |
+| `SO_KEEPALIVE` | Read or change keepalive enablement |
+| `TCP_KEEPIDLE`, `TCP_KEEPINTVL`, `TCP_KEEPCNT` | Set idle seconds, interval seconds, and probe count |
+| `SO_RCVBUF` | Set the UDP byte queue limit or query the fixed TCP receive window |
+| `SO_SNDBUF` | Query the fixed TCP send capacity or maximum UDP payload |
+| `SO_RCVTIMEO`, `SO_SNDTIMEO` | Read or change the receive or send timeout as a Linux timeval |
+
+UDP receive buffer requests are doubled with a minimum effective limit of 256 bytes.
+The limit applies to queued payload bytes, and a datagram exceeding the remaining capacity is dropped whole.
+TCP buffer resizing and send buffer resizing return `EOPNOTSUPP`.
+The TCP capacities come from the stack configuration, so their values do not imply Linux buffer accounting.
+Keepalive idle and interval values accept 1 through 32,767 seconds, and the probe count accepts 1 through 127.
+Loopback tests verify these settings and live traffic. Probe failure behavior across an external interface remains unvalidated.
+Unknown options return `ENOPROTOOPT`, and invalid values return `EINVAL`.
+Linger remains unsupported.
+
+Timeouts belong to the shared open file description and are inherited by accepted sockets.
+A zero timeval disables the timeout.
+The receive timeout applies to receive and accept, while the send timeout applies to send and connect.
+An expired data or accept operation returns `EAGAIN` if it made no progress.
+A connect timeout returns `EINPROGRESS` and leaves the pending connection available for readiness observation.
+Completed partial I/O returns its count before considering timeout expiry.
+Readiness waits and nonblocking operations use their own waiting rules.
+The service waits for any submitted native attempt to finish before applying a timeout or signal, so a committed transfer cannot be replayed.
+Calls with a configured timeout return `EINTR` on a signal even when its handler uses `SA_RESTART`.
 
 UDP sends preserve one datagram, including an empty payload, and accept at most 65,507 bytes.
 An unconnected socket supplies its destination through `sendto` or `sendmsg`.

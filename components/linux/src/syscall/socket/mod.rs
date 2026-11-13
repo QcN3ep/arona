@@ -5,6 +5,7 @@
 mod address;
 mod message;
 mod operation;
+mod options;
 
 use super::{
     Outcome,
@@ -58,12 +59,8 @@ pub(super) fn dispatch<'a>(
     }
     Some(outcome((|| {
         let description = description(process, args[0])?;
-        if number == GETSOCKOPT && args[1] as u32 == 1 && args[2] as u32 == 3 {
-            let kind = Socket::state(&description).kind;
-            return Ok(Pending::Value(
-                Output::new(process, args[3], args[4])?,
-                if kind == net::SocketKind::Tcp { 1 } else { 2 },
-            ));
+        if matches!(number, GETSOCKOPT | SETSOCKOPT) {
+            return options::dispatch(process, description, args, number == SETSOCKOPT);
         }
         let action = action(process, &description, number, args)?;
         let nonblocking = (matches!(number, SENDTO | RECVFROM) && args[3] & DONTWAIT != 0)
@@ -72,7 +69,8 @@ pub(super) fn dispatch<'a>(
             description,
             action,
             nonblocking,
-        ))))
+            process,
+        )?)))
     })()))
 }
 
@@ -136,23 +134,6 @@ fn action(
             args[2],
             number == SENDMSG,
         )?,
-        GETSOCKOPT => Action::GetOption {
-            checking: false,
-            name: if args[1] as u32 == 1 && args[2] as u32 == 4 {
-                None
-            } else {
-                Some(address::option(args[1], args[2])?)
-            },
-            output: Output::new(process, args[3], args[4])?,
-        },
-        SETSOCKOPT => {
-            let name = address::option(args[1], args[2])?;
-            if (args[4] as u32) < 4 {
-                return Err(EINVAL);
-            }
-            let bytes = wait::read_bytes(process, args[3], 4)?;
-            Action::SetOption(name, i32::from_le_bytes(bytes.try_into().unwrap()) != 0)
-        }
         SHUTDOWN => Action::Shutdown(match args[1] as i32 {
             0 => net::Shutdown::Read,
             1 => net::Shutdown::Write,
@@ -229,7 +210,7 @@ pub(super) fn io<'a>(
             }
             Action::Receive(receive)
         };
-        let operation = Operation::new(description, action, false);
+        let operation = Operation::new(description, action, false, process)?;
         Ok(outcome(Ok(Pending::Operation(Box::new(operation)))))
     })()
     .unwrap_or_else(|error| Outcome::Complete(Err(error)))
@@ -278,13 +259,17 @@ fn install<'a>(
     native: net::Socket<'a>,
     flags: u32,
     connected: bool,
+    timeouts: [Option<u64>; 2],
 ) -> SyscallResult {
+    let state = Socket::new(native, connected);
+    state.receive_timeout.set(timeouts[0]);
+    state.send_timeout.set(timeouts[1]);
     process
         .files
         .insert(
             Descriptor {
                 description: Rc::new(OpenFileDescription::Socket {
-                    state: Socket::new(native, connected),
+                    state,
                     flags: core::cell::Cell::new(2 | (flags & O_NONBLOCK)),
                 }),
                 close_on_exec: flags & O_CLOEXEC != 0,

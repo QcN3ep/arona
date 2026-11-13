@@ -204,7 +204,7 @@ fn socket_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
         .join(options.profile())
         .join("linux-tests");
     let mut objects = Vec::new();
-    for name in ["stream.c", "datagram.c", &format!("{isa}.S")] {
+    for name in ["stream.c", "datagram.c", "options.c", &format!("{isa}.S")] {
         let object = directory.join(format!("socket-{name}.o"));
         let mut compile = Command::new("clang");
         compile.arg(format!("--target={triple}")).args([
