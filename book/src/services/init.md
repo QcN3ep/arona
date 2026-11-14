@@ -19,14 +19,15 @@ The archive page frame is then handed to the file service, and init reads the re
 | Order | Action |
 |---|---|
 | 1 | Load fs from the archive, hand over the archive, and establish the file client |
-| 2 | Read devmgr from fs, hand over the DeviceSet, and wait for driver initialization to complete |
-| 3 | Query the first block device and, if present, mount its full range as ext4 at `/var` |
-| 4 | Open the UART output session, start logger, and hand over the KernelLog and the optional persistence file |
-| 5 | Establish the local log facade, start net with a separate RNG session, and wait for loopback readiness |
-| 6 | Start linux and hand over the file, RTC, and random number sessions |
-| 7 | Record `System services ready`, read the configuration, and enter the supervision loop |
+| 2 | Mount a fresh tmpfs at `/tmp` |
+| 3 | Read devmgr from fs, hand over the DeviceSet, and wait for driver initialization to complete |
+| 4 | Query the first block device and, if present, mount its full range as ext4 at `/var` |
+| 5 | Open the UART output session, start logger, and hand over the KernelLog and the optional persistence file |
+| 6 | Establish the local log facade, start net with a separate RNG session, and wait for loopback readiness |
+| 7 | Start linux and hand over the file, RTC, and random number sessions |
+| 8 | Record `System services ready`, read the configuration, and enter the supervision loop |
 
-fs starts first because it establishes file access capability directly from the archive; devmgr then provides device sessions, letting persistent storage and serial output join the system.
+fs starts first because it establishes file access capability directly from the archive; init then mounts a tmpfs at `/tmp` so temporary files do not depend on persistent storage. devmgr next provides device sessions, letting persistent storage and serial output join the system.
 After the `/var` mount succeeds, init creates the log directory, opens or creates `/var/log/system.log`, and hands the file session to logger.
 Only after each service replies with its initialization result does init continue to use the interfaces it provides.
 
