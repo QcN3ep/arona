@@ -185,21 +185,59 @@ fn archive_file<'a>(archive: &'a [u8], name: &str) -> Result<&'a [u8], String> {
     }
 }
 
-pub(super) fn window(measurement: &Value, symbols: &BTreeMap<&str, u64>) -> Result<Window, String> {
+pub(super) fn window(
+    directory: &std::path::Path,
+    manifest: &Value,
+    symbols: &BTreeMap<&str, u64>,
+) -> Result<Window, String> {
+    let measurement = &manifest["measurement"];
     let address = |key| {
         let value = measurement[key].as_str().ok_or("missing system boundary")?;
+        let (value, image) = if let Some((name, symbol)) = value.split_once(':') {
+            let index = manifest["images"]
+                .as_array()
+                .ok_or("missing saved images")?
+                .iter()
+                .position(|image| image["name"] == name)
+                .ok_or_else(|| format!("boundary image was not supplied: {name}"))?;
+            (symbol, Some(index))
+        } else {
+            (value, None)
+        };
         if let Some(hex) = value.strip_prefix("0x") {
-            u64::from_str_radix(hex, 16).map_err(|error| error.to_string())
+            Ok((
+                u64::from_str_radix(hex, 16).map_err(|error| error.to_string())?,
+                image,
+            ))
+        } else if let Some(index) = image {
+            let output = super::command_output(
+                std::process::Command::new("llvm-nm")
+                    .args(["--format=posix", "--defined-only", "--no-demangle"])
+                    .arg(directory.join(format!("images/{index}/symbols.elf"))),
+            )?;
+            let pc = output
+                .lines()
+                .find_map(|line| {
+                    let mut fields = line.split_whitespace();
+                    if fields.next()? != value {
+                        return None;
+                    }
+                    fields.next()?;
+                    u64::from_str_radix(fields.next()?, 16).ok()
+                })
+                .ok_or_else(|| format!("missing boundary symbol: {value}"))?;
+            Ok((pc, image))
         } else {
             symbols
                 .get(value)
                 .copied()
+                .map(|pc| (pc, image))
                 .ok_or_else(|| format!("missing boundary symbol: {value}"))
         }
     };
-    let start = address("start")?;
-    let end = address("end")?;
-    if start == end || start == 0 || end == 0 {
+    let (start, start_image) = address("start")?;
+    let (end, end_image) = address("end")?;
+    if (start == end && start_image == end_image) || start == 0 || end == 0 {
         return Err("system boundaries must be distinct nonzero addresses".to_owned());
     }
     Ok(Window {
@@ -207,6 +245,8 @@ pub(super) fn window(measurement: &Value, symbols: &BTreeMap<&str, u64>) -> Resu
         start,
         end,
         expected: None,
+        start_image,
+        end_image,
     })
 }
 

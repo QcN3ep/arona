@@ -146,6 +146,7 @@ The mapping scenario switches between programs at the same virtual address and r
 The collector keeps these instances separate and checks instruction bytes against their saved ELF locations.
 `counts.json` retains execution contexts, instruction addresses, bytes, and counts for each interval.
 `report.md` and `report.json` group these counts by image, function or symbol, and source line, with instruction disassembly and inline frames.
+Function and source-line groups retain the image name.
 Each group includes unknown entries, and each grouping sums to that interval's total.
 Only the innermost inline frame receives the count. Enclosing frames provide context.
 Each calibration interval is one work unit.
@@ -177,19 +178,27 @@ The collector copies both inputs and derives the runtime kernel from the supplie
 It starts one QEMU vCPU with the existing VirtIO RNG configuration.
 Boundaries are exact ELF symbol names or hexadecimal addresses prefixed with `0x`.
 Each boundary must execute once. Both boundary instructions are excluded.
-Both boundaries must lie in executable kernel segments.
+Boundaries refer to the kernel ELF by default.
+Use `ARCHIVE_PATH:SYMBOL`, such as `bin/init:SYMBOL`, to select a boundary in a program supplied with `--image`.
+An image-qualified boundary is accepted only while that executable mapping is verified.
+Each boundary must lie in an executable segment of its selected ELF.
 The interval includes every instruction dispatched by the guest, including other tasks and interrupt handlers.
 `--units` records the completed work represented by the interval.
 
 The completion message must appear on the serial console after the measured work finishes.
 A panic, missing boundary, missing completion message, or timeout makes the run fail.
 Use `--case system --artifacts RUN_DIRECTORY` to reuse the saved kernel, archive, and measurement settings.
-Use `--mode profile` to generate kernel instruction hotspots from the same inputs.
-The report attributes verified bytes in the shared kernel mapping. User addresses and other unresolved code remain unknown.
-Repeated unknown addresses are aggregated by PC and bytes without assigning a process or load identity.
+Use `--mode profile` to generate instruction hotspots from the same inputs.
+The report resolves the shared kernel mapping and supplied fixed-address ET_EXEC programs.
 Supply component symbols explicitly with `--image bin/fs=PATH/TO/fs`, repeated for other archive entries as needed.
 Each supplied ELF must contain debug information and match the load segments of that archive entry.
-These files are saved for inspection. They do not establish which user address space executed an instruction.
+The collector compares all file-backed executable bytes with the active mappings.
+Only a unique match among the supplied images receives attribution.
+RISC-V reads `satp`. LoongArch observes writes to `PGDL` through the instruction's source register.
+Mapping invalidations and writes to observed code pages invalidate the cached match.
+Counts are grouped by verified ELF identity. Observed roots and mapping epochs are recorded separately in `report.json`.
+Programs without supplied images, ambiguous matches, and unsupported mappings remain unknown.
+PIE images and shared libraries are not supported.
 
 ## Comparing Saved Runs
 

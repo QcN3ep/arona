@@ -81,6 +81,7 @@ pub(super) fn build(directory: &Path, metadata: &Value) -> Result<(Value, Vec<St
         metadata["target"]
             .as_str()
             .ok_or("missing profile target")?,
+        &manifest,
     )?;
     let mut warnings = Vec::new();
     let locations = symbols::resolve(directory, &manifest, &counts, &addresses, &mut warnings)?;
@@ -98,7 +99,7 @@ pub(super) fn build(directory: &Path, metadata: &Value) -> Result<(Value, Vec<St
     let report = json!({
         "metric": counts["metric"], "scope": counts["scope"],
         "target": metadata["target"], "counts_sha256": metadata["counts_sha256"],
-        "contexts": counts["contexts"], "context_register": counts["context_register"],
+        "contexts": counts["contexts"], "context_register": counts["context_register"], "mappings": counts["mappings"],
         "measurement": manifest["measurement"],
         "saved_images": manifest["images"],
         "artifacts_sha256": metadata["artifacts"]["sha256"],
@@ -141,7 +142,7 @@ fn pc(value: &Value) -> Result<u64, String> {
         .ok_or_else(|| "invalid profile address".to_owned())
 }
 
-fn validate(counts: &Value, target: &str) -> Result<Vec<Address>, String> {
+fn validate(counts: &Value, target: &str, manifest: &Value) -> Result<Vec<Address>, String> {
     if !matches!(
         counts["scope"].as_str(),
         Some("controlled-mappings" | "system")
@@ -151,7 +152,7 @@ fn validate(counts: &Value, target: &str) -> Result<Vec<Address>, String> {
     {
         return Err("unsupported or invalid instruction profile".to_owned());
     }
-    mappings::validate(counts, target)?;
+    mappings::validate(counts, target, manifest)?;
     let windows = counts["windows"]
         .as_array()
         .ok_or("missing profile windows")?;
@@ -164,6 +165,19 @@ fn validate(counts: &Value, target: &str) -> Result<Vec<Address>, String> {
         let name = window["name"]
             .as_str()
             .ok_or("missing profile window name")?;
+        for edge in ["start_image", "end_image"] {
+            let image = window.get(edge).ok_or("missing profile boundary image")?;
+            if !image.is_null()
+                && (counts["scope"] != "system"
+                    || image.as_u64().is_none_or(|index| {
+                        manifest["images"]
+                            .as_array()
+                            .is_none_or(|images| index >= images.len() as u64)
+                    }))
+            {
+                return Err("invalid profile boundary image".to_owned());
+            }
+        }
         if !names.insert(name) || window["starts"] != 1 || window["ends"] != 1 {
             return Err("invalid profile boundaries".to_owned());
         }
@@ -185,8 +199,10 @@ fn validate(counts: &Value, target: &str) -> Result<Vec<Address>, String> {
                 || !seen.insert((context, address, code))
                 || number(&row["instructions"])? == 0
                 || row["disassembly"].as_str().is_none()
-                || address == pc(&window["start"])?
-                || address == pc(&window["end"])?
+                || (address == pc(&window["start"])?
+                    && mappings::boundary(counts, context, window, "start"))
+                || (address == pc(&window["end"])?
+                    && mappings::boundary(counts, context, window, "end"))
             {
                 return Err("invalid profile instruction record".to_owned());
             }
@@ -267,11 +283,16 @@ fn summarize(
 }
 
 fn group(rows: &[Value], field: &str, total: u64) -> Result<Vec<Value>, String> {
-    let mut groups = BTreeMap::<&str, u64>::new();
-    groups.insert(UNKNOWN, 0);
+    let mut groups = BTreeMap::<(&str, &str), u64>::new();
+    groups.insert((if field == "image" { "" } else { UNKNOWN }, UNKNOWN), 0);
     for row in rows {
         let name = row[field].as_str().ok_or("missing profile group")?;
-        let value = groups.entry(name).or_default();
+        let image = if field == "image" {
+            ""
+        } else {
+            row["image"].as_str().ok_or("missing profile image")?
+        };
+        let value = groups.entry((image, name)).or_default();
         *value = value
             .checked_add(number(&row["instructions"])?)
             .ok_or("profile count overflow")?;
@@ -284,10 +305,16 @@ fn group(rows: &[Value], field: &str, total: u64) -> Result<Vec<Value>, String> 
         return Err("profile groups do not sum to the interval count".to_owned());
     }
     let mut groups = groups.into_iter().collect::<Vec<_>>();
-    groups.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(right.0)));
+    groups.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     Ok(groups
         .into_iter()
-        .map(|(name, count)| json!({"name": name, "instructions": count}))
+        .map(|((image, name), count)| {
+            let mut group = json!({"name": name, "instructions": count});
+            if field != "image" {
+                group["image"] = json!(image);
+            }
+            group
+        })
         .collect())
 }
 
@@ -316,7 +343,7 @@ fn markdown(report: &Value) -> Result<String, String> {
         .map_err(|error| error.to_string())?;
     }
     if report["scope"] == "system" {
-        text.push_str("\nOnly the shared kernel mapping is attributed. User address spaces and load lifetimes are unresolved. Their counts stay unknown.\n");
+        text.push_str("\nNative image attribution checks all file-backed executable bytes of the supplied images. Counts are grouped by verified ELF identity. Unresolved or ambiguous images remain unknown. Observed mapping roots and epochs are recorded separately in report.json.\n");
     } else {
         write_contexts(
             &mut text,
@@ -389,12 +416,11 @@ fn write_window(text: &mut String, window: &Value) -> std::fmt::Result {
     ] {
         writeln!(text, "| {title} | Instructions |\n| --- | ---: |")?;
         for row in window[field].as_array().into_iter().flatten() {
-            writeln!(
-                text,
-                "| {} | {} |",
-                cell(row["name"].as_str().unwrap_or(UNKNOWN)),
-                row["instructions"]
-            )?;
+            let name = row["name"].as_str().unwrap_or(UNKNOWN);
+            let label = row["image"]
+                .as_str()
+                .map_or_else(|| name.to_owned(), |image| format!("{image} / {name}"));
+            writeln!(text, "| {} | {} |", cell(&label), row["instructions"])?;
         }
         text.push('\n');
     }
