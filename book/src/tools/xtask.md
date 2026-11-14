@@ -159,3 +159,29 @@ The report command runs offline and reads only the saved artifacts.
 Missing symbols leave function and line counts unknown. Missing source files do not prevent reporting recorded locations.
 Changed code that does not match the saved ELF remains unknown and retains its captured disassembly.
 Damaged files and inconsistent counts cause an error. Tool diagnostics are saved in `report.log`.
+
+## System Instruction Collection
+
+Use `--case system` to measure an existing kernel and external initramfs:
+
+```sh
+cargo xtask perf run riscv64 --case system --mode count \
+  --kernel PATH/TO/arch --initramfs PATH/TO/initramfs.cpio \
+  --start START_SYMBOL --end END_SYMBOL \
+  --success 'COMPLETION MESSAGE' --workload WORKLOAD_NAME --units 1
+```
+
+Build the kernel for an external initramfs and keep its symbols and debug information.
+Prepare the workload through the existing init configuration and archive packaging commands.
+The collector copies both inputs and derives the runtime kernel from the supplied ELF.
+It starts one QEMU vCPU with the existing VirtIO RNG configuration.
+Boundaries are exact ELF symbol names or hexadecimal addresses prefixed with `0x`.
+Each boundary must execute once. Both boundary instructions are excluded.
+Choose kernel boundaries or markers in a controlled driver whose address space is unambiguous.
+The interval includes every instruction dispatched by the guest, including other tasks and interrupt handlers.
+`--units` records the completed work represented by the interval.
+
+The completion message must appear on the serial console after the measured work finishes.
+A panic, missing boundary, missing completion message, or timeout makes the run fail.
+Use `--case system --artifacts RUN_DIRECTORY` to reuse the saved kernel, archive, and measurement settings.
+System collection currently supports `count` mode.

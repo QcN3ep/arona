@@ -4,6 +4,7 @@
 
 mod artifacts;
 mod report;
+mod system;
 
 use super::{
     Target, build_std, cargo_command, execute, linux_test, qemu_command, target_directory,
@@ -38,6 +39,8 @@ const PASSED: &str = "Perf calibration passed";
 const FAILED: &str = "Perf calibration failed:";
 
 struct Options {
+    case: &'static str,
+    input: system::Input,
     target: Target,
     release: Option<bool>,
     artifacts: Option<PathBuf>,
@@ -53,6 +56,8 @@ impl Options {
         });
         let target = Target::parse(&arguments.next().transpose()?.ok_or_else(super::usage)?)?;
         let mut options = Self {
+            case: "calibration",
+            input: system::Input::default(),
             target,
             release: None,
             artifacts: None,
@@ -71,8 +76,30 @@ impl Options {
                     ));
                 }
                 "--case" => {
-                    if arguments.next().transpose()?.as_deref() != Some("calibration") {
-                        return Err("--case currently supports only calibration".to_owned());
+                    options.case = match arguments.next().transpose()?.as_deref() {
+                        Some("calibration") => "calibration",
+                        Some("system") => "system",
+                        _ => return Err("--case supports calibration or system".to_owned()),
+                    };
+                }
+                "--kernel" | "--initramfs" | "--start" | "--end" | "--success" | "--workload"
+                | "--units" => {
+                    let value = arguments
+                        .next()
+                        .transpose()?
+                        .ok_or_else(|| format!("missing {argument} value"))?;
+                    match argument.as_str() {
+                        "--kernel" => options.input.kernel = Some(value.into()),
+                        "--initramfs" => options.input.initramfs = Some(value.into()),
+                        "--start" => options.input.start = Some(value),
+                        "--end" => options.input.end = Some(value),
+                        "--success" => options.input.success = Some(value),
+                        "--workload" => options.input.workload = Some(value),
+                        "--units" => {
+                            options.input.units =
+                                Some(value.parse().map_err(|_| "invalid work units")?)
+                        }
+                        _ => unreachable!(),
                     }
                 }
                 "--mode" => match arguments.next().transpose()?.as_deref() {
@@ -94,6 +121,11 @@ impl Options {
                 }
                 _ => return Err(format!("unknown perf option: {argument}")),
             }
+        }
+        if !options.input.is_empty() && (options.case != "system" || options.artifacts.is_some()) {
+            return Err(
+                "system input options require --case system without --artifacts".to_owned(),
+            );
         }
         Ok(options)
     }
@@ -123,7 +155,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), S
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let mut metadata = json!({
         "status": "preparing", "target": options.target.triple(),
-        "case": "calibration", "mode": if options.profile { "profile" } else { "count" }, "plugin_api": 7,
+        "case": options.case, "mode": if options.profile { "profile" } else { "count" }, "plugin_api": 7,
         "timeout_seconds": options.timeout.as_secs(),
     });
     save_metadata(&directory, &metadata)?;
@@ -148,13 +180,21 @@ fn collect(
 ) -> Result<(), String> {
     let manifest = artifacts::prepare(options, root, directory)?;
     let saved = directory.join("artifacts");
-    let (windows, context) = read_windows(&saved.join("symbols.elf"))?;
+    let (windows, context) = read_windows(&saved.join("symbols.elf"), &manifest)?;
+    if options.case == "system" && options.profile {
+        return Err("system profiling is not implemented".to_owned());
+    }
     let plugin = build_plugin(root, directory)?;
     let mut command = qemu_command(options.target, root);
     let version = command_output(Command::new(command.get_program()).arg("--version"))?;
     let control = env::temp_dir().join(format!("arona-perf-{stamp}-{}", std::process::id()));
     if matches!(options.target, Target::Riscv64) {
         command.arg("-bios").arg(saved.join("firmware.bin"));
+    }
+    if options.case == "system" {
+        command.arg("-initrd").arg(saved.join("initramfs.cpio"));
+        command.args(["-device", "virtio-rng-pci,disable-legacy=on"]);
+        metadata["measurement"] = manifest["measurement"].clone();
     }
     command
         .arg("-kernel")
@@ -191,7 +231,14 @@ fn collect(
     );
     metadata["status"] = json!("running");
     save_metadata(directory, metadata)?;
-    measure(command, control, directory, options.timeout)?;
+    let success = if options.case == "system" {
+        manifest["measurement"]["success"]
+            .as_str()
+            .ok_or("missing completion marker")?
+    } else {
+        PASSED
+    };
+    measure(command, control, directory, options.timeout, success)?;
     validate_counts(directory, &windows)?;
     metadata["counts_sha256"] = json!(artifacts::digest(&directory.join("counts.json"))?);
     if options.profile {
@@ -281,7 +328,7 @@ fn command_output(command: &mut Command) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|error| error.to_string())
 }
 
-fn read_windows(executable: &Path) -> Result<(Vec<Window>, u64), String> {
+fn read_windows(executable: &Path, manifest: &Value) -> Result<(Vec<Window>, u64), String> {
     let output = command_output(
         Command::new("llvm-nm")
             .args(["--format=posix", "--defined-only", "--no-demangle"])
@@ -290,12 +337,41 @@ fn read_windows(executable: &Path) -> Result<(Vec<Window>, u64), String> {
     let mut symbols = BTreeMap::new();
     for line in output.lines() {
         let fields: Vec<_> = line.split_whitespace().collect();
-        if fields.len() >= 3 && fields[0].starts_with("__arona_perf_") {
+        if fields.len() >= 3 {
             symbols.insert(
                 fields[0],
                 u64::from_str_radix(fields[2], 16).map_err(|error| error.to_string())?,
             );
         }
+    }
+    if manifest["case"] == "system" {
+        let window = system::window(&manifest["measurement"], &symbols)?;
+        let image = artifacts::inspect(executable)?;
+        for pc in [window.start, window.end] {
+            if !image["ProgramHeaders"]
+                .as_array()
+                .ok_or("missing ELF segments")?
+                .iter()
+                .any(|header| {
+                    let segment = &header["ProgramHeader"];
+                    segment["Type"]["Value"] == 1
+                        && segment["Flags"]["Value"]
+                            .as_u64()
+                            .is_some_and(|flags| flags & 1 != 0)
+                        && segment["VirtualAddress"]
+                            .as_u64()
+                            .zip(segment["FileSize"].as_u64())
+                            .is_some_and(|(base, size)| {
+                                pc.checked_sub(base).is_some_and(|offset| offset < size)
+                            })
+                })
+            {
+                return Err(format!(
+                    "boundary 0x{pc:x} is outside executable kernel segments"
+                ));
+            }
+        }
+        return Ok((vec![window], 0));
     }
     let symbol = |name, suffix| {
         symbols
@@ -433,6 +509,7 @@ fn measure(
     control: PathBuf,
     directory: &Path,
     timeout: Duration,
+    success: &str,
 ) -> Result<(), String> {
     let serial = directory.join("serial.log");
     command
@@ -449,8 +526,8 @@ fn measure(
     loop {
         let bytes = fs::read(&serial).map_err(|error| error.to_string())?;
         let log = String::from_utf8_lossy(&bytes);
-        let failed = log.contains(FAILED);
-        let passed = log.lines().any(|line| line == PASSED);
+        let failed = log.contains(FAILED) || log.contains("PANIC:") || log.contains("panicked at");
+        let passed = log.lines().any(|line| line.contains(success));
         if let Some(status) = emulator
             .child
             .try_wait()
@@ -460,14 +537,14 @@ fn measure(
                 Ok(())
             } else {
                 Err(format!(
-                    "QEMU exited before successful calibration: {status}; see qemu.log"
+                    "QEMU exited before measurement completed: {status}; see qemu.log"
                 ))
             };
         }
         if failed || passed {
             let stopped = emulator.stop();
             return if failed {
-                Err("guest calibration failed; see serial.log".to_owned())
+                Err("guest failed; see serial.log".to_owned())
             } else {
                 stopped
             };
@@ -475,7 +552,7 @@ fn measure(
         if Instant::now() >= deadline {
             let _ = emulator.stop();
             return Err(format!(
-                "calibration timed out after {} seconds",
+                "measurement timed out after {} seconds",
                 timeout.as_secs()
             ));
         }
