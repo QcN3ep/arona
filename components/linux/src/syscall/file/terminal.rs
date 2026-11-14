@@ -83,6 +83,9 @@ pub(super) fn write_output<'a>(
             return Ok(Outcome::Complete(Ok(0)));
         }
         if terminal.stopped() {
+            if description.flags() & O_NONBLOCK != 0 {
+                return Err(EAGAIN);
+            }
             return Ok(outcome(Ok(Pending::TerminalOutput(Output {
                 terminal: Rc::clone(terminal),
                 input,

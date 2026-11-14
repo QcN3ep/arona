@@ -316,7 +316,22 @@ raw_read:
     ld.hu $t0, $sp, 128
     li.d $t1, 0x7978
     bne $t0, $t1, terminal_failure
-    # Injected input passes through the discipline like typed input.
+    # Injected input echoes before the next physical input arrives.
+    li.d $t0, 8
+    st.w $t0, $sp, 12
+    li.d $t0, 1
+    st.b $t0, $sp, 23
+    st.b $zero, $sp, 22
+    li.d $a0, 0
+    li.d $a1, 0x5402
+    move $a2, $sp
+    invoke 29
+    expect 0
+    li.d $a0, 1
+    la.pcrel $a1, injected_prompt
+    li.d $a2, 24
+    invoke 64
+    expect 24
     li.d $t0, 90
     st.b $t0, $sp, 112
     li.d $a0, 0
@@ -331,6 +346,14 @@ raw_read:
     expect 1
     ld.bu $t0, $sp, 128
     li.d $t1, 90
+    bne $t0, $t1, terminal_failure
+    li.d $a0, 0
+    addi.d $a1, $sp, 128
+    li.d $a2, 1
+    invoke 63
+    expect 1
+    ld.bu $t0, $sp, 128
+    li.d $t1, 89
     bne $t0, $t1, terminal_failure
     # The discipline buffers no pending output of its own.
     li.d $a0, 0
@@ -392,6 +415,26 @@ raw_read:
     li.d $a1, 0x540a
     li.d $a2, 0
     invoke 29
+    expect 0
+    li.d $a0, 1
+    li.d $a1, 4
+    li.d $a2, 2048
+    invoke 25
+    expect 0
+    li.d $a0, 1
+    la.pcrel $a1, flow_byte
+    li.d $a2, 1
+    invoke 64
+    expect -11
+    li.d $a0, 1
+    la.pcrel $a1, flow_byte
+    li.d $a2, 0
+    invoke 64
+    expect 0
+    li.d $a0, 1
+    li.d $a1, 4
+    li.d $a2, 0
+    invoke 25
     expect 0
     li.d $a0, 17
     li.d $a1, 0
@@ -618,6 +661,7 @@ terminal_default: .quad 0, 0, 0
 terminal_ignore: .quad 1, 0, 0
 minimum_prompt: .ascii "Linux terminal minimum\n"
 interbyte_prompt: .ascii "Linux terminal interbyte\n"
+injected_prompt: .ascii "Linux terminal injected "
 signal_prompt: .ascii "Linux terminal signal\n"
 suspend_prompt: .ascii "Linux terminal suspend\n"
 resume_prompt: .ascii "Linux terminal resume\n"
