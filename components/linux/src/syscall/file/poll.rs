@@ -130,6 +130,13 @@ fn select_entries<'a>(
             }
         }
         if events != 0 {
+            if process
+                .files
+                .get(fd)
+                .is_some_and(|descriptor| descriptor.description.path_only())
+            {
+                return Err(EBADF);
+            }
             entries.push(Entry {
                 watch: crate::file::socket::Watch::default(),
                 description: Some(Rc::clone(&process.files.get(fd).ok_or(EBADF)?.description)),
@@ -241,7 +248,7 @@ impl Poll<'_> {
                     state
                         & (entry.events
                             | if matches!(self.output, Output::Poll { .. }) {
-                                ERROR | HANGUP
+                                ERROR | HANGUP | INVALID
                             } else {
                                 0
                             })

@@ -316,12 +316,20 @@ impl FileSystem for Archive {
 
 impl Archive {
     pub fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
+        self.open_node(path, false)
+    }
+
+    pub fn open_path(&self, path: &[u8]) -> Result<File, Error> {
+        self.open_node(path, true)
+    }
+
+    fn open_node(&self, path: &[u8], path_only: bool) -> Result<File, Error> {
         let path = normalize(path)?;
         let entry = self.entries.get(&path).ok_or(Error::NotFound)?;
         if entry.metadata.mode & 0o170000 == 0o040000 {
             return Err(Error::IsDirectory);
         }
-        if entry.metadata.mode & 0o170000 == 0o120000 {
+        if !path_only && entry.metadata.mode & 0o170000 == 0o120000 {
             return Err(Error::InvalidRequest);
         }
         Ok(File {

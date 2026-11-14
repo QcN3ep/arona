@@ -165,9 +165,10 @@ fn open_at(
             let path = path(&mut request, *length)?;
             let follow = flags == 1 && !(options.create && options.exclusive);
             let path = resolve(namespace, files, anchor, &path, follow, options.create)?;
-            if namespace
-                .metadata(&path)
-                .is_ok_and(|info| info.mode & 0o170000 == 0o120000)
+            if !options.path_only
+                && namespace
+                    .metadata(&path)
+                    .is_ok_and(|info| info.mode & 0o170000 == 0o120000)
             {
                 return Err(if options.create && options.exclusive {
                     Error::AlreadyExists
@@ -176,6 +177,7 @@ fn open_at(
                 });
             }
             match namespace.open_with(&path, options) {
+                Ok(file) if options.path_only => Node::Path(file),
                 Ok(file) => Node::File(file),
                 Err(Error::IsDirectory)
                     if !options.write && !options.create && !options.truncate =>

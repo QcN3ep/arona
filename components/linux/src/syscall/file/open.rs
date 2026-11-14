@@ -20,6 +20,7 @@ use crate::{
     process::Process,
 };
 
+// REFERENCE: https://man7.org/linux/man-pages/man2/open.2.html
 // REFERENCE: https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/fcntl.h
 const O_CREAT: u32 = 0x40;
 const O_EXCL: u32 = 0x80;
@@ -44,6 +45,11 @@ pub(in crate::syscall) fn openat<'a>(
 ) -> Outcome<'a> {
     let operation = (|| {
         let mut flags = flags as u32;
+        // An O_PATH request resolves the node without opening it for I/O, so every other
+        // flag — including the access mode — is ignored rather than rejected.
+        if flags & O_PATH != 0 {
+            flags &= O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+        }
         if flags & 0x100000 != 0 {
             flags |= O_DSYNC;
         }
@@ -66,11 +72,6 @@ pub(in crate::syscall) fn openat<'a>(
         if flags & !supported != 0 {
             // TODO: Support anonymous temporary files and signal-driven open options.
             return Err(EOPNOTSUPP);
-        }
-        // An O_PATH request resolves the node without opening it for I/O, so every other
-        // flag — including the access mode — is ignored rather than rejected.
-        if flags & O_PATH != 0 {
-            flags &= O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
         }
         if flags & 3 == 3 || flags & (O_CREAT | O_DIRECTORY) == O_CREAT | O_DIRECTORY {
             return Err(EINVAL);
@@ -106,6 +107,7 @@ pub(in crate::syscall) fn openat<'a>(
                 lookup.directory(),
                 &lookup.name,
                 fs::OpenOptions {
+                    path_only: flags & O_PATH != 0,
                     write: flags & 3 != 0,
                     create: flags & O_CREAT != 0,
                     exclusive: flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL,

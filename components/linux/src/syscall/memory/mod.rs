@@ -92,6 +92,9 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
             .ok_or(EBADF)?
             .description,
     );
+    if description.path_only() {
+        return Err(EBADF);
+    }
     let OpenFileDescription::Regular { file, .. } = description.as_ref() else {
         return Err(ENODEV);
     };

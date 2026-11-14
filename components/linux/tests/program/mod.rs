@@ -320,6 +320,8 @@ fn writable(
             .unwrap()
     };
     metadata_fixture(files);
+    path_session(files);
+    tmpfs_path_session(files);
     for mode in [
         b"metadata".as_slice(),
         b"directory",
@@ -453,6 +455,88 @@ fn metadata_fixture(files: &fs::Client<'_>) {
         .unwrap();
 }
 
+fn path_session(files: &fs::Client<'_>) {
+    let fs::client::OpenedNode::File(file) = files
+        .start_open_at(
+            None,
+            b"/var/linux-stat-symlink",
+            fs::OpenOptions {
+                path_only: true,
+                write: false,
+                create: false,
+                exclusive: false,
+                truncate: false,
+                permissions: 0,
+            },
+            false,
+            false,
+        )
+        .unwrap()
+        .wait(until())
+        .unwrap()
+    else {
+        panic!("expected a symbolic link");
+    };
+    let before = file.metadata(service::deadline()).unwrap();
+    assert_eq!(before.mode & 0o170000, 0o120000);
+    assert_eq!(
+        file.read_at(0, &mut [0; 16], service::deadline()),
+        Err(fs::Error::InvalidRequest)
+    );
+    assert_eq!(
+        file.write_at(0, b"x", service::deadline()),
+        Err(fs::Error::InvalidRequest)
+    );
+    assert_eq!(file.metadata(service::deadline()).unwrap(), before);
+    assert_eq!(
+        file.start_read_link().unwrap().wait(until()).unwrap(),
+        b"/var/linux-stat"
+    );
+}
+
+fn tmpfs_path_session(files: &fs::Client<'_>) {
+    files
+        .symlink(b"missing", b"/tmp/link", service::deadline())
+        .unwrap();
+    let fs::client::OpenedNode::File(file) = files
+        .start_open_at(
+            None,
+            b"/tmp/link",
+            fs::OpenOptions {
+                path_only: true,
+                write: false,
+                create: false,
+                exclusive: false,
+                truncate: false,
+                permissions: 0,
+            },
+            false,
+            false,
+        )
+        .unwrap()
+        .wait(until())
+        .unwrap()
+    else {
+        panic!("expected a symbolic link");
+    };
+    let before = file.metadata(service::deadline()).unwrap();
+    files
+        .unlink_bytes(b"/tmp/link", service::deadline())
+        .unwrap();
+    let after = file.metadata(service::deadline()).unwrap();
+    assert_eq!(after.inode, before.inode);
+    assert_eq!(after.links, 0);
+    assert_eq!(
+        file.start_read_link().unwrap().wait(until()).unwrap(),
+        b"missing"
+    );
+    assert_eq!(
+        file.write_at(0, b"x", service::deadline()),
+        Err(fs::Error::InvalidRequest)
+    );
+    assert_eq!(file.metadata(service::deadline()).unwrap(), after);
+}
+
 fn until() -> WaitMode {
     WaitMode::Until(service::deadline())
 }
@@ -483,20 +567,21 @@ fn execution(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
     };
     let mut first = start(b"normal");
     let mut second = start(b"normal");
-    assert_eq!(
-        first.wait(until()).unwrap(),
-        ExitStatus {
+    for guest in [&mut first, &mut second] {
+        let result = guest.wait(until());
+        let expected = ExitStatus {
             code: 42,
-            signal: 0
+            signal: 0,
+        };
+        if result != Ok(expected) {
+            let output = output();
+            output
+                .write_all(alloc::format!("Linux basic scenario: {result:?}\n").as_bytes())
+                .unwrap();
+            output.flush().unwrap();
         }
-    );
-    assert_eq!(
-        second.wait(until()).unwrap(),
-        ExitStatus {
-            code: 42,
-            signal: 0
-        }
-    );
+        assert_eq!(result.unwrap(), expected);
+    }
     assert_eq!(
         start(b"Q").wait(until()).unwrap(),
         ExitStatus { code: 0, signal: 0 }

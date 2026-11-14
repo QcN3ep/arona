@@ -248,8 +248,44 @@ files_path:
     expect 0
     mv a0, s0
     la a1, renamed_link
+    li a2, 0x220000
+    invoke 56
+    bltz a0, path_failure
+    mv s4, a0
+    mv a0, s4
+    mv a1, sp
+    invoke 80
+    expect 0
+    lw t0, 16(sp)
+    li t1, 0170000
+    and t0, t0, t1
+    li t1, 0120000
+    bne t0, t1, path_failure
+    ld s5, 8(sp)
+    mv a0, s0
+    la a1, renamed_link
     li a2, 0
     invoke 35
+    expect 0
+    mv a0, s4
+    mv a1, sp
+    invoke 80
+    expect 0
+    ld t0, 8(sp)
+    bne t0, s5, path_failure
+    lw t0, 20(sp)
+    bnez t0, path_failure
+    mv a0, s4
+    la a1, empty_path
+    mv a2, sp
+    li a3, 512
+    invoke 78
+    expect 15
+    lw t0, 0(sp)
+    li t1, 0x722f2e2e
+    bne t0, t1, path_failure
+    mv a0, s4
+    invoke 57
     expect 0
     mv a0, s0
     la a1, renamed_loop
@@ -320,5 +356,6 @@ slash: .asciz "/"
 archive_data: .asciz "/etc/linux-data"
 renamed_link: .asciz "renamed/link"
 renamed_loop: .asciz "renamed/loop"
+empty_path: .asciz ""
 payload: .asciz "xyz"
 .section .note.GNU-stack,"",@progbits

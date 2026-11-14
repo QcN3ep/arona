@@ -82,6 +82,13 @@ impl Mounted {
         }
     }
 
+    fn open_path(&self, path: &[u8]) -> Result<File, Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.open_path(path).map(File::Ext4),
+            Self::Tmpfs(filesystem) => filesystem.open_path(path).map(File::Tmpfs),
+        }
+    }
+
     fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.open_bytes(path).map(File::Ext4),
@@ -307,7 +314,11 @@ impl Namespace {
 
     pub fn open_with(&self, path: &[u8], options: crate::OpenOptions) -> Result<File, Error> {
         options.validate()?;
-        let file = match self.open_bytes(path) {
+        let file = match if options.path_only {
+            self.open_path(path)
+        } else {
+            self.open_bytes(path)
+        } {
             Ok(_) if options.create && options.exclusive => return Err(Error::AlreadyExists),
             Err(Error::IsDirectory) if options.create && options.exclusive => {
                 return Err(Error::AlreadyExists);
@@ -482,6 +493,17 @@ impl Namespace {
         Ok(())
     }
 
+    pub fn open_path(&self, path: &[u8]) -> Result<File, Error> {
+        let path = normalize(path)?;
+        for (prefix, filesystem) in self.mounts.borrow().iter() {
+            if beneath(&path, prefix) {
+                let relative = path.get(prefix.len() + 1..).unwrap_or(b"/");
+                return filesystem.open_path(relative);
+            }
+        }
+        self.archive.open_path(&path).map(File::Archive)
+    }
+
     pub fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
         let path = normalize(path)?;
         for (prefix, filesystem) in self.mounts.borrow().iter() {
@@ -523,6 +545,19 @@ impl ReadAt for File {
 }
 
 impl File {
+    pub fn read_link(&self) -> Result<Vec<u8>, Error> {
+        let info = self.metadata()?;
+        if info.mode & 0o170000 != 0o120000 {
+            return Err(Error::InvalidRequest);
+        }
+        if info.size >= 4096 {
+            return Err(Error::InvalidData);
+        }
+        let mut bytes = alloc::vec![0; info.size as usize];
+        self.read_exact_at(0, &mut bytes)?;
+        Ok(bytes)
+    }
+
     pub fn statistics(&self) -> Result<crate::Statistics, Error> {
         match self {
             Self::Archive(file) => file.statistics(),

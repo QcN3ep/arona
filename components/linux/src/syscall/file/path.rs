@@ -106,6 +106,32 @@ pub(super) fn dispatch<'a>(
     })
 }
 
+fn read_link_fd<'a>(
+    process: &Process<'a>,
+    directory: usize,
+    address: usize,
+    length: usize,
+) -> Result<Pending<'a>, Errno> {
+    if length == 0 {
+        return Err(EINVAL);
+    }
+    let anchor = Rc::clone(&process.files.get(fd(directory)?).ok_or(EBADF)?.description);
+    let OpenFileDescription::Regular { file, .. } = anchor.as_ref() else {
+        return Err(EINVAL);
+    };
+    if !anchor.path_only() {
+        return Err(EINVAL);
+    }
+    Ok(Pending::Path(PathOperation {
+        request: Request::ReadLink {
+            request: file.start_read_link().map_err(filesystem_error)?,
+            address,
+            length,
+        },
+        _anchors: alloc::vec![anchor],
+    }))
+}
+
 fn start<'a>(
     process: &Process<'a>,
     files: &fs::Client<'a>,
@@ -117,6 +143,9 @@ fn start<'a>(
         abi::SYMLINKAT => (args[1], args[2]),
         _ => (args[0], args[1]),
     };
+    if number == abi::READLINKAT && open::path_bytes(process, name)?.is_empty() {
+        return read_link_fd(process, directory, args[2], args[3]);
+    }
     let lookup = Lookup::new(process, directory, name)?;
     if number == abi::UNLINKAT {
         check_remove(&lookup.name, args[2])?;
@@ -129,6 +158,7 @@ fn start<'a>(
                     lookup.directory(),
                     &lookup.name,
                     fs::OpenOptions {
+                        path_only: false,
                         write: false,
                         create: false,
                         exclusive: false,

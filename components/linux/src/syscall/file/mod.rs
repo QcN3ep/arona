@@ -225,6 +225,9 @@ pub(super) fn fcntl(
 ) -> SyscallResult {
     let index = fd(raw)?;
     let descriptor = process.files.get_mut(index).ok_or(EBADF)?;
+    if descriptor.description.path_only() && !matches!(command as u32, 0..=3 | 1030) {
+        return Err(EBADF);
+    }
     match command as u32 {
         0 | 1030 => {
             if argument > i32::MAX as usize {

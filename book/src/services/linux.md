@@ -72,7 +72,9 @@ Virtual character descriptions implement `/dev/null` and `/dev/zero`, while `/de
 
 Path operations convert the current directory or dirfd into a file service directory anchor.
 Permission modes, umask, and open flags are interpreted in the compatibility layer, while the actual file content and persistence are handled by the file service.
-`O_PATH` requests resolve the node and return a path-only descriptor: it answers status queries, anchors relative opens, and serves as the working directory, while byte I/O, positioning, and directory reads fail with `EBADF`.
+`O_PATH` requests resolve the node and return a path-only descriptor: it answers status queries, anchors relative opens, and serves as the working directory, while byte I/O, memory mapping, ioctl, and directory reads fail with `EBADF`.
+`O_PATH | O_NOFOLLOW` retains the symbolic link itself.
+An empty `readlinkat` path reads that link through its descriptor even after unlinking it.
 `statx` also reports the filesystem mount identity and the creation timestamp when the stored inode provides it.
 `statfs` resolves the path and reports its filesystem's capacity and identity.
 `fstatfs` uses the filesystem held by an open regular file or directory, so renaming or unlinking the file does not change the result.

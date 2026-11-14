@@ -247,8 +247,44 @@ files_path:
     expect 0
     move $a0, $s0
     la.pcrel $a1, renamed_link
+    li.d $a2, 0x220000
+    invoke 56
+    bltz $a0, path_failure
+    move $s4, $a0
+    move $a0, $s4
+    move $a1, $sp
+    invoke 80
+    expect 0
+    ld.w $t0, $sp, 16
+    li.d $t1, 0170000
+    and $t0, $t0, $t1
+    li.d $t1, 0120000
+    bne $t0, $t1, path_failure
+    ld.d $s5, $sp, 8
+    move $a0, $s0
+    la.pcrel $a1, renamed_link
     li.d $a2, 0
     invoke 35
+    expect 0
+    move $a0, $s4
+    move $a1, $sp
+    invoke 80
+    expect 0
+    ld.d $t0, $sp, 8
+    bne $t0, $s5, path_failure
+    ld.w $t0, $sp, 20
+    bnez $t0, path_failure
+    move $a0, $s4
+    la.pcrel $a1, empty_path
+    move $a2, $sp
+    li.d $a3, 512
+    invoke 78
+    expect 15
+    ld.w $t0, $sp, 0
+    li.d $t1, 0x722f2e2e
+    bne $t0, $t1, path_failure
+    move $a0, $s4
+    invoke 57
     expect 0
     move $a0, $s0
     la.pcrel $a1, renamed_loop
@@ -319,5 +355,6 @@ slash: .asciz "/"
 archive_data: .asciz "/etc/linux-data"
 renamed_link: .asciz "renamed/link"
 renamed_loop: .asciz "renamed/loop"
+empty_path: .asciz ""
 payload: .asciz "xyz"
 .section .note.GNU-stack,"",@progbits

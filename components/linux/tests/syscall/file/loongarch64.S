@@ -8,6 +8,7 @@
 .endm
 
 .macro expect value
+    li.d $s8, \@
     li.d $t0, \value
     bne $a0, $t0, file_failure
 .endm
@@ -509,7 +510,9 @@ files:
     la.pcrel $a1, data_path
     li.d $a2, 0x200000
     invoke 56
-    expect -95
+    bltz $a0, file_failure
+    invoke 57
+    expect 0
     li.d $a0, -100
     la.pcrel $a1, null_path
     li.d $a2, 2
@@ -648,14 +651,67 @@ files:
     invoke 46
     expect -9
     move $a0, $s0
-    invoke 74
+    invoke 82
+    expect -9
+    move $a0, $s0
+    li.d $a1, 4
+    li.d $a2, 2048
+    invoke 25
+    expect -9
+    move $a0, $s0
+    li.d $a1, 3
+    invoke 25
+    expect 0x200000
+    move $a0, $s0
+    li.d $a1, 0x5403
+    move $a2, $sp
+    invoke 29
+    expect -9
+    move $a0, $s0
+    li.d $a1, 0x5421
+    move $a2, $sp
+    invoke 29
+    expect -9
+    li.d $a0, 0
+    li.d $a1, 4096
+    li.d $a2, 1
+    li.d $a3, 2
+    move $a4, $s0
+    li.d $a5, 0
+    invoke 222
+    expect -9
+    st.w $s0, $sp, 0
+    li.d $t0, 1
+    st.h $t0, $sp, 4
+    st.h $zero, $sp, 6
+    st.d $zero, $sp, 16
+    st.d $zero, $sp, 24
+    move $a0, $sp
+    li.d $a1, 1
+    addi.d $a2, $sp, 16
+    li.d $a3, 0
+    invoke 73
+    expect 1
+    ld.hu $t0, $sp, 6
+    li.d $t1, 32
+    bne $t0, $t1, file_failure
+    li.d $t0, 1
+    sll.d $t0, $t0, $s0
+    st.d $t0, $sp, 0
+    addi.d $a0, $s0, 1
+    move $a1, $sp
+    li.d $a2, 0
+    li.d $a3, 0
+    addi.d $a4, $sp, 16
+    li.d $a5, 0
+    invoke 72
     expect -9
     move $a0, $s0
     invoke 57
     expect 0
     # An O_PATH directory anchors relative opens but rejects directory reads.
     li.d $a0, -100
-    la.pcrel $a1, root_path
+    la.pcrel $a1, path_root
     li.d $a2, 0x210000
     invoke 56
     bltz $a0, file_failure
@@ -663,7 +719,7 @@ files:
     move $a0, $s0
     move $a1, $sp
     li.d $a2, 8
-    invoke 217
+    invoke 61
     expect -9
     move $a0, $s0
     la.pcrel $a1, relative_path
@@ -678,7 +734,7 @@ files:
     invoke 57
     expect 0
     # O_PATH ignores the access mode, and O_PATH|O_DIRECTORY still rejects files.
-    open_data 0x200003
+    open_data 0x80200003
     bltz $a0, file_failure
     move $s0, $a0
     move $a0, $s0
@@ -697,7 +753,7 @@ files:
     addi.d $sp, $sp, 16
     jr $ra
 file_failure:
-    li.d $a0, 3
+    addi.d $a0, $s8, 3
     invoke 94
     b file_failure
 
@@ -710,6 +766,7 @@ file_failure:
  null_data: .ascii "abc"
  relative_path: .asciz "etc/linux-data"
  trailing_path: .asciz "/etc/linux-data/"
+ path_root: .asciz "/"
  root_path: .asciz "/bin"
  missing_path: .asciz "/etc/absent"
  empty_path: .asciz ""
