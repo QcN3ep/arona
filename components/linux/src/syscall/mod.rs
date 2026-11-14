@@ -144,7 +144,9 @@ pub(crate) fn dispatch<'a>(
             abi::EXECVE => process::exec::start(process, files, arguments),
             abi::EXIT => process::exit(process, index, arguments[0])?,
             abi::EXIT_GROUP => process::exit_group(process, arguments[0])?,
-            abi::BRK => Outcome::Complete(Ok(process.address_space.brk(arguments[0])?)),
+            abi::BRK => Outcome::Complete(Ok(process
+                .address_space
+                .brk(arguments[0], process.limits.address_space())?)),
             abi::MMAP => memory::mmap(process, arguments),
             abi::MADVISE => Outcome::Complete(memory::madvise(&process.address_space, arguments)),
             abi::MUNMAP => Outcome::Complete(memory::munmap(

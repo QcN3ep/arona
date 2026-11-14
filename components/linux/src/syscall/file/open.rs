@@ -91,7 +91,10 @@ pub(in crate::syscall) fn openat<'a>(
             };
         }
         if name == b"/dev/tty" {
-            return open_terminal(process, flags).map(|fd| Outcome::Complete(Ok(fd)));
+            return open_terminal(process, flags, false).map(|fd| Outcome::Complete(Ok(fd)));
+        }
+        if name == b"/dev/console" {
+            return open_terminal(process, flags, true).map(|fd| Outcome::Complete(Ok(fd)));
         }
         match name.as_slice() {
             b"/dev/null" => {
@@ -194,11 +197,18 @@ fn open_rtc(process: &mut Process<'_>, flags: u32) -> Result<usize, Errno> {
         .ok_or(EMFILE)
 }
 
-fn open_terminal(process: &mut Process<'_>, flags: u32) -> Result<usize, Errno> {
+fn open_terminal(process: &mut Process<'_>, flags: u32, console: bool) -> Result<usize, Errno> {
     if flags & O_DIRECTORY != 0 {
         return Err(ENOTDIR);
     }
-    let terminal = process.namespace.controlling_terminal(process.pid)?;
+    let terminal = if console {
+        process
+            .namespace
+            .controlling_terminal(process.pid)
+            .unwrap_or_else(|_| Rc::clone(&process.terminal))
+    } else {
+        process.namespace.controlling_terminal(process.pid)?
+    };
     if terminal.exclusive() {
         return Err(EBUSY);
     }

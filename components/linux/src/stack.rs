@@ -11,7 +11,7 @@ use crate::{
     protocol::Arguments,
 };
 
-const STACK_SIZE: usize = 64 * 1024;
+pub(crate) const STACK_SIZE: usize = 64 * 1024;
 
 // REFERENCE: https://refspecs.linuxfoundation.org/elf/gabi4+/ch5.pheader.html
 pub(crate) fn build(
@@ -20,6 +20,7 @@ pub(crate) fn build(
     interpreter_base: usize,
     arguments: &Arguments,
     random: Option<&[u8; 16]>,
+    stack: usize,
 ) -> Result<usize, Error> {
     let task = &space.native;
     let (phdr, top) = load_headers(space, image, &arguments.path)?;
@@ -35,7 +36,7 @@ pub(crate) fn build(
         .and_then(|size| size.checked_add(3 + (auxv.len() + 3) * 2))
         .and_then(|size| size.checked_mul(8))
         .ok_or(Error::InvalidRequest)?;
-    let length = STACK_SIZE
+    let length = stack
         .checked_add(string_size)
         .and_then(|size| size.checked_add(words))
         .and_then(|size| size.checked_add(31))

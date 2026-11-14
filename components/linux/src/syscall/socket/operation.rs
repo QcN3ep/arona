@@ -133,21 +133,25 @@ impl<'a> Pending<'a> {
                 }
             }
             Self::Local(operation) => operation.waits(items),
-            Self::Operation(operation) => {
-                if operation.lease.is_none() {
-                    operation.deadline.waits(items);
-                }
-                operation.watch.waits(items);
-                if let Some(call) = operation
-                    .lease
-                    .as_ref()
-                    .and_then(|lease| lease.native.as_ref())
-                    .and_then(net::Socket::call)
-                {
-                    items.push(WaitItem::new(call, ipc::READABLE));
-                }
-            }
+            Self::Operation(operation) => operation.waits(items),
             _ => {}
+        }
+    }
+}
+
+impl<'a> Operation<'a> {
+    pub(super) fn waits<'b>(&'b self, items: &mut Vec<WaitItem<'b>>) {
+        if self.lease.is_none() {
+            self.deadline.waits(items);
+        }
+        self.watch.waits(items);
+        if let Some(call) = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.native.as_ref())
+            .and_then(net::Socket::call)
+        {
+            items.push(WaitItem::new(call, ipc::READABLE));
         }
     }
 }
@@ -235,7 +239,7 @@ impl<'a> Operation<'a> {
         })
     }
 
-    fn poll(&mut self, process: &mut Process<'a>) -> Result<Option<usize>, Errno> {
+    pub(super) fn poll(&mut self, process: &mut Process<'a>) -> Result<Option<usize>, Errno> {
         loop {
             if let Action::Receive(receive) = &self.action
                 && let Some(count) = receive.buffered(process, Socket::state(&self.description))?

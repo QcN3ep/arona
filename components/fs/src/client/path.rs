@@ -93,6 +93,30 @@ impl<'a> Client<'a> {
         metadata_call(self.task, &self.channel, request)
     }
 
+    pub fn start_set_attributes_at(
+        &self,
+        directory: Option<&Directory<'_>>,
+        path: &[u8],
+        attributes: crate::Attributes,
+        follow: bool,
+    ) -> Result<Pending<()>, Error> {
+        attributes.validate()?;
+        let mut request = at(
+            self,
+            protocol::SET_ATTRIBUTES,
+            directory,
+            u64::from(follow),
+            &[path.len() as u64],
+        )?;
+        transfer(&mut request, path_buffer(self.task, path)?, Rights::READ)?;
+        transfer(
+            &mut request,
+            input_buffer(self.task, &attributes.encode())?,
+            Rights::READ,
+        )?;
+        empty_call(&self.channel, request)
+    }
+
     pub fn start_mkdir_at(
         &self,
         directory: Option<&Directory<'_>>,

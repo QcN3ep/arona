@@ -176,6 +176,13 @@ fn client(
     files: &mut Vec<FileSession>,
     request: ReceivedMessage,
 ) -> Result<Message, Error> {
+    if request.tag == protocol::SYNC {
+        if !request.words().is_empty() || !request.handles().is_empty() {
+            return Err(Error::InvalidRequest);
+        }
+        namespace.sync()?;
+        return Ok(Message::new(protocol::SUCCESS, &[])?);
+    }
     if request.tag == protocol::RELATIVE {
         return path::relative(namespace, files, request);
     }

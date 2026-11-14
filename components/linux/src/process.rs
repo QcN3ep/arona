@@ -94,6 +94,8 @@ pub(crate) struct Process<'a> {
     pub umask: u16,
     pub status: ExitStatus,
     pub credentials: Credentials,
+    pub limits: crate::limits::Limits,
+    pub cpu_limited: bool,
 }
 
 /// Real, effective, and saved user and group identities inherited by child processes.
@@ -121,7 +123,9 @@ impl<'a> Process<'a> {
         let start_ns = runtime::thread::now_ns().unwrap_or(0);
         let machine = images.image.machine;
         let entry = images.entry();
-        let (address_space, stack) = AddressSpace::load(parent, port, images, arguments, random)?;
+        let limits = crate::limits::Limits::default();
+        let (address_space, stack) =
+            AddressSpace::load(parent, port, images, arguments, random, limits.stack())?;
         let native = address_space.native.create_thread(
             UserEntry {
                 pc: entry as u64,
@@ -191,6 +195,8 @@ impl<'a> Process<'a> {
             umask: 0o022,
             credentials: Credentials::default(),
             status: ExitStatus { code: 0, signal: 0 },
+            limits,
+            cpu_limited: false,
         })
     }
 
@@ -239,6 +245,7 @@ impl<'a> Process<'a> {
     ) -> Result<bool, Error> {
         self.refresh_record();
         let mut progress = timer::poll(self)?;
+        progress |= self.enforce_cpu_limit();
         progress |= self.terminal.poll();
         if self.terminal.failed() {
             progress |= self.namespace.hangup_terminal(&self.terminal);
@@ -286,6 +293,38 @@ impl<'a> Process<'a> {
             self.release_vfork();
         }
         Ok(progress)
+    }
+
+    /// Reports the CPU time limit as `SIGXCPU`, or `SIGKILL` past the hard limit.
+    fn enforce_cpu_limit(&mut self) -> bool {
+        let limit = self.limits.cpu();
+        if limit.current == crate::limits::INFINITY && limit.maximum == crate::limits::INFINITY {
+            return false;
+        }
+        let mut used = self.cpu_ns;
+        for thread in &self.threads {
+            used = used.saturating_add(thread.native.cpu_time_ns().unwrap_or(0));
+        }
+        let seconds = used / 1_000_000_000;
+        let hard = limit.maximum != crate::limits::INFINITY && seconds >= limit.maximum;
+        let soft = limit.current != crate::limits::INFINITY && seconds >= limit.current;
+        if !hard && (!soft || self.cpu_limited) {
+            return false;
+        }
+        let number = if hard { 9 } else { 24 };
+        let info = signal::Info {
+            number,
+            code: 128,
+            sender: 0,
+            uid: 0,
+            address: 0,
+            value: 0,
+        };
+        let _ = self.namespace.signal_process(self.pid, info);
+        if !hard {
+            self.cpu_limited = true;
+        }
+        true
     }
 
     /// Resume a suspended vfork parent once this process replaces its address space or exits.

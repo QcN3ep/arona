@@ -230,6 +230,40 @@ pub(super) fn io<'a>(
     .unwrap_or_else(|error| Outcome::Complete(Err(error)))
 }
 
+/// A stream send driven by another syscall, such as `sendfile`.
+pub(super) struct Stream<'a> {
+    operation: Box<Operation<'a>>,
+}
+
+impl<'a> Stream<'a> {
+    pub(super) fn start(
+        process: &Process<'a>,
+        description: Rc<OpenFileDescription<'a>>,
+        bytes: alloc::vec::Vec<u8>,
+    ) -> Result<Self, Errno> {
+        let action = Action::Send { bytes, peer: None };
+        Ok(Self {
+            operation: Box::new(Operation::new(description, action, false, process)?),
+        })
+    }
+
+    pub(super) fn call(&self) -> Option<&runtime::Handle<runtime::Call>> {
+        None
+    }
+
+    pub(super) fn waits<'b>(&'b self, items: &mut alloc::vec::Vec<runtime::ipc::WaitItem<'b>>) {
+        self.operation.waits(items);
+    }
+
+    pub(super) fn poll(&mut self, process: &mut Process<'a>) -> Option<SyscallResult> {
+        match self.operation.poll(process) {
+            Ok(Some(count)) => Some(Ok(count)),
+            Ok(None) => None,
+            Err(error) => Some(Err(error)),
+        }
+    }
+}
+
 fn check_flags(flags: usize, supported: usize) -> Result<(), Errno> {
     if flags & !supported == 0 {
         Ok(())

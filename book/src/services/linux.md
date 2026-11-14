@@ -62,12 +62,14 @@ Nonblocking operations report `EAGAIN` when they would wait.
 Selected files under `/proc` and `/sys` expose read-only snapshots taken when the descriptor is opened.
 These include process status and arguments, mount information, the release version, and the online CPU list.
 Virtual character descriptions implement `/dev/null` and `/dev/zero`, while `/dev/random` and `/dev/urandom` read from the configured random number session.
+`/dev/console` and `/dev/tty` open the terminal that owns the calling process, so console reads, writes, and ioctls use the same line discipline as the standard streams.
 
 | Operation group | Implemented calls |
 |---|---|
 | Open and descriptors | `openat`, `close`, `dup`, `dup3`, `fcntl` |
 | Byte I/O | `read`, `write`, `pread64`, `pwrite64`, `readv`, `writev`, `preadv`, `pwritev` |
 | File status | `fstat`, `newfstatat`, `statx`, `statfs`, `fstatfs`, `lseek`, `ftruncate`, `fsync`, `fdatasync` |
+| Access, timestamps, and flushing | `faccessat`, `faccessat2`, `utimensat`, `sync`, `sendfile` |
 | Directory and paths | `getdents64`, `chdir`, `fchdir`, `getcwd`, `mkdirat`, `unlinkat`, `readlinkat`, `symlinkat`, `linkat`, `renameat`, `renameat2` |
 | Waiting and pipes | `pipe2`, `eventfd2`, `ppoll`, `pselect6` |
 
@@ -76,6 +78,11 @@ Permission modes, umask, and open flags are interpreted in the compatibility lay
 `O_PATH` requests resolve the node and return a path-only descriptor: it answers status queries, anchors relative opens, and serves as the working directory, while byte I/O, memory mapping, ioctl, and directory reads fail with `EBADF`.
 `O_PATH | O_NOFOLLOW` retains the symbolic link itself.
 An empty `readlinkat` path reads that link through its descriptor even after unlinking it.
+`faccessat` and `faccessat2` resolve the path and compare the requested `R_OK`, `W_OK`, and `X_OK` bits against the inode's mode and the caller's real or effective identities, so an unprivileged caller is denied in the same cases as Linux.
+A superuser still needs an execute bit to pass `X_OK` on a regular file.
+`utimensat` stores explicit, current, or omitted access and modification timestamps through the file service, and updates the change timestamp to the current time.
+`sync` flushes every mounted volume and reports the first flush failure.
+`sendfile` stages one page at a time between a regular source file and a regular file, pipe, or connected socket destination, honors an explicit offset pointer, and returns short counts for partial writes.
 `statx` also reports the filesystem mount identity and the creation timestamp when the stored inode provides it.
 `statfs` resolves the path and reports its filesystem's capacity and identity.
 `fstatfs` uses the filesystem held by an open regular file or directory, so renaming or unlinking the file does not change the result.
@@ -306,6 +313,10 @@ The identity interfaces provide PID, TID, process group, session, and credential
 A process starts with root credentials and passes its real, effective, and saved user and group IDs to its children.
 The `setuid`, `setgid`, `setreuid`, `setregid`, `setresuid`, and `setresgid` calls update these IDs according to the caller's privilege and saved identities.
 Supplementary group lists are currently empty, and `setgroups` accepts an empty list only for root.
+
+`prlimit64` queries and updates the soft and hard limits of the calling process.
+The `RLIMIT_NOFILE` soft limit bounds descriptor allocation, `RLIMIT_FSIZE` truncates writes at the limit and reports `EFBIG` afterwards, `RLIMIT_AS` rejects mappings and heap growth beyond the limit, and `RLIMIT_STACK` bounds the initial stack of an executed image.
+Limits on other processes and the remaining resource kinds are recorded but not yet enforced.
 
 ## Terminals and Shell
 

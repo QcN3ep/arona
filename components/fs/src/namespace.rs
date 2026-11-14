@@ -484,6 +484,18 @@ impl Namespace {
         self.archive.read_link(&path)
     }
 
+    pub fn set_attributes(&self, path: &[u8], attributes: crate::Attributes) -> Result<(), Error> {
+        self.mounted(path, |fs, path| fs.set_attributes(path, attributes))
+    }
+
+    /// Flushes every mounted filesystem; the read-only archive needs no flush.
+    pub fn sync(&self) -> Result<(), Error> {
+        for filesystem in self.mounts.borrow().values() {
+            filesystem.sync()?;
+        }
+        Ok(())
+    }
+
     pub fn shutdown(&self) -> Result<(), Error> {
         let mut mounts = self.mounts.borrow_mut();
         while let Some(entry) = mounts.first_entry() {

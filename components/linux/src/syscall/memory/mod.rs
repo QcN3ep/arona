@@ -56,6 +56,13 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
         .checked_next_multiple_of(PAGE_SIZE)
         .filter(|length| *length <= isize::MAX as usize)
         .ok_or(ENOMEM)?;
+    if process
+        .limits
+        .address_space()
+        .is_some_and(|limit| process.address_space.mapped().saturating_add(length) > limit)
+    {
+        return Err(ENOMEM);
+    }
     let exact = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
     let replace = flags & MAP_FIXED != 0;
     if exact && !address.is_multiple_of(PAGE_SIZE) {

@@ -79,6 +79,7 @@ impl AddressSpace {
         images: &ImageSet<'_>,
         arguments: &Arguments,
         random: Option<&[u8; 16]>,
+        stack: usize,
     ) -> Result<(Self, usize), Error> {
         let main_path = Rc::new(arguments.path.clone());
         let interpreter_path = images.image.interpreter.map(|path| Rc::new(path.to_vec()));
@@ -140,8 +141,14 @@ impl AddressSpace {
             images.interpreter.as_ref().map_or(0, |image| image.base),
             arguments,
             random,
+            stack,
         )?;
         Ok((address_space, stack))
+    }
+
+    /// Returns the number of bytes currently mapped into the address space.
+    pub fn mapped(&self) -> usize {
+        self.pages.borrow().len() * PAGE_SIZE
     }
 
     pub fn read(&self, address: usize, output: &mut [u8]) -> Result<(), runtime::Error> {
@@ -679,7 +686,7 @@ impl AddressSpace {
     }
 
     // REFERENCE: https://man7.org/linux/man-pages/man2/brk.2.html
-    pub fn brk(&mut self, address: usize) -> Result<usize, runtime::Error> {
+    pub fn brk(&mut self, address: usize, limit: Option<usize>) -> Result<usize, runtime::Error> {
         if address < self.heap.start {
             return Ok(self.heap.end);
         }
@@ -687,6 +694,13 @@ impl AddressSpace {
             return Ok(self.heap.end);
         };
         let previous = self.heap.end.next_multiple_of(PAGE_SIZE);
+        if let Some(limit) = limit
+            && end > previous
+            && self.mapped().saturating_add(end - previous) > limit
+        {
+            // A rejected growth keeps the previous break, like an allocation failure.
+            return Ok(self.heap.end);
+        }
         let changed = match end.cmp(&previous) {
             core::cmp::Ordering::Less => self.unmap(end..previous).is_ok(),
             core::cmp::Ordering::Equal => true,

@@ -34,6 +34,7 @@ pub(in crate::syscall) struct Write<'a> {
     description: Rc<OpenFileDescription<'a>>,
     input: Vec<u8>,
     offset: Option<usize>,
+    limit: Option<usize>,
     position: Option<FilePosition<'a>>,
     request: Option<WriteRequest>,
 }
@@ -242,6 +243,7 @@ pub(in crate::syscall) fn write<'a>(
             description: Rc::clone(&descriptor.description),
             input,
             offset,
+            limit: process.limits.file_size(),
             position: None,
             request: None,
         })))
@@ -270,6 +272,13 @@ pub(in crate::syscall) fn truncate<'a>(
         let OpenFileDescription::Regular { file, .. } = descriptor.description.as_ref() else {
             return Err(EINVAL);
         };
+        if process
+            .limits
+            .file_size()
+            .is_some_and(|limit| length > limit)
+        {
+            return Err(EFBIG);
+        }
         Ok(Pending::Truncate {
             request: file.start_truncate(length).map_err(filesystem_error)?,
             _description: Rc::clone(&descriptor.description),
@@ -512,7 +521,13 @@ impl Write<'_> {
                 let offset = self
                     .offset
                     .unwrap_or_else(|| self.position.as_ref().unwrap().get());
-                let length = self.input.len().min(i64::MAX as usize - offset);
+                let mut length = self.input.len().min(i64::MAX as usize - offset);
+                if let Some(limit) = self.limit {
+                    if offset >= limit {
+                        return Some(Err(EFBIG));
+                    }
+                    length = length.min(limit - offset);
+                }
                 if length == 0 {
                     return Some(Err(EFBIG));
                 }

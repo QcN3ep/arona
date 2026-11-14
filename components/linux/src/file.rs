@@ -20,6 +20,7 @@ pub(crate) const O_PATH: u32 = 0x200000;
 
 pub(crate) struct FileTable<'a> {
     entries: BTreeMap<usize, Descriptor<'a>>,
+    maximum: usize,
 }
 
 pub(crate) struct Descriptor<'a> {
@@ -126,6 +127,7 @@ impl<'a> FileTable<'a> {
             flags: Cell::new(1),
         });
         let mut table = Self {
+            maximum: crate::limits::Limits::default().file_descriptors(),
             entries: [
                 (
                     1,
@@ -176,7 +178,7 @@ impl<'a> FileTable<'a> {
             }
             available += 1;
         }
-        if available > i32::MAX as usize {
+        if available >= self.maximum {
             return None;
         }
         self.entries.insert(available, descriptor);
@@ -425,7 +427,13 @@ impl FileTable<'_> {
                 .iter()
                 .map(|(&fd, entry)| (fd, entry.duplicate(entry.close_on_exec)))
                 .collect(),
+            maximum: self.maximum,
         }
+    }
+
+    /// Applies the `RLIMIT_NOFILE` soft limit to future descriptor allocations.
+    pub fn set_maximum(&mut self, maximum: usize) {
+        self.maximum = maximum;
     }
 }
 

@@ -127,6 +127,8 @@ fn spawn<'a>(
         vfork: waiting.clone(),
         umask: process.umask,
         credentials: process.credentials,
+        limits: process.limits,
+        cpu_limited: false,
         cpu_ns: 0,
         timers: crate::process::timer::Timers::default(),
         status: crate::ExitStatus { code: 0, signal: 0 },

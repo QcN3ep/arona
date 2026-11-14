@@ -178,9 +178,22 @@ fn replace(
     random: Option<&[u8; 16]>,
 ) -> Result<(), Errno> {
     let entry = images.entry();
-    let (space, stack) =
-        AddressSpace::load(process.supervisor, &process.port, images, arguments, random)
-            .map_err(error)?;
+    let (space, stack) = AddressSpace::load(
+        process.supervisor,
+        &process.port,
+        images,
+        arguments,
+        random,
+        process.limits.stack(),
+    )
+    .map_err(error)?;
+    if process
+        .limits
+        .address_space()
+        .is_some_and(|limit| space.mapped() > limit)
+    {
+        return Err(ENOMEM);
+    }
     let native = space
         .native
         .create_thread(

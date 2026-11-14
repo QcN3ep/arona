@@ -4,6 +4,7 @@ mod child;
 pub(super) mod exec;
 pub(super) mod futex;
 mod identity;
+mod rlimit;
 mod thread;
 pub(super) mod wait;
 
@@ -25,6 +26,9 @@ pub(super) fn dispatch<'a>(
     }
     if matches!(number, abi::WAIT4 | abi::WAITID) {
         return Some(wait::start(process, number, args));
+    }
+    if number == abi::PRLIMIT64 {
+        return Some(rlimit::start(process, args));
     }
     let result = match number {
         abi::GETPID => Ok(process.pid),

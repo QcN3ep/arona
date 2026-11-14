@@ -94,6 +94,15 @@ pub(super) fn relative(
                 Ok(Message::new(protocol::SUCCESS, &[bytes.len() as u64])?)
             }
         }
+        (protocol::SET_ATTRIBUTES, [length]) if request.handles().len() == 2 && *flags <= 1 => {
+            let path = path(&mut request, *length)?;
+            let path = resolve(namespace, files, *anchor, &path, *flags == 1, false)?;
+            let input = take_frames(&mut request, Rights::READ)?;
+            let mut bytes = [0; crate::Attributes::SIZE];
+            input.read(0, &mut bytes)?;
+            namespace.set_attributes(&path, crate::Attributes::decode(&bytes)?)?;
+            Ok(Message::new(protocol::SUCCESS, &[])?)
+        }
         (protocol::MKDIR, [length, permissions]) if request.handles().len() == 1 && *flags == 0 => {
             let permissions = u16::try_from(*permissions).map_err(|_| Error::InvalidRequest)?;
             let mut path = path(&mut request, *length)?;

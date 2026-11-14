@@ -249,6 +249,11 @@ fn lookup<'a>(
             Err(error) => Err(error),
         });
     }
+    if path.starts_with(b"/")
+        && let Some(info) = super::device::metadata(&path)
+    {
+        return Outcome::Complete(buffer.write(process, info));
+    }
     let operation = (|| {
         if path.is_empty() {
             return Err(ENOENT);

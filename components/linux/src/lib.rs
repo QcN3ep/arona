@@ -12,6 +12,7 @@ extern crate alloc;
 mod client;
 pub mod elf;
 mod file;
+mod limits;
 mod memory;
 mod process;
 mod protocol;

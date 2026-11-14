@@ -4,7 +4,9 @@
 
 // TODO: Support file change notifications.
 
+mod access;
 pub(super) mod buffer;
+mod device;
 mod directory;
 mod eventfd;
 mod io;
@@ -15,10 +17,12 @@ pub(in crate::syscall) mod path;
 mod pipe;
 mod poll;
 mod rtc;
+mod sendfile;
 mod signalfd;
 mod statistics;
 mod terminal;
 mod timerfd;
+mod times;
 mod virtual_file;
 
 use super::{
@@ -51,6 +55,12 @@ pub(super) enum Pending<'a> {
     Read(io::Read<'a>),
     Write(io::Write<'a>),
     Seek(io::Seek<'a>),
+    Access(access::Access<'a>),
+    Sendfile(sendfile::Sendfile<'a>),
+    Utimens(times::Utimens<'a>),
+    GlobalSync {
+        request: fs::client::Pending<()>,
+    },
     Stat(metadata::Stat<'a>),
     Statistics(statistics::Statistics<'a>),
     Directory(directory::ReadDirectory<'a>),
@@ -163,6 +173,15 @@ pub(super) fn dispatch<'a>(
         ),
         abi::FTRUNCATE => truncate(process, arguments[0], arguments[1]),
         abi::FSYNC | abi::FDATASYNC => sync(process, arguments[0]),
+        abi::SYNC => outcome(
+            files
+                .start_sync()
+                .map(|request| Pending::GlobalSync { request })
+                .map_err(filesystem_error),
+        ),
+        abi::FACCESSAT | abi::FACCESSAT2 => access::start(process, files, number, arguments),
+        abi::UTIMENSAT => times::start(process, files, services, arguments),
+        abi::SENDFILE => sendfile::start(process, arguments),
         abi::UMASK => Outcome::Complete(Ok(core::mem::replace(
             &mut process.umask,
             arguments[0] as u16 & 0o777,
@@ -296,6 +315,7 @@ impl<'a> Pending<'a> {
             Self::Poll(poll) => poll.waits(items),
             Self::Terminal(read) => read.waits(items),
             Self::Timerfd(read) => read.waits(items),
+            Self::Sendfile(sendfile) => sendfile.waits(items),
             _ => {}
         }
     }
@@ -311,12 +331,16 @@ impl<'a> Pending<'a> {
             Self::Read(read) => read.call(),
             Self::Write(write) => write.call(),
             Self::Seek(seek) => seek.call(),
+            Self::Access(access) => access.call(),
+            Self::Sendfile(sendfile) => sendfile.call(),
+            Self::Utimens(utimens) => utimens.call(),
             Self::Stat(stat) => Some(stat.call()),
             Self::Statistics(statistics) => Some(statistics.call()),
             Self::Directory(directory) => directory.call(),
             Self::Output { request, .. } => Some(request.call()),
             Self::Truncate { request, .. } => Some(request.call()),
             Self::Sync { request, .. } => Some(request.call()),
+            Self::GlobalSync { request } => Some(request.call()),
         }
     }
 
@@ -340,6 +364,9 @@ impl<'a> Pending<'a> {
             Self::Read(read) => read.poll(process),
             Self::Write(write) => write.poll(),
             Self::Seek(seek) => seek.poll(),
+            Self::Access(access) => access.poll(),
+            Self::Sendfile(sendfile) => sendfile.poll(process),
+            Self::Utimens(utimens) => utimens.poll(files),
             Self::Stat(stat) => stat.poll(process),
             Self::Statistics(statistics) => statistics.poll(process),
             Self::Directory(directory) => directory.poll(process),
@@ -357,6 +384,11 @@ impl<'a> Pending<'a> {
                     .map_err(filesystem_error),
             ),
             Self::Sync { request, .. } => Some(
+                completion(request.try_complete())?
+                    .map(|()| 0)
+                    .map_err(filesystem_error),
+            ),
+            Self::GlobalSync { request } => Some(
                 completion(request.try_complete())?
                     .map(|()| 0)
                     .map_err(filesystem_error),

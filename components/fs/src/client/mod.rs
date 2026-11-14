@@ -84,6 +84,16 @@ impl<'a> Client<'a> {
             .wait(runtime::ipc::WaitMode::Until(deadline))
     }
 
+    /// Flushes every mounted filesystem and reports the first flush failure.
+    pub fn start_sync(&self) -> Result<Pending<()>, Error> {
+        pending::empty_call(&self.channel, Message::new(protocol::SYNC, &[])?)
+    }
+
+    pub fn sync(&self, deadline: u64) -> Result<(), Error> {
+        self.start_sync()?
+            .wait(runtime::ipc::WaitMode::Until(deadline))
+    }
+
     pub fn metadata(&self, path: &[u8], deadline: u64) -> Result<crate::Metadata, Error> {
         let output = self
             .task

@@ -85,6 +85,7 @@ fn main() {
     malformed(&linux, &output);
     writable(&linux, &files, &output);
     tmpfs(&files, &mounts);
+    fs_misc(&linux, &files, &output);
     terminal(&linux, &output, &device_service, console);
     mounts.unmount(b"/var", service::deadline()).unwrap();
     let output = output();
@@ -409,6 +410,100 @@ fn writable(
         0o600
     );
     append_records(files, &run);
+}
+
+fn fs_misc(
+    linux: &Control<'_>,
+    files: &fs::Client<'_>,
+    output: &impl Fn() -> devmgr::uart::Session,
+) {
+    for path in [
+        b"/var/misc-owner".as_slice(),
+        b"/var/misc-group",
+        b"/var/misc-other",
+        b"/var/misc-exec",
+        b"/var/misc-none",
+        b"/var/misc-root",
+        b"/var/misc-private",
+        b"/var/misc-rlimit",
+        b"/var/misc-send-src",
+        b"/var/misc-send-dst",
+        b"/var/misc-send-big",
+        b"/var/misc-sync",
+        b"/var/misc-utimens",
+        b"/var/misc-utimens-link",
+    ] {
+        match files.unlink_bytes(path, service::deadline()) {
+            Ok(()) | Err(fs::Error::NotFound) => {}
+            Err(error) => panic!("test cleanup failed: {error:?}"),
+        }
+    }
+    let fixture = |path: &[u8], permissions: u32, uid: u32, gid: u32| {
+        let file = files.create_bytes(path, service::deadline()).unwrap();
+        file.set_attributes(
+            fs::Attributes {
+                permissions,
+                uid,
+                gid,
+                ..fs::Attributes::default()
+            },
+            service::deadline(),
+        )
+        .unwrap();
+    };
+    fixture(b"/var/misc-owner", 0o600, 123, 456);
+    fixture(b"/var/misc-group", 0o040, 42, 456);
+    fixture(b"/var/misc-other", 0o004, 42, 7);
+    fixture(b"/var/misc-exec", 0o755, 123, 456);
+    fixture(b"/var/misc-none", 0o000, 42, 7);
+    fixture(b"/var/misc-root", 0o600, 0, 0);
+    files
+        .symlink(b"/var/misc-root", b"/var/misc-private", service::deadline())
+        .unwrap();
+    for mode in [
+        b"access".as_slice(),
+        b"utimens",
+        b"sync",
+        b"sendfile",
+        b"rlimit",
+        b"console",
+    ] {
+        let result = linux
+            .start_run(
+                Program {
+                    path: b"/bin/linux-fs-misc",
+                    arguments: &[b"/bin/linux-fs-misc", mode],
+                    environment: &[],
+                },
+                output(),
+            )
+            .unwrap_or_else(|error| {
+                output()
+                    .write_all(alloc::format!("Fs misc launch {mode:?}: {error:?}\n").as_bytes())
+                    .unwrap();
+                panic!("failed to launch filesystem misc scenario");
+            })
+            .wait(WaitMode::Until(
+                runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
+            ));
+        let expected = ExitStatus {
+            code: 42,
+            signal: 0,
+        };
+        if result != Ok(expected) {
+            let output = output();
+            output
+                .write_all(
+                    alloc::format!("Linux fs misc scenario {mode:?}: {result:?}\n").as_bytes(),
+                )
+                .unwrap();
+            output.flush().unwrap();
+        }
+        assert_eq!(result.unwrap(), expected);
+    }
+    output()
+        .write_all(b"Linux filesystem misc tests passed\n")
+        .unwrap();
 }
 
 fn append_records(
