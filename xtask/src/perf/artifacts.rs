@@ -3,7 +3,7 @@
 //! Preserves calibration images and verifies that saved symbols describe the running code.
 
 use super::{
-    Options, Target, calibration_command, command_output, execute, linux_test, qemu_command,
+    Options, Target, calibration_command, command_output, execute, linux_test, qemu_command, system,
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, env, fs, path::Path, process::Command};
@@ -30,7 +30,7 @@ pub(super) fn prepare(options: &Options, root: &Path, run: &Path) -> Result<Valu
             .map_err(|error| format!("cannot read saved artifacts: {error}"))?;
         let manifest: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         validate_manifest(&manifest, options, root)?;
-        for name in filenames(options.target) {
+        for name in filenames(options.target, options.case) {
             verify_file(&source, name, &manifest)?;
             fs::copy(source.join(name), directory.join(name)).map_err(|error| error.to_string())?;
         }
@@ -38,10 +38,10 @@ pub(super) fn prepare(options: &Options, root: &Path, run: &Path) -> Result<Valu
     } else {
         create(options, root, &directory)?
     };
-    for name in filenames(options.target) {
+    for name in filenames(options.target, options.case) {
         verify_file(&directory, name, &manifest)?;
     }
-    validate_images(options.target, &directory)?;
+    validate_images(options.target, &directory, options.case)?;
     fs::write(
         directory.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?,
@@ -50,17 +50,23 @@ pub(super) fn prepare(options: &Options, root: &Path, run: &Path) -> Result<Valu
     Ok(manifest)
 }
 
-fn filenames(target: Target) -> &'static [&'static str] {
+fn filenames(target: Target, case: &str) -> Vec<&'static str> {
+    if case == "system" {
+        return system::files(target);
+    }
     if matches!(target, Target::Riscv64) {
-        &["symbols.elf", "guest.elf", "firmware.bin"]
+        vec!["symbols.elf", "guest.elf", "firmware.bin"]
     } else {
-        &["symbols.elf", "guest.elf"]
+        vec!["symbols.elf", "guest.elf"]
     }
 }
 
 fn validate_manifest(manifest: &Value, options: &Options, root: &Path) -> Result<(), String> {
-    if manifest["case"] != "calibration" {
+    if manifest["case"] != options.case {
         return Err("unsupported performance case".to_owned());
+    }
+    if options.case == "system" {
+        system::validate_measurement(&manifest["measurement"])?;
     }
     if manifest["target"] != options.target.triple()
         || manifest["release"].as_bool().is_none()
@@ -74,7 +80,7 @@ fn validate_manifest(manifest: &Value, options: &Options, root: &Path) -> Result
         return Err("saved artifacts use an unsupported QEMU machine configuration".to_owned());
     }
     if manifest["files"].as_object().map(|files| files.len())
-        != Some(filenames(options.target).len())
+        != Some(filenames(options.target, options.case).len())
     {
         return Err("unexpected performance artifact files".to_owned());
     }
@@ -102,6 +108,9 @@ pub(super) fn digest(path: &Path) -> Result<String, String> {
 }
 
 fn create(options: &Options, root: &Path, directory: &Path) -> Result<Value, String> {
+    if options.case == "system" {
+        return create_system(options, root, directory);
+    }
     let source = source_state(root)?;
     let command = calibration_command(options, root);
     let arguments = command
@@ -132,8 +141,8 @@ fn create(options: &Options, root: &Path, directory: &Path) -> Result<Value, Str
         preserve_firmware(options.target, root, directory)?;
     }
     let mut files = BTreeMap::new();
-    for name in filenames(options.target) {
-        files.insert(*name, digest(&directory.join(name))?);
+    for name in filenames(options.target, options.case) {
+        files.insert(name, digest(&directory.join(name))?);
     }
     Ok(json!({
         "target": options.target.triple(), "case": "calibration",
@@ -149,6 +158,30 @@ fn create(options: &Options, root: &Path, directory: &Path) -> Result<Value, Str
             "llvm_objcopy": command_output(Command::new("llvm-objcopy").arg("--version"))?,
             "llvm_nm": command_output(Command::new("llvm-nm").arg("--version"))?,
         },
+    }))
+}
+
+fn create_system(options: &Options, root: &Path, directory: &Path) -> Result<Value, String> {
+    let measurement = options.input.measurement()?;
+    options.input.preserve(directory)?;
+    let mut strip = Command::new("llvm-objcopy");
+    strip
+        .arg("--strip-all")
+        .arg(directory.join("symbols.elf"))
+        .arg(directory.join("guest.elf"));
+    execute(strip)?;
+    if matches!(options.target, Target::Riscv64) {
+        preserve_firmware(options.target, root, directory)?;
+    }
+    let mut files = BTreeMap::new();
+    for name in filenames(options.target, options.case) {
+        files.insert(name, digest(&directory.join(name))?);
+    }
+    Ok(json!({
+        "target": options.target.triple(), "case": "system", "measurement": measurement,
+        "machine_arguments": machine_arguments(options.target, root),
+        "release": options.release.unwrap_or(false), "files": files,
+        "input_kernel": options.input.kernel, "input_initramfs": options.input.initramfs,
     }))
 }
 
@@ -239,7 +272,7 @@ pub(super) fn inspect(path: &Path) -> Result<Value, String> {
     Ok(files.remove(0))
 }
 
-fn validate_images(target: Target, directory: &Path) -> Result<(), String> {
+fn validate_images(target: Target, directory: &Path, case: &str) -> Result<(), String> {
     let symbols = inspect(&directory.join("symbols.elf"))?;
     let guest = inspect(&directory.join("guest.elf"))?;
     let machine = if matches!(target, Target::Riscv64) {
@@ -266,6 +299,18 @@ fn validate_images(target: Target, directory: &Path) -> Result<(), String> {
     let sections = symbols["Sections"]
         .as_array()
         .ok_or("missing ELF sections")?;
+    if case == "system"
+        && sections.iter().any(|section| {
+            section["Section"]["Name"]["Name"] == ".initramfs"
+                && section["Section"]["Size"]
+                    .as_u64()
+                    .is_some_and(|size| size > 0)
+        })
+    {
+        return Err(
+            "system collection requires a kernel built for an external initramfs".to_owned(),
+        );
+    }
     for name in [".symtab", ".debug_info", ".debug_line"] {
         if !sections.iter().any(|section| {
             section["Section"]["Name"]["Name"] == name
