@@ -34,6 +34,31 @@ For example, the file system scenario attaches a disk fixture, and the UART scen
 
 To boot a built image, use `cargo xtask run <target> [--release]`.
 
+## Ext4 Disk Images
+
+The file system scenarios mount an ext4 image from an attached block device.
+The Linux suite harness mounts the first block device at `/var` with a 16 MiB extent, and the ext4 driver accepts only a narrow feature set, so an image created with default `mkfs.ext4` options is rejected during mount.
+Create a compatible image with:
+
+```sh
+dd if=/dev/zero of=disk.img bs=1M count=16
+mkfs.ext4 -q -F -b 4096 -I 256 \
+  -O ^has_journal,^ext_attr,^resize_inode,^dir_index,^huge_file,^extra_isize,^dir_nlink,^flex_bg,^metadata_csum,^64bit \
+  disk.img
+```
+
+The driver accepts block sizes of 1024, 2048, and 4096 bytes, inode sizes of 128 or 256 bytes, and a feature set limited to `filetype`, `extent`, `sparse_super`, `large_file`, and optionally `has_journal` and `64bit`; any other ext4 feature fails the mount with `Unsupported`.
+The mounted block count times the block size must stay within the mount extent, so keep the image within the 16 MiB the Linux suite passes, and mount the image with a clean filesystem state.
+
+Attach the image to QEMU with a VirtIO block device:
+
+```sh
+-drive if=none,id=hd,file=disk.img,format=raw \
+-device virtio-blk-pci,drive=hd
+```
+
+The default transitional device and the `disable-legacy=on` non-transitional device are both detected and driven through the modern VirtIO interface.
+
 ## VirtIO Net Frames
 
 The `components/devmgr/tests/net/` program exchanges Ethernet frames with a host peer through a real QEMU VirtIO net device.
