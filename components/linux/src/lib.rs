@@ -18,6 +18,7 @@ mod memory;
 mod process;
 mod protocol;
 pub mod service;
+mod shm;
 mod stack;
 mod syscall;
 

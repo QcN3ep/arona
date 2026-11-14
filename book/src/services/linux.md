@@ -45,6 +45,7 @@ When there is no progress, the relevant Calls, events, thread exits, and ports a
 | `syscall/socket/` | TCP and UDP sockets, local Unix socket pairs, messages, addresses, options, and pending I/O |
 | `syscall/process/` | clone, exec, exit, wait, identity, thread, and futex |
 | `syscall/memory/` | mmap, munmap, mprotect, mremap, and related memory operations |
+| `syscall/shm.rs` | System V shared memory segments and control operations |
 | `syscall/signal.rs` | signal system calls |
 | `syscall/system/` | uname, clock, sleep, interval timers, and random numbers |
 
@@ -307,6 +308,36 @@ exec reads the new image, constructs a new execution environment, and handles th
 The `execve` path also recognizes a `#!` interpreter line.
 It passes the optional argument as one string, followed by the script path and the original arguments after `argv[0]`.
 Interpreter scripts may nest up to four levels.
+
+## System V Shared Memory
+
+The compatibility service keeps a service-wide table of System V shared memory segments keyed by identifier and by non-private key.
+`shmget` accepts `IPC_PRIVATE`, `IPC_CREAT`, `IPC_EXCL`, and the low nine mode bits, and reports `EEXIST`, `ENOENT`, `EINVAL`, `EACCES`, or `ENOMEM` for the corresponding failure cases.
+A private segment is never reachable by key. An existing key returns its current identifier when the requested size does not exceed the segment size.
+Segments are limited to 4096 entries and 1 GiB each.
+
+Segment page frames are allocated when the first `shmat` attaches the segment and are retained by the segment record.
+Every attachment of a segment maps the same frames, so writes through one attachment are visible through the others and through forked processes.
+`shmat` chooses a free address when `shmaddr` is zero, honors `SHM_RND` by rounding a requested address down to the page boundary, and otherwise requires page alignment.
+`SHM_RDONLY` maps the segment read-only; a write through that mapping raises `SIGSEGV`.
+A failed attachment leaves no mapping or attachment count behind.
+`SHM_REMAP` is not supported and returns `EINVAL`.
+
+`shmdt` requires the exact start address of an attachment. It removes the mapping first and then accounts the detachment, so a failure keeps the attachment intact, and it reports `EINVAL` when `munmap` or `mremap` has already moved the mapping. A fixed `mmap` replacement that would overlap an attachment is rejected for the same reason.
+A fork copies the parent's attachments into the child and counts each inherited mapping in `nattch`, while a vfork child shares the address space and only inherits the mapping. An inherited attachment can be detached by the child.
+exec and process exit release every attachment owned by the process.
+
+`shmctl` implements `IPC_STAT`, `IPC_SET`, `IPC_RMID`, `IPC_INFO`, and `SHM_INFO`.
+`IPC_STAT` writes the 112-byte Linux `shmid64_ds` layout, including the kernel `ipc64_perm` layout with a 16-bit sequence field.
+`IPC_SET` accepts a new mode and, for a privileged caller, new user and group owners.
+Owners and group members follow the segment mode; the root user bypasses the permission checks.
+Only the owner or root may change or remove a segment, and `IPC_SET` additionally requires write permission.
+
+`IPC_RMID` marks the segment deleted and removes its key immediately, so a new `shmget` with that key reports `ENOENT` unless it also passes `IPC_CREAT`, which creates a new segment.
+Existing attachments remain usable, while a new `shmat` reports `EIDRM` until the last attachment detaches; later control operations on the identifier report `EINVAL` once the segment is released.
+`IPC_INFO` reports the size and count limits in a 20-byte `shminfo`, and `SHM_INFO` reports the used identifier count and allocated bytes in a 48-byte `shm_info`.
+Invalid control commands return `EINVAL`.
+`SHM_LOCK`, `SHM_UNLOCK`, `SHM_STAT`, and `SHM_STAT_ANY` remain future work.
 
 ## Processes, Threads, and Signals
 

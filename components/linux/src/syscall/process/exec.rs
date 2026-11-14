@@ -241,6 +241,7 @@ fn replace(
     process
         .namespace
         .register_thread(process.pid, process.pid, &thread_signals);
+    process.detach_shared_memory();
     process.address_space = space;
     process.threads.push(Thread {
         native,

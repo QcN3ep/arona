@@ -4,7 +4,8 @@
 
 mod loading;
 
-use alloc::vec::Vec;
+use alloc::{rc::Rc, vec::Vec};
+use core::cell::RefCell;
 use fs::ReadAt;
 use runtime::{
     Channel, Handle, Reply, Rights, Task,
@@ -43,7 +44,10 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
             return Err(error);
         }
     };
-    let namespace = alloc::rc::Rc::new(crate::process::namespace::PidNamespace::new());
+    let shared = crate::process::Shared {
+        namespace: Rc::new(crate::process::namespace::PidNamespace::new()),
+        shm: Rc::new(RefCell::new(crate::shm::Table::new())),
+    };
     let port = alloc::rc::Rc::new(task.trap_port(Rights::READ | Rights::WAIT)?);
     reply.send(&mut Message::new(0, &[])?)?;
     let mut guests = Guests {
@@ -58,7 +62,7 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
             &files,
             machine,
             &services,
-            &namespace,
+            &shared,
         )?;
         progress |= poll_running(&mut guests.running, &files, &services)?;
         match port.receive(WaitMode::Poll) {
@@ -184,12 +188,12 @@ fn poll_loading<'a>(
     files: &fs::Client<'a>,
     machine: Machine,
     services: &Services<'a>,
-    namespace: &alloc::rc::Rc<crate::process::namespace::PidNamespace>,
+    shared: &crate::process::Shared,
 ) -> Result<bool, Error> {
     let mut progress = false;
     let mut index = 0;
     while index < guests.loading.len() {
-        match guests.loading[index].poll(task, port, files, machine, services, namespace) {
+        match guests.loading[index].poll(task, port, files, machine, services, shared) {
             Ok(Some(process)) => {
                 let pending = guests.loading.swap_remove(index);
                 guests.running.push(Running {

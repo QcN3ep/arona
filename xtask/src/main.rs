@@ -200,6 +200,7 @@ fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, S
             "bin/linux-test",
             "bin/linux-mqueue",
             "bin/linux-fs-misc",
+            "bin/linux-shm",
             "bin/linux-noexec",
             "bin/linux-compact",
             "bin/linux-separate-headers",

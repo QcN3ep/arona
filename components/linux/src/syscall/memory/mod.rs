@@ -64,6 +64,17 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
         return Err(ENOMEM);
     }
     let exact = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
+    if exact
+        && address != 0
+        && process.attaches.iter().any(|(start, attach)| {
+            *start < address.saturating_add(length)
+                && start.saturating_add(attach.mapped_length) > address
+        })
+    {
+        // A fixed replacement would detach a System V mapping without updating
+        // its attachment record, so keep the mapping owned by shmdt.
+        return Err(EINVAL);
+    }
     let replace = flags & MAP_FIXED != 0;
     if exact && !address.is_multiple_of(PAGE_SIZE) {
         return Err(EINVAL);

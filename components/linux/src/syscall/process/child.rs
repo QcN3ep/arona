@@ -129,6 +129,31 @@ fn spawn<'a>(
         credentials: process.credentials,
         limits: process.limits,
         cpu_limited: false,
+        shm: Rc::clone(&process.shm),
+        attaches: {
+            // A plain fork gives the child its own attachment record, which Linux
+            // counts in `nattch`. A vfork child shares the address space, so it
+            // inherits the mapping without another count.
+            let counted = waiting.is_none();
+            let now = runtime::thread::now_ns().unwrap_or(0);
+            process
+                .attaches
+                .iter()
+                .map(|(address, attach)| {
+                    if counted {
+                        process.shm.borrow_mut().attach(attach.id, pid, now);
+                    }
+                    (
+                        *address,
+                        crate::shm::Attach {
+                            id: attach.id,
+                            mapped_length: attach.mapped_length,
+                            counted,
+                        },
+                    )
+                })
+                .collect()
+        },
         cpu_ns: 0,
         timers: crate::process::timer::Timers::default(),
         status: crate::ExitStatus { code: 0, signal: 0 },

@@ -34,6 +34,12 @@ pub(super) fn append(
         0o100755,
         &misc_guest(options, root, target_directory)?,
     )?;
+    append_entry(
+        bytes,
+        "bin/linux-shm",
+        0o100755,
+        &shm_guest(options, root, target_directory)?,
+    )?;
     append_entry(bytes, "bin/linux-noexec", 0o100644, &image)?;
     let mut compact = fs::read(compact).map_err(|error| error.to_string())?;
     append_entry(bytes, "bin/linux-compact", 0o100755, &compact)?;
@@ -237,25 +243,66 @@ fn build_guest(
 }
 
 fn socket_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<u8>, String> {
-    let (isa, triple) = match options.target {
-        Target::Riscv64 => ("riscv64", "riscv64-unknown-linux-gnu"),
-        Target::LoongArch64 => ("loongarch64", "loongarch64-unknown-linux-gnu"),
+    let isa = match options.target {
+        Target::Riscv64 => "riscv64",
+        Target::LoongArch64 => "loongarch64",
+    };
+    compile_guest(
+        options,
+        root,
+        target,
+        "syscall/socket",
+        "linux-socket",
+        &[
+            "stream.c",
+            "datagram.c",
+            "socketpair.c",
+            "options.c",
+            "ipv6.c",
+            "proc.c",
+        ],
+        isa,
+    )
+}
+
+fn shm_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<u8>, String> {
+    let isa = match options.target {
+        Target::Riscv64 => "riscv64",
+        Target::LoongArch64 => "loongarch64",
+    };
+    compile_guest(
+        options,
+        root,
+        target,
+        "syscall/shm",
+        "linux-shm",
+        &["shm.c"],
+        isa,
+    )
+}
+
+fn compile_guest(
+    options: &BuildOptions,
+    root: &Path,
+    target: &Path,
+    directory_name: &str,
+    executable_name: &str,
+    sources: &[&str],
+    isa: &str,
+) -> Result<Vec<u8>, String> {
+    let triple = match options.target {
+        Target::Riscv64 => "riscv64-unknown-linux-gnu",
+        Target::LoongArch64 => "loongarch64-unknown-linux-gnu",
     };
     let directory = target
         .join(options.target.triple())
         .join(options.profile())
         .join("linux-tests");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let source_directory = root.join("components/linux/tests").join(directory_name);
     let mut objects = Vec::new();
-    for name in [
-        "stream.c",
-        "datagram.c",
-        "socketpair.c",
-        "options.c",
-        "ipv6.c",
-        "proc.c",
-        &format!("{isa}.S"),
-    ] {
-        let object = directory.join(format!("socket-{name}.o"));
+    for name in sources {
+        let object = directory.join(format!("{executable_name}-{name}.o"));
         let mut compile = Command::new("clang");
         compile.arg(format!("--target={triple}")).args([
             "-c",
@@ -274,16 +321,27 @@ fn socket_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
             compile.args(["-mno-lsx", "-mno-lasx"]);
         }
         compile
-            .arg(
-                root.join("components/linux/tests/syscall/socket")
-                    .join(name),
-            )
+            .arg(source_directory.join(name))
             .arg("-o")
             .arg(&object);
         execute(compile)?;
         objects.push(object);
     }
-    let executable = directory.join("linux-socket");
+    let assembly = directory.join(format!("{executable_name}-{isa}.o"));
+    let mut assemble = Command::new("clang");
+    assemble
+        .arg(format!("--target={triple}"))
+        .args(["-c", "-x", "assembler"]);
+    if isa == "riscv64" {
+        assemble.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
+    }
+    assemble
+        .arg(source_directory.join(format!("{isa}.S")))
+        .arg("-o")
+        .arg(&assembly);
+    execute(assemble)?;
+    objects.push(assembly);
+    let executable = directory.join(executable_name);
     let mut link = Command::new("ld.lld");
     link.args([
         "-static",
@@ -300,135 +358,45 @@ fn socket_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
 }
 
 fn mqueue_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<u8>, String> {
-    let (isa, triple) = match options.target {
-        Target::Riscv64 => ("riscv64", "riscv64-unknown-linux-gnu"),
-        Target::LoongArch64 => ("loongarch64", "loongarch64-unknown-linux-gnu"),
+    let isa = match options.target {
+        Target::Riscv64 => "riscv64",
+        Target::LoongArch64 => "loongarch64",
     };
-    let directory = target
-        .join(options.target.triple())
-        .join(options.profile())
-        .join("linux-tests");
-    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let mut objects = Vec::new();
-    let source = directory.join("mqueue.c.o");
-    let mut compile = Command::new("clang");
-    compile.arg(format!("--target={triple}")).args([
-        "-c",
-        "-O2",
-        "-ffreestanding",
-        "-fno-builtin",
-        "-fno-stack-protector",
-        "-fno-pic",
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-    ]);
-    if isa == "riscv64" {
-        compile.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
-    } else {
-        compile.args(["-mno-lsx", "-mno-lasx"]);
-    }
-    compile
-        .arg(root.join("components/linux/tests/syscall/mqueue/mqueue.c"))
-        .arg("-o")
-        .arg(&source);
-    execute(compile)?;
-    objects.push(source);
-    let entry = directory.join(format!("mqueue-{isa}.o"));
-    let mut assemble = Command::new("clang");
-    assemble
-        .arg(format!("--target={triple}"))
-        .args(["-c", "-x", "assembler"]);
-    if isa == "riscv64" {
-        assemble.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
-    }
-    assemble
-        .arg(root.join(format!("components/linux/tests/syscall/mqueue/{isa}.S")))
-        .arg("-o")
-        .arg(&entry);
-    execute(assemble)?;
-    objects.push(entry);
-    let executable = directory.join("linux-mqueue");
-    let mut link = Command::new("ld.lld");
-    link.args([
-        "-static",
-        "--entry=_start",
-        "-z",
-        "max-page-size=4096",
-        "-Ttext=0x400000",
-    ])
-    .args(&objects)
-    .arg("-o")
-    .arg(&executable);
-    execute(link)?;
-    fs::read(executable).map_err(|error| error.to_string())
+    compile_guest(
+        options,
+        root,
+        target,
+        "syscall/mqueue",
+        "linux-mqueue",
+        &["mqueue.c"],
+        isa,
+    )
 }
 
 /// Builds the guest program that exercises access, timestamp, flush, transfer,
 /// limit, and console syscalls.
 fn misc_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<u8>, String> {
-    let (isa, triple) = match options.target {
-        Target::Riscv64 => ("riscv64", "riscv64-unknown-linux-gnu"),
-        Target::LoongArch64 => ("loongarch64", "loongarch64-unknown-linux-gnu"),
+    let isa = match options.target {
+        Target::Riscv64 => "riscv64",
+        Target::LoongArch64 => "loongarch64",
     };
-    let directory = target
-        .join(options.target.triple())
-        .join(options.profile())
-        .join("linux-tests");
-    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let mut objects = Vec::new();
-    for name in [
-        "misc.c",
-        "access.c",
-        "utimens.c",
-        "sync.c",
-        "sendfile.c",
-        "rlimit.c",
-        "console.c",
-        &format!("{isa}.S"),
-    ] {
-        let object = directory.join(format!("misc-{name}.o"));
-        let mut compile = Command::new("clang");
-        compile.arg(format!("--target={triple}")).args([
-            "-c",
-            "-O2",
-            "-ffreestanding",
-            "-fno-builtin",
-            "-fno-stack-protector",
-            "-fno-pic",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-        ]);
-        if isa == "riscv64" {
-            compile.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
-        } else {
-            compile.args(["-mno-lsx", "-mno-lasx"]);
-        }
-        compile
-            .arg(
-                root.join("components/linux/tests/syscall/file/misc")
-                    .join(name),
-            )
-            .arg("-o")
-            .arg(&object);
-        execute(compile)?;
-        objects.push(object);
-    }
-    let executable = directory.join("linux-fs-misc");
-    let mut link = Command::new("ld.lld");
-    link.args([
-        "-static",
-        "--entry=_start",
-        "-z",
-        "max-page-size=4096",
-        "-Ttext=0x400000",
-    ])
-    .args(&objects)
-    .arg("-o")
-    .arg(&executable);
-    execute(link)?;
-    fs::read(executable).map_err(|error| error.to_string())
+    compile_guest(
+        options,
+        root,
+        target,
+        "syscall/file/misc",
+        "linux-fs-misc",
+        &[
+            "misc.c",
+            "access.c",
+            "utimens.c",
+            "sync.c",
+            "sendfile.c",
+            "rlimit.c",
+            "console.c",
+        ],
+        isa,
+    )
 }
 
 const FIXTURE_ENTRY: usize = 0x100;

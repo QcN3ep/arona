@@ -5,7 +5,7 @@ use crate::{
     Error, Services,
     elf::{Image, ImageSet, Machine},
     file::terminal::Terminal,
-    process::Process,
+    process::{Process, Shared},
     protocol::{self, Arguments},
 };
 use alloc::{rc::Rc, vec::Vec};
@@ -92,7 +92,7 @@ impl<'a> Loading<'a> {
         files: &fs::Client<'a>,
         machine: Machine,
         services: &Services<'_>,
-        namespace: &Rc<crate::process::namespace::PidNamespace>,
+        shared: &Shared,
     ) -> Result<Option<Process<'a>>, Error> {
         if let Some(loaded) = self.executable.poll(files, machine, services)? {
             if loaded.main.bytes.starts_with(b"#!") {
@@ -125,7 +125,7 @@ impl<'a> Loading<'a> {
                 &self.arguments,
                 Rc::clone(&self.terminal),
                 loaded.main.random.as_ref(),
-                Rc::clone(namespace),
+                shared,
             )
             .map(Some);
         }

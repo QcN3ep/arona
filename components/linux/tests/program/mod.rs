@@ -91,6 +91,7 @@ fn main() {
     writable(&linux, &files, &output);
     tmpfs(&files, &mounts);
     fs_misc(&linux, &files, &output);
+    shared_memory(&linux, &output);
     terminal(&linux, &output, &device_service, console);
     mounts.unmount(b"/var", service::deadline()).unwrap();
     let output = output();
@@ -512,6 +513,63 @@ fn fs_misc(
     }
     output()
         .write_all(b"Linux filesystem misc tests passed\n")
+        .unwrap();
+}
+
+fn shared_memory(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
+    let run = |mode: &[u8]| {
+        linux
+            .start_run(
+                Program {
+                    path: b"/bin/linux-shm",
+                    arguments: &[b"/bin/linux-shm", mode],
+                    environment: &[],
+                },
+                output(),
+            )
+            .unwrap()
+    };
+    let expected = ExitStatus {
+        code: 42,
+        signal: 0,
+    };
+    for mode in [
+        b"basic".as_slice(),
+        b"fork",
+        b"lifecycle",
+        b"permissions",
+        b"mapping",
+    ] {
+        let result = run(mode).wait(WaitMode::Forever);
+        if result != Ok(expected) {
+            let output = output();
+            output
+                .write_all(
+                    alloc::format!("Linux scenario shared-memory {mode:?}: {result:?}\n")
+                        .as_bytes(),
+                )
+                .unwrap();
+            output.flush().unwrap();
+        }
+        assert_eq!(result.unwrap(), expected);
+    }
+    let result = run(b"readonly").wait(WaitMode::Forever);
+    let expected = ExitStatus {
+        code: 0,
+        signal: 11,
+    };
+    if result != Ok(expected) {
+        let output = output();
+        output
+            .write_all(
+                alloc::format!("Linux scenario shared-memory readonly: {result:?}\n").as_bytes(),
+            )
+            .unwrap();
+        output.flush().unwrap();
+    }
+    assert_eq!(result.unwrap(), expected);
+    output()
+        .write_all(b"Linux shared memory tests passed\n")
         .unwrap();
 }
 

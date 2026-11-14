@@ -8,7 +8,7 @@ pub(crate) mod signal;
 pub(crate) mod terminal;
 pub(crate) mod timer;
 
-use alloc::{rc::Rc, vec::Vec};
+use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::cell::{Cell, RefCell};
 use namespace::PidNamespace;
 use runtime::{
@@ -70,6 +70,12 @@ impl Vfork {
     }
 }
 
+/// Process-independent state shared by every guest of the Linux service.
+pub(crate) struct Shared {
+    pub namespace: Rc<PidNamespace>,
+    pub shm: Rc<RefCell<crate::shm::Table>>,
+}
+
 pub(crate) struct Process<'a> {
     pub namespace: Rc<PidNamespace>,
     pub pid: usize,
@@ -96,6 +102,8 @@ pub(crate) struct Process<'a> {
     pub credentials: Credentials,
     pub limits: crate::limits::Limits,
     pub cpu_limited: bool,
+    pub shm: Rc<RefCell<crate::shm::Table>>,
+    pub attaches: BTreeMap<usize, crate::shm::Attach>,
 }
 
 /// Real, effective, and saved user and group identities inherited by child processes.
@@ -109,6 +117,12 @@ pub(crate) struct Credentials {
     pub sgid: u32,
 }
 
+impl Drop for Process<'_> {
+    fn drop(&mut self) {
+        self.detach_shared_memory();
+    }
+}
+
 impl<'a> Process<'a> {
     pub fn start(
         parent: &'a Handle<Task>,
@@ -117,8 +131,9 @@ impl<'a> Process<'a> {
         arguments: &Arguments,
         terminal: alloc::rc::Rc<crate::file::terminal::Terminal>,
         random: Option<&[u8; 16]>,
-        namespace: Rc<PidNamespace>,
+        shared: &Shared,
     ) -> Result<Self, Error> {
+        let namespace = Rc::clone(&shared.namespace);
         let pid = namespace.allocate().ok_or(Error::NoMemory)?;
         let start_ns = runtime::thread::now_ns().unwrap_or(0);
         let machine = images.image.machine;
@@ -194,6 +209,8 @@ impl<'a> Process<'a> {
             vfork: None,
             umask: 0o022,
             credentials: Credentials::default(),
+            shm: Rc::clone(&shared.shm),
+            attaches: BTreeMap::new(),
             status: ExitStatus { code: 0, signal: 0 },
             limits,
             cpu_limited: false,
@@ -325,6 +342,48 @@ impl<'a> Process<'a> {
             self.cpu_limited = true;
         }
         true
+    }
+
+    /// Release attachments fully covered by an address range the process
+    /// unmapped or moved without `shmdt`.
+    pub fn detach_shared_range(&mut self, start: usize, end: usize) {
+        let stale: Vec<usize> = self
+            .attaches
+            .iter()
+            .filter(|(address, attach)| {
+                **address >= start && address.saturating_add(attach.mapped_length) <= end
+            })
+            .map(|(address, _)| *address)
+            .collect();
+        if stale.is_empty() {
+            return;
+        }
+        let shm = Rc::clone(&self.shm);
+        let mut table = shm.borrow_mut();
+        let now = runtime::thread::now_ns().unwrap_or(0);
+        for address in stale {
+            if let Some(attach) = self.attaches.remove(&address)
+                && attach.counted
+            {
+                table.detach(attach.id, self.pid, now);
+            }
+        }
+    }
+
+    /// Release every System V attachment and account its detachment.
+    pub fn detach_shared_memory(&mut self) {
+        if self.attaches.is_empty() {
+            return;
+        }
+        let attaches = core::mem::take(&mut self.attaches);
+        let shm = Rc::clone(&self.shm);
+        let mut table = shm.borrow_mut();
+        let now = runtime::thread::now_ns().unwrap_or(0);
+        for attach in attaches.into_values() {
+            if attach.counted {
+                table.detach(attach.id, self.pid, now);
+            }
+        }
     }
 
     /// Resume a suspended vfork parent once this process replaces its address space or exits.

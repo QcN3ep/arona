@@ -10,6 +10,7 @@ mod memory;
 mod mqueue;
 mod process;
 mod rusage;
+mod shm;
 mod signal;
 mod socket;
 mod system;
@@ -149,12 +150,26 @@ pub(crate) fn dispatch<'a>(
                 .brk(arguments[0], process.limits.address_space())?)),
             abi::MMAP => memory::mmap(process, arguments),
             abi::MADVISE => Outcome::Complete(memory::madvise(&process.address_space, arguments)),
-            abi::MUNMAP => Outcome::Complete(memory::munmap(
-                &process.address_space,
-                arguments[0],
-                arguments[1],
-            )),
-            abi::MREMAP => Outcome::Complete(memory::mremap(&process.address_space, arguments)),
+            abi::MUNMAP => {
+                let result = memory::munmap(&process.address_space, arguments[0], arguments[1]);
+                if result.is_ok() {
+                    process.detach_shared_range(
+                        arguments[0],
+                        arguments[0].saturating_add(arguments[1]),
+                    );
+                }
+                Outcome::Complete(result)
+            }
+            abi::MREMAP => {
+                let result = memory::mremap(&process.address_space, arguments);
+                if result.is_ok() {
+                    process.detach_shared_range(
+                        arguments[0],
+                        arguments[0].saturating_add(arguments[1]),
+                    );
+                }
+                Outcome::Complete(result)
+            }
             abi::MPROTECT => Outcome::Complete(memory::mprotect(
                 &process.address_space,
                 arguments[0],
@@ -167,6 +182,9 @@ pub(crate) fn dispatch<'a>(
                 arguments[1],
                 arguments[2],
             )),
+            abi::SHMGET | abi::SHMAT | abi::SHMDT | abi::SHMCTL => {
+                Outcome::Complete(shm::dispatch(process, number, arguments))
+            }
             _ => Outcome::Complete(Err(ENOSYS)),
         }
     };
