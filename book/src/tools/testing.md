@@ -9,7 +9,7 @@ These scenarios are carried by host Cargo tests, architecture test images, and u
 ```sh
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- -D warnings --force-warn clippy::too_many_lines
-cargo test --locked --workspace --tests
+cargo test --locked --workspace --tests --features arona-fs/host-tests
 ```
 
 `cargo fmt` checks formatting, Clippy checks Rust code, and `cargo test` runs integration tests that satisfy the current target and feature conditions.

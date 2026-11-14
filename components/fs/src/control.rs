@@ -50,8 +50,9 @@ impl<'a> Control<'a> {
         empty(call(&self.channel, &mut request, deadline)?)
     }
 
-    pub fn mount_tmpfs(&self, path: &[u8], deadline: u64) -> Result<(), Error> {
-        let mut request = Message::new(protocol::TMPFS, &[path.len() as u64])?;
+    /// Mounts an in-memory filesystem; zero capacity selects the default.
+    pub fn mount_tmpfs(&self, path: &[u8], capacity: usize, deadline: u64) -> Result<(), Error> {
+        let mut request = Message::new(protocol::TMPFS, &[path.len() as u64, capacity as u64])?;
         transfer(&mut request, self.path(path)?, Rights::READ)?;
         empty(call(&self.channel, &mut request, deadline)?)
     }

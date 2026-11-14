@@ -11,7 +11,7 @@ Code review continues along the creation, use, and release of resources, verifyi
 cargo fmt --all -- --check
 cargo clippy --locked --workspace --all-targets -- \
   -D warnings --force-warn clippy::too_many_lines
-cargo test --locked --workspace --tests
+cargo test --locked --workspace --tests --features arona-fs/host-tests
 ```
 
 Workspace lints set `unsafe_op_in_unsafe_fn` and Clippy correctness to deny, enabling general Clippy checks and unsafe code comment checks.

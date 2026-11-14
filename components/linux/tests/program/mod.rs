@@ -39,6 +39,9 @@ fn main() {
     let (_devices, device_service) = service::devices(&devmgr, machine, &devices);
     let (_filesystem, mounts, files) = service::filesystem(archive, &fs, machine);
     service::mount(&mounts, &device_service);
+    mounts
+        .mount_tmpfs(b"/tmp", 64 * 1024, service::deadline())
+        .unwrap();
     let (_linux, channel) = service::launch(&native, machine, linux::service::REQUIRED_RIGHTS);
     let mut services = service::resources(&device_service);
     let (_net, net_channel) = service::launch(
@@ -82,6 +85,7 @@ fn main() {
     layouts(&linux, &output);
     malformed(&linux, &output);
     writable(&linux, &files, &output);
+    tmpfs(&files, &mounts);
     terminal(&linux, &output, &device_service, console);
     mounts.unmount(b"/var", service::deadline()).unwrap();
     let output = output();
@@ -100,6 +104,42 @@ fn main() {
     bootstrap
         .send(&mut Message::new(73, &[37, 41]).unwrap(), WaitMode::Forever)
         .unwrap();
+}
+
+fn tmpfs(files: &fs::Client<'_>, mounts: &fs::Control<'_>) {
+    let until = service::deadline();
+    let before = files.statfs(b"/tmp", until).unwrap();
+    let file = files.create_bytes(b"/tmp/native", until).unwrap();
+    file.write_at(0, b"temporary", until).unwrap();
+    file.truncate(64 * 1024, until).unwrap();
+    assert_eq!(
+        file.write_at(64 * 1024, b"x", until),
+        Err(fs::Error::NoSpace)
+    );
+    assert_eq!(file.metadata(until).unwrap().size, 64 * 1024);
+    assert_eq!(files.statfs(b"/tmp", until).unwrap().free_blocks, 0);
+    drop(file);
+    files.unlink_bytes(b"/tmp/native", until).unwrap();
+    assert_eq!(
+        files.statfs(b"/tmp", until).unwrap().free_blocks,
+        before.free_blocks
+    );
+    mounts
+        .mount_tmpfs(b"/allocation", 2 * 1024 * 1024 * 1024, until)
+        .unwrap();
+    let file = files.create_bytes(b"/allocation/file", until).unwrap();
+    assert_eq!(
+        file.truncate(2 * 1024 * 1024 * 1024, until),
+        Err(fs::Error::NoSpace)
+    );
+    assert_eq!(file.metadata(until).unwrap().size, 0);
+    let statistics = files.statfs(b"/allocation", until).unwrap();
+    assert_eq!(statistics.free_blocks, statistics.blocks);
+    file.write_at(0, b"alive", until).unwrap();
+    assert_eq!(file.metadata(until).unwrap().size, 5);
+    drop(file);
+    files.unlink_bytes(b"/allocation/file", until).unwrap();
+    mounts.unmount(b"/allocation", until).unwrap();
 }
 
 fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {

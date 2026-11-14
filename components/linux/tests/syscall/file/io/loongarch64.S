@@ -311,6 +311,43 @@ files_write:
     move $a0, $s0
     invoke 82
     expect 0
+    open_file 0xc2, temporary
+    bltz $a0, io_failure
+    move $s0, $a0
+    put $s0
+    expect 2
+    move $a0, $s0
+    move $a1, $sp
+    invoke 80
+    expect 0
+    ld.d $t0, $sp, 64
+    li.d $t1, 8
+    bne $t0, $t1, io_failure
+    move $a0, $s0
+    li.d $a1, 65536
+    invoke 46
+    expect 0
+    move $a0, $s0
+    la.pcrel $a1, pair
+    li.d $a2, 2
+    li.d $a3, 65536
+    invoke 68
+    expect -28
+    move $a0, $s0
+    move $a1, $sp
+    invoke 80
+    expect 0
+    ld.d $t0, $sp, 48
+    li.d $t1, 65536
+    bne $t0, $t1, io_failure
+    move $a0, $s0
+    invoke 57
+    expect 0
+    li.d $a0, -100
+    la.pcrel $a1, temporary
+    li.d $a2, 0
+    invoke 35
+    expect 0
     li.d $a0, 42
     invoke 94
     b io_failure
@@ -360,6 +397,7 @@ io_failure:
  write_path: .asciz "/var/linux-write"
  new_path: .asciz "/var/linux-new"
  append_path: .asciz "/var/linux-append"
+ temporary: .asciz "/tmp/linux-temporary"
  directory: .asciz "/var"
  digits: .ascii "0123456789"
  pair: .ascii "AB"

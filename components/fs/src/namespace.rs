@@ -259,7 +259,7 @@ impl Namespace {
     }
 
     /// Mounts a fresh in-memory filesystem at a path.
-    pub fn mount_tmpfs(&self, path: &[u8]) -> Result<(), Error> {
+    pub fn mount_tmpfs(&self, path: &[u8], capacity: usize) -> Result<(), Error> {
         let path = normalize(path)?;
         let mut mounts = self.mounts.borrow_mut();
         if path.is_empty()
@@ -269,7 +269,12 @@ impl Namespace {
         {
             return Err(Error::Busy);
         }
-        mounts.insert(path, Mounted::Tmpfs(Tmpfs::new()?));
+        let filesystem = if capacity == 0 {
+            Tmpfs::new()?
+        } else {
+            Tmpfs::with_capacity(capacity)?
+        };
+        mounts.insert(path, Mounted::Tmpfs(filesystem));
         Ok(())
     }
 

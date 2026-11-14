@@ -311,11 +311,15 @@ impl Volume {
         self.release(inode)
     }
 
-    /// Drops one link from an inode and frees it when the last one closes.
+    /// Removes an entry link and frees the inode after its last session closes.
     fn release(&mut self, inode: u64) -> Result<(), Error> {
         let links = {
             let node = self.nodes.get_mut(&inode).ok_or(Error::InvalidData)?;
-            node.links = node.links.checked_sub(1).ok_or(Error::InvalidData)?;
+            node.links = if node.is_directory() {
+                0
+            } else {
+                node.links.checked_sub(1).ok_or(Error::InvalidData)?
+            };
             node.links
         };
         if links == 0 && !self.open.contains_key(&inode) {
@@ -480,7 +484,7 @@ impl Volume {
             blocks: if node.is_directory() || node.is_symlink() {
                 0
             } else {
-                node.data.len().div_ceil(BLOCK_SIZE) as u64
+                (node.data.len().div_ceil(BLOCK_SIZE) * (BLOCK_SIZE / 512)) as u64
             },
             links: node.links,
             mode: node.mode,
@@ -588,11 +592,20 @@ impl File {
             .nodes
             .get_mut(&self.inode)
             .ok_or(Error::InvalidData)?;
+        if node.is_directory() {
+            return Err(Error::IsDirectory);
+        }
+        node.data
+            .try_reserve(bytes.len())
+            .map_err(|_| Error::NoSpace)?;
         node.data.extend_from_slice(bytes);
         Ok((offset, bytes.len()))
     }
 
     pub fn write_at(&self, offset: usize, bytes: &[u8]) -> Result<usize, Error> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
         let mut volume = self.volume.borrow_mut();
         let end = offset.checked_add(bytes.len()).ok_or(Error::FileTooLarge)?;
         volume.check_growth(self.inode, end)?;
@@ -604,6 +617,9 @@ impl File {
             return Err(Error::IsDirectory);
         }
         if node.data.len() < end {
+            node.data
+                .try_reserve(end - node.data.len())
+                .map_err(|_| Error::NoSpace)?;
             node.data.resize(end, 0);
         }
         node.data[offset..end].copy_from_slice(bytes);
@@ -622,6 +638,11 @@ impl File {
             .ok_or(Error::InvalidData)?;
         if node.is_directory() {
             return Err(Error::IsDirectory);
+        }
+        if size > node.data.len() {
+            node.data
+                .try_reserve(size - node.data.len())
+                .map_err(|_| Error::NoSpace)?;
         }
         node.data.resize(size, 0);
         Ok(())
