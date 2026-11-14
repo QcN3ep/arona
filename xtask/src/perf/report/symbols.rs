@@ -4,7 +4,7 @@
 
 use super::{
     super::{artifacts, command_output},
-    Address, mappings,
+    Address, UNKNOWN, mappings,
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::Path, process::Command};
@@ -150,12 +150,14 @@ fn symbolize(
     locations: &mut BTreeMap<Address, Value>,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
+    let symbols = function_symbols(path)?;
     let addresses = queries.keys().copied().collect::<Vec<_>>();
     for batch in addresses.chunks(128) {
         let output = Command::new("llvm-symbolizer")
             .args([
                 "--output-style=JSON",
                 "--inlines",
+                "--no-demangle",
                 "--no-debuginfod",
                 "--obj",
             ])
@@ -177,9 +179,35 @@ fn symbolize(
         if frames.len() != batch.len() {
             return Err("incomplete symbolizer output".to_owned());
         }
-        for (address, frame) in batch.iter().zip(frames) {
+        for (address, mut frame) in batch.iter().zip(frames) {
             if frame["Address"] != format!("0x{address:x}") {
                 return Err("unexpected symbolizer address".to_owned());
+            }
+            for symbol in frame["Symbol"]
+                .as_array_mut()
+                .ok_or("missing inline frames")?
+            {
+                let name = symbol["FunctionName"].as_str().unwrap_or(UNKNOWN);
+                let name = if name.is_empty() || name == "??" || name.starts_with(".L") {
+                    symbols
+                        .iter()
+                        .find(|entry| *address >= entry.start && *address < entry.end)
+                        .map_or(UNKNOWN, |entry| entry.name.as_str())
+                } else {
+                    name
+                };
+                let linkage = name.to_owned();
+                symbol["FunctionName"] = json!(format!("{:#}", rustc_demangle::demangle(name)));
+                symbol["LinkageName"] = json!(linkage);
+                let file = symbol["StartFileName"]
+                    .as_str()
+                    .filter(|file| !file.is_empty() && *file != "??");
+                let line = symbol["StartLine"].as_u64().filter(|line| *line > 0);
+                symbol["Definition"] = json!(
+                    file.zip(line)
+                        .map(|(file, line)| format!("{file}:{line}"))
+                        .unwrap_or_default()
+                );
             }
             for key in queries.get(address).ok_or("missing symbolizer query")? {
                 locations.get_mut(key).ok_or("missing symbolizer address")?["frames"] =
@@ -188,4 +216,45 @@ fn symbolize(
         }
     }
     Ok(())
+}
+
+struct FunctionSymbol {
+    start: u64,
+    end: u64,
+    name: String,
+}
+
+fn function_symbols(path: &Path) -> Result<Vec<FunctionSymbol>, String> {
+    let output = command_output(
+        Command::new("llvm-readobj")
+            .args(["--elf-output-style=JSON", "--symbols"])
+            .arg(path),
+    )?;
+    let files: Vec<Value> = serde_json::from_str(&output).map_err(|error| error.to_string())?;
+    let mut symbols = Vec::new();
+    for entry in files
+        .first()
+        .and_then(|file| file["Symbols"].as_array())
+        .ok_or("missing ELF symbols")?
+    {
+        let symbol = &entry["Symbol"];
+        if symbol["Type"]["Value"] != 2 {
+            continue;
+        }
+        let start = symbol["Value"].as_u64().ok_or("missing function address")?;
+        let size = symbol["Size"].as_u64().ok_or("missing function size")?;
+        if size == 0 {
+            continue;
+        }
+        symbols.push(FunctionSymbol {
+            start,
+            end: start.checked_add(size).ok_or("function range overflow")?,
+            name: symbol["Name"]["Name"]
+                .as_str()
+                .ok_or("missing function name")?
+                .to_owned(),
+        });
+    }
+    symbols.sort_by_key(|entry| (entry.end - entry.start, entry.start, entry.name.clone()));
+    Ok(symbols)
 }
