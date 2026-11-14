@@ -18,9 +18,8 @@ pub(super) fn resolve(
 ) -> Result<BTreeMap<Address, Value>, String> {
     let saved = directory.join("artifacts");
     let mut locations = BTreeMap::new();
-    if !available(&saved, "guest.elf", manifest, warnings)? {
-        return Ok(locations);
-    }
+    verify(&saved, "guest.elf", manifest)?;
+    verify(&saved, "symbols.elf", manifest)?;
     let guest = saved.join("guest.elf");
     let image = artifacts::inspect(&guest)?;
     let bytes = fs::read(&guest).map_err(|error| error.to_string())?;
@@ -56,34 +55,21 @@ pub(super) fn resolve(
             }
         }
     }
-    if available(&saved, "symbols.elf", manifest, warnings)? {
-        symbolize(
-            &saved.join("symbols.elf"),
-            &queries,
-            &mut locations,
-            warnings,
-        )?;
-    }
+    symbolize(
+        &saved.join("symbols.elf"),
+        &queries,
+        &mut locations,
+        warnings,
+    )?;
     Ok(locations)
 }
 
-fn available(
-    directory: &Path,
-    name: &str,
-    manifest: &Value,
-    warnings: &mut Vec<String>,
-) -> Result<bool, String> {
+fn verify(directory: &Path, name: &str, manifest: &Value) -> Result<(), String> {
     let path = directory.join(name);
-    if !path.exists() {
-        warnings.push(format!(
-            "Missing {name}; its address information remains unknown."
-        ));
-        return Ok(false);
-    }
     if manifest["files"][name].as_str() != Some(artifacts::digest(&path)?.as_str()) {
         return Err(format!("artifact checksum mismatch: {}", path.display()));
     }
-    Ok(true)
+    Ok(())
 }
 
 fn image_location(pc: u64, code: &str, headers: &[Value], bytes: &[u8]) -> Option<Value> {
