@@ -121,7 +121,7 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     halt()
 }
 
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn mappings() {
     // SAFETY: The test exclusively owns the mapped and initialized boot console.
     let uart = unsafe { Uart::new(UART) };

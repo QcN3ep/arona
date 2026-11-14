@@ -100,7 +100,7 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
     }
 }
 
-fn prepare(kernel_tests: bool) {
+fn prepare(testkit: bool) {
     initialize();
     hardware::trap()
         .install(
@@ -111,7 +111,7 @@ fn prepare(kernel_tests: bool) {
             handle,
         )
         .unwrap();
-    if kernel_tests {
+    if testkit {
         hardware::timer()
             .initialize(isa::frequency(FIRMWARE.load(Ordering::Relaxed)))
             .unwrap();
@@ -119,7 +119,7 @@ fn prepare(kernel_tests: bool) {
     }
 }
 
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn contexts() {
     prepare(false);
     run_execution(memory::manager());
@@ -133,64 +133,64 @@ mod kernel {
         ::kernel::thread::scheduler::initialize().unwrap();
     }
 
-    #[kernel_tests::ktest]
+    #[testkit::ktest]
     fn threads() {
         prepare(true);
-        kernel_tests::run_threads::<Platform>();
+        testkit::run_threads::<Platform>();
     }
 
-    #[kernel_tests::ktest]
+    #[testkit::ktest]
     fn memory() {
         initialize();
-        kernel_tests::run_concurrent_memory();
+        testkit::run_concurrent_memory();
     }
 
-    #[kernel_tests::ktest]
+    #[testkit::ktest]
     fn tasks() {
         initialize();
-        kernel_tests::run_tasks();
+        testkit::run_tasks();
     }
 
-    #[kernel_tests::ktest]
+    #[testkit::ktest]
     fn ipc() {
         initialize();
-        kernel_tests::run_ipc();
+        testkit::run_ipc();
     }
 
-    #[kernel_tests::ktest]
+    #[testkit::ktest]
     fn syscalls() {
         initialize();
-        kernel_tests::run_syscalls(<Platform as kernel_tests::Platform>::syscall_code());
+        testkit::run_syscalls(<Platform as testkit::Platform>::syscall_code());
     }
 
-    #[kernel_tests::ktest]
+    #[testkit::ktest]
     fn user_threads() {
         initialize();
-        kernel_tests::run_user_threads(
-            <Platform as kernel_tests::Platform>::user_code(),
-            <Platform as kernel_tests::Platform>::set_floating_enabled,
+        testkit::run_user_threads(
+            <Platform as testkit::Platform>::user_code(),
+            <Platform as testkit::Platform>::set_floating_enabled,
         );
     }
 
-    #[kernel_tests::ktest]
+    #[testkit::ktest]
     fn traps() {
         initialize();
-        kernel_tests::run_traps::<Platform>();
+        testkit::run_traps::<Platform>();
     }
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn runtime() {
     prepare(true);
-    kernel_tests::run_program::<Platform>();
+    testkit::run_program::<Platform>();
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn process() {
     prepare(true);
-    kernel_tests::run_process::<Platform>();
+    testkit::run_process::<Platform>();
 }
 
 fn run_execution(manager: &'static MemoryManager) {
@@ -262,7 +262,7 @@ fn run_execution(manager: &'static MemoryManager) {
 
 struct Platform;
 
-impl kernel_tests::Platform for Platform {
+impl testkit::Platform for Platform {
     fn return_values(state: &mut ::kernel::hardware::execution::UserState, values: [usize; 3]) {
         isa::return_values(state, values);
     }
@@ -382,7 +382,7 @@ extern "C" fn switch_context(current: &Context, next: &Context) {
 
 fn handle(trap: Trap) -> TrapOutcome {
     if KERNEL_TESTS.load(Ordering::Relaxed) {
-        return kernel_tests::handle(trap);
+        return testkit::handle(trap);
     }
     assert_eq!(trap.origin, TrapOrigin::User);
     assert_eq!(hardware::cpu().interrupt_state(), InterruptState::Disabled);

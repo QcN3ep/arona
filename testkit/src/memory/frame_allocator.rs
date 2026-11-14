@@ -12,6 +12,18 @@ pub(super) fn run(regions: &[MemoryRegion]) {
     contiguous();
 }
 
+/// Measure allocating, zeroing, and releasing one kernel data page per iteration.
+pub fn perf_allocate_free_frame(perf: &mut crate::perf::Perf) {
+    let manager = memory::manager();
+    let initial = manager.stats();
+    perf.iter(|| {
+        manager
+            .allocate(FrameOwner::Kernel, FramePurpose::Data, 1)
+            .unwrap()
+    });
+    assert_eq!(manager.stats(), initial);
+}
+
 fn reserved(regions: &[MemoryRegion]) {
     let manager = memory::manager();
     let initial = manager.stats();

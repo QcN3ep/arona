@@ -3,8 +3,9 @@
 //! Select and report one test case over the boot console.
 
 use arch::device::uart::Uart;
+use testkit::{Case, CaseKind, perf::Perf};
 
-pub type Case = (&'static str, fn(), &'static [&'static str]);
+mod perf;
 
 static CURRENT: spin::Once<&'static str> = spin::Once::new();
 
@@ -16,9 +17,16 @@ const UART: usize = 0xffff_8000_0060_01e0;
 pub fn run(cases: &[&Case]) {
     let uart = uart();
     for case in cases {
-        uart.write(format_args!("KTEST CASE {}", case.0)).unwrap();
-        for message in case.2 {
-            uart.write(format_args!("\t{message}")).unwrap();
+        uart.write(format_args!("KTEST CASE {}", case.name))
+            .unwrap();
+        match case.kind {
+            CaseKind::Test { expected, .. } => {
+                uart.write(format_args!("\ttest")).unwrap();
+                for message in expected {
+                    uart.write(format_args!("\t{message}")).unwrap();
+                }
+            }
+            CaseKind::Perf(_) => uart.write(format_args!("\tperf")).unwrap(),
         }
         uart.write(format_args!("\n")).unwrap();
     }
@@ -40,22 +48,48 @@ pub fn run(cases: &[&Case]) {
         input[length] = byte;
         length += 1;
     }
-    let name = core::str::from_utf8(&input[..length]).unwrap();
+    let selection = core::str::from_utf8(&input[..length]).unwrap();
+    let (name, iterations) =
+        selection
+            .split_once('\t')
+            .map_or((selection, None), |(name, count)| {
+                (
+                    name,
+                    Some(count.parse::<u64>().expect("invalid iteration count")),
+                )
+            });
     if name == "--list" {
         uart.write(format_args!("KTEST LISTED\n")).unwrap();
         return;
     }
     let case = cases
         .iter()
-        .find(|case| case.0 == name)
+        .find(|case| case.name == name)
         .expect("unknown test case");
-    uart.write(format_args!("KTEST RUN {}\n", case.0)).unwrap();
-    CURRENT.call_once(|| case.0);
-    (case.1)();
-    assert!(
-        case.2.is_empty(),
-        "expected fatal diagnostic was not raised"
-    );
+    uart.write(format_args!("KTEST RUN {}\n", case.name))
+        .unwrap();
+    CURRENT.call_once(|| case.name);
+    match case.kind {
+        CaseKind::Test { run, expected } => {
+            assert!(
+                iterations.is_none(),
+                "functional tests do not take iterations"
+            );
+            run();
+            assert!(
+                expected.is_empty(),
+                "expected fatal diagnostic was not raised"
+            );
+        }
+        CaseKind::Perf(run) => {
+            let iterations = iterations.expect("performance case requires iterations");
+            let mut perf = Perf::new(iterations, perf::start, perf::end);
+            run(&mut perf);
+            perf.finish();
+            uart.write(format_args!("KPERF UNITS {iterations}\n"))
+                .unwrap();
+        }
+    }
     pass();
 }
 

@@ -5,8 +5,8 @@ resolver = "3"
 members = [
     "kernel",
     "arch",
-    "kernel-tests",
-    "kernel-tests/macros",
+    "testkit",
+    "testkit/macros",
     "abi",
     "components/runtime",
     "components/init",

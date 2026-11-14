@@ -2,9 +2,19 @@
 
 //! Build and run host tests and isolated QEMU test cases.
 
-mod build;
+pub(super) mod build;
 mod resources;
-mod vm;
+pub(super) mod vm;
+
+const IMAGES: &[&str] = &[
+    "paging",
+    "allocator",
+    "trap",
+    "execution",
+    "timer",
+    "interrupt",
+    "kperf",
+];
 
 use super::{Target, cargo_command, execute, target_directory, workspace_root};
 use serde_json::json;
@@ -24,8 +34,9 @@ pub(super) struct Options {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Case {
-    name: String,
+    pub(super) name: String,
     expected: Vec<String>,
+    pub(super) performance: bool,
 }
 
 impl Options {
@@ -110,21 +121,14 @@ pub(super) fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), Strin
     let mut builds = build::Build::new(root.clone(), target, options.release);
     let mut results = Vec::new();
     let mut matched = 0;
-    for image in [
-        "paging",
-        "allocator",
-        "trap",
-        "execution",
-        "timer",
-        "interrupt",
-    ] {
+    for image in IMAGES {
         let kernel = builds.image(image)?;
         let listing = directory.join(format!("list-{image}"));
         fs::create_dir(&listing).map_err(|error| error.to_string())?;
         let cases = vm::list(target, &root, &kernel, &listing)?;
         for case in cases
             .iter()
-            .filter(|case| case.name.contains(&options.filter))
+            .filter(|case| !case.performance && case.name.contains(&options.filter))
         {
             matched += 1;
             if options.list {

@@ -17,7 +17,7 @@ name = "arona-arch"
 version = "0.2.0"
 dependencies = [
  "arona-kernel",
- "arona-kernel-tests",
+ "arona-testkit",
  "arrayvec",
  "fdt",
  "spin",
@@ -63,26 +63,6 @@ dependencies = [
  "log",
  "spin",
  "triomphe",
-]
-
-[[package]]
-name = "arona-kernel-tests"
-version = "0.2.0"
-dependencies = [
- "arona-abi",
- "arona-kernel",
- "arona-ktest",
- "arona-runtime",
- "arrayvec",
- "spin",
-]
-
-[[package]]
-name = "arona-ktest"
-version = "0.2.0"
-dependencies = [
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -141,6 +121,26 @@ dependencies = [
  "arrayvec",
  "dlmalloc",
  "spin",
+]
+
+[[package]]
+name = "arona-testkit"
+version = "0.2.0"
+dependencies = [
+ "arona-abi",
+ "arona-kernel",
+ "arona-runtime",
+ "arona-testkit-macros",
+ "arrayvec",
+ "spin",
+]
+
+[[package]]
+name = "arona-testkit-macros"
+version = "0.2.0"
+dependencies = [
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

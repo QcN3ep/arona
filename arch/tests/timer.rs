@@ -58,7 +58,7 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
     }
 }
 
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn deadlines() {
     uart().write(format_args!("Timer tests started\n")).unwrap();
     arch::hardware::bind();

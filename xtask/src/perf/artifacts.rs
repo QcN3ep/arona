@@ -16,7 +16,7 @@ const INPUTS: &[&str] = &[
     "abi",
     "arch",
     "kernel",
-    "kernel-tests",
+    "testkit",
     "components/runtime",
     "xtask",
 ];
@@ -78,7 +78,7 @@ fn validate_manifest(manifest: &Value, options: &Options, root: &Path) -> Result
     if manifest["case"] != options.case {
         return Err("unsupported performance case".to_owned());
     }
-    if options.case == "system" {
+    if options.case != "calibration" {
         system::validate_measurement(&manifest["measurement"])?;
     }
     if manifest["target"] != options.target.triple()
@@ -126,26 +126,23 @@ fn create(options: &Options, root: &Path, directory: &Path) -> Result<Value, Str
     if options.case == "system" {
         return create_system(options, root, directory);
     }
-    let source = source_state(root)?;
-    let command = calibration_command(options, root);
-    let arguments = command
-        .get_args()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let environment = command
-        .get_envs()
-        .map(|(name, value)| {
-            (
-                name.to_string_lossy().into_owned(),
-                value.map(|value| value.to_string_lossy().into_owned()),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    let executable = linux_test::build_runner(command, "perf")?;
+    let (executable, mut build) = if options.case == "kperf" {
+        let selection = options
+            .selection
+            .as_ref()
+            .ok_or("missing performance case")?;
+        (selection.executable.clone(), selection.build.clone())
+    } else {
+        let source = source_state(root)?;
+        let command = calibration_command(options, root);
+        let build = build_description(&command, root, source)?;
+        (linux_test::build_runner(command, "perf")?, build)
+    };
     fs::copy(&executable, directory.join("symbols.elf")).map_err(|error| error.to_string())?;
-    if source_state(root)? != source {
+    if source_state(root)? != build["source"] {
         return Err("source inputs changed during the performance build".to_owned());
     }
+    build["original_elf"] = json!(executable);
     let mut strip = Command::new("llvm-objcopy");
     strip
         .arg("--strip-all")
@@ -159,20 +156,48 @@ fn create(options: &Options, root: &Path, directory: &Path) -> Result<Value, Str
     for name in filenames(options.target, options.case) {
         files.insert(name, digest(&directory.join(name))?);
     }
-    Ok(json!({
-        "target": options.target.triple(), "case": "calibration", "images": [],
+    let mut manifest = json!({
+        "target": options.target.triple(), "case": options.case, "images": [],
         "machine_arguments": machine_arguments(options.target, root),
-        "release": options.release.unwrap_or(false), "files": files,
-        "build": {
+        "release": options.release.unwrap_or(false), "files": files, "build": build,
+    });
+    if let Some(selection) = &options.selection {
+        manifest["measurement"] = json!({
+            "start": "__arona_kperf_start", "end": "__arona_kperf_end",
+            "success": format!("KTEST PASS {}", selection.name),
+            "workload": selection.name, "units": selection.iterations,
+        });
+    }
+    Ok(manifest)
+}
+
+pub(super) fn build_description(
+    command: &Command,
+    root: &Path,
+    source: Value,
+) -> Result<Value, String> {
+    let arguments = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let environment = command
+        .get_envs()
+        .map(|(name, value)| {
+            (
+                name.to_string_lossy().into_owned(),
+                value.map(|value| value.to_string_lossy().into_owned()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    Ok(json!({
             "source": source, "environment": build_environment(),
             "command": "cargo", "arguments": arguments, "environment_overrides": environment,
-            "debug": 2, "strip": "none", "original_elf": executable,
+            "debug": 2, "strip": "none",
             "rustc": command_output(Command::new("rustc").current_dir(root).arg("-vV"))?,
             "cargo": command_output(Command::new("cargo").current_dir(root).arg("-V"))?,
             "llvm_readobj": command_output(Command::new("llvm-readobj").arg("--version"))?,
             "llvm_objcopy": command_output(Command::new("llvm-objcopy").arg("--version"))?,
             "llvm_nm": command_output(Command::new("llvm-nm").arg("--version"))?,
-        },
     }))
 }
 
@@ -212,7 +237,7 @@ fn machine_arguments(target: Target, root: &Path) -> Vec<String> {
         .collect()
 }
 
-fn source_state(root: &Path) -> Result<Value, String> {
+pub(super) fn source_state(root: &Path) -> Result<Value, String> {
     let git =
         |arguments: &[&str]| command_output(Command::new("git").current_dir(root).args(arguments));
     let commit = git(&["rev-parse", "HEAD"])?;

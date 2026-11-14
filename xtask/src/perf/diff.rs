@@ -59,7 +59,10 @@ impl SavedRun {
         if metadata["status"] != "complete"
             || metadata["plugin_api"] != 7
             || !matches!(metadata["mode"].as_str(), Some("count" | "profile"))
-            || !matches!(metadata["case"].as_str(), Some("calibration" | "system"))
+            || !matches!(
+                metadata["case"].as_str(),
+                Some("calibration" | "system" | "kperf")
+            )
         {
             return Err(format!(
                 "incomplete or invalid performance run: {}",
@@ -98,7 +101,7 @@ impl SavedRun {
                 .as_array()
                 .ok_or("missing count windows")?
                 .clone();
-            let units = if metadata["case"] == "system" {
+            let units = if metadata["case"] != "calibration" {
                 number(&manifest["measurement"]["units"])?
             } else {
                 1
@@ -142,7 +145,7 @@ fn validate_artifacts(directory: &Path, metadata: &Value, manifest: &Value) -> R
             &manifest["files"][&name],
         )?;
     }
-    if metadata["case"] == "system" {
+    if metadata["case"] != "calibration" {
         system::validate_measurement(&manifest["measurement"])?;
         if metadata["measurement"] != manifest["measurement"] {
             return Err("saved measurement settings disagree".to_owned());

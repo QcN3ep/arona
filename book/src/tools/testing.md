@@ -27,7 +27,7 @@ cargo test --locked -p arona-arch --test boot
 ## Tests on Real Architectures
 
 Paging, the kernel heap, Trap, execution contexts, timers, and the interrupt controller are carried by test images in `arch/tests/`.
-Generic memory, Task, thread, IPC, and system call scenarios live in `kernel-tests` and are invoked by the architecture entry point.
+Generic memory, Task, thread, IPC, and system call scenarios live in `testkit` and are invoked by the architecture entry point.
 Test programs for the runtime and system services run in user space and use the same native kernel interface.
 
 The test images cover debug and release builds for RISC-V and LoongArch.
@@ -42,7 +42,7 @@ cargo xtask test loongarch64 --release --filter execution::kernel::ipc
 cargo xtask test riscv64 --list
 ```
 
-`#[kernel_tests::ktest]` marks a safe `fn()` in an architecture test target.
+`#[testkit::ktest]` marks a safe `fn()` in an architecture test target.
 Rust's custom test harness collects the functions from that target and its modules.
 The architecture entry point initializes the boot console and calls the generated harness.
 Each selected case runs in a fresh QEMU instance, so initialization and global state do not depend on earlier cases.
@@ -52,8 +52,13 @@ The runner builds the required programs, prepares disk fixtures, and supplies co
 It saves `serial.log`, `qemu.log`, the command, and a result summary under `target/tests/`.
 `--timeout SECONDS` sets the time limit for each QEMU run.
 An unexpected panic, an early QEMU exit, or a timeout fails the case.
-Cases that deliberately trigger fatal exceptions declare the expected diagnostics in `#[kernel_tests::ktest("diagnostic", ...)]`.
+Cases that deliberately trigger fatal exceptions declare the expected diagnostics in `#[testkit::ktest("diagnostic", ...)]`.
 Those diagnostics must appear after the selected case starts.
+
+Performance cases use `#[testkit::kperf]` on `fn(&mut testkit::perf::Perf)` and share the same registration and selection mechanism.
+The `kperf` architecture target collects performance cases from its subsystem modules.
+Reusable kernel scenarios live in `testkit` beside their functional counterparts.
+Run performance cases through [the perf command](xtask.md#performance-cases).
 
 `cargo xtask run` boots the normal system.
 

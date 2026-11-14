@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Run kernel integration tests on real hardware capabilities.
+//! Register functional and performance cases and provide shared kernel scenarios.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -9,7 +9,22 @@ extern crate alloc;
 
 use kernel::trap::{Trap, TrapOrigin, TrapOutcome};
 
-pub use ktest::ktest;
+pub use macros::{kperf, ktest};
+
+pub mod perf;
+
+pub struct Case {
+    pub name: &'static str,
+    pub kind: CaseKind,
+}
+
+pub enum CaseKind {
+    Test {
+        run: fn(),
+        expected: &'static [&'static str],
+    },
+    Perf(fn(&mut perf::Perf)),
+}
 
 mod device;
 mod ipc;
@@ -22,6 +37,7 @@ mod trap;
 pub use device::{run as run_devices, run_dma_failure};
 pub use ipc::run as run_ipc;
 pub use memory::concurrent as run_concurrent_memory;
+pub use memory::perf_allocate_free_frame;
 pub use memory::{run as run_memory, validate_regions as validate_memory_regions};
 pub use syscall::run as run_syscalls;
 pub use syscall::{handle_program, run_device_program, run_init_program, run_service_program};

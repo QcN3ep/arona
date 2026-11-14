@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 [package]
-name = "arona-ktest"
+name = "arona-testkit-macros"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
