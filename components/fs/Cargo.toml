@@ -12,6 +12,7 @@ workspace = true
 
 [features]
 baremetal = ["runtime/program"]
+host-tests = []
 
 [lib]
 name = "fs"
@@ -34,3 +35,8 @@ name = "ext4"
 path = "tests/ext4/mod.rs"
 harness = false
 required-features = ["baremetal"]
+
+[[test]]
+name = "tmpfs"
+path = "tests/tmpfs/mod.rs"
+required-features = ["host-tests"]

@@ -8,6 +8,7 @@ use crate::{
     block::Disk,
     ext4::Ext4,
     path::normalize,
+    tmpfs::Tmpfs,
 };
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::cell::{Cell, RefCell};
@@ -15,12 +16,123 @@ use core::cell::{Cell, RefCell};
 pub struct Namespace {
     archive: Archive,
     next_directory: Cell<u64>,
-    mounts: RefCell<BTreeMap<Vec<u8>, Ext4>>,
+    mounts: RefCell<BTreeMap<Vec<u8>, Mounted>>,
+}
+
+/// A filesystem mounted at a path in the namespace.
+enum Mounted {
+    Ext4(Ext4),
+    Tmpfs(Tmpfs),
+}
+
+impl Mounted {
+    fn statistics(&self) -> Result<crate::Statistics, Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.statistics(),
+            Self::Tmpfs(filesystem) => filesystem.statistics(),
+        }
+    }
+
+    fn unmount(&self) -> Result<(), Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.unmount(),
+            Self::Tmpfs(filesystem) => filesystem.unmount(),
+        }
+    }
+
+    fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.metadata(path),
+            Self::Tmpfs(filesystem) => filesystem.metadata(path),
+        }
+    }
+
+    fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.read_dir(path),
+            Self::Tmpfs(filesystem) => filesystem.read_dir(path),
+        }
+    }
+
+    fn rename(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.rename(source, target),
+            Self::Tmpfs(filesystem) => filesystem.rename(source, target),
+        }
+    }
+
+    fn hard_link(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.hard_link(source, target),
+            Self::Tmpfs(filesystem) => filesystem.hard_link(source, target),
+        }
+    }
+
+    fn symlink(&self, target: &[u8], path: &[u8]) -> Result<(), Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.symlink(target, path),
+            Self::Tmpfs(filesystem) => filesystem.symlink(target, path),
+        }
+    }
+
+    fn read_link(&self, path: &[u8]) -> Result<Vec<u8>, Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.read_link(path),
+            Self::Tmpfs(filesystem) => filesystem.read_link(path),
+        }
+    }
+
+    fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.open_bytes(path).map(File::Ext4),
+            Self::Tmpfs(filesystem) => filesystem.open_bytes(path).map(File::Tmpfs),
+        }
+    }
+
+    fn open_directory(&self, path: &[u8]) -> Result<DirectoryNode, Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.open_directory(path).map(DirectoryNode::Ext4),
+            Self::Tmpfs(filesystem) => filesystem.open_directory(path).map(DirectoryNode::Tmpfs),
+        }
+    }
+
+    fn create(&self, path: &[u8]) -> Result<File, Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.create(path).map(File::Ext4),
+            Self::Tmpfs(filesystem) => filesystem.create(path).map(File::Tmpfs),
+        }
+    }
+
+    fn create_with_permissions(&self, path: &[u8], permissions: u16) -> Result<File, Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem
+                .create_with_permissions(path, permissions)
+                .map(File::Ext4),
+            Self::Tmpfs(filesystem) => filesystem
+                .create_with_permissions(path, permissions)
+                .map(File::Tmpfs),
+        }
+    }
+
+    fn mkdir_with_permissions(&self, path: &[u8], permissions: u16) -> Result<(), Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.mkdir_with_permissions(path, permissions),
+            Self::Tmpfs(filesystem) => filesystem.mkdir_with_permissions(path, permissions),
+        }
+    }
+
+    fn unlink(&self, path: &[u8]) -> Result<(), Error> {
+        match self {
+            Self::Ext4(filesystem) => filesystem.unlink(path),
+            Self::Tmpfs(filesystem) => filesystem.unlink(path),
+        }
+    }
 }
 
 pub enum File {
     Archive(archive::File),
     Ext4(crate::ext4::File),
+    Tmpfs(crate::tmpfs::File),
 }
 
 pub struct Directory {
@@ -33,6 +145,7 @@ pub struct Directory {
 enum DirectoryNode {
     Archive(archive::Directory),
     Ext4(crate::ext4::File),
+    Tmpfs(crate::tmpfs::File),
 }
 
 impl Directory {
@@ -40,17 +153,20 @@ impl Directory {
         match &self.node {
             DirectoryNode::Archive(directory) => directory.statistics(),
             DirectoryNode::Ext4(directory) => directory.statistics(),
+            DirectoryNode::Tmpfs(directory) => directory.statistics(),
         }
     }
 
     pub fn path(&self) -> Result<Vec<u8>, Error> {
         let mut path = self.path.clone();
-        if let DirectoryNode::Ext4(directory) = &self.node {
-            let relative = directory.path()?;
-            if !relative.is_empty() {
-                path.push(b'/');
-                path.extend(relative);
-            }
+        let relative = match &self.node {
+            DirectoryNode::Archive(_) => Vec::new(),
+            DirectoryNode::Ext4(directory) => directory.path()?,
+            DirectoryNode::Tmpfs(directory) => directory.path()?,
+        };
+        if !relative.is_empty() {
+            path.push(b'/');
+            path.extend(relative);
         }
         path.insert(0, b'/');
         Ok(path)
@@ -60,6 +176,7 @@ impl Directory {
         match &self.node {
             DirectoryNode::Archive(_) => Ok(()),
             DirectoryNode::Ext4(directory) => directory.fsync(),
+            DirectoryNode::Tmpfs(directory) => directory.fsync(),
         }
     }
 
@@ -67,17 +184,20 @@ impl Directory {
         match &self.node {
             DirectoryNode::Archive(directory) => Ok(directory.metadata()),
             DirectoryNode::Ext4(directory) => directory.metadata(),
+            DirectoryNode::Tmpfs(directory) => directory.metadata(),
         }
     }
     pub fn read_dir(&self) -> Result<Vec<crate::DirEntry>, Error> {
         match &self.node {
             DirectoryNode::Archive(directory) => Ok(directory.read_dir()),
             DirectoryNode::Ext4(directory) => directory.read_dir(),
+            DirectoryNode::Tmpfs(directory) => directory.read_dir(),
         }
     }
     pub fn read_dir_all(&self) -> Result<Vec<crate::DirEntry>, Error> {
         let parent = match &self.node {
             DirectoryNode::Ext4(directory) => directory.parent_metadata()?.unwrap_or(self.parent),
+            DirectoryNode::Tmpfs(directory) => directory.parent_metadata()?.unwrap_or(self.parent),
             DirectoryNode::Archive(_) => self.parent,
         };
         let mut entries = alloc::vec![
@@ -99,6 +219,7 @@ impl Directory {
         match &self.node {
             DirectoryNode::Archive(_) => Err(Error::ReadOnly),
             DirectoryNode::Ext4(directory) => directory.set_attributes(attributes),
+            DirectoryNode::Tmpfs(directory) => directory.set_attributes(attributes),
         }
     }
 }
@@ -133,7 +254,22 @@ impl Namespace {
             return Err(Error::Busy);
         }
         let filesystem = Ext4::mount(disk, start, length)?;
-        mounts.insert(path, filesystem);
+        mounts.insert(path, Mounted::Ext4(filesystem));
+        Ok(())
+    }
+
+    /// Mounts a fresh in-memory filesystem at a path.
+    pub fn mount_tmpfs(&self, path: &[u8]) -> Result<(), Error> {
+        let path = normalize(path)?;
+        let mut mounts = self.mounts.borrow_mut();
+        if path.is_empty()
+            || mounts
+                .keys()
+                .any(|other| beneath(&path, other) || beneath(other, &path))
+        {
+            return Err(Error::Busy);
+        }
+        mounts.insert(path, Mounted::Tmpfs(Tmpfs::new()?));
         Ok(())
     }
 
@@ -149,7 +285,7 @@ impl Namespace {
     fn mounted<T>(
         &self,
         path: &[u8],
-        operation: impl FnOnce(&Ext4, &[u8]) -> Result<T, Error>,
+        operation: impl FnOnce(&Mounted, &[u8]) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let path = crate::path::normalize(path)?;
         for (prefix, filesystem) in self.mounts.borrow().iter() {
@@ -161,7 +297,7 @@ impl Namespace {
     }
 
     pub fn create(&self, path: &[u8]) -> Result<File, Error> {
-        self.mounted(path, |fs, path| fs.create(path).map(File::Ext4))
+        self.mounted(path, Mounted::create)
     }
 
     pub fn open_with(&self, path: &[u8], options: crate::OpenOptions) -> Result<File, Error> {
@@ -174,7 +310,6 @@ impl Namespace {
             Ok(file) => file,
             Err(Error::NotFound) if options.create => self.mounted(path, |fs, path| {
                 fs.create_with_permissions(path, options.permissions)
-                    .map(File::Ext4)
             })?,
             Err(error) => return Err(error),
         };
@@ -284,14 +419,13 @@ impl Namespace {
         let parent = self.metadata(parent_path)?;
         for (prefix, fs) in self.mounts.borrow().iter() {
             if beneath(&path, prefix) {
-                return fs
-                    .open_directory(path.get(prefix.len() + 1..).unwrap_or(b"/"))
-                    .map(|directory| Directory {
-                        id,
-                        node: DirectoryNode::Ext4(directory),
-                        parent,
-                        path: prefix.clone(),
-                    });
+                let node = fs.open_directory(path.get(prefix.len() + 1..).unwrap_or(b"/"))?;
+                return Ok(Directory {
+                    id,
+                    node,
+                    parent,
+                    path: prefix.clone(),
+                });
             }
         }
         let mut directory =
@@ -348,7 +482,7 @@ impl Namespace {
         for (prefix, filesystem) in self.mounts.borrow().iter() {
             if beneath(&path, prefix) {
                 let relative = path.get(prefix.len() + 1..).unwrap_or(b"/");
-                return filesystem.open_bytes(relative).map(File::Ext4);
+                return filesystem.open_bytes(relative);
             }
         }
         self.archive.open_bytes(&path).map(File::Archive)
@@ -371,12 +505,14 @@ impl ReadAt for File {
         match self {
             Self::Archive(file) => file.len(),
             Self::Ext4(file) => file.len(),
+            Self::Tmpfs(file) => file.len(),
         }
     }
     fn read_at(&self, offset: usize, output: &mut [u8]) -> Result<usize, Error> {
         match self {
             Self::Archive(file) => file.read_at(offset, output),
             Self::Ext4(file) => file.read_at(offset, output),
+            Self::Tmpfs(file) => file.read_at(offset, output),
         }
     }
 }
@@ -386,6 +522,7 @@ impl File {
         match self {
             Self::Archive(file) => file.statistics(),
             Self::Ext4(file) => file.statistics(),
+            Self::Tmpfs(file) => file.statistics(),
         }
     }
 
@@ -393,6 +530,7 @@ impl File {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Ext4(file) => file.check_writable(),
+            Self::Tmpfs(file) => file.check_writable(),
         }
     }
 
@@ -400,18 +538,21 @@ impl File {
         match self {
             Self::Archive(file) => Ok(file.metadata()),
             Self::Ext4(file) => file.metadata(),
+            Self::Tmpfs(file) => file.metadata(),
         }
     }
     pub fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Ext4(file) => file.set_attributes(attributes),
+            Self::Tmpfs(file) => file.set_attributes(attributes),
         }
     }
     pub fn append(&self, bytes: &[u8]) -> Result<(usize, usize), Error> {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Ext4(file) => file.append(bytes),
+            Self::Tmpfs(file) => file.append(bytes),
         }
     }
 
@@ -419,18 +560,21 @@ impl File {
         match self {
             Self::Archive(_) => Ok(()),
             Self::Ext4(file) => file.fsync(),
+            Self::Tmpfs(file) => file.fsync(),
         }
     }
     pub fn write_at(&self, offset: usize, bytes: &[u8]) -> Result<usize, Error> {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Ext4(file) => file.write_at(offset, bytes),
+            Self::Tmpfs(file) => file.write_at(offset, bytes),
         }
     }
     pub fn truncate(&self, size: usize) -> Result<(), Error> {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Ext4(file) => file.truncate(size),
+            Self::Tmpfs(file) => file.truncate(size),
         }
     }
 }

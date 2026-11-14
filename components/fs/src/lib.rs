@@ -7,7 +7,7 @@
 
 extern crate alloc;
 
-// TODO: Integrate a RAM filesystem and FAT32.
+// TODO: Integrate a FAT32 filesystem.
 
 pub mod archive;
 pub mod block;
@@ -21,6 +21,7 @@ mod path;
 mod protocol;
 pub mod service;
 mod statistics;
+pub mod tmpfs;
 
 pub use client::{Client, Directory, File};
 pub use control::Control;
