@@ -188,10 +188,11 @@ It supports the shared boot mapping and controlled mappings in the calibration i
 The mapping scenario switches between programs at the same virtual address and reuses page tables for a new load instance.
 The collector keeps these instances separate and checks instruction bytes against their saved ELF locations.
 `counts.json` retains execution contexts, instruction addresses, bytes, and counts for each interval.
-`report.md` and `report.json` group these counts by image, function or symbol, and source line, with instruction disassembly and inline frames.
-Function and source-line groups retain the image name.
-Each group includes unknown entries, and each grouping sums to that interval's total.
-Only the innermost inline frame receives the count. Enclosing frames provide context.
+`report.md` summarizes coverage and hotspots with counts, shares, and counts per work unit.
+Direct function and source-line groups assign each instruction to its innermost inline frame. Each complete grouping sums to the interval total.
+A separate function table includes instructions from inline expansions. These rows overlap and do not include out-of-line callees.
+The report also counts TLB operations, barriers, atomic operations, and exception returns.
+`instructions.md` contains the full mnemonic and address listings. `report.json` retains every group, instruction, inline frame, and original linkage name.
 Each calibration interval is one work unit.
 
 Mapping attribution uses read-only descriptors supplied by the calibration driver.
@@ -202,7 +203,7 @@ This does not provide general process attribution for Arona workloads.
 The report command runs offline and reads only the saved artifacts.
 The saved ELF files are required. Missing source files do not prevent reporting recorded locations.
 Changed code that does not match the saved ELF remains unknown and retains its captured disassembly.
-Damaged files and inconsistent counts cause an error. Tool diagnostics are saved in `report.log`.
+Damaged files and inconsistent counts cause an error. Repeated tool diagnostics are summarized, with the full output in `report.log`.
 
 ## System Instruction Collection
 
@@ -257,7 +258,7 @@ Guest builds may differ. The caller must keep workload inputs and completion sem
 
 The comparison shows exact instruction counts and their difference, followed by counts per work unit.
 JSON stores the signed integer difference as a decimal string. Percentages and per-unit values use floating point.
-Profile comparisons also show image, function, and source-line changes, including unknown counts and coverage.
+Profile comparisons also show direct and inline function changes, source lines, and instruction kinds, including unknown counts and coverage.
 Functions match image, demangled name without the Rust symbol hash, and definition location when available. Source lines match exact recorded locations.
 Unmatched groups appear as added or removed. Absolute PCs are not matched across builds.
-The Markdown report shows the 20 largest changes in each grouping. JSON retains every group.
+The Markdown report shows the 20 largest changes in each grouping. JSON retains every group, and `diff.log` retains full tool diagnostics.
