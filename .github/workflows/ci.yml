@@ -13,16 +13,19 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   check:
     name: Check
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/qcn3ep/arona-ci:latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          rustflags: ""
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings --force-warn clippy::too_many_lines
       - run: cargo test --locked --workspace --features arona-fs/host-tests
@@ -33,10 +36,9 @@ jobs:
   build:
     name: Build (${{ matrix.target }})
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/qcn3ep/arona-ci:latest
     timeout-minutes: 45
-    env:
-      ARONA_CC: clang-18
-      ARONA_AR: llvm-ar-18
     strategy:
       fail-fast: false
       matrix:
@@ -47,11 +49,6 @@ jobs:
             triple: loongarch64-unknown-none
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          rustflags: ""
-      - name: Install C compiler, archiver, and linker
-        run: sudo apt-get update && sudo apt-get install -y clang-18 llvm-18 lld
       - run: cargo xtask build ${{ matrix.target }}
       - name: Clippy bare-metal libraries and binaries
         env:
@@ -100,6 +97,47 @@ jobs:
               -Zbuild-std-features=compiler-builtins-mem \
               -- -Cstrip=symbols -Clink-arg=-zmax-page-size=4096
           done
+
+  qemu:
+    name: QEMU (${{ matrix.target }}, ${{ matrix.profile }})
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/qcn3ep/arona-ci:latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [riscv64, loongarch64]
+        profile: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show test tool versions
+        run: |
+          rustc --version
+          clang --version
+          qemu-system-riscv64 --version
+          qemu-system-loongarch64 --version
+      - name: Run all QEMU tests
+        env:
+          TEST_TARGET: ${{ matrix.target }}
+          TEST_PROFILE: ${{ matrix.profile }}
+        run: |
+          args=("$TEST_TARGET")
+          if [[ "$TEST_PROFILE" == release ]]; then
+            args+=(--release --timeout 900)
+          else
+            args+=(--timeout 1800)
+          fi
+          cargo xtask test "${args[@]}"
+      - name: Upload QEMU test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-${{ matrix.target }}-${{ matrix.profile }}
+          path: |
+            target/tests/**/*.log
+            target/tests/**/*.json
+          if-no-files-found: warn
 
   book:
     name: Book
