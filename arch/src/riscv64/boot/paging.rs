@@ -6,9 +6,9 @@ use crate::paging::PAGE_TABLE_WINDOW;
 
 pub(super) const LARGE_PAGE_SIZE: usize = 0x20_0000;
 const KERNEL_BASE: usize = 0xffff_ffc0_0000_0000;
-pub(super) const UART_BASE: usize = KERNEL_BASE + 0x20_0000;
+pub(super) const UART_BASE: usize = KERNEL_BASE + 0x40_0000;
 pub(super) const UART_PHYSICAL_BASE: usize = 0x1000_0000;
-pub(super) const FIRMWARE_BASE: usize = KERNEL_BASE + 0x40_0000;
+pub(super) const FIRMWARE_BASE: usize = KERNEL_BASE + 0x60_0000;
 
 // REFERENCE: https://docs.riscv.org/reference/isa/priv/supervisor.html
 const VALID: usize = 1;
@@ -46,6 +46,7 @@ unsafe extern "C" {
     static mut _boot_tables_phys: PageTables;
     static _boot_tables_window_phys: u8;
     static _kernel_phys_start: u8;
+    static _kernel_phys_end: u8;
 }
 
 /// # Safety
@@ -96,8 +97,14 @@ impl PageTables {
         unsafe { (*(window_table as *mut PageTable)).clear() };
         self.window_l1
             .link_address::<1>(PAGE_TABLE_WINDOW, window_table);
-        // The boot image is temporarily mapped with a single read-write-execute 2 MiB large page.
-        self.kernel_l1.map::<1>(KERNEL_BASE, kernel, PAGE_RWX);
+        let end = core::ptr::addr_of!(_kernel_phys_end) as usize;
+        let mut physical = kernel;
+        let mut virtual_address = KERNEL_BASE;
+        while physical < end {
+            self.kernel_l1.map::<1>(virtual_address, physical, PAGE_RWX);
+            physical = physical.wrapping_add(LARGE_PAGE_SIZE);
+            virtual_address = virtual_address.wrapping_add(LARGE_PAGE_SIZE);
+        }
         self.kernel_l1
             .map::<1>(UART_BASE, UART_PHYSICAL_BASE, PAGE_RW);
 
