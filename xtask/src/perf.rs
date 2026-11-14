@@ -126,6 +126,8 @@ struct Window {
     start: u64,
     end: u64,
     expected: Option<u64>,
+    start_image: Option<usize>,
+    end_image: Option<usize>,
 }
 
 pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
@@ -194,7 +196,7 @@ fn collect(
             &windows,
             options.profile,
             context,
-            options.case,
+            &manifest,
         )?)
         .arg("-qmp")
         .arg(format!("unix:{}/qmp,server=on,wait=off", control.display()));
@@ -209,6 +211,7 @@ fn collect(
         "plugin_sha256": artifacts::digest(&plugin)?,
         "source_sha256": artifacts::digest(&directory.join("count.c"))?,
         "context_header_sha256": artifacts::digest(&directory.join("context.h"))?,
+        "system_header_sha256": artifacts::digest(&directory.join("system.h"))?,
         "compiler": command_output(Command::new(env::var_os("CC").unwrap_or_else(|| "cc".into())).arg("--version"))?,
     });
     metadata["command"] = json!(command.get_program().to_string_lossy());
@@ -287,6 +290,8 @@ fn build_plugin(root: &Path, directory: &Path) -> Result<PathBuf, String> {
         directory.join("context.h"),
     )
     .map_err(|error| error.to_string())?;
+    fs::copy(root.join("xtask/perf/system.h"), directory.join("system.h"))
+        .map_err(|error| error.to_string())?;
     let mut command = Command::new(env::var_os("CC").unwrap_or_else(|| "cc".into()));
     command
         .args([
@@ -345,9 +350,19 @@ fn read_windows(executable: &Path, manifest: &Value) -> Result<(Vec<Window>, u64
         }
     }
     if manifest["case"] == "system" {
-        let window = system::window(&manifest["measurement"], &symbols)?;
-        let image = artifacts::inspect(executable)?;
-        for pc in [window.start, window.end] {
+        let directory = executable
+            .parent()
+            .ok_or("missing saved artifact directory")?;
+        let window = system::window(directory, manifest, &symbols)?;
+        for (pc, index) in [
+            (window.start, window.start_image),
+            (window.end, window.end_image),
+        ] {
+            let path = index.map_or_else(
+                || executable.to_path_buf(),
+                |index| directory.join(format!("images/{index}/symbols.elf")),
+            );
+            let image = artifacts::inspect(&path)?;
             if !image["ProgramHeaders"]
                 .as_array()
                 .ok_or("missing ELF segments")?
@@ -367,7 +382,8 @@ fn read_windows(executable: &Path, manifest: &Value) -> Result<(Vec<Window>, u64
                 })
             {
                 return Err(format!(
-                    "boundary 0x{pc:x} is outside executable kernel segments"
+                    "boundary 0x{pc:x} is outside executable segments in {}",
+                    path.display()
                 ));
             }
         }
@@ -391,6 +407,8 @@ fn read_windows(executable: &Path, manifest: &Value) -> Result<(Vec<Window>, u64
                 } else {
                     Some(symbol(name, "expected")?)
                 },
+                start_image: None,
+                end_image: None,
             })
         })
         .collect::<Result<_, String>>()?;
@@ -403,7 +421,7 @@ fn plugin_options(
     windows: &[Window],
     profile: bool,
     context: u64,
-    case: &str,
+    manifest: &Value,
 ) -> Result<String, String> {
     let escape = |path: &Path| {
         path.to_str()
@@ -419,15 +437,38 @@ fn plugin_options(
         use std::fmt::Write;
         write!(
             options,
-            ",window={}:{:x}:{:x}",
-            window.name, window.start, window.end
+            ",window={}:{:x}:{:x}:{}:{}",
+            window.name,
+            window.start,
+            window.end,
+            window
+                .start_image
+                .map_or_else(|| "-1".to_owned(), |image| image.to_string()),
+            window
+                .end_image
+                .map_or_else(|| "-1".to_owned(), |image| image.to_string())
         )
         .map_err(|error| error.to_string())?;
     }
+    if manifest["case"] == "system" {
+        options.push_str(",case=system");
+        for image in manifest["images"]
+            .as_array()
+            .ok_or("missing saved component images")?
+        {
+            let saved = image["directory"]
+                .as_str()
+                .ok_or("missing image directory")?;
+            options.push_str(",image=");
+            options.push_str(&escape(
+                &directory.join("artifacts").join(saved).join("guest.elf"),
+            )?);
+        }
+    }
     if profile {
         use std::fmt::Write;
-        write!(options, ",profile={case}").map_err(|error| error.to_string())?;
-        if case == "calibration" {
+        options.push_str(",profile=on");
+        if manifest["case"] == "calibration" {
             write!(options, ",context={context:x}").map_err(|error| error.to_string())?;
         }
     }
@@ -591,6 +632,8 @@ fn validate_counts(directory: &Path, expected: &[Window]) -> Result<(), String> 
         if window["name"] != expected.name
             || window["start"] != format!("0x{:x}", expected.start)
             || window["end"] != format!("0x{:x}", expected.end)
+            || window.get("start_image") != Some(&json!(expected.start_image))
+            || window.get("end_image") != Some(&json!(expected.end_image))
             || window["starts"] != 1
             || window["ends"] != 1
             || !matches

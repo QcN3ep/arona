@@ -15,6 +15,7 @@ struct window;
 struct boundary {
     struct window *window;
     bool start;
+    int image;
 };
 
 struct window {
@@ -39,15 +40,20 @@ static char *output_path;
 static char *pending_path;
 static const char *error;
 static GHashTable *instructions;
-static bool system_profile;
+static bool system_mode;
+static bool profiling;
 
 #define MAX_INSTRUCTIONS 262144
+#define MAX_SAMPLES 1048576
 
 struct instruction {
     uint64_t pc;
     size_t size;
     unsigned char bytes[16];
     char *disassembly;
+    bool root_access;
+    bool mapping_barrier;
+    int root_operand;
 };
 
 static void free_instruction(void *data)
@@ -78,6 +84,7 @@ static void overflow(unsigned int cpu, void *userdata)
 
 static void json_string(const char *value);
 #include "context.h"
+#include "system.h"
 
 struct sample {
     struct instruction *instruction;
@@ -96,16 +103,19 @@ static void free_sample(void *data)
 
 static uint64_t *sample_count(struct instruction *instruction)
 {
-    struct context *context = system_profile
-        ? (instruction->pc >= UINT64_C(0xffff000000000000) ? &static_context : &unknown_context)
+    struct context *context = system_mode
+        ? system_context(instruction->pc, instruction->size)
         : (!strcmp(active->name, "mappings") ? observe_context() : &static_context);
     if (!context) { return NULL; }
+    if (system_mode && context != &static_context) {
+        context = context->image < 0 ? &unknown_context : g_ptr_array_index(contexts, context->image + 2);
+    }
     struct { struct instruction *instruction; struct context *context; } key = {instruction, context};
     GBytes *bytes = g_bytes_new(&key, sizeof(key));
     struct sample *sample = g_hash_table_lookup(samples, bytes);
     if (!sample) {
-        if (g_hash_table_size(samples) >= MAX_INSTRUCTIONS) {
-            fail("profile instruction capacity exhausted");
+        if (g_hash_table_size(samples) >= MAX_SAMPLES) {
+            fail("profile sample capacity exhausted");
             g_bytes_unref(bytes);
             return NULL;
         }
@@ -122,7 +132,8 @@ static void profile(unsigned int cpu, void *userdata)
 {
     (void)cpu;
     struct instruction *instruction = userdata;
-    if (!active || instruction->pc == active->start_pc) {
+    if (!active || (instruction->pc == active->start_pc &&
+        (active->start.image < 0 || system_context(instruction->pc, instruction->size)->image == active->start.image))) {
         return;
     }
     uint64_t *count = sample_count(instruction);
@@ -135,7 +146,7 @@ static void profile(unsigned int cpu, void *userdata)
     ++active->profiled;
 }
 
-static void instrument(struct qemu_plugin_insn *insn)
+static struct instruction *instrument(struct qemu_plugin_insn *insn)
 {
     struct {
         uint64_t pc;
@@ -146,7 +157,7 @@ static void instrument(struct qemu_plugin_insn *insn)
     if (!key.size || key.size > sizeof(key.bytes) ||
         qemu_plugin_insn_data(insn, key.bytes, sizeof(key.bytes)) != key.size) {
         fail("unsupported profile instruction size");
-        return;
+        return NULL;
     }
     GBytes *bytes = g_bytes_new(&key, sizeof(key));
     struct instruction *instruction = g_hash_table_lookup(instructions, bytes);
@@ -154,25 +165,30 @@ static void instrument(struct qemu_plugin_insn *insn)
         if (g_hash_table_size(instructions) >= MAX_INSTRUCTIONS) {
             fail("profile instruction capacity exhausted");
             g_bytes_unref(bytes);
-            return;
+            return NULL;
         }
         instruction = g_new0(struct instruction, 1);
         instruction->pc = key.pc;
         instruction->size = key.size;
         memcpy(instruction->bytes, key.bytes, key.size);
         instruction->disassembly = qemu_plugin_insn_disas(insn);
+        if (system_mode) { decode_system(instruction); }
         g_hash_table_insert(instructions, bytes, instruction);
     } else {
         g_bytes_unref(bytes);
     }
-    qemu_plugin_register_vcpu_insn_exec_cb(
-        insn, profile, system_profile ? QEMU_PLUGIN_CB_NO_REGS : QEMU_PLUGIN_CB_R_REGS, instruction);
+    if (system_mode && images->len) {
+        qemu_plugin_register_vcpu_insn_exec_cb(insn, observe_system, QEMU_PLUGIN_CB_R_REGS, instruction);
+        qemu_plugin_register_vcpu_mem_cb(insn, code_written, QEMU_PLUGIN_CB_NO_REGS, QEMU_PLUGIN_MEM_W, NULL);
+    }
+    return instruction;
 }
 
 static void boundary(unsigned int cpu, void *userdata)
 {
     struct boundary *edge = userdata;
     struct window *window = edge->window;
+    if (edge->image >= 0 && system_context(edge->start ? window->start_pc : window->end_pc, 1)->image != edge->image) { return; }
     uint64_t dispatched = qemu_plugin_u64_get(counter(), cpu);
 
     if (edge->start) {
@@ -203,17 +219,21 @@ static void translate(struct qemu_plugin_tb *tb, void *userdata)
     for (size_t index = 0; index < count; ++index) {
         struct qemu_plugin_insn *insn = qemu_plugin_tb_get_insn(tb, index);
         uint64_t pc = qemu_plugin_insn_vaddr(insn);
+        // Observe page-table writes before evaluating an image-qualified boundary.
+        struct instruction *instruction = instructions ? instrument(insn) : NULL;
         for (size_t region = 0; region < window_count; ++region) {
             struct window *window = &windows[region];
-            struct boundary *edge = pc == window->start_pc ? &window->start :
-                                    pc == window->end_pc ? &window->end : NULL;
-            if (edge) {
+            if (pc == window->start_pc) {
                 qemu_plugin_register_vcpu_insn_exec_cb(
-                    insn, boundary, QEMU_PLUGIN_CB_NO_REGS, edge);
+                    insn, boundary, QEMU_PLUGIN_CB_R_REGS, &window->start);
+            }
+            if (pc == window->end_pc) {
+                qemu_plugin_register_vcpu_insn_exec_cb(
+                    insn, boundary, QEMU_PLUGIN_CB_R_REGS, &window->end);
             }
         }
-        if (instructions) {
-            instrument(insn);
+        if (profiling && instruction) {
+            qemu_plugin_register_vcpu_insn_exec_cb(insn, profile, QEMU_PLUGIN_CB_R_REGS, instruction);
         }
         qemu_plugin_register_vcpu_insn_exec_inline_per_vcpu(
             insn, QEMU_PLUGIN_INLINE_ADD_U64, counter(), 1);
@@ -275,7 +295,7 @@ static void finish(void *userdata)
         if (windows[index].starts != 1 || windows[index].ends != 1) {
             fail("missing measurement boundary");
         }
-        if (instructions && windows[index].instructions != windows[index].profiled) {
+        if (profiling && windows[index].instructions != windows[index].profiled) {
             fail("profile does not sum to the interval count");
         }
     }
@@ -287,9 +307,9 @@ static void finish(void *userdata)
     } else {
         fputs("null", output);
     }
-    if (instructions) {
-        fprintf(output, ",\"scope\":\"%s\"", system_profile ? "system" : "controlled-mappings");
-        write_contexts();
+    if (profiling) {
+        fprintf(output, ",\"scope\":\"%s\"", system_mode ? "system" : "controlled-mappings");
+        if (system_mode) { write_system_contexts(); } else { write_contexts(); }
     }
     fputs(",\"windows\":[", output);
     for (size_t index = 0; index < window_count; ++index) {
@@ -303,7 +323,11 @@ static void finish(void *userdata)
                 "\",\"starts\":%u,\"ends\":%u,\"instructions\":%" PRIu64,
                 window->start_pc, window->end_pc, window->starts, window->ends,
                 window->instructions);
-        if (instructions) {
+        fputs(",\"start_image\":", output);
+        if (window->start.image < 0) { fputs("null", output); } else { fprintf(output, "%d", window->start.image); }
+        fputs(",\"end_image\":", output);
+        if (window->end.image < 0) { fputs("null", output); } else { fprintf(output, "%d", window->end.image); }
+        if (profiling) {
             write_profile(index);
         }
         fputc('}', output);
@@ -318,11 +342,12 @@ static void finish(void *userdata)
     g_free(output_path);
     g_free(pending_path);
     g_free(windows);
-    if (instructions) {
+    if (profiling) {
         g_hash_table_destroy(samples);
-        if (!system_profile) { destroy_contexts(); }
-        g_hash_table_destroy(instructions);
     }
+    if (system_mode) { destroy_system(); } else { g_ptr_array_free(images, true); }
+    if (profiling && !system_mode) { destroy_contexts(); }
+    if (instructions) { g_hash_table_destroy(instructions); }
     qemu_plugin_scoreboard_free(score);
 }
 
@@ -330,12 +355,15 @@ static bool add_window(const char *spec)
 {
     gchar **fields = g_strsplit(spec, ":", -1);
     struct window *window = &windows[window_count];
-    bool valid = g_strv_length(fields) == 3 && *fields[0] &&
+    gint64 start_image = -1, end_image = -1;
+    bool valid = g_strv_length(fields) == 5 && *fields[0] &&
         g_ascii_string_to_unsigned(fields[1], 16, 1, UINT64_MAX,
                                    &window->start_pc, NULL) &&
         g_ascii_string_to_unsigned(fields[2], 16, 1, UINT64_MAX,
                                    &window->end_pc, NULL) &&
-        window->start_pc != window->end_pc;
+        g_ascii_string_to_signed(fields[3], 10, -1, G_MAXINT, &start_image, NULL) &&
+        g_ascii_string_to_signed(fields[4], 10, -1, G_MAXINT, &end_image, NULL) &&
+        (window->start_pc != window->end_pc || start_image != end_image);
     for (size_t index = 0; valid && index < window_count; ++index) {
         const struct window *other = &windows[index];
         valid = strcmp(fields[0], other->name) &&
@@ -344,8 +372,8 @@ static bool add_window(const char *spec)
     }
     if (valid) {
         window->name = g_strdup(fields[0]);
-        window->start = (struct boundary){window, true};
-        window->end = (struct boundary){window, false};
+        window->start = (struct boundary){window, true, start_image};
+        window->end = (struct boundary){window, false, end_image};
         ++window_count;
     }
     g_strfreev(fields);
@@ -363,15 +391,20 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         return -1;
     }
     const char *path = NULL;
+    riscv = !strcmp(info->target_name, "riscv64");
+    images = g_ptr_array_new();
     windows = g_new0(struct window, argc);
     for (int index = 0; index < argc; ++index) {
         if (g_str_has_prefix(argv[index], "output=") && !path) {
             path = argv[index] + strlen("output=");
-        } else if ((!strcmp(argv[index], "profile=calibration") || !strcmp(argv[index], "profile=system")) && !instructions) {
-            system_profile = !strcmp(argv[index], "profile=system");
-            instructions = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
-                                                 (GDestroyNotify)g_bytes_unref,
-                                                 free_instruction);
+        } else if (!strcmp(argv[index], "case=system") && !system_mode) {
+            system_mode = true;
+        } else if (!strcmp(argv[index], "profile=on") && !profiling) {
+            profiling = true;
+        } else if (g_str_has_prefix(argv[index], "image=")) {
+            if (!load_image(argv[index] + strlen("image="))) {
+                fputs("Arona perf: invalid native executable image\n", stderr); return -1;
+            }
         } else if (g_str_has_prefix(argv[index], "context=") && !context_address &&
                    g_ascii_string_to_unsigned(argv[index] + strlen("context="), 16, 1, UINT64_MAX,
                                               &context_address, NULL)) {
@@ -388,16 +421,40 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         fputs("Arona perf requires an output file and distinct measurement windows\n", stderr);
         return -1;
     }
-    if ((instructions && !system_profile && !context_address) ||
-        (context_address && (!instructions || system_profile))) {
+    if ((profiling && !system_mode && !context_address) ||
+        (context_address && (!profiling || system_mode)) || (images->len && !system_mode)) {
         fputs("Arona perf requires a context address only for calibration profiling\n", stderr);
         return -1;
     }
-    if (instructions) {
+    for (size_t index = 0; index < window_count; ++index) {
+        if (windows[index].start.image >= (int)images->len || windows[index].end.image >= (int)images->len) {
+            fputs("Arona perf: invalid boundary image\n", stderr); return -1;
+        }
+    }
+    if (profiling || (system_mode && images->len)) {
+        instructions = g_hash_table_new_full(g_bytes_hash, g_bytes_equal, (GDestroyNotify)g_bytes_unref, free_instruction);
+    }
+    if (profiling) {
         samples = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                         (GDestroyNotify)g_bytes_unref, free_sample);
     }
-    if (instructions && !system_profile) {
+    if (system_mode) {
+        contexts = g_ptr_array_new();
+        static_context.image = -1; unknown_context.image = -1;
+        g_ptr_array_add(contexts, &static_context); g_ptr_array_add(contexts, &unknown_context);
+        for (guint index = 0; index < images->len; ++index) {
+            struct context *context = g_new0(struct context, 1);
+            context->id = index + 2; context->image = index;
+            g_ptr_array_add(contexts, context);
+        }
+        mapping_observations = g_ptr_array_new();
+        code_pages = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)g_byte_array_unref);
+        system_register_bytes = g_byte_array_new();
+        if (images->len) {
+            qemu_plugin_register_vcpu_init_cb(id, initialize_system, NULL);
+            qemu_plugin_register_vcpu_discon_cb(id, QEMU_PLUGIN_DISCON_ALL, system_discontinuity, NULL);
+        }
+    } else if (profiling) {
         require_root = !strcmp(info->target_name, "riscv64");
         contexts = g_ptr_array_new();
         g_ptr_array_add(contexts, &static_context);

@@ -74,6 +74,7 @@ impl SavedRun {
         for (file, key) in [
             ("count.c", "source_sha256"),
             ("context.h", "context_header_sha256"),
+            ("system.h", "system_header_sha256"),
             ("count.so", "plugin_sha256"),
         ] {
             check_digest(&directory.join(file), &metadata["collector"][key])?;
@@ -156,7 +157,12 @@ fn compatible(left: &SavedRun, right: &SavedRun) -> Result<(), String> {
             return Err(format!("performance runs differ in {key}"));
         }
     }
-    for key in ["source_sha256", "context_header_sha256", "plugin_sha256"] {
+    for key in [
+        "source_sha256",
+        "context_header_sha256",
+        "system_header_sha256",
+        "plugin_sha256",
+    ] {
         if left.metadata["collector"][key] != right.metadata["collector"][key] {
             return Err(format!("performance collectors differ in {key}"));
         }

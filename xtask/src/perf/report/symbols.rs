@@ -17,9 +17,53 @@ pub(super) fn resolve(
     warnings: &mut Vec<String>,
 ) -> Result<BTreeMap<Address, Value>, String> {
     let saved = directory.join("artifacts");
+    let mut images = BTreeMap::<String, Vec<(Address, u64, String)>>::new();
+    images.insert(String::new(), Vec::new());
+    for image in manifest["images"]
+        .as_array()
+        .ok_or("missing saved images")?
+    {
+        images.insert(
+            image["directory"]
+                .as_str()
+                .ok_or("missing image directory")?
+                .to_owned(),
+            Vec::new(),
+        );
+    }
+    for key @ (context, pc, code) in addresses {
+        if let Some((link, image, directory)) =
+            mappings::relocate(counts, *context, *pc, code.len() / 2, manifest)
+        {
+            images
+                .get_mut(&directory)
+                .ok_or("missing mapped image")?
+                .push((key.clone(), link, image));
+        }
+    }
     let mut locations = BTreeMap::new();
-    verify(&saved, "guest.elf", manifest)?;
-    verify(&saved, "symbols.elf", manifest)?;
+    for (relative, addresses) in images {
+        let prefix = if relative.is_empty() {
+            String::new()
+        } else {
+            format!("{relative}/")
+        };
+        verify(&saved, &format!("{prefix}guest.elf"), manifest)?;
+        verify(&saved, &format!("{prefix}symbols.elf"), manifest)?;
+        locations.extend(resolve_image(&saved.join(relative), &addresses, warnings)?);
+    }
+    Ok(locations)
+}
+
+fn resolve_image(
+    saved: &Path,
+    addresses: &[(Address, u64, String)],
+    warnings: &mut Vec<String>,
+) -> Result<BTreeMap<Address, Value>, String> {
+    let mut locations = BTreeMap::new();
+    if addresses.is_empty() {
+        return Ok(locations);
+    }
     let guest = saved.join("guest.elf");
     let image = artifacts::inspect(&guest)?;
     let bytes = fs::read(&guest).map_err(|error| error.to_string())?;
@@ -27,14 +71,12 @@ pub(super) fn resolve(
         .as_array()
         .ok_or("missing ELF segments")?;
     let mut queries = BTreeMap::<u64, Vec<Address>>::new();
-    for key @ (context, pc, code) in addresses {
-        if let Some((link, image)) = mappings::relocate(counts, *context, *pc, code.len() / 2)
-            && let Some(mut location) = image_location(link, code, headers, &bytes)
-        {
+    for (key, link, image) in addresses {
+        if let Some(mut location) = image_location(*link, &key.2, headers, &bytes) {
             location["image"] = json!(image);
             location["link_pc"] = json!(format!("0x{link:x}"));
             locations.insert(key.clone(), location);
-            queries.entry(link).or_default().push(key.clone());
+            queries.entry(*link).or_default().push(key.clone());
         }
     }
     let disassembly = command_output(

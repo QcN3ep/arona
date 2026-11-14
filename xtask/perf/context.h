@@ -10,6 +10,9 @@ struct context {
     unsigned int id;
     bool root_readable;
     const char *reason;
+    uint64_t root;
+    uint64_t epoch;
+    int image;
 };
 
 static uint64_t context_address;
@@ -99,10 +102,6 @@ static struct context *observe_context(void)
 
 static void write_contexts(void)
 {
-    if (system_profile) {
-        fputs(",\"context_register\":null,\"contexts\":[{\"id\":0,\"kind\":\"shared-kernel\"},{\"id\":1,\"kind\":\"unknown\"}]", output);
-        return;
-    }
     fprintf(output, ",\"context_register\":%s,\"contexts\":[{\"id\":0,\"kind\":\"static\"}",
             root_register ? "\"satp\"" : "null");
     for (guint index = 1; index < contexts->len; ++index) {
