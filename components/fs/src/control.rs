@@ -50,6 +50,12 @@ impl<'a> Control<'a> {
         empty(call(&self.channel, &mut request, deadline)?)
     }
 
+    pub fn mount_tmpfs(&self, path: &[u8], deadline: u64) -> Result<(), Error> {
+        let mut request = Message::new(protocol::TMPFS, &[path.len() as u64])?;
+        transfer(&mut request, self.path(path)?, Rights::READ)?;
+        empty(call(&self.channel, &mut request, deadline)?)
+    }
+
     pub fn unmount(&self, path: &[u8], deadline: u64) -> Result<(), Error> {
         let mut request = Message::new(protocol::UNMOUNT, &[path.len() as u64])?;
         transfer(&mut request, self.path(path)?, Rights::READ)?;
