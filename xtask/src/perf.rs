@@ -3,6 +3,7 @@
 //! Collects and validates instruction counts from calibration and system images.
 
 mod artifacts;
+mod diff;
 mod report;
 mod system;
 
@@ -130,6 +131,7 @@ struct Window {
 pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
     match arguments.next().as_deref().and_then(|value| value.to_str()) {
         Some("report") => return report::run(arguments),
+        Some("diff") => return diff::run(arguments),
         Some("run") => (),
         _ => return Err(super::usage()),
     }
@@ -227,6 +229,17 @@ fn collect(
     };
     measure(command, control, directory, options.timeout, success)?;
     validate_counts(directory, &windows)?;
+    let counts = report::read_json(&directory.join("counts.json"))?;
+    for window in counts["windows"]
+        .as_array()
+        .ok_or("missing plugin windows")?
+    {
+        println!(
+            "{}: {} instructions",
+            window["name"].as_str().ok_or("missing window name")?,
+            window["instructions"]
+        );
+    }
     metadata["counts_sha256"] = json!(artifacts::digest(&directory.join("counts.json"))?);
     if options.profile {
         report::generate(directory, metadata)?;
@@ -576,6 +589,8 @@ fn validate_counts(directory: &Path, expected: &[Window]) -> Result<(), String> 
             None => count > 0,
         };
         if window["name"] != expected.name
+            || window["start"] != format!("0x{:x}", expected.start)
+            || window["end"] != format!("0x{:x}", expected.end)
             || window["starts"] != 1
             || window["ends"] != 1
             || !matches
@@ -590,7 +605,6 @@ fn validate_counts(directory: &Path, expected: &[Window]) -> Result<(), String> 
                 window["instructions"]
             ));
         }
-        println!("{}: {} instructions", expected.name, window["instructions"]);
     }
     Ok(())
 }
