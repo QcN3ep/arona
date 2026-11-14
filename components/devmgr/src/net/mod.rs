@@ -29,6 +29,7 @@ pub const MAX_FRAME: usize = 1518;
 pub const MIN_FRAME: usize = 14;
 const HEADER: usize = 12;
 const SLOT: usize = 2048;
+const SLOTS_PER_PAGE: usize = 4096 / SLOT;
 const MAX_SLOTS: usize = 32;
 const MAC: u64 = 1 << 5;
 const MTU: u64 = 1 << 3;
@@ -60,8 +61,8 @@ pub struct Net<'a> {
     interrupt: InterruptBinding<'a>,
     rx: Queue<'a>,
     tx: Queue<'a>,
-    receive: DmaBuffer<'a>,
-    transmit: DmaBuffer<'a>,
+    receive: Vec<DmaBuffer<'a>>,
+    transmit: Vec<DmaBuffer<'a>>,
     busy: Vec<bool>,
     rx_slots: usize,
     domain: &'a Handle<DmaDomain>,
@@ -97,16 +98,8 @@ impl<'a> Net<'a> {
         let tx = Queue::new(domain, task, &mut transport, 1)?;
         let rx_slots = rx.size().min(MAX_SLOTS);
         let tx_slots = tx.size().min(MAX_SLOTS);
-        let receive = domain.allocate(
-            task,
-            (rx_slots * SLOT).div_ceil(4096) as u64,
-            DmaDirection::FromDevice,
-        )?;
-        let transmit = domain.allocate(
-            task,
-            (tx_slots * SLOT).div_ceil(4096) as u64,
-            DmaDirection::ToDevice,
-        )?;
+        let receive = allocate_buffers(domain, task, rx_slots, DmaDirection::FromDevice)?;
+        let transmit = allocate_buffers(domain, task, tx_slots, DmaDirection::ToDevice)?;
         match ipc::wait_many(&[WaitItem::new(event, 1)], WaitMode::Poll) {
             Ok(_) | Err(runtime::Error::Kernel(runtime::KernelError::WouldBlock)) => {}
             Err(error) => return Err(error.into()),
@@ -157,15 +150,16 @@ impl<'a> Net<'a> {
         }
         self.transport.check()?;
         let slot = self.busy.iter().position(|busy| !busy).ok_or(Error::Busy)?;
-        let offset = (slot * SLOT) as u64;
+        let buffer = &mut self.transmit[slot / SLOTS_PER_PAGE];
+        let offset = (slot % SLOTS_PER_PAGE * SLOT) as u64;
         let mut bytes = [0; HEADER + MAX_FRAME];
         bytes[HEADER..HEADER + frame.len()].copy_from_slice(frame);
         let length = HEADER + frame.len().max(60);
-        self.transmit.write(offset, &bytes[..length])?;
+        buffer.write(offset, &bytes[..length])?;
         self.tx.publish(
             slot as u16,
             &[Descriptor {
-                address: self.transmit.bus_address().ok_or(Error::Unavailable)? + offset,
+                address: buffer.bus_address().ok_or(Error::Unavailable)? + offset,
                 length: length as u32,
                 writable: false,
             }],
@@ -209,9 +203,10 @@ impl<'a> Net<'a> {
             if usize::from(slot) >= self.rx_slots || length < HEADER as u32 {
                 return Err(Error::DeviceFault);
             }
-            let offset = u64::from(slot) * SLOT as u64;
+            let buffer = &self.receive[usize::from(slot) / SLOTS_PER_PAGE];
+            let offset = (usize::from(slot) % SLOTS_PER_PAGE * SLOT) as u64;
             let mut header = [0; HEADER];
-            self.receive.read(offset, &mut header)?;
+            buffer.read(offset, &mut header)?;
             // REFERENCE: https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html#x1-2440006
             // No checksum or segmentation offloads were negotiated. num_buffers is unused.
             if header[0] != 0 || header[1] != 0 {
@@ -220,8 +215,7 @@ impl<'a> Net<'a> {
             let count = length as usize - HEADER;
             let valid = (MIN_FRAME..=self.info.max_frame()).contains(&count);
             if valid {
-                self.receive
-                    .read(offset + HEADER as u64, &mut output[..count])?;
+                buffer.read(offset + HEADER as u64, &mut output[..count])?;
             }
             self.replenish(slot)?;
             self.rx.notify(&mut self.transport)?;
@@ -269,11 +263,12 @@ impl<'a> Net<'a> {
     }
 
     fn replenish(&mut self, slot: u16) -> Result<(), Error> {
+        let buffer = &self.receive[usize::from(slot) / SLOTS_PER_PAGE];
+        let offset = (usize::from(slot) % SLOTS_PER_PAGE * SLOT) as u64;
         self.rx.publish(
             slot,
             &[Descriptor {
-                address: self.receive.bus_address().ok_or(Error::Unavailable)?
-                    + u64::from(slot) * SLOT as u64,
+                address: buffer.bus_address().ok_or(Error::Unavailable)? + offset,
                 length: SLOT as u32,
                 writable: true,
             }],
@@ -285,6 +280,18 @@ impl Drop for Net<'_> {
     fn drop(&mut self) {
         let _ = self.stop();
     }
+}
+
+fn allocate_buffers<'a>(
+    domain: &'a Handle<DmaDomain>,
+    task: &Handle<Task>,
+    slots: usize,
+    direction: DmaDirection,
+) -> Result<Vec<DmaBuffer<'a>>, Error> {
+    // Ordinary frame allocations do not guarantee physical contiguity across pages.
+    (0..slots.div_ceil(SLOTS_PER_PAGE))
+        .map(|_| domain.allocate(task, 1, direction).map_err(Error::from))
+        .collect()
 }
 
 fn configuration_info(transport: &mut Transport<'_>, features: u64) -> Result<Info, Error> {
