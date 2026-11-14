@@ -142,6 +142,27 @@ impl MemoryBuffer {
         Ok(())
     }
 
+    /// Atomically compares and exchanges one aligned 32-bit word in the buffer.
+    pub(crate) fn compare_exchange_u32(
+        &self,
+        offset: usize,
+        expected: u32,
+        new: u32,
+    ) -> Result<Option<u32>, MemoryError> {
+        self.check(offset, 4)?;
+        let position = self
+            .offset
+            .checked_add(offset)
+            .ok_or(MemoryError::InvalidRequest)?;
+        let index = position / PAGE_SIZE;
+        let within = position % PAGE_SIZE;
+        if within + 4 > PAGE_SIZE {
+            return Err(MemoryError::InvalidRequest);
+        }
+        let frame = self.frames.get(index).ok_or(MemoryError::InvalidRequest)?;
+        frame.compare_exchange_u32(within, expected, new)
+    }
+
     fn check(&self, offset: usize, length: usize) -> Result<(), MemoryError> {
         if offset
             .checked_add(length)

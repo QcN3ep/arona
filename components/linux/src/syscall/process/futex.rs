@@ -186,6 +186,8 @@ impl Pending {
 
     pub fn poll(&mut self, process: &Process<'_>) -> Option<SyscallResult> {
         if self.registration.ready() {
+            // A robust owner marked this wait as owner-died. Return zero and let
+            // userspace inspect the futex word, as Linux does.
             return Some(Ok(0));
         }
         if let Some(request) = &mut self.clock {

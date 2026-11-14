@@ -159,6 +159,18 @@ impl AddressSpace {
         self.native.task().write_memory(address, input)
     }
 
+    /// Atomically compares and exchanges one aligned user word.
+    pub fn compare_exchange(
+        &self,
+        address: usize,
+        expected: u32,
+        new: u32,
+    ) -> Result<Option<u32>, runtime::Error> {
+        self.native
+            .task()
+            .compare_exchange_memory(address, expected, new)
+    }
+
     /// Bytes covered by the current page records.
     pub fn mapped_bytes(&self) -> usize {
         self.pages.borrow().len() * PAGE_SIZE

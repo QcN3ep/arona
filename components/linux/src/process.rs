@@ -31,6 +31,8 @@ use crate::{
 pub(crate) struct Thread<'a> {
     pub tid: usize,
     pub clear_tid: usize,
+    /// User address of this thread's `struct robust_list_head`, or zero.
+    pub robust_list: usize,
     pub native: Handle<runtime::Thread>,
     pub native_id: u64,
     pub pending: Option<Pending<'a>>,
@@ -173,6 +175,7 @@ impl<'a> Process<'a> {
             threads: alloc::vec![Thread {
                 tid: pid,
                 clear_tid: 0,
+                robust_list: 0,
                 native,
                 native_id: id,
                 pending: None,
@@ -259,6 +262,7 @@ impl<'a> Process<'a> {
                 self.cpu_ns = self
                     .cpu_ns
                     .saturating_add(self.threads[index].native.cpu_time_ns().unwrap_or(0));
+                self.robust_list_cleanup(index);
                 let status = self.threads[index].native.wait(0)?;
                 let clear_tid = self.threads[index].clear_tid;
                 if clear_tid != 0
@@ -327,6 +331,99 @@ impl<'a> Process<'a> {
     pub fn release_vfork(&self) {
         if let Some(vfork) = &self.vfork {
             vfork.release();
+        }
+    }
+
+    /// Release the robust futexes owned by an exiting thread.
+    ///
+    /// Each list node points at a futex word through the head's `futex_offset`.
+    /// A word whose owner bits still name the exiting thread is marked
+    /// `FUTEX_OWNER_DIED` and one waiter is woken. The head, the nodes, and the
+    /// futex words are user memory, so an unreadable or malformed list ends the
+    /// walk instead of failing the exit.
+    pub(crate) fn robust_list_cleanup(&self, index: usize) {
+        let thread = &self.threads[index];
+        let head = thread.robust_list;
+        let tid = thread.tid as u32;
+        if head == 0 {
+            return;
+        }
+        let mut header = [0; futex::ROBUST_LIST_HEAD_SIZE];
+        if self.address_space.read(head, &mut header).is_err() {
+            return;
+        }
+        let mut entry = (u64::from_le_bytes(header[0..8].try_into().unwrap()) as usize) & !1;
+        let offset = i64::from_le_bytes(header[8..16].try_into().unwrap());
+        let pending = (u64::from_le_bytes(header[16..24].try_into().unwrap()) as usize) & !1;
+        for _ in 0..futex::ROBUST_LIST_LIMIT {
+            if entry == head {
+                break;
+            }
+            let mut next = [0; 8];
+            let fetched = self.address_space.read(entry, &mut next);
+            if entry != pending {
+                self.robust_futex_cleanup(entry, offset, tid, false);
+            }
+            if fetched.is_err() {
+                return;
+            }
+            entry = (u64::from_le_bytes(next) as usize) & !1;
+        }
+        if pending != 0 {
+            self.robust_futex_cleanup(pending, offset, tid, true);
+        }
+    }
+
+    // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/kernel/futex/core.c
+    /// Mark one robust-list futex as owner-died and wake a waiter.
+    ///
+    /// A pending entry with no recorded owner is the unlock vs. thread-death
+    /// race in Linux: the value was released but the wakeup was not issued yet,
+    /// so the waiter must be woken without changing the word.
+    fn robust_futex_cleanup(&self, entry: usize, offset: i64, tid: u32, pending: bool) {
+        let address = (entry as i64).wrapping_add(offset);
+        if address < 0 {
+            return;
+        }
+        let address = address as usize;
+        if address & 3 != 0 {
+            return;
+        }
+        // A competing update changes the expected word, so re-read and retry a
+        // bounded number of times instead of overwriting another owner's bits.
+        for _ in 0..16 {
+            let mut word = [0; 4];
+            if self.address_space.read(address, &mut word).is_err() {
+                return;
+            }
+            let value = u32::from_le_bytes(word);
+            if pending && value & futex::FUTEX_TID_MASK == 0 {
+                self.robust_wake(address);
+                return;
+            }
+            if value & futex::FUTEX_TID_MASK != tid {
+                return;
+            }
+            let updated = (value & futex::FUTEX_WAITERS) | futex::FUTEX_OWNER_DIED;
+            match self.address_space.compare_exchange(address, value, updated) {
+                Ok(Some(_)) => {
+                    self.robust_wake(address);
+                    return;
+                }
+                Ok(None) => {}
+                Err(_) => return,
+            }
+        }
+    }
+
+    /// Wake one waiter on a robust futex without changing its word.
+    fn robust_wake(&self, address: usize) {
+        // A robust list does not record FUTEX_PRIVATE_FLAG, while arona derives
+        // the wait key from it. Wake both interpretations of the futex word.
+        for private in [true, false] {
+            if let Ok((key, _)) = self.address_space.futex_key(self.pid, address, private) {
+                self.namespace.futexes.wake(key, 1, u32::MAX);
+            }
         }
     }
 

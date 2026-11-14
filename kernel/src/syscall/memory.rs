@@ -40,6 +40,7 @@ pub(super) fn task(
         }
         task::ALLOCATE => allocate(caller, target, args),
         task::READ_MEMORY | task::WRITE_MEMORY => copy_task_memory(caller, target, method, args),
+        task::ATOMIC_COMPARE_EXCHANGE => atomic_compare_exchange(target, args),
         task::MAP => map(caller, target, args),
         task::UNMAP => {
             target.unmap(range(args[0], args[1])?)?;
@@ -105,6 +106,17 @@ fn copy_task_memory(
     };
     result.map_err(mm::UserMemoryError)?;
     Ok([args[2], 0])
+}
+
+fn atomic_compare_exchange(target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {
+    let remote = target.pin_user_memory(args[0] as usize, 4, true)?;
+    let old = remote
+        .compare_exchange_u32(0, args[1] as u32, args[2] as u32)
+        .map_err(mm::UserMemoryError)?;
+    Ok([
+        u64::from(old.unwrap_or(args[1] as u32)),
+        u64::from(old.is_some() as u8),
+    ])
 }
 
 fn allocate(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {

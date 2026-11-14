@@ -38,6 +38,7 @@ methods!(task {
     QUERY_NEXT = 37 => MAP_MEMORY;
     MEMORY_STATS = 38 => NONE;
     LOAD_AVERAGE = 39 => NONE;
+    ATOMIC_COMPARE_EXCHANGE = 40 => WRITE_MEMORY;
 });
 methods!(memory {
     SIZE = 16 => NONE;

@@ -191,6 +191,20 @@ pub trait Mmu: Sync {
         offset: usize,
         words: &[u64],
     ) -> Result<(), MmuError>;
+
+    /// Atomically compares and exchanges one aligned 32-bit word at a byte
+    /// offset within a mapped normal-memory page.
+    ///
+    /// Returns `Ok(None)` when the current word differs from `expected`; the
+    /// full normal memory page must remain writable during the access.
+    fn compare_exchange_u32(
+        &self,
+        address: usize,
+        byte_offset: usize,
+        expected: u32,
+        new: u32,
+    ) -> Result<Option<u32>, MmuError>;
+
     /// Invalidates the local TLB entry for the page, including global entries.
     fn invalidate_page(&self, address: usize) -> Result<(), MmuError>;
     /// Clears all local TLB entries, including global entries.

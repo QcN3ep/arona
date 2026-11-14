@@ -260,6 +260,17 @@ impl Mmu for Sv39 {
         paging::write_mapped_frame(self, address, offset, words)
     }
 
+
+    fn compare_exchange_u32(
+        &self,
+        address: usize,
+        byte_offset: usize,
+        expected: u32,
+        new: u32,
+    ) -> Result<Option<u32>, MmuError> {
+        paging::compare_exchange_u32(self, address, byte_offset, expected, new)
+    }
+
     fn invalidate_page(&self, address: usize) -> Result<(), MmuError> {
         if !self.is_valid_virtual_address(address) {
             return Err(MmuError::InvalidAddress);

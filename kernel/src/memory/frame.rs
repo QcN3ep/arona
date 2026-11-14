@@ -239,6 +239,26 @@ impl FrameAccessReference {
         }
         Ok(())
     }
+
+    /// Atomically compares and exchanges one aligned 32-bit word in this frame.
+    ///
+    /// The operation needs the direct map, so it reports `InvalidRequest` when
+    /// the frame has no kernel virtual address.
+    pub fn compare_exchange_u32(
+        &self,
+        byte_offset: usize,
+        expected: u32,
+        new: u32,
+    ) -> Result<Option<u32>, MemoryError> {
+        if self.access != FrameAccess::Write {
+            return Err(MemoryError::AccessConflict);
+        }
+        if !byte_offset.is_multiple_of(4) || byte_offset + 4 > PAGE_SIZE {
+            return Err(MemoryError::InvalidRequest);
+        }
+        let address = self.virtual_address().ok_or(MemoryError::InvalidRequest)?;
+        Ok(hardware::mmu().compare_exchange_u32(address, byte_offset, expected, new)?)
+    }
 }
 
 impl Drop for FrameAccessReference {

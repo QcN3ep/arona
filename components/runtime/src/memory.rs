@@ -54,6 +54,24 @@ impl Handle<Task> {
         Ok(())
     }
 
+    /// Atomically compares and exchanges one aligned user word in another Task.
+    ///
+    /// Returns the previous word when the exchange happened, `None` when the
+    /// current value differed from `expected`, and an error only when the word
+    /// is not mapped or not writable.
+    pub fn compare_exchange_memory(
+        &self,
+        address: usize,
+        expected: u32,
+        new: u32,
+    ) -> Result<Option<u32>, Error> {
+        let [old, swapped] = self.borrow().invoke(
+            task::ATOMIC_COMPARE_EXCHANGE,
+            [address as u64, u64::from(expected), u64::from(new), 0, 0],
+        )?;
+        Ok((swapped != 0).then_some(old as u32))
+    }
+
     pub fn allocate(&self, frames: u64, rights: Rights) -> Result<Handle<FrameAllocation>, Error> {
         let [raw, _] = self
             .borrow()

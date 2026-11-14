@@ -212,6 +212,30 @@ pub(crate) fn zero_page(address: usize) {
     }
 }
 
+pub(crate) fn compare_exchange_u32(
+    mmu: &dyn Mmu,
+    address: usize,
+    byte_offset: usize,
+    expected: u32,
+    new: u32,
+) -> Result<Option<u32>, MmuError> {
+    if !byte_offset.is_multiple_of(4) || byte_offset + 4 > PAGE_SIZE {
+        return Err(MmuError::InvalidAlignment);
+    }
+    validate_mapped_frame(mmu, address, byte_offset / size_of::<u64>(), 1)?;
+    let _access = lock_memory();
+    let pointer = (address + byte_offset) as *const core::sync::atomic::AtomicU32;
+    // SAFETY: The direct-mapped normal page stays valid while the frame access
+    // reference is held, and the offset is checked to be one aligned word.
+    let result = unsafe { &*pointer }.compare_exchange(
+        expected,
+        new,
+        core::sync::atomic::Ordering::AcqRel,
+        core::sync::atomic::Ordering::Acquire,
+    );
+    Ok(result.ok())
+}
+
 pub(crate) fn validate_physical<F: Format>(address: u64) -> Result<(), MmuError> {
     if address >= 1 << F::PHYSICAL_BITS {
         return Err(MmuError::InvalidAddress);

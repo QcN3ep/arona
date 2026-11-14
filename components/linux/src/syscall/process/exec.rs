@@ -216,6 +216,11 @@ fn replace(
     let native_id = native.id().map_err(super::error)?;
     native.start().map_err(super::error)?;
     let thread_signals = Rc::clone(&process.threads[index].signals);
+    // exec discards every thread's user context, so release their robust lists
+    // while the old address space is still installed.
+    for index in 0..process.threads.len() {
+        process.robust_list_cleanup(index);
+    }
     // Exec keeps the process CPU-time accounting, so include the retired threads.
     for thread in &process.threads {
         process.cpu_ns = process
@@ -242,6 +247,7 @@ fn replace(
         native_id,
         tid: process.pid,
         clear_tid: 0,
+        robust_list: 0,
         pending: None,
         signals: thread_signals,
         held: None,
