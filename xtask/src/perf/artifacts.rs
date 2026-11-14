@@ -59,8 +59,8 @@ fn filenames(target: Target) -> &'static [&'static str] {
 }
 
 fn validate_manifest(manifest: &Value, options: &Options, root: &Path) -> Result<(), String> {
-    if manifest["schema"] != 1 || manifest["case"] != "calibration" {
-        return Err("unsupported performance artifact format or case".to_owned());
+    if manifest["case"] != "calibration" {
+        return Err("unsupported performance case".to_owned());
     }
     if manifest["target"] != options.target.triple()
         || manifest["release"].as_bool().is_none()
@@ -136,7 +136,7 @@ fn create(options: &Options, root: &Path, directory: &Path) -> Result<Value, Str
         files.insert(*name, digest(&directory.join(name))?);
     }
     Ok(json!({
-        "schema": 1, "target": options.target.triple(), "case": "calibration",
+        "target": options.target.triple(), "case": "calibration",
         "machine_arguments": machine_arguments(options.target, root),
         "release": options.release.unwrap_or(false), "files": files,
         "build": {

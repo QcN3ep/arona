@@ -232,3 +232,76 @@ global_asm!(
     ".option pop",
     ".popsection",
 );
+
+pub fn root(space: &super::mappings::Space) -> usize {
+    (8usize << 60) | (physical(&space.tables[0] as *const _ as usize) >> 12)
+}
+
+fn physical(address: usize) -> usize {
+    address - 0xffff_ffc0_0000_0000 + 0x8020_0000
+}
+
+pub fn map_space(space: &mut super::mappings::Space) {
+    // SAFETY: The boot root remains mapped and is not modified by this single-CPU scenario.
+    space.tables[0].0 = unsafe { super::mappings::_boot_root.0 };
+    for level in 0..2 {
+        space.tables[level].0[0] =
+            (physical(&space.tables[level + 1] as *const _ as usize) >> 2) | 1;
+    }
+    space.tables[2].0[super::mappings::CODE >> 12] =
+        (physical(&space.code as *const _ as usize) >> 2) | 0x4b;
+    space.tables[2].0[super::mappings::DESCRIPTOR >> 12] =
+        (physical(&space.descriptor as *const _ as usize) >> 2) | 0x43;
+}
+
+pub fn hide_descriptor(space: &mut super::mappings::Space) {
+    space.tables[2].0[super::mappings::DESCRIPTOR >> 12] = 0;
+}
+
+pub fn switch_space(root: usize) {
+    // SAFETY: The root covers the current kernel code, stack, and data; interrupts remain disabled.
+    unsafe {
+        core::arch::asm!(
+            "fence rw, rw", "csrw satp, {root}", "sfence.vma", "fence.i",
+            root = in(reg) root, options(nostack),
+        );
+    }
+}
+
+#[unsafe(naked)]
+pub extern "C" fn mappings() -> usize {
+    naked_asm!(
+        ".option push", ".option norvc", ".option norelax",
+        "addi sp, sp, -16", "sd ra, 0(sp)",
+        ".global __arona_perf_mappings_start", ".set __arona_perf_mappings_start, .", "nop",
+        "call {body}",
+        ".global __arona_perf_mappings_end", ".set __arona_perf_mappings_end, .", "nop",
+        "ld ra, 0(sp)", "addi sp, sp, 16", "ret", ".option pop",
+        body = sym super::mappings::run,
+    );
+}
+
+global_asm!(
+    ".global __arona_perf_context_address",
+    ".equ __arona_perf_context_address, 0x11000",
+    ".pushsection .text.perf.images,\"ax\"",
+    ".option push",
+    ".option norvc",
+    ".option norelax",
+    ".global __arona_perf_image_a",
+    ".type __arona_perf_image_a,@function",
+    "__arona_perf_image_a:",
+    "nop",
+    "li a0, 11",
+    "ret",
+    ".size __arona_perf_image_a, .-__arona_perf_image_a",
+    ".global __arona_perf_image_b",
+    ".type __arona_perf_image_b,@function",
+    "__arona_perf_image_b:",
+    "nop",
+    "li a0, 22",
+    "ret",
+    ".size __arona_perf_image_b, .-__arona_perf_image_b",
+    ".option pop",
+    ".popsection",
+);

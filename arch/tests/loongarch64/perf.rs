@@ -194,3 +194,70 @@ global_asm!(
     "jr $t6",
     ".popsection",
 );
+
+pub fn root(space: &super::mappings::Space) -> usize {
+    physical(&space.tables[0] as *const _ as usize)
+}
+
+fn physical(address: usize) -> usize {
+    address - 0xffff_8000_0000_0000
+}
+
+pub fn map_space(space: &mut super::mappings::Space) {
+    for level in 0..3 {
+        space.tables[level].0[0] = physical(&space.tables[level + 1] as *const _ as usize);
+    }
+    space.tables[3].0[super::mappings::CODE >> 12] =
+        physical(&space.code as *const _ as usize) | 0x11;
+    space.tables[3].0[super::mappings::DESCRIPTOR >> 12] =
+        physical(&space.descriptor as *const _ as usize) | 0x4000_0000_0000_0011;
+}
+
+pub fn hide_descriptor(space: &mut super::mappings::Space) {
+    space.tables[3].0[super::mappings::DESCRIPTOR >> 12] = 0;
+}
+
+pub fn switch_space(mut root: usize) {
+    // SAFETY: PGDH retains the current kernel mapping; the new PGDL and its tables stay alive until switched away.
+    unsafe {
+        core::arch::asm!(
+            "dbar 0", "csrwr {root}, 0x19", "csrwr $zero, 0x180",
+            "invtlb 0, $zero, $zero", "ibar 0",
+            root = inout(reg) root, options(nostack),
+        );
+    }
+    let _ = root;
+}
+
+#[unsafe(naked)]
+pub extern "C" fn mappings() -> usize {
+    naked_asm!(
+        "addi.d $sp, $sp, -16", "st.d $ra, $sp, 0",
+        ".global __arona_perf_mappings_start", ".set __arona_perf_mappings_start, .", "nop",
+        "bl {body}",
+        ".global __arona_perf_mappings_end", ".set __arona_perf_mappings_end, .", "nop",
+        "ld.d $ra, $sp, 0", "addi.d $sp, $sp, 16", "jr $ra",
+        body = sym super::mappings::run,
+    );
+}
+
+global_asm!(
+    ".global __arona_perf_context_address",
+    ".equ __arona_perf_context_address, 0x11000",
+    ".pushsection .text.perf.images,\"ax\"",
+    ".global __arona_perf_image_a",
+    ".type __arona_perf_image_a,@function",
+    "__arona_perf_image_a:",
+    "nop",
+    "addi.d $a0, $zero, 11",
+    "jr $ra",
+    ".size __arona_perf_image_a, .-__arona_perf_image_a",
+    ".global __arona_perf_image_b",
+    ".type __arona_perf_image_b,@function",
+    "__arona_perf_image_b:",
+    "nop",
+    "addi.d $a0, $zero, 22",
+    "jr $ra",
+    ".size __arona_perf_image_b, .-__arona_perf_image_b",
+    ".popsection",
+);

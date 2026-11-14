@@ -141,12 +141,19 @@ cargo xtask perf report target/perf/RUN_DIRECTORY
 ```
 
 Profiling also requires `llvm-symbolizer` and `llvm-objdump`.
-It currently supports the calibration image's fixed boot mapping. It does not resolve multiple address spaces.
-`counts.json` retains instruction addresses, bytes, and counts for each interval.
+It supports the shared boot mapping and controlled mappings in the calibration image.
+The mapping scenario switches between programs at the same virtual address and reuses page tables for a new load instance.
+The collector keeps these instances separate and checks instruction bytes against their saved ELF locations.
+`counts.json` retains execution contexts, instruction addresses, bytes, and counts for each interval.
 `report.md` and `report.json` group these counts by image, function or symbol, and source line, with instruction disassembly and inline frames.
 Each group includes unknown entries, and each grouping sums to that interval's total.
 Only the innermost inline frame receives the count. Enclosing frames provide context.
 Each calibration interval is one work unit.
+
+Mapping attribution uses read-only descriptors supplied by the calibration driver.
+RISC-V also checks the active `satp` value. The LoongArch plugin API does not expose page-table roots, so its attribution relies on the controlled descriptor mapping.
+Unreadable descriptors and uncertain lifetimes remain unknown, including execution after the scenario removes its descriptor.
+This does not provide general process attribution for Arona workloads.
 
 The report command runs offline and reads only the saved artifacts.
 Missing symbols leave function and line counts unknown. Missing source files do not prevent reporting recorded locations.

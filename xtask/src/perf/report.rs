@@ -2,6 +2,7 @@
 
 //! Generates offline instruction hotspot reports from a saved calibration run.
 
+mod mappings;
 mod symbols;
 
 use super::{artifacts, command_output};
@@ -16,6 +17,7 @@ use std::{
 };
 
 const UNKNOWN: &str = "[unknown]";
+type Address = (u64, u64, String);
 
 pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
     let directory = arguments.next().ok_or_else(super::super::usage)?;
@@ -31,8 +33,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), S
 }
 
 pub(super) fn generate(directory: &Path, metadata: &Value) -> Result<(), String> {
-    if metadata["schema"] != 2 || metadata["mode"] != "profile" || metadata["case"] != "calibration"
-    {
+    if metadata["mode"] != "profile" || metadata["case"] != "calibration" {
         return Err("report requires a saved calibration profile".to_owned());
     }
     check_digest(
@@ -41,25 +42,28 @@ pub(super) fn generate(directory: &Path, metadata: &Value) -> Result<(), String>
     )?;
     check_digest(&directory.join("counts.json"), &metadata["counts_sha256"])?;
     let manifest = read_json(&directory.join("artifacts/manifest.json"))?;
-    if manifest["schema"] != 1
-        || manifest["case"] != "calibration"
-        || manifest["target"] != metadata["target"]
-    {
+    if manifest["case"] != "calibration" || manifest["target"] != metadata["target"] {
         return Err("unsupported performance artifacts".to_owned());
     }
     let counts = read_json(&directory.join("counts.json"))?;
-    let addresses = validate(&counts)?;
+    let addresses = validate(
+        &counts,
+        metadata["target"]
+            .as_str()
+            .ok_or("missing profile target")?,
+    )?;
     let mut warnings = Vec::new();
-    let locations = symbols::resolve(directory, &manifest, &addresses, &mut warnings)?;
+    let locations = symbols::resolve(directory, &manifest, &counts, &addresses, &mut warnings)?;
     let windows = counts["windows"]
         .as_array()
         .ok_or("missing profile windows")?
         .iter()
-        .map(|window| summarize(window, &locations))
+        .map(|window| summarize(&counts, window, &locations))
         .collect::<Result<Vec<_>, _>>()?;
     let report = json!({
-        "schema": 1, "metric": counts["metric"], "scope": counts["scope"],
+        "metric": counts["metric"], "scope": counts["scope"],
         "target": metadata["target"], "counts_sha256": metadata["counts_sha256"],
+        "contexts": counts["contexts"], "context_register": counts["context_register"],
         "artifacts_sha256": metadata["artifacts"]["sha256"],
         "tools": {
             "llvm_symbolizer": command_output(Command::new("llvm-symbolizer").arg("--version"))?,
@@ -110,15 +114,15 @@ fn pc(value: &Value) -> Result<u64, String> {
         .ok_or_else(|| "invalid profile address".to_owned())
 }
 
-fn validate(counts: &Value) -> Result<Vec<(u64, String)>, String> {
-    if counts["schema"] != 2
+fn validate(counts: &Value, target: &str) -> Result<Vec<Address>, String> {
+    if counts["scope"] != "controlled-mappings"
         || counts["valid"] != true
         || counts["plugin_api"] != 7
         || counts["metric"] != "guest_instruction_dispatches"
-        || counts["scope"] != "static-calibration"
     {
         return Err("unsupported or invalid instruction profile".to_owned());
     }
+    mappings::validate(counts, target)?;
     let windows = counts["windows"]
         .as_array()
         .ok_or("missing profile windows")?;
@@ -140,6 +144,7 @@ fn validate(counts: &Value) -> Result<Vec<(u64, String)>, String> {
         let mut seen = BTreeSet::new();
         let mut total = 0u64;
         for row in rows {
+            let context = mappings::context(counts, row, name)?;
             let address = pc(&row["pc"])?;
             let code = row["bytes"]
                 .as_str()
@@ -148,7 +153,7 @@ fn validate(counts: &Value) -> Result<Vec<(u64, String)>, String> {
                 || code.len() > 32
                 || code.len() % 2 != 0
                 || !code.bytes().all(|byte| byte.is_ascii_hexdigit())
-                || !seen.insert((address, code))
+                || !seen.insert((context, address, code))
                 || number(&row["instructions"])? == 0
                 || row["disassembly"].as_str().is_none()
                 || address == pc(&window["start"])?
@@ -159,7 +164,7 @@ fn validate(counts: &Value) -> Result<Vec<(u64, String)>, String> {
             total = total
                 .checked_add(number(&row["instructions"])?)
                 .ok_or("profile count overflow")?;
-            addresses.insert((address, code.to_owned()));
+            addresses.insert((context, address, code.to_owned()));
         }
         if total != number(&window["instructions"])? {
             return Err("profile does not sum to the interval count".to_owned());
@@ -168,15 +173,30 @@ fn validate(counts: &Value) -> Result<Vec<(u64, String)>, String> {
     Ok(addresses.into_iter().collect())
 }
 
-fn summarize(window: &Value, locations: &BTreeMap<u64, Value>) -> Result<Value, String> {
+fn summarize(
+    counts: &Value,
+    window: &Value,
+    locations: &BTreeMap<Address, Value>,
+) -> Result<Value, String> {
     let mut rows = Vec::new();
     for row in window["addresses"]
         .as_array()
         .ok_or("missing profile addresses")?
     {
-        let location = locations
-            .get(&pc(&row["pc"])?)
-            .filter(|location| location["bytes"] == row["bytes"]);
+        let context = mappings::context(
+            counts,
+            row,
+            window["name"].as_str().ok_or("missing window name")?,
+        )?;
+        let key = (
+            context,
+            pc(&row["pc"])?,
+            row["bytes"]
+                .as_str()
+                .ok_or("missing instruction bytes")?
+                .to_owned(),
+        );
+        let location = locations.get(&key);
         let frames = location.and_then(|location| location["frames"].as_array());
         let frame = frames.and_then(|frames| frames.first());
         let function = frame
@@ -190,8 +210,9 @@ fn summarize(window: &Value, locations: &BTreeMap<u64, Value>) -> Result<Value, 
             .filter(|line| *line > 0);
         let source = file.zip(line).map(|(file, line)| format!("{file}:{line}"));
         rows.push(json!({
-            "context": "static-calibration", "pc": row["pc"], "bytes": row["bytes"],
-            "instructions": row["instructions"], "image": location.map(|_| "guest.elf").unwrap_or(UNKNOWN),
+            "context": context, "pc": row["pc"], "bytes": row["bytes"],
+            "instructions": row["instructions"], "image": location.map(|location| location["image"].as_str().unwrap_or(UNKNOWN)).unwrap_or(UNKNOWN),
+            "link_pc": location.map(|location| &location["link_pc"]),
             "segment": location.map(|location| &location["segment"]), "offset": location.map(|location| &location["offset"]),
             "function": function.unwrap_or(UNKNOWN), "source": source.as_deref().unwrap_or(UNKNOWN),
             "inline_frames": frames, "disassembly": location.and_then(|location| location.get("disassembly")).unwrap_or(&row["disassembly"]),
@@ -203,10 +224,12 @@ fn summarize(window: &Value, locations: &BTreeMap<u64, Value>) -> Result<Value, 
             .cmp(&left["instructions"].as_u64())
             .then_with(|| left["pc"].as_str().cmp(&right["pc"].as_str()))
             .then_with(|| left["bytes"].as_str().cmp(&right["bytes"].as_str()))
+            .then_with(|| left["context"].as_u64().cmp(&right["context"].as_u64()))
     });
     let total = number(&window["instructions"])?;
     Ok(json!({
         "name": window["name"], "instructions": total, "work_units": 1,
+        "attribution_complete": rows.iter().all(|row| row["image"] != UNKNOWN),
         "images": group(&rows, "image", total)?, "functions": group(&rows, "function", total)?,
         "lines": group(&rows, "source", total)?, "addresses": rows,
     }))
@@ -248,7 +271,7 @@ fn cell(value: &str) -> String {
 
 fn markdown(report: &Value) -> Result<String, String> {
     let mut text = String::from(
-        "# Guest instruction hotspots\n\nCounts are guest instruction dispatches. Each calibration interval is one work unit.\n\nThis report covers the calibration image's fixed boot mapping. It does not resolve multiple address spaces.\n\nFunction and line groups count each instruction once at its innermost frame. Enclosing inline frames are context only.\n",
+        "# Guest instruction hotspots\n\nCounts are guest instruction dispatches. Each calibration interval is one work unit.\n\nThis report covers static calibration mappings and controlled load instances. General process attribution is not supported.\n\nFunction and line groups count each instruction once at its innermost frame. Enclosing inline frames are context only.\n",
     );
     for warning in report["warnings"]
         .as_array()
@@ -261,6 +284,14 @@ fn markdown(report: &Value) -> Result<String, String> {
         )
         .map_err(|error| error.to_string())?;
     }
+    write_contexts(
+        &mut text,
+        report["contexts"]
+            .as_array()
+            .ok_or("missing report contexts")?,
+        report["context_register"].as_str(),
+    )
+    .map_err(|error| error.to_string())?;
     for window in report["windows"]
         .as_array()
         .ok_or("missing report windows")?
@@ -268,6 +299,43 @@ fn markdown(report: &Value) -> Result<String, String> {
         write_window(&mut text, window).map_err(|error| error.to_string())?;
     }
     Ok(text)
+}
+
+fn write_contexts(
+    text: &mut String,
+    contexts: &[Value],
+    root_register: Option<&str>,
+) -> std::fmt::Result {
+    writeln!(
+        text,
+        "\nRoot register: {}.\n",
+        root_register.unwrap_or("unavailable")
+    )?;
+    if root_register.is_none() {
+        text.push_str("Page-table roots are not independently observed. Attribution relies on the calibration driver's controlled descriptors.\n\n");
+    }
+    text.push_str("| Context | Load instance | Declared root | Observed root | Runtime base | ELF base |\n| --- | --- | --- | --- | --- | --- |\n");
+    let mut unknown = 0;
+    for context in contexts.iter().skip(1) {
+        if !context["reason"].is_null() {
+            unknown += 1;
+            continue;
+        }
+        writeln!(
+            text,
+            "| {} | {} | {} | {} | {} | {} |",
+            context["id"],
+            context["instance"],
+            context["root"].as_str().unwrap_or(UNKNOWN),
+            context["observed_root"].as_str().unwrap_or(UNKNOWN),
+            context["runtime"].as_str().unwrap_or(UNKNOWN),
+            context["link"].as_str().unwrap_or(UNKNOWN)
+        )?;
+    }
+    writeln!(
+        text,
+        "\nUnresolved execution observations: {unknown}. Details remain in report.json."
+    )
 }
 
 fn write_window(text: &mut String, window: &Value) -> std::fmt::Result {
@@ -294,7 +362,7 @@ fn write_window(text: &mut String, window: &Value) -> std::fmt::Result {
         }
         text.push('\n');
     }
-    text.push_str("| PC | Segment offset | Bytes | Instructions | Disassembly | Inline frames |\n| --- | --- | --- | ---: | --- | --- |\n");
+    text.push_str("| Context | PC | ELF PC | Segment offset | Bytes | Instructions | Disassembly | Inline frames |\n| --- | --- | --- | --- | --- | ---: | --- | --- |\n");
     for row in window["addresses"].as_array().into_iter().flatten() {
         let frames = row["inline_frames"]
             .as_array()
@@ -312,8 +380,10 @@ fn write_window(text: &mut String, window: &Value) -> std::fmt::Result {
             .join(" → ");
         writeln!(
             text,
-            "| {} | {}:{} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {}:{} | {} | {} | {} | {} |",
+            row["context"],
             cell(row["pc"].as_str().unwrap_or(UNKNOWN)),
+            cell(row["link_pc"].as_str().unwrap_or(UNKNOWN)),
             row["segment"],
             cell(row["offset"].as_str().unwrap_or(UNKNOWN)),
             cell(row["bytes"].as_str().unwrap_or(UNKNOWN)),

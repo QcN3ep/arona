@@ -40,8 +40,6 @@ static char *pending_path;
 static const char *error;
 static GHashTable *instructions;
 
-// This scope has one boot mapping and no task or address-space switches.
-static const char *profile_scope = "static-calibration";
 #define MAX_INSTRUCTIONS 262144
 
 struct instruction {
@@ -49,14 +47,12 @@ struct instruction {
     size_t size;
     unsigned char bytes[16];
     char *disassembly;
-    uint64_t *counts;
 };
 
 static void free_instruction(void *data)
 {
     struct instruction *instruction = data;
     g_free(instruction->disassembly);
-    g_free(instruction->counts);
     g_free(instruction);
 }
 
@@ -79,6 +75,46 @@ static void overflow(unsigned int cpu, void *userdata)
     fail("instruction counter overflow");
 }
 
+static void json_string(const char *value);
+#include "context.h"
+
+struct sample {
+    struct instruction *instruction;
+    struct context *context;
+    uint64_t *counts;
+};
+
+static GHashTable *samples;
+
+static void free_sample(void *data)
+{
+    struct sample *sample = data;
+    g_free(sample->counts);
+    g_free(sample);
+}
+
+static uint64_t *sample_count(struct instruction *instruction)
+{
+    struct context *context = !strcmp(active->name, "mappings") ? observe_context() : &static_context;
+    if (!context) { return NULL; }
+    struct { struct instruction *instruction; struct context *context; } key = {instruction, context};
+    GBytes *bytes = g_bytes_new(&key, sizeof(key));
+    struct sample *sample = g_hash_table_lookup(samples, bytes);
+    if (!sample) {
+        if (g_hash_table_size(samples) >= MAX_INSTRUCTIONS) {
+            fail("profile instruction capacity exhausted");
+            g_bytes_unref(bytes);
+            return NULL;
+        }
+        sample = g_new(struct sample, 1);
+        *sample = (struct sample){instruction, context, g_new0(uint64_t, window_count)};
+        g_hash_table_insert(samples, bytes, sample);
+    } else {
+        g_bytes_unref(bytes);
+    }
+    return &sample->counts[active - windows];
+}
+
 static void profile(unsigned int cpu, void *userdata)
 {
     (void)cpu;
@@ -86,7 +122,8 @@ static void profile(unsigned int cpu, void *userdata)
     if (!active || instruction->pc == active->start_pc) {
         return;
     }
-    uint64_t *count = &instruction->counts[active - windows];
+    uint64_t *count = sample_count(instruction);
+    if (!count) { return; }
     if (*count == UINT64_MAX || active->profiled == UINT64_MAX) {
         fail("profile counter overflow");
         return;
@@ -121,13 +158,12 @@ static void instrument(struct qemu_plugin_insn *insn)
         instruction->size = key.size;
         memcpy(instruction->bytes, key.bytes, key.size);
         instruction->disassembly = qemu_plugin_insn_disas(insn);
-        instruction->counts = g_new0(uint64_t, window_count);
         g_hash_table_insert(instructions, bytes, instruction);
     } else {
         g_bytes_unref(bytes);
     }
     qemu_plugin_register_vcpu_insn_exec_cb(
-        insn, profile, QEMU_PLUGIN_CB_NO_REGS, instruction);
+        insn, profile, QEMU_PLUGIN_CB_R_REGS, instruction);
 }
 
 static void boundary(unsigned int cpu, void *userdata)
@@ -206,10 +242,12 @@ static void write_profile(size_t window)
     GHashTableIter iterator;
     void *value;
     bool first = true;
-    g_hash_table_iter_init(&iterator, instructions);
+    g_hash_table_iter_init(&iterator, samples);
     while (g_hash_table_iter_next(&iterator, NULL, &value)) {
-        const struct instruction *instruction = value;
-        if (!instruction->counts[window]) {
+        const struct sample *sample = value;
+        const struct instruction *instruction = sample->instruction;
+        uint64_t count = sample->counts[window];
+        if (!count) {
             continue;
         }
         fprintf(output, "%s{\"pc\":\"0x%" PRIx64 "\",\"bytes\":\"",
@@ -219,8 +257,9 @@ static void write_profile(size_t window)
             fprintf(output, "%02x", instruction->bytes[byte]);
         }
         fprintf(output, "\",\"instructions\":%" PRIu64 ",\"disassembly\":",
-                instruction->counts[window]);
+                count);
         json_string(instruction->disassembly ? instruction->disassembly : "unknown");
+        fprintf(output, ",\"context\":%u", sample->context->id);
         fputc('}', output);
     }
     fputc(']', output);
@@ -237,17 +276,17 @@ static void finish(void *userdata)
             fail("profile does not sum to the interval count");
         }
     }
-    fprintf(output, "{\"schema\":%d,\"metric\":\"guest_instruction_dispatches\","
+    fprintf(output, "{\"metric\":\"guest_instruction_dispatches\","
             "\"plugin_api\":%d,\"valid\":%s,\"error\":",
-            instructions ? 2 : 1, QEMU_PLUGIN_VERSION, error ? "false" : "true");
+            QEMU_PLUGIN_VERSION, error ? "false" : "true");
     if (error) {
         json_string(error);
     } else {
         fputs("null", output);
     }
     if (instructions) {
-        fputs(",\"scope\":", output);
-        json_string(profile_scope);
+        fputs(",\"scope\":\"controlled-mappings\"", output);
+        write_contexts();
     }
     fputs(",\"windows\":[", output);
     for (size_t index = 0; index < window_count; ++index) {
@@ -277,6 +316,8 @@ static void finish(void *userdata)
     g_free(pending_path);
     g_free(windows);
     if (instructions) {
+        g_hash_table_destroy(samples);
+        destroy_contexts();
         g_hash_table_destroy(instructions);
     }
     qemu_plugin_scoreboard_free(score);
@@ -323,10 +364,14 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     for (int index = 0; index < argc; ++index) {
         if (g_str_has_prefix(argv[index], "output=") && !path) {
             path = argv[index] + strlen("output=");
-        } else if (!strcmp(argv[index], "profile=static-calibration") && !instructions) {
+        } else if (!strcmp(argv[index], "profile=on") && !instructions) {
             instructions = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                                  (GDestroyNotify)g_bytes_unref,
                                                  free_instruction);
+        } else if (g_str_has_prefix(argv[index], "context=") && !context_address &&
+                   g_ascii_string_to_unsigned(argv[index] + strlen("context="), 16, 1, UINT64_MAX,
+                                              &context_address, NULL)) {
+            continue;
         } else if (g_str_has_prefix(argv[index], "window=") &&
                    add_window(argv[index] + strlen("window="))) {
             continue;
@@ -338,6 +383,22 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     if (!path || !*path || !window_count) {
         fputs("Arona perf requires an output file and distinct measurement windows\n", stderr);
         return -1;
+    }
+    if ((instructions && !context_address) || (!instructions && context_address)) {
+        fputs("Arona perf requires a context address exactly when profiling\n", stderr);
+        return -1;
+    }
+    if (instructions) {
+        require_root = !strcmp(info->target_name, "riscv64");
+        contexts = g_ptr_array_new();
+        g_ptr_array_add(contexts, &static_context);
+        known_contexts = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
+                                              (GDestroyNotify)g_bytes_unref, NULL);
+        samples = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
+                                        (GDestroyNotify)g_bytes_unref, free_sample);
+        context_bytes = g_byte_array_new();
+        register_bytes = g_byte_array_new();
+        qemu_plugin_register_vcpu_init_cb(id, initialize_context, NULL);
     }
     output_path = g_strdup(path);
     pending_path = g_strconcat(path, ".tmp", NULL);

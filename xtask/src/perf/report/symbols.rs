@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Resolves saved static-image addresses through LLVM tools without consulting other builds.
+//! Resolves verified instruction mappings through saved ELF files and LLVM tools.
 
-use super::super::{artifacts, command_output};
+use super::{
+    super::{artifacts, command_output},
+    Address, mappings,
+};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::Path, process::Command};
 
 pub(super) fn resolve(
     directory: &Path,
     manifest: &Value,
-    addresses: &[(u64, String)],
+    counts: &Value,
+    addresses: &[Address],
     warnings: &mut Vec<String>,
-) -> Result<BTreeMap<u64, Value>, String> {
+) -> Result<BTreeMap<Address, Value>, String> {
     let saved = directory.join("artifacts");
     let mut locations = BTreeMap::new();
     if !available(&saved, "guest.elf", manifest, warnings)? {
@@ -23,9 +27,15 @@ pub(super) fn resolve(
     let headers = image["ProgramHeaders"]
         .as_array()
         .ok_or("missing ELF segments")?;
-    for (pc, code) in addresses {
-        if let Some(location) = image_location(*pc, code, headers, &bytes) {
-            locations.insert(*pc, location);
+    let mut queries = BTreeMap::<u64, Vec<Address>>::new();
+    for key @ (context, pc, code) in addresses {
+        if let Some((link, image)) = mappings::relocate(counts, *context, *pc, code.len() / 2)
+            && let Some(mut location) = image_location(link, code, headers, &bytes)
+        {
+            location["image"] = json!(image);
+            location["link_pc"] = json!(format!("0x{link:x}"));
+            locations.insert(key.clone(), location);
+            queries.entry(link).or_default().push(key.clone());
         }
     }
     let disassembly = command_output(
@@ -36,13 +46,23 @@ pub(super) fn resolve(
     for line in disassembly.lines() {
         if let Some((address, instruction)) = line.trim().split_once(':')
             && let Ok(address) = u64::from_str_radix(address, 16)
-            && let Some(location) = locations.get_mut(&address)
+            && let Some(keys) = queries.get(&address)
         {
-            location["disassembly"] = json!(instruction.trim());
+            for key in keys {
+                locations
+                    .get_mut(key)
+                    .ok_or("missing instruction location")?["disassembly"] =
+                    json!(instruction.trim());
+            }
         }
     }
     if available(&saved, "symbols.elf", manifest, warnings)? {
-        symbolize(&saved.join("symbols.elf"), &mut locations, warnings)?;
+        symbolize(
+            &saved.join("symbols.elf"),
+            &queries,
+            &mut locations,
+            warnings,
+        )?;
     }
     Ok(locations)
 }
@@ -98,10 +118,11 @@ fn image_location(pc: u64, code: &str, headers: &[Value], bytes: &[u8]) -> Optio
 
 fn symbolize(
     path: &Path,
-    locations: &mut BTreeMap<u64, Value>,
+    queries: &BTreeMap<u64, Vec<Address>>,
+    locations: &mut BTreeMap<Address, Value>,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
-    let addresses = locations.keys().copied().collect::<Vec<_>>();
+    let addresses = queries.keys().copied().collect::<Vec<_>>();
     for batch in addresses.chunks(128) {
         let output = Command::new("llvm-symbolizer")
             .args([
@@ -132,9 +153,10 @@ fn symbolize(
             if frame["Address"] != format!("0x{address:x}") {
                 return Err("unexpected symbolizer address".to_owned());
             }
-            locations
-                .get_mut(address)
-                .ok_or("missing symbolizer address")?["frames"] = frame["Symbol"].clone();
+            for key in queries.get(address).ok_or("missing symbolizer query")? {
+                locations.get_mut(key).ok_or("missing symbolizer address")?["frames"] =
+                    frame["Symbol"].clone();
+            }
         }
     }
     Ok(())
