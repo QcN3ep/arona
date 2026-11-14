@@ -3,6 +3,8 @@
 //! Generates offline instruction hotspot reports from a saved run.
 
 mod mappings;
+mod render;
+mod summary;
 mod symbols;
 
 use super::{artifacts, command_output};
@@ -10,7 +12,6 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
-    fmt::Write,
     fs,
     path::Path,
     process::Command,
@@ -41,8 +42,13 @@ pub(super) fn generate(directory: &Path, metadata: &Value) -> Result<(), String>
         serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    fs::write(directory.join("report.md"), markdown(&report)?)
+    fs::write(directory.join("report.md"), render::markdown(&report)?)
         .map_err(|error| error.to_string())?;
+    fs::write(
+        directory.join("instructions.md"),
+        render::instructions(&report)?,
+    )
+    .map_err(|error| error.to_string())?;
     println!("Hotspot report: {}", directory.join("report.md").display());
     Ok(())
 }
@@ -110,10 +116,7 @@ pub(super) fn build(directory: &Path, metadata: &Value) -> Result<(Value, Vec<St
             "llvm_symbolizer": command_output(Command::new("llvm-symbolizer").arg("--version"))?,
             "llvm_objdump": command_output(Command::new("llvm-objdump").arg("--version"))?,
         },
-        "warnings": warnings.iter().map(|message| {
-            let first = message.lines().next().unwrap_or("");
-        if message.lines().count() > 1 { format!("{first} (see report.log)") } else { first.to_owned() }
-        }).collect::<Vec<_>>(),
+        "warnings": warning_summary(&warnings, "report.log"),
         "windows": windows,
     });
     Ok((report, warnings))
@@ -266,6 +269,7 @@ fn summarize(
             "function": function.unwrap_or(UNKNOWN), "source": source.as_deref().unwrap_or(UNKNOWN),
             "function_definition": frame.and_then(|frame| frame["Definition"].as_str()).unwrap_or(""),
             "symbol": frame.and_then(|frame| frame["LinkageName"].as_str()),
+            "mnemonic": row["disassembly"].as_str().and_then(|text| text.split_whitespace().next()).unwrap_or(UNKNOWN),
             "inline_frames": frames, "disassembly": location.and_then(|location| location.get("disassembly")).unwrap_or(&row["disassembly"]),
         }));
     }
@@ -282,20 +286,32 @@ fn summarize(
         "name": window["name"], "instructions": total, "work_units": work_units,
         "instructions_per_unit": total as f64 / work_units as f64,
         "attribution_complete": rows.iter().all(|row| row["image"] != UNKNOWN),
-        "images": group(&rows, "image", total)?, "functions": group(&rows, "function", total)?,
-        "lines": group(&rows, "source", total)?, "addresses": rows,
+        "images": group(&rows, "image", total, work_units)?, "functions": group(&rows, "function", total, work_units)?,
+        "lines": group(&rows, "source", total, work_units)?, "addresses": rows,
+        "inline_functions": summary::inline_functions(&rows, total, work_units)?,
+        "instruction_classes": summary::instruction_classes(&rows, total, work_units)?,
+        "mnemonics": group(&rows, "mnemonic", total, work_units)?,
+        "coverage": summary::coverage(&rows, total)?,
     }))
 }
 
-fn group(rows: &[Value], field: &str, total: u64) -> Result<Vec<Value>, String> {
+fn group(rows: &[Value], field: &str, total: u64, units: u64) -> Result<Vec<Value>, String> {
     let mut groups = BTreeMap::<(&str, &str, &str), u64>::new();
     groups.insert(
-        (if field == "image" { "" } else { UNKNOWN }, UNKNOWN, ""),
+        (
+            if matches!(field, "image" | "mnemonic") {
+                ""
+            } else {
+                UNKNOWN
+            },
+            UNKNOWN,
+            "",
+        ),
         0,
     );
     for row in rows {
         let name = row[field].as_str().ok_or("missing profile group")?;
-        let image = if field == "image" {
+        let image = if matches!(field, "image" | "mnemonic") {
             ""
         } else {
             row["image"].as_str().ok_or("missing profile image")?
@@ -325,7 +341,8 @@ fn group(rows: &[Value], field: &str, total: u64) -> Result<Vec<Value>, String> 
         .into_iter()
         .map(|((image, name, definition), count)| {
             let mut group = json!({
-                "name": name, "instructions": count,
+                "name": name, "instructions": count, "share_percent": summary::share(count, total),
+                "instructions_per_unit": count as f64 / units as f64,
             });
             if !image.is_empty() {
                 group["image"] = json!(image);
@@ -358,136 +375,23 @@ pub(super) fn group_label(row: &Value) -> String {
     label
 }
 
-fn markdown(report: &Value) -> Result<String, String> {
-    let mut text = String::from(
-        "# Guest instruction hotspots\n\nCounts are guest instruction dispatches.\n\nFunction and line groups count each instruction once at its innermost frame. Enclosing inline frames are context only.\n",
-    );
-    if let Some(workload) = report["measurement"]["workload"].as_str() {
-        writeln!(text, "\nWorkload: {}.\n", cell(workload)).map_err(|error| error.to_string())?;
-    }
-    for warning in report["warnings"]
-        .as_array()
-        .ok_or("missing report warnings")?
+pub(super) fn warning_summary(warnings: &[String], log: &str) -> Vec<String> {
+    let mut messages = BTreeMap::<String, usize>::new();
+    for line in warnings
+        .iter()
+        .flat_map(|warning| warning.lines())
+        .filter(|line| !line.is_empty())
     {
-        writeln!(
-            text,
-            "\nWarning: {}",
-            cell(warning.as_str().ok_or("invalid warning")?)
-        )
-        .map_err(|error| error.to_string())?;
+        let message =
+            if line.contains("address range table") && line.contains("premature terminator") {
+                "LLVM reported premature terminators in DWARF address ranges".to_owned()
+            } else {
+                line.to_owned()
+            };
+        *messages.entry(message).or_default() += 1;
     }
-    if report["scope"] == "system" {
-        text.push_str("\nNative image attribution checks all file-backed executable bytes of the supplied images. Counts are grouped by verified ELF identity. Unresolved or ambiguous images remain unknown. Observed mapping roots and epochs are recorded separately in report.json.\n");
-    } else {
-        write_contexts(
-            &mut text,
-            report["contexts"]
-                .as_array()
-                .ok_or("missing report contexts")?,
-            report["context_register"].as_str(),
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    for window in report["windows"]
-        .as_array()
-        .ok_or("missing report windows")?
-    {
-        write_window(&mut text, window).map_err(|error| error.to_string())?;
-    }
-    Ok(text)
-}
-
-fn write_contexts(
-    text: &mut String,
-    contexts: &[Value],
-    root_register: Option<&str>,
-) -> std::fmt::Result {
-    writeln!(
-        text,
-        "\nRoot register: {}.\n",
-        root_register.unwrap_or("unavailable")
-    )?;
-    if root_register.is_none() {
-        text.push_str("Page-table roots are not independently observed. Attribution relies on the calibration driver's controlled descriptors.\n\n");
-    }
-    text.push_str("| Context | Load instance | Declared root | Observed root | Runtime base | ELF base |\n| --- | --- | --- | --- | --- | --- |\n");
-    let mut unknown = 0;
-    for context in contexts.iter().skip(1) {
-        if !context["reason"].is_null() {
-            unknown += 1;
-            continue;
-        }
-        writeln!(
-            text,
-            "| {} | {} | {} | {} | {} | {} |",
-            context["id"],
-            context["instance"],
-            context["root"].as_str().unwrap_or(UNKNOWN),
-            context["observed_root"].as_str().unwrap_or(UNKNOWN),
-            context["runtime"].as_str().unwrap_or(UNKNOWN),
-            context["link"].as_str().unwrap_or(UNKNOWN)
-        )?;
-    }
-    writeln!(
-        text,
-        "\nUnresolved execution observations: {unknown}. Details remain in report.json."
-    )
-}
-
-fn write_window(text: &mut String, window: &Value) -> std::fmt::Result {
-    writeln!(
-        text,
-        "\n## {}\n\nTotal: {} instructions over {} work units, {} instructions per unit.\n",
-        window["name"].as_str().unwrap_or(UNKNOWN),
-        window["instructions"],
-        window["work_units"],
-        window["instructions_per_unit"]
-    )?;
-    for (field, title) in [
-        ("images", "Image"),
-        ("functions", "Function or symbol"),
-        ("lines", "Source line"),
-    ] {
-        writeln!(text, "| {title} | Instructions |\n| --- | ---: |")?;
-        for row in window[field].as_array().into_iter().flatten() {
-            writeln!(
-                text,
-                "| {} | {} |",
-                cell(&group_label(row)),
-                row["instructions"]
-            )?;
-        }
-        text.push('\n');
-    }
-    text.push_str("| Context | PC | ELF PC | Segment offset | Bytes | Instructions | Disassembly | Inline frames |\n| --- | --- | --- | --- | --- | ---: | --- | --- |\n");
-    for row in window["addresses"].as_array().into_iter().flatten() {
-        let frames = row["inline_frames"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|frame| {
-                format!(
-                    "{} ({}:{})",
-                    frame["FunctionName"].as_str().unwrap_or(UNKNOWN),
-                    frame["FileName"].as_str().unwrap_or(UNKNOWN),
-                    frame["Line"]
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" → ");
-        writeln!(
-            text,
-            "| {} | {} | {} | {}:{} | {} | {} | {} | {} |",
-            row["context"],
-            cell(row["pc"].as_str().unwrap_or(UNKNOWN)),
-            cell(row["link_pc"].as_str().unwrap_or(UNKNOWN)),
-            row["segment"],
-            cell(row["offset"].as_str().unwrap_or(UNKNOWN)),
-            cell(row["bytes"].as_str().unwrap_or(UNKNOWN)),
-            row["instructions"],
-            cell(row["disassembly"].as_str().unwrap_or(UNKNOWN)),
-            cell(&frames)
-        )?;
-    }
-    Ok(())
+    messages
+        .into_iter()
+        .map(|(message, count)| format!("{message} ({count} diagnostics; see {log})"))
+        .collect()
 }

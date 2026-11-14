@@ -34,6 +34,15 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), S
         "windows": windows,
     });
     fs::write(
+        after.join("diff.log"),
+        format!(
+            "Before:\n{}\nAfter:\n{}",
+            left.warnings.join("\n"),
+            right.warnings.join("\n")
+        ),
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(
         after.join("diff.json"),
         serde_json::to_vec_pretty(&comparison).map_err(|error| error.to_string())?,
     )
@@ -196,7 +205,7 @@ fn identity(directory: &Path, run: &SavedRun) -> Value {
         "directory": directory, "counts_sha256": run.metadata["counts_sha256"],
         "artifacts_sha256": run.metadata["artifacts"]["sha256"],
         "release": run.metadata["release"], "measurement": run.manifest["measurement"],
-        "build": run.manifest["build"], "warnings": run.warnings,
+        "build": run.manifest["build"], "warnings": report::warning_summary(&run.warnings, "diff.log"),
     })
 }
 
@@ -230,6 +239,13 @@ fn compare_window(left: &Value, right: &Value) -> Result<Value, String> {
             unknown["after_share_percent"] = json!(share(number(&unknown["after"])?, after));
             window["unknown"][field] = unknown;
             window[field] = json!(compare_groups(&left, &right, units));
+        }
+        for field in ["inline_functions", "instruction_classes", "mnemonics"] {
+            window[field] = json!(compare_groups(
+                &groups(left, field)?,
+                &groups(right, field)?,
+                units
+            ));
         }
     }
     Ok(window)
@@ -370,10 +386,13 @@ fn write_window(text: &mut String, window: &Value) -> std::fmt::Result {
                 row["after_share_percent"]
             )?;
         }
-        text.push_str("\nThe following tables show up to 20 entries with the largest absolute count changes. The JSON file contains every entry.\n");
+        text.push_str("\nThe following tables show up to 20 entries with the largest absolute count changes. The JSON file contains every entry. Inline expansion rows overlap and exclude out-of-line callees.\n");
         for (field, title) in [
             ("images", "Image"),
             ("functions", "Direct function"),
+            ("inline_functions", "Function including inline expansions"),
+            ("instruction_classes", "Instruction kind"),
+            ("mnemonics", "Instruction mnemonic"),
             ("lines", "Source line"),
         ] {
             writeln!(
