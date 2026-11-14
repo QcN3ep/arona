@@ -203,6 +203,7 @@ fn physical(address: usize) -> usize {
     address - 0xffff_8000_0000_0000
 }
 
+// REFERENCE: https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html
 pub fn map_space(space: &mut super::mappings::Space) {
     for level in 0..3 {
         space.tables[level].0[0] = physical(&space.tables[level + 1] as *const _ as usize);

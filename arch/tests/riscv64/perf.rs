@@ -233,6 +233,7 @@ global_asm!(
     ".popsection",
 );
 
+// REFERENCE: https://docs.riscv.org/reference/isa/priv/supervisor.html
 pub fn root(space: &super::mappings::Space) -> usize {
     (8usize << 60) | (physical(&space.tables[0] as *const _ as usize) >> 12)
 }
@@ -241,6 +242,7 @@ fn physical(address: usize) -> usize {
     address - 0xffff_ffc0_0000_0000 + 0x8020_0000
 }
 
+// REFERENCE: https://docs.riscv.org/reference/isa/priv/supervisor.html
 pub fn map_space(space: &mut super::mappings::Space) {
     // SAFETY: The boot root remains mapped and is not modified by this single-CPU scenario.
     space.tables[0].0 = unsafe { super::mappings::_boot_root.0 };
