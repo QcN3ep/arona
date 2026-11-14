@@ -7,8 +7,8 @@ Both paths return a File session, and clients read and write through the same IP
 
 ## Interface and Sessions
 
-`Control` manages the file service and is responsible for establishing clients, mounting disk volumes, and unmounting file systems.
-`MountControl` duplicates the control channel for the Linux compatibility layer and can mount and unmount tmpfs volumes without exposing disk mounts.
+`Control` manages the file service and is responsible for establishing clients, mounting disk and startup volumes, and unmounting file systems.
+`MountControl` is a dedicated mount-control channel that `Control::mount_control` creates for the Linux compatibility layer; it can mount and unmount in-memory volumes without exposing disk or startup mounts.
 `Client` provides path operations, and `File` and `Directory` represent opened sessions.
 
 | Interface | Operations |
@@ -49,6 +49,8 @@ A tmpfs mount creates an empty directory hierarchy in memory, while an ext4 moun
 Mounting at an existing mount point or above a nested mount reports a busy mount, while mounting below an existing mount is allowed.
 Unmounting a path that is not a mount, has nested mounts, or still has open ext4 references reports the corresponding error.
 The file service exposes tmpfs mounting and unmounting through `MountControl` so the Linux compatibility layer can implement `mount` and `umount2` without exposing disk mounts.
+The mount-control channel accepts only tmpfs mount requests and in-memory unmount requests; disk mounting and administrative unmounting are rejected there, and mount ownership follows the channel that created the mount rather than a request word.
+A user mount may only be placed on a writable volume: a target on the read-only boot archive is rejected, so a client cannot shadow system files in the global namespace.
 Only tmpfs mounts created through that interface can be unmounted through it; the startup `/tmp` mount and disk mounts report an invalid request.
 
 The directory anchor interface supports relative directory lookup.

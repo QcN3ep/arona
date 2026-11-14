@@ -32,6 +32,11 @@ const SUPPORTED_FLAGS: u32 = MS_NOSUID
 
 const AT_FDCWD: usize = (-100i32) as usize;
 
+// User mounts may only appear on writable volumes. The file service enforces the
+// same boundary by rejecting targets on the read-only boot archive, but checking
+// the canonical path here avoids sending a request that the service would deny.
+const USER_MOUNT_ROOTS: &[&[u8]] = &[b"/tmp", b"/var"];
+
 #[derive(Clone, Copy)]
 enum Operation {
     Mount,
@@ -181,7 +186,10 @@ impl<'a> Mount<'a> {
                     Err(error) => return Some(Err(filesystem_error(error))),
                 };
                 let request = match self.operation {
-                    Operation::Mount => self.mounts.start_mount_tmpfs(&path),
+                    Operation::Mount if mount_target_allowed(&path) => {
+                        self.mounts.start_mount_tmpfs(&path)
+                    }
+                    Operation::Mount => return Some(Err(EPERM)),
                     Operation::Unmount => self.mounts.start_unmount_tmpfs(&path),
                 };
                 match request {
@@ -207,6 +215,12 @@ fn check_privileged(process: &Process<'_>) -> Result<(), Errno> {
     } else {
         Err(EPERM)
     }
+}
+
+fn mount_target_allowed(path: &[u8]) -> bool {
+    USER_MOUNT_ROOTS
+        .iter()
+        .any(|root| path == *root || path.starts_with(root) && path.get(root.len()) == Some(&b'/'))
 }
 
 fn optional_string(process: &Process<'_>, address: usize) -> Result<Vec<u8>, Errno> {

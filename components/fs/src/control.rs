@@ -64,12 +64,22 @@ impl<'a> Control<'a> {
         empty(call(&self.channel, &mut request, deadline)?)
     }
 
-    pub fn mount_control(&self) -> Result<MountControl<'a>, Error> {
+    /// Opens a dedicated mount-control channel for in-memory volumes.
+    ///
+    /// The service accepts only tmpfs mount creation and in-memory unmounting on
+    /// this channel. It cannot mount or unmount disk volumes or the service-owned
+    /// startup mounts.
+    pub fn mount_control(&self, deadline: u64) -> Result<MountControl<'a>, Error> {
+        let (channel, server) = self.task.channel(
+            CHANNEL_RIGHTS | Rights::DUPLICATE | Rights::TRANSFER,
+            Rights::READ_WRITE | Rights::WAIT | Rights::TRANSFER,
+        )?;
+        let mut request = Message::new(protocol::CONNECT_MOUNT, &[])?;
+        transfer(&mut request, server, Rights::READ_WRITE | Rights::WAIT)?;
+        empty(call(&self.channel, &mut request, deadline)?)?;
         Ok(MountControl {
             task: self.task,
-            channel: self.channel.try_clone(
-                Rights::READ_WRITE | Rights::WAIT | Rights::TRANSFER | Rights::DUPLICATE,
-            )?,
+            channel,
         })
     }
 
@@ -78,7 +88,13 @@ impl<'a> Control<'a> {
     }
 }
 
-/// Mount and unmount requests issued through a duplicated file service control channel.
+/// Mount and unmount requests for in-memory volumes issued by a client such as the
+/// Linux compatibility layer.
+///
+/// The service creates the dedicated channel for [`Control::mount_control`] and
+/// derives mount ownership from that channel, so a client cannot forge a
+/// service-owned mount. Only mounts created through this handle can be unmounted
+/// through it.
 pub struct MountControl<'a> {
     task: &'a Handle<Task>,
     channel: Handle<Channel>,
@@ -108,7 +124,7 @@ impl<'a> MountControl<'a> {
         empty_call(&self.channel, request)
     }
 
-    /// Duplicates the control channel so a pending request can own it.
+    /// Duplicates the mount-control channel so a pending request can own it.
     pub fn try_clone(&self) -> Result<Self, Error> {
         Ok(Self {
             task: self.task,

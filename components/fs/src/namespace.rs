@@ -20,10 +20,19 @@ pub struct Namespace {
     mounts: RefCell<BTreeMap<Vec<u8>, MountEntry>>,
 }
 
-/// A mount table entry; user mounts come from the mount-control channel.
+/// A mount table entry and who created it.
 struct MountEntry {
     filesystem: Mounted,
-    user: bool,
+    owner: MountOwner,
+}
+
+/// Owner of a mount table entry.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum MountOwner {
+    /// A client mount created through the mount-control channel.
+    User,
+    /// A startup or disk mount created by the administrative control.
+    Service,
 }
 
 /// A filesystem mounted at a path in the namespace.
@@ -304,7 +313,7 @@ impl Namespace {
         } else {
             Mounted::Fat32(Fat32::mount(disk, start, length)?)
         };
-        self.install(&path, filesystem, false)
+        self.install(&path, filesystem, MountOwner::Service)
     }
 
     /// Mounts a fresh in-memory filesystem at a path.
@@ -316,7 +325,7 @@ impl Namespace {
         } else {
             Tmpfs::with_capacity(capacity)?
         };
-        self.install(&path, Mounted::Tmpfs(filesystem), false)
+        self.install(&path, Mounted::Tmpfs(filesystem), MountOwner::Service)
     }
 
     /// Mounts a tmpfs on an existing directory for a user mount request.
@@ -326,7 +335,13 @@ impl Namespace {
         if metadata.mode & 0o170000 != 0o040000 {
             return Err(Error::NotDirectory);
         }
-        self.install(&path, Mounted::Tmpfs(Tmpfs::new()?), true)
+        // A user mount may only be placed on a writable volume. Placing one on
+        // the read-only boot archive would let a client shadow system files for
+        // every process that resolves through the global namespace.
+        if mounted_at(&self.mounts.borrow(), &path).is_none() {
+            return Err(Error::InvalidRequest);
+        }
+        self.install(&path, Mounted::Tmpfs(Tmpfs::new()?), MountOwner::User)
     }
 
     fn check_install(&self, path: &[u8]) -> Result<(), Error> {
@@ -340,23 +355,25 @@ impl Namespace {
         Ok(())
     }
 
-    fn install(&self, path: &[u8], filesystem: Mounted, user: bool) -> Result<(), Error> {
-        self.check_install(path)?;
+    fn install(&self, path: &[u8], filesystem: Mounted, owner: MountOwner) -> Result<(), Error> {
+        let path = normalize(path)?;
+        self.check_install(&path)?;
         self.mounts
             .borrow_mut()
-            .insert(path.to_vec(), MountEntry { filesystem, user });
+            .insert(path, MountEntry { filesystem, owner });
+
         Ok(())
     }
 
     pub fn unmount(&self, path: &[u8]) -> Result<(), Error> {
-        self.remove_mount(path, false)
+        self.remove_mount(path, None)
     }
 
     pub fn unmount_tmpfs(&self, path: &[u8]) -> Result<(), Error> {
-        self.remove_mount(path, true)
+        self.remove_mount(path, Some(MountOwner::User))
     }
 
-    fn remove_mount(&self, path: &[u8], user_tmpfs_only: bool) -> Result<(), Error> {
+    fn remove_mount(&self, path: &[u8], owner: Option<MountOwner>) -> Result<(), Error> {
         let path = normalize(path)?;
         {
             let mounts = self.mounts.borrow();
@@ -367,7 +384,7 @@ impl Namespace {
                     _ => Err(Error::InvalidRequest),
                 };
             };
-            if user_tmpfs_only && (!entry.user || !entry.filesystem.is_tmpfs()) {
+            if owner.is_some_and(|owner| entry.owner != owner) {
                 return Err(Error::InvalidRequest);
             }
             if mounts

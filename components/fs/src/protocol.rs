@@ -36,6 +36,7 @@ pub const TMPFS: u64 = 25;
 pub const SYNC: u64 = 26;
 pub const MOUNT_TMPFS: u64 = 27;
 pub const UNMOUNT_TMPFS: u64 = 28;
+pub const CONNECT_MOUNT: u64 = 29;
 
 pub const SUCCESS: u64 = 0;
 pub const INVALID_REQUEST: u64 = 1;

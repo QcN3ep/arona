@@ -164,6 +164,10 @@ static void errors(void) {
     CHECK(SC(39, P("/tmp/arona-plain"), 0) == -EINVAL);
     CHECK(SC(39, P("/tmp/arona-missing"), 0) == -ENOENT);
     CHECK(SC(39, P("/tmp"), 1) == -EINVAL);
+    // Mounting over the boot archive would shadow system files for every process.
+    CHECK(SC(40, P("tmpfs"), P("/bin"), P("tmpfs"), 0, 0) == -EPERM);
+    CHECK(SC(40, P("tmpfs"), P("/etc"), P("tmpfs"), 0, 0) == -EPERM);
+    CHECK(SC(40, P("tmpfs"), P("/"), P("tmpfs"), 0, 0) == -EPERM);
     // The startup /tmp mount belongs to the file service, so only mounts created
     // through the mount call can be removed here.
     CHECK(SC(39, P("/tmp"), 0) == -EINVAL);

@@ -45,6 +45,7 @@ fn main() {
     mounts
         .mount_tmpfs(b"/tmp", 64 * 1024, service::deadline())
         .unwrap();
+    mount_target_bounds(&mounts);
     let (_linux, channel) = service::launch(&native, machine, linux::service::REQUIRED_RIGHTS);
     let mut services = service::resources(&device_service, &kernel_log);
     let (_net, net_channel) = service::launch(
@@ -64,7 +65,7 @@ fn main() {
     .unwrap();
     services.entropy = service::resources(&device_service, &kernel_log).entropy;
     services.net = Some(net.connect().unwrap());
-    services.mounts = Some(mounts.mount_control().unwrap());
+    services.mounts = Some(mounts.mount_control(service::deadline()).unwrap());
     let linux = Control::start_with_services(
         process::task(),
         channel,
@@ -148,6 +149,15 @@ fn tmpfs(files: &fs::Client<'_>, mounts: &fs::Control<'_>) {
     drop(file);
     files.unlink_bytes(b"/allocation/file", until).unwrap();
     mounts.unmount(b"/allocation", until).unwrap();
+}
+
+fn mount_target_bounds(mounts: &fs::Control<'_>) {
+    let control = mounts.mount_control(service::deadline()).unwrap();
+    let mut denied = control.start_mount_tmpfs(b"/bin").unwrap();
+    assert_eq!(
+        denied.wait(WaitMode::Until(service::deadline())),
+        Err(fs::Error::InvalidRequest)
+    );
 }
 
 fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {

@@ -65,13 +65,15 @@ pub fn serve(
     namespace: &Namespace,
 ) -> Result<(), Error> {
     let mut clients = Vec::new();
+    let mut mounts = Vec::new();
     let mut files = Vec::new();
     loop {
         poll_files(namespace, &mut files)?;
         match control.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
-                    protocol::respond(reply, admin(task, namespace, &mut clients, request))?;
+                    let response = admin(task, namespace, &mut clients, &mut mounts, request);
+                    protocol::respond(reply, response)?;
                 }
             }
             Err(runtime::Error::Kernel(KernelError::WouldBlock)) => {}
@@ -81,6 +83,7 @@ pub fn serve(
             }
             Err(error) => return Err(error.into()),
         }
+        poll_mounts(namespace, &mut mounts)?;
         let mut index = 0;
         while index < clients.len() {
             match clients[index].receive(WaitMode::Poll) {
@@ -98,10 +101,15 @@ pub fn serve(
                 Err(error) => return Err(error.into()),
             }
         }
-        let mut items = Vec::with_capacity(files.len() + clients.len() + 1);
+        let mut items = Vec::with_capacity(files.len() + clients.len() + mounts.len() + 1);
         items.push(WaitItem::new(&control, ipc::READABLE | ipc::PEER_CLOSED));
         items.extend(
             clients
+                .iter()
+                .map(|channel| WaitItem::new(channel, ipc::READABLE | ipc::PEER_CLOSED)),
+        );
+        items.extend(
+            mounts
                 .iter()
                 .map(|channel| WaitItem::new(channel, ipc::READABLE | ipc::PEER_CLOSED)),
         );
@@ -112,6 +120,26 @@ pub fn serve(
         );
         ipc::wait_many(&items, WaitMode::Forever)?;
     }
+}
+
+fn poll_mounts(namespace: &Namespace, mounts: &mut Vec<Handle<Channel>>) -> Result<(), Error> {
+    let mut index = 0;
+    while index < mounts.len() {
+        match mounts[index].receive(WaitMode::Poll) {
+            Ok(mut request) => {
+                if let Some(reply) = request.take_reply() {
+                    protocol::respond(reply, mount_admin(namespace, request))?;
+                }
+                index += 1;
+            }
+            Err(runtime::Error::Kernel(KernelError::WouldBlock)) => index += 1,
+            Err(runtime::Error::Kernel(KernelError::EndOfStream)) => {
+                mounts.swap_remove(index);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
 }
 
 fn poll_files(namespace: &Namespace, files: &mut Vec<FileSession>) -> Result<(), Error> {
@@ -144,11 +172,18 @@ fn admin(
     task: &Handle<runtime::Task>,
     namespace: &Namespace,
     clients: &mut Vec<Handle<Channel>>,
+    mounts: &mut Vec<Handle<Channel>>,
     mut request: ReceivedMessage,
 ) -> Result<Message, Error> {
     match (request.tag, request.words()) {
         (protocol::CONNECT, []) if request.handles().len() == 1 => {
             clients.push(take_channel(&mut request, Rights::READ | Rights::WAIT)?);
+        }
+        (protocol::CONNECT_MOUNT, []) if request.handles().len() == 1 => {
+            mounts.push(take_channel(
+                &mut request,
+                Rights::READ_WRITE | Rights::WAIT,
+            )?);
         }
         (protocol::MOUNT, [length, start, size]) if request.handles().len() == 2 => {
             let (length, start, size) = (*length, *start, *size);
@@ -167,6 +202,13 @@ fn admin(
             let length = *length;
             namespace.unmount(&path(&mut request, length)?)?;
         }
+        _ => return Err(Error::InvalidRequest),
+    }
+    Ok(Message::new(protocol::SUCCESS, &[])?)
+}
+
+fn mount_admin(namespace: &Namespace, mut request: ReceivedMessage) -> Result<Message, Error> {
+    match (request.tag, request.words()) {
         (protocol::MOUNT_TMPFS, [length]) if request.handles().len() == 1 => {
             let length = *length;
             namespace.mount_tmpfs_user(&path(&mut request, length)?)?;
