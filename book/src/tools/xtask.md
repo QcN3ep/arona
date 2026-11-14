@@ -156,7 +156,7 @@ Unreadable descriptors and uncertain lifetimes remain unknown, including executi
 This does not provide general process attribution for Arona workloads.
 
 The report command runs offline and reads only the saved artifacts.
-Missing symbols leave function and line counts unknown. Missing source files do not prevent reporting recorded locations.
+The saved ELF files are required. Missing source files do not prevent reporting recorded locations.
 Changed code that does not match the saved ELF remains unknown and retains its captured disassembly.
 Damaged files and inconsistent counts cause an error. Tool diagnostics are saved in `report.log`.
 
@@ -177,11 +177,16 @@ The collector copies both inputs and derives the runtime kernel from the supplie
 It starts one QEMU vCPU with the existing VirtIO RNG configuration.
 Boundaries are exact ELF symbol names or hexadecimal addresses prefixed with `0x`.
 Each boundary must execute once. Both boundary instructions are excluded.
-Choose kernel boundaries or markers in a controlled driver whose address space is unambiguous.
+Both boundaries must lie in executable kernel segments.
 The interval includes every instruction dispatched by the guest, including other tasks and interrupt handlers.
 `--units` records the completed work represented by the interval.
 
 The completion message must appear on the serial console after the measured work finishes.
 A panic, missing boundary, missing completion message, or timeout makes the run fail.
 Use `--case system --artifacts RUN_DIRECTORY` to reuse the saved kernel, archive, and measurement settings.
-System collection currently supports `count` mode.
+Use `--mode profile` to generate kernel instruction hotspots from the same inputs.
+The report attributes verified bytes in the shared kernel mapping. User addresses and other unresolved code remain unknown.
+Repeated unknown addresses are aggregated by PC and bytes without assigning a process or load identity.
+Supply component symbols explicitly with `--image bin/fs=PATH/TO/fs`, repeated for other archive entries as needed.
+Each supplied ELF must contain debug information and match the load segments of that archive entry.
+These files are saved for inspection. They do not establish which user address space executed an instruction.

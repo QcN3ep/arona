@@ -7,6 +7,17 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 pub(super) fn validate(counts: &Value, target: &str) -> Result<(), String> {
+    if counts["scope"] == "system" {
+        if counts["contexts"]
+            != serde_json::json!([
+                {"id":0,"kind":"shared-kernel"}, {"id":1,"kind":"unknown"}
+            ])
+            || !counts["context_register"].is_null()
+        {
+            return Err("invalid system execution contexts".to_owned());
+        }
+        return Ok(());
+    }
     let require_root = target == "riscv64gc-unknown-none-elf";
     if !counts["context_register"].is_null()
         && (!require_root || counts["context_register"] != "satp")
@@ -58,6 +69,13 @@ pub(super) fn validate(counts: &Value, target: &str) -> Result<(), String> {
 
 pub(super) fn context(counts: &Value, row: &Value, window: &str) -> Result<u64, String> {
     let id = number(&row["context"])?;
+    if counts["scope"] == "system" {
+        let shared = pc(&row["pc"])? >= 0xffff_0000_0000_0000;
+        if window != "workload" || id != u64::from(!shared) {
+            return Err("invalid system instruction context".to_owned());
+        }
+        return Ok(id);
+    }
     let index = usize::try_from(id).map_err(|error| error.to_string())?;
     if counts["contexts"]
         .as_array()
@@ -78,6 +96,9 @@ pub(super) fn relocate(
 ) -> Option<(u64, String)> {
     if context == 0 {
         return Some((address, "guest.elf".to_owned()));
+    }
+    if counts["scope"] == "system" {
+        return None;
     }
     let descriptor = counts["contexts"]
         .as_array()?

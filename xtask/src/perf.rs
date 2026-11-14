@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Collects and validates instruction counts from the architecture calibration image.
+//! Collects and validates instruction counts from calibration and system images.
 
 mod artifacts;
 mod report;
@@ -68,12 +68,13 @@ impl Options {
             match argument.as_str() {
                 "--release" => options.release = Some(true),
                 "--artifacts" => {
-                    options.artifacts = Some(PathBuf::from(
+                    options.artifacts = Some(
                         arguments
                             .next()
                             .transpose()?
-                            .ok_or("missing artifacts directory")?,
-                    ));
+                            .ok_or("missing artifacts directory")?
+                            .into(),
+                    );
                 }
                 "--case" => {
                     options.case = match arguments.next().transpose()?.as_deref() {
@@ -83,24 +84,12 @@ impl Options {
                     };
                 }
                 "--kernel" | "--initramfs" | "--start" | "--end" | "--success" | "--workload"
-                | "--units" => {
+                | "--units" | "--image" => {
                     let value = arguments
                         .next()
                         .transpose()?
                         .ok_or_else(|| format!("missing {argument} value"))?;
-                    match argument.as_str() {
-                        "--kernel" => options.input.kernel = Some(value.into()),
-                        "--initramfs" => options.input.initramfs = Some(value.into()),
-                        "--start" => options.input.start = Some(value),
-                        "--end" => options.input.end = Some(value),
-                        "--success" => options.input.success = Some(value),
-                        "--workload" => options.input.workload = Some(value),
-                        "--units" => {
-                            options.input.units =
-                                Some(value.parse().map_err(|_| "invalid work units")?)
-                        }
-                        _ => unreachable!(),
-                    }
+                    options.input.set(&argument, value)?;
                 }
                 "--mode" => match arguments.next().transpose()?.as_deref() {
                     Some("count") => options.profile = false,
@@ -181,9 +170,6 @@ fn collect(
     let manifest = artifacts::prepare(options, root, directory)?;
     let saved = directory.join("artifacts");
     let (windows, context) = read_windows(&saved.join("symbols.elf"), &manifest)?;
-    if options.case == "system" && options.profile {
-        return Err("system profiling is not implemented".to_owned());
-    }
     let plugin = build_plugin(root, directory)?;
     let mut command = qemu_command(options.target, root);
     let version = command_output(Command::new(command.get_program()).arg("--version"))?;
@@ -206,6 +192,7 @@ fn collect(
             &windows,
             options.profile,
             context,
+            options.case,
         )?)
         .arg("-qmp")
         .arg(format!("unix:{}/qmp,server=on,wait=off", control.display()));
@@ -403,6 +390,7 @@ fn plugin_options(
     windows: &[Window],
     profile: bool,
     context: u64,
+    case: &str,
 ) -> Result<String, String> {
     let escape = |path: &Path| {
         path.to_str()
@@ -425,7 +413,10 @@ fn plugin_options(
     }
     if profile {
         use std::fmt::Write;
-        write!(options, ",profile=on,context={context:x}").map_err(|error| error.to_string())?;
+        write!(options, ",profile={case}").map_err(|error| error.to_string())?;
+        if case == "calibration" {
+            write!(options, ",context={context:x}").map_err(|error| error.to_string())?;
+        }
     }
     Ok(options)
 }

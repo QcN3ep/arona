@@ -20,6 +20,7 @@ static GByteArray *register_bytes;
 static GPtrArray *contexts;
 static GHashTable *known_contexts;
 static struct context static_context;
+static struct context unknown_context = { .id = 1 };
 
 static void initialize_context(unsigned int cpu, void *userdata)
 {
@@ -98,6 +99,10 @@ static struct context *observe_context(void)
 
 static void write_contexts(void)
 {
+    if (system_profile) {
+        fputs(",\"context_register\":null,\"contexts\":[{\"id\":0,\"kind\":\"shared-kernel\"},{\"id\":1,\"kind\":\"unknown\"}]", output);
+        return;
+    }
     fprintf(output, ",\"context_register\":%s,\"contexts\":[{\"id\":0,\"kind\":\"static\"}",
             root_register ? "\"satp\"" : "null");
     for (guint index = 1; index < contexts->len; ++index) {

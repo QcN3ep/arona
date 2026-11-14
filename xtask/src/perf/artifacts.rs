@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Preserves calibration images and verifies that saved symbols describe the running code.
+//! Preserves guest images and verifies that saved symbols describe the running code.
 
 use super::{
     Options, Target, calibration_command, command_output, execute, linux_test, qemu_command, system,
@@ -34,6 +34,13 @@ pub(super) fn prepare(options: &Options, root: &Path, run: &Path) -> Result<Valu
             verify_file(&source, name, &manifest)?;
             fs::copy(source.join(name), directory.join(name)).map_err(|error| error.to_string())?;
         }
+        for name in system::image_files(&manifest)? {
+            verify_file(&source, &name, &manifest)?;
+            let destination = directory.join(&name);
+            fs::create_dir_all(destination.parent().ok_or("invalid saved image path")?)
+                .map_err(|error| error.to_string())?;
+            fs::copy(source.join(&name), destination).map_err(|error| error.to_string())?;
+        }
         manifest
     } else {
         create(options, root, &directory)?
@@ -42,6 +49,12 @@ pub(super) fn prepare(options: &Options, root: &Path, run: &Path) -> Result<Valu
         verify_file(&directory, name, &manifest)?;
     }
     validate_images(options.target, &directory, options.case)?;
+    for name in system::image_files(&manifest)? {
+        verify_file(&directory, &name, &manifest)?;
+    }
+    if options.case == "system" {
+        system::validate_images(options.target, &directory, &manifest)?;
+    }
     fs::write(
         directory.join("manifest.json"),
         serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?,
@@ -80,7 +93,9 @@ fn validate_manifest(manifest: &Value, options: &Options, root: &Path) -> Result
         return Err("saved artifacts use an unsupported QEMU machine configuration".to_owned());
     }
     if manifest["files"].as_object().map(|files| files.len())
-        != Some(filenames(options.target, options.case).len())
+        != Some(
+            filenames(options.target, options.case).len() + system::image_files(manifest)?.len(),
+        )
     {
         return Err("unexpected performance artifact files".to_owned());
     }
@@ -145,7 +160,7 @@ fn create(options: &Options, root: &Path, directory: &Path) -> Result<Value, Str
         files.insert(name, digest(&directory.join(name))?);
     }
     Ok(json!({
-        "target": options.target.triple(), "case": "calibration",
+        "target": options.target.triple(), "case": "calibration", "images": [],
         "machine_arguments": machine_arguments(options.target, root),
         "release": options.release.unwrap_or(false), "files": files,
         "build": {
@@ -164,6 +179,7 @@ fn create(options: &Options, root: &Path, directory: &Path) -> Result<Value, Str
 fn create_system(options: &Options, root: &Path, directory: &Path) -> Result<Value, String> {
     let measurement = options.input.measurement()?;
     options.input.preserve(directory)?;
+    let images = system::preserve_images(&options.input, directory)?;
     let mut strip = Command::new("llvm-objcopy");
     strip
         .arg("--strip-all")
@@ -175,10 +191,14 @@ fn create_system(options: &Options, root: &Path, directory: &Path) -> Result<Val
     }
     let mut files = BTreeMap::new();
     for name in filenames(options.target, options.case) {
-        files.insert(name, digest(&directory.join(name))?);
+        files.insert(name.to_owned(), digest(&directory.join(name))?);
+    }
+    let image_manifest = json!({"images":images});
+    for name in system::image_files(&image_manifest)? {
+        files.insert(name.clone(), digest(&directory.join(name))?);
     }
     Ok(json!({
-        "target": options.target.triple(), "case": "system", "measurement": measurement,
+        "target": options.target.triple(), "case": "system", "measurement": measurement, "images":images,
         "machine_arguments": machine_arguments(options.target, root),
         "release": options.release.unwrap_or(false), "files": files,
         "input_kernel": options.input.kernel, "input_initramfs": options.input.initramfs,
@@ -272,7 +292,7 @@ pub(super) fn inspect(path: &Path) -> Result<Value, String> {
     Ok(files.remove(0))
 }
 
-fn validate_images(target: Target, directory: &Path, case: &str) -> Result<(), String> {
+pub(super) fn validate_images(target: Target, directory: &Path, case: &str) -> Result<(), String> {
     let symbols = inspect(&directory.join("symbols.elf"))?;
     let guest = inspect(&directory.join("guest.elf"))?;
     let machine = if matches!(target, Target::Riscv64) {

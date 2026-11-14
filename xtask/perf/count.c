@@ -39,6 +39,7 @@ static char *output_path;
 static char *pending_path;
 static const char *error;
 static GHashTable *instructions;
+static bool system_profile;
 
 #define MAX_INSTRUCTIONS 262144
 
@@ -95,7 +96,9 @@ static void free_sample(void *data)
 
 static uint64_t *sample_count(struct instruction *instruction)
 {
-    struct context *context = !strcmp(active->name, "mappings") ? observe_context() : &static_context;
+    struct context *context = system_profile
+        ? (instruction->pc >= UINT64_C(0xffff000000000000) ? &static_context : &unknown_context)
+        : (!strcmp(active->name, "mappings") ? observe_context() : &static_context);
     if (!context) { return NULL; }
     struct { struct instruction *instruction; struct context *context; } key = {instruction, context};
     GBytes *bytes = g_bytes_new(&key, sizeof(key));
@@ -163,7 +166,7 @@ static void instrument(struct qemu_plugin_insn *insn)
         g_bytes_unref(bytes);
     }
     qemu_plugin_register_vcpu_insn_exec_cb(
-        insn, profile, QEMU_PLUGIN_CB_R_REGS, instruction);
+        insn, profile, system_profile ? QEMU_PLUGIN_CB_NO_REGS : QEMU_PLUGIN_CB_R_REGS, instruction);
 }
 
 static void boundary(unsigned int cpu, void *userdata)
@@ -285,7 +288,7 @@ static void finish(void *userdata)
         fputs("null", output);
     }
     if (instructions) {
-        fputs(",\"scope\":\"controlled-mappings\"", output);
+        fprintf(output, ",\"scope\":\"%s\"", system_profile ? "system" : "controlled-mappings");
         write_contexts();
     }
     fputs(",\"windows\":[", output);
@@ -317,7 +320,7 @@ static void finish(void *userdata)
     g_free(windows);
     if (instructions) {
         g_hash_table_destroy(samples);
-        destroy_contexts();
+        if (!system_profile) { destroy_contexts(); }
         g_hash_table_destroy(instructions);
     }
     qemu_plugin_scoreboard_free(score);
@@ -364,7 +367,8 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     for (int index = 0; index < argc; ++index) {
         if (g_str_has_prefix(argv[index], "output=") && !path) {
             path = argv[index] + strlen("output=");
-        } else if (!strcmp(argv[index], "profile=on") && !instructions) {
+        } else if ((!strcmp(argv[index], "profile=calibration") || !strcmp(argv[index], "profile=system")) && !instructions) {
+            system_profile = !strcmp(argv[index], "profile=system");
             instructions = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                                  (GDestroyNotify)g_bytes_unref,
                                                  free_instruction);
@@ -384,18 +388,21 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         fputs("Arona perf requires an output file and distinct measurement windows\n", stderr);
         return -1;
     }
-    if ((instructions && !context_address) || (!instructions && context_address)) {
-        fputs("Arona perf requires a context address exactly when profiling\n", stderr);
+    if ((instructions && !system_profile && !context_address) ||
+        (context_address && (!instructions || system_profile))) {
+        fputs("Arona perf requires a context address only for calibration profiling\n", stderr);
         return -1;
     }
     if (instructions) {
+        samples = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
+                                        (GDestroyNotify)g_bytes_unref, free_sample);
+    }
+    if (instructions && !system_profile) {
         require_root = !strcmp(info->target_name, "riscv64");
         contexts = g_ptr_array_new();
         g_ptr_array_add(contexts, &static_context);
         known_contexts = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
                                               (GDestroyNotify)g_bytes_unref, NULL);
-        samples = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
-                                        (GDestroyNotify)g_bytes_unref, free_sample);
         context_bytes = g_byte_array_new();
         register_bytes = g_byte_array_new();
         qemu_plugin_register_vcpu_init_cb(id, initialize_context, NULL);

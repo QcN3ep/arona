@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Generates offline instruction hotspot reports from a saved calibration run.
+//! Generates offline instruction hotspot reports from a saved run.
 
 mod mappings;
 mod symbols;
@@ -33,8 +33,10 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), S
 }
 
 pub(super) fn generate(directory: &Path, metadata: &Value) -> Result<(), String> {
-    if metadata["mode"] != "profile" || metadata["case"] != "calibration" {
-        return Err("report requires a saved calibration profile".to_owned());
+    if metadata["mode"] != "profile"
+        || !matches!(metadata["case"].as_str(), Some("calibration" | "system"))
+    {
+        return Err("report requires a saved instruction profile".to_owned());
     }
     check_digest(
         &directory.join("artifacts/manifest.json"),
@@ -42,10 +44,23 @@ pub(super) fn generate(directory: &Path, metadata: &Value) -> Result<(), String>
     )?;
     check_digest(&directory.join("counts.json"), &metadata["counts_sha256"])?;
     let manifest = read_json(&directory.join("artifacts/manifest.json"))?;
-    if manifest["case"] != "calibration" || manifest["target"] != metadata["target"] {
+    for name in super::system::image_files(&manifest)? {
+        check_digest(
+            &directory.join("artifacts").join(&name),
+            &manifest["files"][&name],
+        )?;
+    }
+    if manifest["case"] != metadata["case"] || manifest["target"] != metadata["target"] {
         return Err("unsupported performance artifacts".to_owned());
     }
     let counts = read_json(&directory.join("counts.json"))?;
+    let system = metadata["case"] == "system";
+    if system != (counts["scope"] == "system") {
+        return Err("instruction scope differs from the saved case".to_owned());
+    }
+    if system {
+        super::system::validate_measurement(&manifest["measurement"])?;
+    }
     let addresses = validate(
         &counts,
         metadata["target"]
@@ -54,16 +69,23 @@ pub(super) fn generate(directory: &Path, metadata: &Value) -> Result<(), String>
     )?;
     let mut warnings = Vec::new();
     let locations = symbols::resolve(directory, &manifest, &counts, &addresses, &mut warnings)?;
+    let units = if system {
+        number(&manifest["measurement"]["units"])?
+    } else {
+        1
+    };
     let windows = counts["windows"]
         .as_array()
         .ok_or("missing profile windows")?
         .iter()
-        .map(|window| summarize(&counts, window, &locations))
+        .map(|window| summarize(&counts, window, &locations, units))
         .collect::<Result<Vec<_>, _>>()?;
     let report = json!({
         "metric": counts["metric"], "scope": counts["scope"],
         "target": metadata["target"], "counts_sha256": metadata["counts_sha256"],
         "contexts": counts["contexts"], "context_register": counts["context_register"],
+        "measurement": manifest["measurement"],
+        "saved_images": manifest["images"],
         "artifacts_sha256": metadata["artifacts"]["sha256"],
         "tools": {
             "llvm_symbolizer": command_output(Command::new("llvm-symbolizer").arg("--version"))?,
@@ -71,7 +93,7 @@ pub(super) fn generate(directory: &Path, metadata: &Value) -> Result<(), String>
         },
         "warnings": warnings.iter().map(|message| {
             let first = message.lines().next().unwrap_or("");
-            if message.lines().count() > 1 { format!("{first} (see report.log)") } else { first.to_owned() }
+        if message.lines().count() > 1 { format!("{first} (see report.log)") } else { first.to_owned() }
         }).collect::<Vec<_>>(),
         "windows": windows,
     });
@@ -115,8 +137,10 @@ fn pc(value: &Value) -> Result<u64, String> {
 }
 
 fn validate(counts: &Value, target: &str) -> Result<Vec<Address>, String> {
-    if counts["scope"] != "controlled-mappings"
-        || counts["valid"] != true
+    if !matches!(
+        counts["scope"].as_str(),
+        Some("controlled-mappings" | "system")
+    ) || counts["valid"] != true
         || counts["plugin_api"] != 7
         || counts["metric"] != "guest_instruction_dispatches"
     {
@@ -177,6 +201,7 @@ fn summarize(
     counts: &Value,
     window: &Value,
     locations: &BTreeMap<Address, Value>,
+    work_units: u64,
 ) -> Result<Value, String> {
     let mut rows = Vec::new();
     for row in window["addresses"]
@@ -228,7 +253,8 @@ fn summarize(
     });
     let total = number(&window["instructions"])?;
     Ok(json!({
-        "name": window["name"], "instructions": total, "work_units": 1,
+        "name": window["name"], "instructions": total, "work_units": work_units,
+        "instructions_per_unit": total as f64 / work_units as f64,
         "attribution_complete": rows.iter().all(|row| row["image"] != UNKNOWN),
         "images": group(&rows, "image", total)?, "functions": group(&rows, "function", total)?,
         "lines": group(&rows, "source", total)?, "addresses": rows,
@@ -271,7 +297,7 @@ fn cell(value: &str) -> String {
 
 fn markdown(report: &Value) -> Result<String, String> {
     let mut text = String::from(
-        "# Guest instruction hotspots\n\nCounts are guest instruction dispatches. Each calibration interval is one work unit.\n\nThis report covers static calibration mappings and controlled load instances. General process attribution is not supported.\n\nFunction and line groups count each instruction once at its innermost frame. Enclosing inline frames are context only.\n",
+        "# Guest instruction hotspots\n\nCounts are guest instruction dispatches.\n\nFunction and line groups count each instruction once at its innermost frame. Enclosing inline frames are context only.\n",
     );
     for warning in report["warnings"]
         .as_array()
@@ -284,14 +310,18 @@ fn markdown(report: &Value) -> Result<String, String> {
         )
         .map_err(|error| error.to_string())?;
     }
-    write_contexts(
-        &mut text,
-        report["contexts"]
-            .as_array()
-            .ok_or("missing report contexts")?,
-        report["context_register"].as_str(),
-    )
-    .map_err(|error| error.to_string())?;
+    if report["scope"] == "system" {
+        text.push_str("\nOnly the shared kernel mapping is attributed. User address spaces and load lifetimes are unresolved. Their counts stay unknown.\n");
+    } else {
+        write_contexts(
+            &mut text,
+            report["contexts"]
+                .as_array()
+                .ok_or("missing report contexts")?,
+            report["context_register"].as_str(),
+        )
+        .map_err(|error| error.to_string())?;
+    }
     for window in report["windows"]
         .as_array()
         .ok_or("missing report windows")?
@@ -341,10 +371,11 @@ fn write_contexts(
 fn write_window(text: &mut String, window: &Value) -> std::fmt::Result {
     writeln!(
         text,
-        "\n## {}\n\nTotal: {} instructions, {} instructions per interval.\n",
+        "\n## {}\n\nTotal: {} instructions over {} work units, {} instructions per unit.\n",
         window["name"].as_str().unwrap_or(UNKNOWN),
         window["instructions"],
-        window["instructions"]
+        window["work_units"],
+        window["instructions_per_unit"]
     )?;
     for (field, title) in [
         ("images", "Image"),
