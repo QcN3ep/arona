@@ -10,4 +10,5 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+rustc-demangle = "0.1"
 serde_json = "1"

@@ -183,7 +183,7 @@ cargo xtask perf run riscv64 --release --case calibration --mode profile
 cargo xtask perf report target/perf/RUN_DIRECTORY
 ```
 
-Profiling also requires `llvm-symbolizer` and `llvm-objdump`.
+Profiling also requires `llvm-symbolizer`, `llvm-objdump`, and `llvm-readobj`.
 It supports the shared boot mapping and controlled mappings in the calibration image.
 The mapping scenario switches between programs at the same virtual address and reuses page tables for a new load instance.
 The collector keeps these instances separate and checks instruction bytes against their saved ELF locations.
@@ -258,6 +258,6 @@ Guest builds may differ. The caller must keep workload inputs and completion sem
 The comparison shows exact instruction counts and their difference, followed by counts per work unit.
 JSON stores the signed integer difference as a decimal string. Percentages and per-unit values use floating point.
 Profile comparisons also show image, function, and source-line changes, including unknown counts and coverage.
-Groups match exact image names and function names or source locations. Names retain any symbol hashes.
+Functions match image, demangled name without the Rust symbol hash, and definition location when available. Source lines match exact recorded locations.
 Unmatched groups appear as added or removed. Absolute PCs are not matched across builds.
 The Markdown report shows the 20 largest changes in each grouping. JSON retains every group.

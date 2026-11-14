@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, ffi::OsString, fmt::Write, fs, path::Path};
 
 const UNKNOWN: &str = "[unknown]";
-type Groups = BTreeMap<(String, String), u64>;
+type Groups = BTreeMap<(String, String, String), u64>;
 
 pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
     let before = arguments.next().ok_or_else(super::super::usage)?;
@@ -222,18 +222,14 @@ fn compare_window(left: &Value, right: &Value) -> Result<Value, String> {
     window["name"] = left["name"].clone();
     window["work_units"] = json!(units);
     if left["addresses"].is_array() {
-        for (field, label) in [
-            ("image", "images"),
-            ("function", "functions"),
-            ("source", "lines"),
-        ] {
+        for field in ["images", "functions", "lines"] {
             let left = groups(left, field)?;
             let right = groups(right, field)?;
             let mut unknown = change(unknown_count(&left)?, unknown_count(&right)?, units);
             unknown["before_share_percent"] = json!(share(number(&unknown["before"])?, before));
             unknown["after_share_percent"] = json!(share(number(&unknown["after"])?, after));
-            window["unknown"][label] = unknown;
-            window[label] = json!(compare_groups(&left, &right, units));
+            window["unknown"][field] = unknown;
+            window[field] = json!(compare_groups(&left, &right, units));
         }
     }
     Ok(window)
@@ -249,19 +245,19 @@ fn share(count: u64, total: u64) -> f64 {
 
 fn groups(window: &Value, field: &str) -> Result<Groups, String> {
     let mut groups = Groups::new();
-    groups.insert((UNKNOWN.to_owned(), UNKNOWN.to_owned()), 0);
-    for row in window["addresses"]
-        .as_array()
-        .ok_or("missing hotspot addresses")?
-    {
-        let image = row["image"].as_str().ok_or("missing hotspot image")?;
-        let name = row[field].as_str().ok_or("missing hotspot name")?;
-        let count = groups
-            .entry((image.to_owned(), name.to_owned()))
-            .or_default();
-        *count = count
-            .checked_add(number(&row["instructions"])?)
-            .ok_or("hotspot count overflow")?;
+    for row in window[field].as_array().ok_or("missing hotspot groups")? {
+        let image = row["image"].as_str().unwrap_or("");
+        let name = row["name"].as_str().ok_or("missing hotspot name")?;
+        let definition = row["definition"].as_str().unwrap_or("");
+        if groups
+            .insert(
+                (image.to_owned(), name.to_owned(), definition.to_owned()),
+                number(&row["instructions"])?,
+            )
+            .is_some()
+        {
+            return Err("duplicate hotspot group".to_owned());
+        }
     }
     Ok(groups)
 }
@@ -269,7 +265,7 @@ fn groups(window: &Value, field: &str) -> Result<Groups, String> {
 fn unknown_count(groups: &Groups) -> Result<u64, String> {
     groups
         .iter()
-        .filter(|((_, name), _)| name == UNKNOWN)
+        .filter(|((_, name, _), _)| name == UNKNOWN)
         .try_fold(0u64, |sum, (_, count)| sum.checked_add(*count))
         .ok_or_else(|| "unknown count overflow".to_owned())
 }
@@ -294,6 +290,7 @@ fn compare_groups(left: &Groups, right: &Groups, units: u64) -> Vec<Value> {
             );
             row["image"] = json!(key.0);
             row["name"] = json!(key.1);
+            row["definition"] = json!(key.2);
             row["status"] = json!(match (before, after) {
                 (None, _) => "added",
                 (_, None) => "removed",
@@ -306,7 +303,7 @@ fn compare_groups(left: &Groups, right: &Groups, units: u64) -> Vec<Value> {
 
 fn markdown(comparison: &Value) -> Result<String, String> {
     let mut text = format!(
-        "# Guest instruction comparison\n\nBefore: {}\n\nAfter: {}\n\nChanges are after minus before. Counts are guest instruction dispatches.\n\nGroups match exact image names and function names or source locations. Unmatched entries are added or removed. Absolute PCs are not matched across builds.\n",
+        "# Guest instruction comparison\n\nBefore: {}\n\nAfter: {}\n\nChanges are after minus before. Counts are guest instruction dispatches.\n\nFunctions match image, demangled name, and definition location when available. Source lines match exact recorded locations. Unmatched entries are added or removed. Absolute PCs and Rust symbol hashes are not compared.\n",
         cell(
             comparison["before"]["directory"]
                 .as_str()
@@ -376,7 +373,7 @@ fn write_window(text: &mut String, window: &Value) -> std::fmt::Result {
         text.push_str("\nThe following tables show up to 20 entries with the largest absolute count changes. The JSON file contains every entry.\n");
         for (field, title) in [
             ("images", "Image"),
-            ("functions", "Function or symbol"),
+            ("functions", "Direct function"),
             ("lines", "Source line"),
         ] {
             writeln!(
@@ -393,15 +390,7 @@ fn write_window(text: &mut String, window: &Value) -> std::fmt::Result {
                 writeln!(
                     text,
                     "| {} | {} | {} | {} | {} |",
-                    cell(&if field == "images" {
-                        row["name"].as_str().unwrap_or(UNKNOWN).to_owned()
-                    } else {
-                        format!(
-                            "{} / {}",
-                            row["image"].as_str().unwrap_or(UNKNOWN),
-                            row["name"].as_str().unwrap_or(UNKNOWN)
-                        )
-                    }),
+                    cell(&report::group_label(row)),
                     row["status"].as_str().unwrap_or(UNKNOWN),
                     row["before"],
                     row["after"],

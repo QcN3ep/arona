@@ -264,6 +264,8 @@ fn summarize(
             "link_pc": location.map(|location| &location["link_pc"]),
             "segment": location.map(|location| &location["segment"]), "offset": location.map(|location| &location["offset"]),
             "function": function.unwrap_or(UNKNOWN), "source": source.as_deref().unwrap_or(UNKNOWN),
+            "function_definition": frame.and_then(|frame| frame["Definition"].as_str()).unwrap_or(""),
+            "symbol": frame.and_then(|frame| frame["LinkageName"].as_str()),
             "inline_frames": frames, "disassembly": location.and_then(|location| location.get("disassembly")).unwrap_or(&row["disassembly"]),
         }));
     }
@@ -286,8 +288,11 @@ fn summarize(
 }
 
 fn group(rows: &[Value], field: &str, total: u64) -> Result<Vec<Value>, String> {
-    let mut groups = BTreeMap::<(&str, &str), u64>::new();
-    groups.insert((if field == "image" { "" } else { UNKNOWN }, UNKNOWN), 0);
+    let mut groups = BTreeMap::<(&str, &str, &str), u64>::new();
+    groups.insert(
+        (if field == "image" { "" } else { UNKNOWN }, UNKNOWN, ""),
+        0,
+    );
     for row in rows {
         let name = row[field].as_str().ok_or("missing profile group")?;
         let image = if field == "image" {
@@ -295,7 +300,14 @@ fn group(rows: &[Value], field: &str, total: u64) -> Result<Vec<Value>, String> 
         } else {
             row["image"].as_str().ok_or("missing profile image")?
         };
-        let value = groups.entry((image, name)).or_default();
+        let definition = if field == "function" {
+            row["function_definition"]
+                .as_str()
+                .ok_or("missing function definition")?
+        } else {
+            ""
+        };
+        let value = groups.entry((image, name, definition)).or_default();
         *value = value
             .checked_add(number(&row["instructions"])?)
             .ok_or("profile count overflow")?;
@@ -311,10 +323,15 @@ fn group(rows: &[Value], field: &str, total: u64) -> Result<Vec<Value>, String> 
     groups.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
     Ok(groups
         .into_iter()
-        .map(|((image, name), count)| {
-            let mut group = json!({"name": name, "instructions": count});
-            if field != "image" {
+        .map(|((image, name, definition), count)| {
+            let mut group = json!({
+                "name": name, "instructions": count,
+            });
+            if !image.is_empty() {
                 group["image"] = json!(image);
+            }
+            if field == "function" {
+                group["definition"] = json!(definition);
             }
             group
         })
@@ -328,6 +345,17 @@ pub(super) fn cell(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('|', "&#124;")
         .replace(['\n', '\r'], " ")
+}
+
+pub(super) fn group_label(row: &Value) -> String {
+    let mut label = row["name"].as_str().unwrap_or(UNKNOWN).to_owned();
+    if let Some(image) = row["image"].as_str().filter(|image| !image.is_empty()) {
+        label = format!("{image} / {label}");
+    }
+    if let Some(definition) = row["definition"].as_str().filter(|name| !name.is_empty()) {
+        label.push_str(&format!(" ({definition})"));
+    }
+    label
 }
 
 fn markdown(report: &Value) -> Result<String, String> {
@@ -422,11 +450,12 @@ fn write_window(text: &mut String, window: &Value) -> std::fmt::Result {
     ] {
         writeln!(text, "| {title} | Instructions |\n| --- | ---: |")?;
         for row in window[field].as_array().into_iter().flatten() {
-            let name = row["name"].as_str().unwrap_or(UNKNOWN);
-            let label = row["image"]
-                .as_str()
-                .map_or_else(|| name.to_owned(), |image| format!("{image} / {name}"));
-            writeln!(text, "| {} | {} |", cell(&label), row["instructions"])?;
+            writeln!(
+                text,
+                "| {} | {} |",
+                cell(&group_label(row)),
+                row["instructions"]
+            )?;
         }
         text.push('\n');
     }
