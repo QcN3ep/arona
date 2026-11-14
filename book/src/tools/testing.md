@@ -43,11 +43,14 @@ Create a compatible image with:
 ```sh
 dd if=/dev/zero of=disk.img bs=1M count=16
 mkfs.ext4 -q -F -b 4096 -I 256 \
-  -O ^has_journal,^ext_attr,^resize_inode,^dir_index,^huge_file,^extra_isize,^dir_nlink,^flex_bg,^metadata_csum,^64bit \
+  -O none,has_journal,extent,filetype,sparse_super,large_file \
+  -E lazy_itable_init=0 \
   disk.img
 ```
 
-The driver accepts block sizes of 1024, 2048, and 4096 bytes, inode sizes of 128 or 256 bytes, and a feature set limited to `filetype`, `extent`, `sparse_super`, `large_file`, and optionally `has_journal` and `64bit`; any other ext4 feature fails the mount with `Unsupported`.
+The command retains the journal because the driver requires it for writes.
+The driver accepts block sizes of 1024, 2048, and 4096 bytes and inode sizes of 128 or 256 bytes.
+The `64bit` and metadata checksum features are unsupported and must remain disabled.
 The mounted block count times the block size must stay within the mount extent, so keep the image within the 16 MiB the Linux suite passes, and mount the image with a clean filesystem state.
 
 Attach the image to QEMU with a VirtIO block device:
