@@ -2,7 +2,8 @@
 
 use crate::{
     Client, Error,
-    protocol::{self, CHANNEL_RIGHTS, call, transfer},
+    client::Pending,
+    protocol::{self, CHANNEL_RIGHTS, call, response_result, transfer},
 };
 use runtime::{Channel, FrameAllocation, Handle, Rights, Task, ipc::Message};
 
@@ -63,14 +64,70 @@ impl<'a> Control<'a> {
         empty(call(&self.channel, &mut request, deadline)?)
     }
 
-    fn path(&self, path: &[u8]) -> Result<Handle<FrameAllocation>, Error> {
-        crate::path::components(path)?;
-        let mut frames = self
-            .task
-            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER)?;
-        frames.write(0, path)?;
-        Ok(frames)
+    pub fn mount_control(&self) -> Result<MountControl<'a>, Error> {
+        Ok(MountControl {
+            task: self.task,
+            channel: self.channel.try_clone(
+                Rights::READ_WRITE | Rights::WAIT | Rights::TRANSFER | Rights::DUPLICATE,
+            )?,
+        })
     }
+
+    fn path(&self, path: &[u8]) -> Result<Handle<FrameAllocation>, Error> {
+        path_frames(self.task, path)
+    }
+}
+
+/// Mount and unmount requests issued through a duplicated file service control channel.
+pub struct MountControl<'a> {
+    task: &'a Handle<Task>,
+    channel: Handle<Channel>,
+}
+
+impl<'a> MountControl<'a> {
+    pub fn from_channel(task: &'a Handle<Task>, channel: Handle<Channel>) -> Result<Self, Error> {
+        if !channel
+            .info()?
+            .rights
+            .contains(Rights::READ_WRITE | Rights::WAIT)
+        {
+            return Err(Error::InvalidRequest);
+        }
+        Ok(Self { task, channel })
+    }
+
+    pub fn start_mount_tmpfs(&self, path: &[u8]) -> Result<Pending<()>, Error> {
+        let mut request = Message::new(protocol::MOUNT_TMPFS, &[path.len() as u64])?;
+        transfer(&mut request, path_frames(self.task, path)?, Rights::READ)?;
+        empty_call(&self.channel, request)
+    }
+
+    pub fn start_unmount_tmpfs(&self, path: &[u8]) -> Result<Pending<()>, Error> {
+        let mut request = Message::new(protocol::UNMOUNT_TMPFS, &[path.len() as u64])?;
+        transfer(&mut request, path_frames(self.task, path)?, Rights::READ)?;
+        empty_call(&self.channel, request)
+    }
+
+    /// Duplicates the control channel so a pending request can own it.
+    pub fn try_clone(&self) -> Result<Self, Error> {
+        Ok(Self {
+            task: self.task,
+            channel: self
+                .channel
+                .try_clone(Rights::READ_WRITE | Rights::WAIT | Rights::DUPLICATE)?,
+        })
+    }
+
+    pub fn into_channel(self) -> Handle<Channel> {
+        self.channel
+    }
+}
+
+fn path_frames(task: &Handle<Task>, path: &[u8]) -> Result<Handle<FrameAllocation>, Error> {
+    crate::path::components(path)?;
+    let mut frames = task.allocate(1, Rights::READ_WRITE | Rights::TRANSFER)?;
+    frames.write(0, path)?;
+    Ok(frames)
 }
 
 fn empty(response: runtime::ipc::ReceivedMessage) -> Result<(), Error> {
@@ -79,4 +136,12 @@ fn empty(response: runtime::ipc::ReceivedMessage) -> Result<(), Error> {
     } else {
         Err(Error::InvalidData)
     }
+}
+
+fn empty_call(channel: &Handle<Channel>, mut request: Message) -> Result<Pending<()>, Error> {
+    Ok(Pending::new(
+        channel.start_call(&mut request)?,
+        (),
+        |(), response| empty(response_result(response)?),
+    ))
 }

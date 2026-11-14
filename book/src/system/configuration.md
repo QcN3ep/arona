@@ -80,6 +80,7 @@ After linking `/bin/sh`, `/bin/ls`, and `/bin/cat` to `/bin/busybox`, the same p
 The shell looks up these external commands in `PATH`, while built-in commands such as `echo` execute directly inside the shell.
 The symbolic links in the archive therefore determine which commands can be looked up, and `PATH` determines where to look.
 The file tree consists of the archive contents together with the mounts of the file service.
+The file service provides a tmpfs at `/tmp` from startup, so programs can create temporary files even when no persistent volume exists.
 
 ## Default Storage Behavior
 

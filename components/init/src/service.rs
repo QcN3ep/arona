@@ -177,6 +177,7 @@ pub fn start_linux(
             entropy,
             net: Some(network.connect()?),
             log: linux::Log::new(Some(kernel_log.try_clone(Rights::READ | Rights::TRANSFER)?)),
+            mounts: Some(filesystem.mount_control()?),
         },
         deadline()?,
     )?;

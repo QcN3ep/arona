@@ -23,7 +23,7 @@ mod statistics;
 pub mod tmpfs;
 
 pub use client::{Client, Directory, File};
-pub use control::Control;
+pub use control::{Control, MountControl};
 pub use metadata::{Attributes, Metadata, Timestamp};
 pub use open::OpenOptions;
 pub use statistics::Statistics;

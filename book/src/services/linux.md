@@ -98,7 +98,20 @@ Opening `/proc/net` itself returns `ENOTDIR`, and an unknown name below the virt
 | File status | `fstat`, `newfstatat`, `statx`, `statfs`, `fstatfs`, `lseek`, `ftruncate`, `fsync`, `fdatasync` |
 | Access, timestamps, and flushing | `faccessat`, `faccessat2`, `utimensat`, `sync`, `sendfile` |
 | Directory and paths | `getdents64`, `chdir`, `fchdir`, `getcwd`, `mkdirat`, `unlinkat`, `readlinkat`, `symlinkat`, `linkat`, `renameat`, `renameat2` |
+| Mounting | `mount`, `umount2` |
 | Waiting and pipes | `pipe2`, `eventfd2`, `ppoll`, `pselect6` |
+
+`mount` accepts the `tmpfs` filesystem type and resolves the target directory through the file service before adding a mount table entry.
+The source name is ignored, read-only and bind-style flags are rejected, and nonzero data options currently report `EINVAL`.
+`umount2` removes tmpfs mounts created through `mount` and reports `ENOENT` for a missing target, `EINVAL` for a path that is not one of those mounts, and `EBUSY` for a mount with nested entries.
+The startup `/tmp` mount and disk mounts are not removable through `umount2`.
+The compatibility layer does not expose disk mounts to programs.
+Both calls are dispatched as pending operations, so waiting for the file service does not stall other guests or timer handling.
+
+`mount` and `umount2` check that the caller's uid and euid are 0.
+Every Linux process starts with both set to 0, so the check currently rejects only a process that has already dropped its credentials; it does not distinguish ordinary guest programs.
+The file service accepts mount requests only on the mount-control channel that init passes to the Linux service, and guest code cannot reach that channel directly.
+Restricting mounting to selected programs requires assigning real nonzero identities to the remaining processes, which is not implemented yet.
 
 Path operations convert the current directory or dirfd into a file service directory anchor.
 Permission modes, umask, and open flags are interpreted in the compatibility layer, while the actual file content and persistence are handled by the file service.

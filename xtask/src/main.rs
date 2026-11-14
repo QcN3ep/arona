@@ -207,6 +207,7 @@ fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, S
             "bin/linux-truncated",
             "bin/linux-foreign",
             "bin/linux-writable-code",
+            "bin/linux-fs-test",
             "bin/linux-pie",
             "bin/linux-interp",
             "bin/linux-dynamic",

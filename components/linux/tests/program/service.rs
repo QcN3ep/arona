@@ -137,6 +137,7 @@ pub fn resources(
     };
     linux::Services {
         net: None,
+        mounts: None,
         clock: Some(
             devmgr::rtc::Session::open(
                 process::task(),

@@ -45,6 +45,7 @@ init starts applications according to `/etc/init.toml` and enforces restart poli
 | Random numbers | Modern VirtIO PCI RNG |
 | RTC | Goldfish and Loongson LS7A time reads and writes, Linux `/dev/rtc` ioctls |
 | Root file tree | Files, directories, and links in the cpio newc archive |
+| Temporary files | In-memory tmpfs mounted at `/tmp`, regular files, directories, links, and a size limit |
 | Persistent files | 4 KiB block ext4, extents, directory modification, JBD2 transactions and recovery |
 | Log files | logger record append, history recovery, tail handling, and fsync |
 

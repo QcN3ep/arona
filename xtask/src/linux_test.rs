@@ -40,6 +40,12 @@ pub(super) fn append(
         0o100755,
         &shm_guest(options, root, target_directory)?,
     )?;
+    append_entry(
+        bytes,
+        "bin/linux-fs-test",
+        0o100755,
+        &fs_guest(options, root, target_directory)?,
+    )?;
     append_entry(bytes, "bin/linux-noexec", 0o100644, &image)?;
     let mut compact = fs::read(compact).map_err(|error| error.to_string())?;
     append_entry(bytes, "bin/linux-compact", 0o100755, &compact)?;
@@ -396,6 +402,22 @@ fn misc_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<
             "rlimit.c",
             "console.c",
         ],
+        isa,
+    )
+}
+
+fn fs_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<u8>, String> {
+    let isa = match options.target {
+        Target::Riscv64 => "riscv64",
+        Target::LoongArch64 => "loongarch64",
+    };
+    compile_guest(
+        options,
+        root,
+        target,
+        "syscall/file/mount",
+        "linux-fs-test",
+        &["fs.c"],
         isa,
     )
 }

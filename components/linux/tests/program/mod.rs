@@ -64,6 +64,7 @@ fn main() {
     .unwrap();
     services.entropy = service::resources(&device_service, &kernel_log).entropy;
     services.net = Some(net.connect().unwrap());
+    services.mounts = Some(mounts.mount_control().unwrap());
     let linux = Control::start_with_services(
         process::task(),
         channel,
@@ -85,6 +86,7 @@ fn main() {
     sockets(&linux, &output);
     mqueue(&linux, &output);
     socket_memory(&linux, &files, &output);
+    filesystem(&linux, &output);
     execution(&linux, &output);
     layouts(&linux, &output);
     malformed(&linux, &output);
@@ -328,6 +330,28 @@ fn socket_memory(
     output()
         .write_all(b"Linux socket memory tests passed\n")
         .unwrap();
+}
+
+fn filesystem(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
+    let result = linux
+        .start_run(
+            Program {
+                path: b"/bin/linux-fs-test",
+                arguments: &[b"/bin/linux-fs-test"],
+                environment: &[],
+            },
+            output(),
+        )
+        .unwrap()
+        .wait(WaitMode::Forever);
+    assert_eq!(
+        result,
+        Ok(ExitStatus {
+            code: 42,
+            signal: 0
+        })
+    );
+    output().write_all(b"Linux tmpfs tests passed\n").unwrap();
 }
 
 fn writable(

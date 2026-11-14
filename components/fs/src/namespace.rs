@@ -17,7 +17,13 @@ use core::cell::{Cell, RefCell};
 pub struct Namespace {
     archive: Archive,
     next_directory: Cell<u64>,
-    mounts: RefCell<BTreeMap<Vec<u8>, Mounted>>,
+    mounts: RefCell<BTreeMap<Vec<u8>, MountEntry>>,
+}
+
+/// A mount table entry; user mounts come from the mount-control channel.
+struct MountEntry {
+    filesystem: Mounted,
+    user: bool,
 }
 
 /// A filesystem mounted at a path in the namespace.
@@ -42,6 +48,10 @@ impl Mounted {
             Self::Fat32(filesystem) => filesystem.unmount(),
             Self::Tmpfs(filesystem) => filesystem.unmount(),
         }
+    }
+
+    fn is_tmpfs(&self) -> bool {
+        matches!(self, Self::Tmpfs(_))
     }
 
     fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
@@ -262,10 +272,9 @@ impl Directory {
 impl Namespace {
     pub fn statistics(&self, path: &[u8]) -> Result<crate::Statistics, Error> {
         let path = normalize(&self.resolve(b"/", path, true, false)?)?;
-        for (prefix, filesystem) in self.mounts.borrow().iter() {
-            if beneath(&path, prefix) {
-                return filesystem.statistics();
-            }
+        let mounts = self.mounts.borrow();
+        if let Some((_, filesystem)) = mounted_at(&mounts, &path) {
+            return filesystem.statistics();
         }
         self.archive.statistics()
     }
@@ -280,14 +289,7 @@ impl Namespace {
 
     pub fn mount(&self, path: &[u8], disk: Rc<Disk>, start: u64, length: u64) -> Result<(), Error> {
         let path = normalize(path)?;
-        let mut mounts = self.mounts.borrow_mut();
-        if path.is_empty()
-            || mounts
-                .keys()
-                .any(|other| beneath(&path, other) || beneath(other, &path))
-        {
-            return Err(Error::Busy);
-        }
+        self.check_install(&path)?;
         if length < 4096
             || start
                 .checked_add(length)
@@ -302,36 +304,81 @@ impl Namespace {
         } else {
             Mounted::Fat32(Fat32::mount(disk, start, length)?)
         };
-        mounts.insert(path, filesystem);
-        Ok(())
+        self.install(&path, filesystem, false)
     }
 
     /// Mounts a fresh in-memory filesystem at a path.
     pub fn mount_tmpfs(&self, path: &[u8], capacity: usize) -> Result<(), Error> {
         let path = normalize(path)?;
-        let mut mounts = self.mounts.borrow_mut();
-        if path.is_empty()
-            || mounts
-                .keys()
-                .any(|other| beneath(&path, other) || beneath(other, &path))
-        {
-            return Err(Error::Busy);
-        }
+        self.check_install(&path)?;
         let filesystem = if capacity == 0 {
             Tmpfs::new()?
         } else {
             Tmpfs::with_capacity(capacity)?
         };
-        mounts.insert(path, Mounted::Tmpfs(filesystem));
+        self.install(&path, Mounted::Tmpfs(filesystem), false)
+    }
+
+    /// Mounts a tmpfs on an existing directory for a user mount request.
+    pub fn mount_tmpfs_user(&self, path: &[u8]) -> Result<(), Error> {
+        let path = normalize(path)?;
+        let metadata = self.metadata(&path)?;
+        if metadata.mode & 0o170000 != 0o040000 {
+            return Err(Error::NotDirectory);
+        }
+        self.install(&path, Mounted::Tmpfs(Tmpfs::new()?), true)
+    }
+
+    fn check_install(&self, path: &[u8]) -> Result<(), Error> {
+        let mounts = self.mounts.borrow();
+        if path.is_empty()
+            || mounts.contains_key(path)
+            || mounts.keys().any(|other| beneath(other, path))
+        {
+            return Err(Error::Busy);
+        }
+        Ok(())
+    }
+
+    fn install(&self, path: &[u8], filesystem: Mounted, user: bool) -> Result<(), Error> {
+        self.check_install(path)?;
+        self.mounts
+            .borrow_mut()
+            .insert(path.to_vec(), MountEntry { filesystem, user });
         Ok(())
     }
 
     pub fn unmount(&self, path: &[u8]) -> Result<(), Error> {
+        self.remove_mount(path, false)
+    }
+
+    pub fn unmount_tmpfs(&self, path: &[u8]) -> Result<(), Error> {
+        self.remove_mount(path, true)
+    }
+
+    fn remove_mount(&self, path: &[u8], user_tmpfs_only: bool) -> Result<(), Error> {
         let path = normalize(path)?;
-        let mut mounts = self.mounts.borrow_mut();
-        let filesystem = mounts.get(&path).ok_or(Error::NotFound)?;
-        filesystem.unmount()?;
-        mounts.remove(&path);
+        {
+            let mounts = self.mounts.borrow();
+            let Some(entry) = mounts.get(&path) else {
+                drop(mounts);
+                return match self.metadata(&path) {
+                    Err(Error::NotFound) => Err(Error::NotFound),
+                    _ => Err(Error::InvalidRequest),
+                };
+            };
+            if user_tmpfs_only && (!entry.user || !entry.filesystem.is_tmpfs()) {
+                return Err(Error::InvalidRequest);
+            }
+            if mounts
+                .keys()
+                .any(|other| other != &path && beneath(other, &path))
+            {
+                return Err(Error::Busy);
+            }
+            entry.filesystem.unmount()?;
+        }
+        self.mounts.borrow_mut().remove(&path);
         Ok(())
     }
 
@@ -341,12 +388,11 @@ impl Namespace {
         operation: impl FnOnce(&Mounted, &[u8]) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let path = crate::path::normalize(path)?;
-        for (prefix, filesystem) in self.mounts.borrow().iter() {
-            if beneath(&path, prefix) {
-                return operation(filesystem, path.get(prefix.len() + 1..).unwrap_or(b"/"));
-            }
-        }
-        Err(Error::ReadOnly)
+        let mounts = self.mounts.borrow();
+        let Some((prefix, filesystem)) = mounted_at(&mounts, &path) else {
+            return Err(Error::ReadOnly);
+        };
+        operation(filesystem, relative(&path, prefix))
     }
 
     pub fn create(&self, path: &[u8]) -> Result<File, Error> {
@@ -396,15 +442,13 @@ impl Namespace {
     pub fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
         let path = crate::path::normalize(path)?;
         let mounts = self.mounts.borrow();
-        for (prefix, fs) in mounts.iter() {
-            if beneath(&path, prefix) {
-                return fs.read_dir(path.get(prefix.len() + 1..).unwrap_or(b"/"));
-            }
+        if let Some((prefix, filesystem)) = mounted_at(&mounts, &path) {
+            return filesystem.read_dir(relative(&path, prefix));
         }
         let mut entries = self
             .archive
             .read_dir(if path.is_empty() { b"/" } else { &path })?;
-        for prefix in mounts.keys() {
+        for (prefix, entry) in mounts.iter() {
             let parent = prefix
                 .iter()
                 .rposition(|byte| *byte == b'/')
@@ -422,7 +466,7 @@ impl Namespace {
                 entries.retain(|entry| entry.name != name);
                 entries.push(crate::DirEntry {
                     name: name.to_vec(),
-                    inode: mounts.get(prefix).unwrap().metadata(b"/")?.inode,
+                    inode: entry.filesystem.metadata(b"/")?.inode,
                     kind: crate::FileType::Directory,
                 });
             }
@@ -440,26 +484,31 @@ impl Namespace {
         {
             return Err(Error::Busy);
         }
-        for (prefix, filesystem) in self.mounts.borrow().iter() {
-            if beneath(&source, prefix) {
-                if !beneath(&target, prefix) {
-                    return Err(Error::CrossDevice);
-                }
-                return filesystem.rename(
-                    source.get(prefix.len() + 1..).unwrap_or(b"/"),
-                    target.get(prefix.len() + 1..).unwrap_or(b"/"),
-                );
-            }
+        let mounts = self.mounts.borrow();
+        let Some((prefix, filesystem)) = mounted_at(&mounts, &source) else {
+            return Err(Error::ReadOnly);
+        };
+        if !beneath(&target, prefix)
+            || mounts
+                .keys()
+                .any(|other| other != prefix && beneath(&target, other))
+        {
+            return Err(Error::CrossDevice);
         }
-        Err(Error::ReadOnly)
+        if mounts
+            .keys()
+            .any(|other| beneath(other, &source) || beneath(other, &target))
+        {
+            return Err(Error::Busy);
+        }
+        filesystem.rename(relative(&source, prefix), relative(&target, prefix))
     }
 
     pub fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
         let path = normalize(path)?;
-        for (prefix, fs) in self.mounts.borrow().iter() {
-            if beneath(&path, prefix) {
-                return fs.metadata(path.get(prefix.len() + 1..).unwrap_or(b"/"));
-            }
+        let mounts = self.mounts.borrow();
+        if let Some((prefix, filesystem)) = mounted_at(&mounts, &path) {
+            return filesystem.metadata(relative(&path, prefix));
         }
         self.archive
             .metadata(if path.is_empty() { b"/" } else { &path })
@@ -474,17 +523,17 @@ impl Namespace {
             .rposition(|byte| *byte == b'/')
             .map_or(b"/".as_slice(), |end| &path[..end]);
         let parent = self.metadata(parent_path)?;
-        for (prefix, fs) in self.mounts.borrow().iter() {
-            if beneath(&path, prefix) {
-                let node = fs.open_directory(path.get(prefix.len() + 1..).unwrap_or(b"/"))?;
-                return Ok(Directory {
-                    id,
-                    node,
-                    parent,
-                    path: prefix.clone(),
-                });
-            }
+        let mounts = self.mounts.borrow();
+        if let Some((prefix, filesystem)) = mounted_at(&mounts, &path) {
+            let node = filesystem.open_directory(relative(&path, prefix))?;
+            return Ok(Directory {
+                id,
+                node,
+                parent,
+                path: prefix.to_vec(),
+            });
         }
+        drop(mounts);
         let mut directory =
             self.archive
                 .open_directory(if path.is_empty() { b"/" } else { &path })?;
@@ -499,28 +548,27 @@ impl Namespace {
     pub fn hard_link(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
         let source = normalize(source)?;
         let target = normalize(target)?;
-        for (prefix, fs) in self.mounts.borrow().iter() {
-            if beneath(&source, prefix) {
-                if !beneath(&target, prefix) {
-                    return Err(Error::CrossDevice);
-                }
-                return fs.hard_link(
-                    source.get(prefix.len() + 1..).unwrap_or(b"/"),
-                    target.get(prefix.len() + 1..).unwrap_or(b"/"),
-                );
-            }
+        let mounts = self.mounts.borrow();
+        let Some((prefix, filesystem)) = mounted_at(&mounts, &source) else {
+            return Err(Error::ReadOnly);
+        };
+        if !beneath(&target, prefix)
+            || mounts
+                .keys()
+                .any(|other| other != prefix && beneath(&target, other))
+        {
+            return Err(Error::CrossDevice);
         }
-        Err(Error::ReadOnly)
+        filesystem.hard_link(relative(&source, prefix), relative(&target, prefix))
     }
     pub fn symlink(&self, target: &[u8], path: &[u8]) -> Result<(), Error> {
         self.mounted(path, |fs, path| fs.symlink(target, path))
     }
     pub fn read_link(&self, path: &[u8]) -> Result<Vec<u8>, Error> {
         let path = normalize(path)?;
-        for (prefix, fs) in self.mounts.borrow().iter() {
-            if beneath(&path, prefix) {
-                return fs.read_link(path.get(prefix.len() + 1..).unwrap_or(b"/"));
-            }
+        let mounts = self.mounts.borrow();
+        if let Some((prefix, filesystem)) = mounted_at(&mounts, &path) {
+            return filesystem.read_link(relative(&path, prefix));
         }
         self.archive.read_link(&path)
     }
@@ -533,8 +581,8 @@ impl Namespace {
 
     /// Flushes every mounted filesystem; the read-only archive needs no flush.
     pub fn sync(&self) -> Result<(), Error> {
-        for filesystem in self.mounts.borrow().values() {
-            match filesystem {
+        for entry in self.mounts.borrow().values() {
+            match &entry.filesystem {
                 Mounted::Ext4(filesystem) => filesystem.sync()?,
                 Mounted::Fat32(filesystem) => filesystem.sync()?,
                 Mounted::Tmpfs(_) => (),
@@ -546,7 +594,7 @@ impl Namespace {
     pub fn shutdown(&self) -> Result<(), Error> {
         let mut mounts = self.mounts.borrow_mut();
         while let Some(entry) = mounts.first_entry() {
-            entry.get().unmount()?;
+            entry.get().filesystem.unmount()?;
             entry.remove();
         }
         Ok(())
@@ -554,25 +602,36 @@ impl Namespace {
 
     pub fn open_path(&self, path: &[u8]) -> Result<File, Error> {
         let path = normalize(path)?;
-        for (prefix, filesystem) in self.mounts.borrow().iter() {
-            if beneath(&path, prefix) {
-                let relative = path.get(prefix.len() + 1..).unwrap_or(b"/");
-                return filesystem.open_path(relative);
-            }
+        let mounts = self.mounts.borrow();
+        if let Some((prefix, filesystem)) = mounted_at(&mounts, &path) {
+            return filesystem.open_path(relative(&path, prefix));
         }
         self.archive.open_path(&path).map(File::Archive)
     }
 
     pub fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
         let path = normalize(path)?;
-        for (prefix, filesystem) in self.mounts.borrow().iter() {
-            if beneath(&path, prefix) {
-                let relative = path.get(prefix.len() + 1..).unwrap_or(b"/");
-                return filesystem.open_bytes(relative);
-            }
+        let mounts = self.mounts.borrow();
+        if let Some((prefix, filesystem)) = mounted_at(&mounts, &path) {
+            return filesystem.open_bytes(relative(&path, prefix));
         }
         self.archive.open_bytes(&path).map(File::Archive)
     }
+}
+
+fn mounted_at<'a>(
+    mounts: &'a BTreeMap<Vec<u8>, MountEntry>,
+    path: &[u8],
+) -> Option<(&'a [u8], &'a Mounted)> {
+    mounts
+        .iter()
+        .rev()
+        .find(|(prefix, _)| beneath(path, prefix))
+        .map(|(prefix, entry)| (prefix.as_slice(), &entry.filesystem))
+}
+
+fn relative<'a>(path: &'a [u8], prefix: &[u8]) -> &'a [u8] {
+    path.get(prefix.len() + 1..).unwrap_or(b"/")
 }
 
 fn beneath(path: &[u8], prefix: &[u8]) -> bool {

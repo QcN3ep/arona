@@ -12,6 +12,7 @@ mod eventfd;
 mod io;
 // TODO: Add mount and umount2 after directory sessions retain mount identity.
 mod metadata;
+mod mount;
 mod net;
 mod open;
 pub(in crate::syscall) mod path;
@@ -49,6 +50,7 @@ pub(super) enum Pending<'a> {
     Pipe(pipe::PipeIo<'a>),
     Poll(poll::Poll<'a>),
     Open(open::Open<'a>),
+    Mount(mount::Mount<'a>),
     Path(path::PathOperation<'a>),
     Eventfd(eventfd::Pending<'a>),
     Timerfd(timerfd::Read<'a>),
@@ -84,7 +86,7 @@ pub(super) fn dispatch<'a>(
     process: &mut Process<'a>,
     index: usize,
     files: &fs::Client<'a>,
-    services: &crate::Services<'_>,
+    services: &crate::Services<'a>,
     number: usize,
     arguments: [usize; 6],
 ) -> Option<Outcome<'a>> {
@@ -188,6 +190,8 @@ pub(super) fn dispatch<'a>(
             &mut process.umask,
             arguments[0] as u16 & 0o777,
         ) as usize)),
+        abi::MOUNT => mount::mount(process, files, services, arguments),
+        abi::UMOUNT2 => mount::umount2(process, files, services, arguments),
         _ => return None,
     })
 }
@@ -329,6 +333,7 @@ impl<'a> Pending<'a> {
             Self::TerminalChange(change) => Some(change.call()),
             Self::Pipe(_) | Self::Poll(_) => None,
             Self::Open(open) => Some(open.call()),
+            Self::Mount(mount) => Some(mount.call()),
             Self::Path(path) => Some(path.call()),
             Self::Read(read) => read.call(),
             Self::Write(write) => write.call(),
@@ -362,6 +367,7 @@ impl<'a> Pending<'a> {
             Self::Pipe(pipe) => pipe.poll(process),
             Self::Poll(poll) => poll.poll(process, index),
             Self::Open(open) => open.poll(process, files),
+            Self::Mount(mount) => mount.poll(),
             Self::Path(path) => path.poll(process),
             Self::Read(read) => read.poll(process),
             Self::Write(write) => write.poll(),

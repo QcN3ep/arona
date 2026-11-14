@@ -41,7 +41,8 @@ pub fn run(task: &Handle<runtime::Task>, control: Handle<Channel>) -> Result<(),
         }
     };
     protocol::respond(reply, Ok(Message::new(protocol::SUCCESS, &[])?))?;
-    serve(task, control, &Namespace::new(archive))
+    let namespace = Namespace::new(archive);
+    serve(task, control, &namespace)
 }
 
 fn load_archive(mut startup: ReceivedMessage) -> Result<Archive, Error> {
@@ -165,6 +166,14 @@ fn admin(
         (protocol::UNMOUNT, [length]) if request.handles().len() == 1 => {
             let length = *length;
             namespace.unmount(&path(&mut request, length)?)?;
+        }
+        (protocol::MOUNT_TMPFS, [length]) if request.handles().len() == 1 => {
+            let length = *length;
+            namespace.mount_tmpfs_user(&path(&mut request, length)?)?;
+        }
+        (protocol::UNMOUNT_TMPFS, [length]) if request.handles().len() == 1 => {
+            let length = *length;
+            namespace.unmount_tmpfs(&path(&mut request, length)?)?;
         }
         _ => return Err(Error::InvalidRequest),
     }

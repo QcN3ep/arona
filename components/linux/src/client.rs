@@ -22,6 +22,7 @@ pub struct Services<'a> {
     pub entropy: Option<devmgr::rng::Session<'a>>,
     pub net: Option<net::Client<'a>>,
     pub log: crate::Log,
+    pub mounts: Option<fs::MountControl<'a>>,
 }
 
 pub struct Control<'a> {
@@ -49,7 +50,8 @@ impl<'a> Control<'a> {
         let flags = u64::from(services.clock.is_some())
             | (u64::from(services.entropy.is_some()) << 1)
             | (u64::from(services.net.is_some()) << 2)
-            | (u64::from(services.log.kernel().is_some()) << 3);
+            | (u64::from(services.log.kernel().is_some()) << 3)
+            | (u64::from(services.mounts.is_some()) << 4);
         let mut request = Message::new(protocol::START, &[flags])?;
         transfer(&mut request, files.into_channel(), CHANNEL_RIGHTS)?;
         if let Some(clock) = services.clock {
@@ -63,6 +65,13 @@ impl<'a> Control<'a> {
         }
         if let Some(kernel_log) = services.log.take_kernel() {
             transfer(&mut request, kernel_log, Rights::READ | Rights::TRANSFER)?;
+        }
+        if let Some(mounts) = services.mounts {
+            transfer(
+                &mut request,
+                mounts.into_channel(),
+                CHANNEL_RIGHTS | Rights::DUPLICATE,
+            )?;
         }
         let response = channel
             .call(&mut request, Some(deadline))
