@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Linux IP sockets over the native network service.
+//! Linux IP sockets over the native network service and local Unix socket pairs.
 
 mod address;
+mod local;
 mod message;
 mod operation;
 mod options;
@@ -39,6 +40,9 @@ pub(super) fn dispatch<'a>(
     if number == SOCKET {
         return Some(outcome(create(services, args)));
     }
+    if number == SOCKETPAIR {
+        return Some(Outcome::Complete(local::create(process, args)));
+    }
     if !matches!(
         number,
         BIND | LISTEN
@@ -59,6 +63,9 @@ pub(super) fn dispatch<'a>(
     }
     Some(outcome((|| {
         let description = description(process, args[0])?;
+        if matches!(description.as_ref(), OpenFileDescription::SocketPair { .. }) {
+            return local::dispatch(process, description, number, args);
+        }
         if matches!(number, GETSOCKOPT | SETSOCKOPT) {
             return options::dispatch(process, description, args, number == SETSOCKOPT);
         }
@@ -203,6 +210,10 @@ pub(super) fn io<'a>(
         if offset.is_some() {
             return Err(ESPIPE);
         }
+        if matches!(description.as_ref(), OpenFileDescription::SocketPair { .. }) {
+            return local::io(process, description, buffer, offset, write)
+                .map(|pending| outcome(Ok(pending)));
+        }
         let action = if write {
             message::send(process, Socket::state(&description), buffer, None, 0)?
         } else {
@@ -243,7 +254,7 @@ fn description<'a>(process: &Process<'a>, fd: usize) -> Result<Rc<OpenFileDescri
     let descriptor = process.files.get(fd as i32 as usize).ok_or(EBADF)?;
     if !matches!(
         descriptor.description.as_ref(),
-        OpenFileDescription::Socket { .. }
+        OpenFileDescription::Socket { .. } | OpenFileDescription::SocketPair { .. }
     ) {
         return Err(ENOTSOCK);
     }

@@ -2,7 +2,7 @@
 
 //! Socket attempts, blocking retries, and committed result delivery.
 
-use super::{Output, error, install, message::Receive};
+use super::{Output, error, install, local, message::Receive};
 use crate::{
     file::{
         O_NONBLOCK, OpenFileDescription,
@@ -20,6 +20,7 @@ pub(in crate::syscall) enum Pending<'a> {
         flags: u32,
     },
     Operation(Box<Operation<'a>>),
+    Local(Box<local::Operation<'a>>),
     Value(Output, usize),
     Bytes(Output, Vec<u8>),
     Done,
@@ -81,6 +82,7 @@ impl<'a> Pending<'a> {
             Self::Bytes(output, bytes) => Some(output.bytes(process, bytes)),
             Self::Done => Some(Ok(0)),
             Self::Operation(operation) => operation.poll(process).transpose(),
+            Self::Local(operation) => operation.poll(process),
             Self::Create { native, flags } => match native.as_mut().unwrap().try_complete() {
                 Err(net::Error::WouldBlock) if native.as_ref().unwrap().has_pending() => None,
                 Ok(net::Completion::Done) => Some(install(
@@ -97,6 +99,9 @@ impl<'a> Pending<'a> {
     }
 
     pub fn interrupt(&self) -> Option<(bool, SyscallResult)> {
+        if let Self::Local(operation) = self {
+            return operation.interrupt();
+        }
         let Self::Operation(operation) = self else {
             return None;
         };
@@ -127,6 +132,7 @@ impl<'a> Pending<'a> {
                     items.push(WaitItem::new(call, ipc::READABLE));
                 }
             }
+            Self::Local(operation) => operation.waits(items),
             Self::Operation(operation) => {
                 if operation.lease.is_none() {
                     operation.deadline.waits(items);

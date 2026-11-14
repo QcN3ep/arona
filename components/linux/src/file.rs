@@ -4,6 +4,7 @@
 
 pub(crate) mod pipe;
 pub(crate) mod socket;
+pub(crate) mod socketpair;
 pub(crate) mod terminal;
 
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
@@ -34,6 +35,10 @@ pub(crate) enum Virtual {
 pub(crate) enum OpenFileDescription<'a> {
     Socket {
         state: socket::Socket<'a>,
+        flags: Cell<u32>,
+    },
+    SocketPair {
+        state: socketpair::SocketPair,
         flags: Cell<u32>,
     },
     Pipe {
@@ -250,6 +255,7 @@ impl<'a> OpenFileDescription<'a> {
     pub fn flags(&self) -> u32 {
         match self {
             Self::Socket { flags, .. }
+            | Self::SocketPair { flags, .. }
             | Self::Pipe { flags, .. }
             | Self::Terminal { flags, .. }
             | Self::Directory { flags, .. }
@@ -264,6 +270,7 @@ impl<'a> OpenFileDescription<'a> {
 
     pub fn set_flags(&self, value: u32) {
         let (Self::Socket { flags, .. }
+        | Self::SocketPair { flags, .. }
         | Self::Pipe { flags, .. }
         | Self::Terminal { flags, .. }
         | Self::Directory { flags, .. }

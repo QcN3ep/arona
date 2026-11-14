@@ -165,17 +165,17 @@ pub(super) fn send(
     })
 }
 
-pub(super) fn import(
-    process: &Process<'_>,
-    socket: &Socket<'_>,
-    header: usize,
-    flags: usize,
-    write: bool,
-) -> Result<Action, Errno> {
+pub(super) struct Header {
+    pub name: usize,
+    pub length: usize,
+    pub buffer: Buffer,
+    pub address: usize,
+}
+
+pub(super) fn header(process: &Process<'_>, header: usize) -> Result<Header, Errno> {
     // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/linux/socket.h?h=v6.12
     let bytes = wait::read_bytes(process, header, 56)?;
     let word = |offset| u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize;
-    let name = word(0);
     let length = i32::from_le_bytes(bytes[8..12].try_into().unwrap());
     if length < 0 {
         return Err(EINVAL);
@@ -183,17 +183,33 @@ pub(super) fn import(
     if word(40) != 0 {
         return Err(EOPNOTSUPP);
     }
-    let buffer = Buffer::Vector {
-        address: word(16),
-        count: word(24),
-    };
+    Ok(Header {
+        name: word(0),
+        length: length as usize,
+        buffer: Buffer::Vector {
+            address: word(16),
+            count: word(24),
+        },
+        address: header,
+    })
+}
+
+pub(super) fn import(
+    process: &Process<'_>,
+    socket: &Socket<'_>,
+    header: usize,
+    flags: usize,
+    write: bool,
+) -> Result<Action, Errno> {
+    let header = self::header(process, header)?;
     if write {
-        let peer = address::optional_input(process, name, length as usize)?;
-        send(process, socket, buffer, peer, flags)
+        let peer = address::optional_input(process, header.name, header.length)?;
+        send(process, socket, header.buffer, peer, flags)
     } else {
-        let peer = (name != 0).then(|| Output::with_capacity(name, header + 8, length as usize));
-        let mut receive = Receive::new(process, buffer, peer, flags, socket.kind)?;
-        receive.header = Some(header);
+        let peer = (header.name != 0)
+            .then(|| Output::with_capacity(header.name, header.address + 8, header.length));
+        let mut receive = Receive::new(process, header.buffer, peer, flags, socket.kind)?;
+        receive.header = Some(header.address);
         Ok(Action::Receive(receive))
     }
 }

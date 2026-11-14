@@ -41,7 +41,7 @@ When there is no progress, the relevant Calls, events, thread exits, and ports a
 | Implementation group | Corresponding content |
 |---|---|
 | `syscall/file/` | open, I/O, path, directory, metadata, pipe, poll, and terminal |
-| `syscall/socket/` | TCP and UDP sockets, messages, addresses, options, and pending network I/O |
+| `syscall/socket/` | TCP and UDP sockets, local Unix socket pairs, messages, addresses, options, and pending I/O |
 | `syscall/process/` | clone, exec, exit, wait, identity, thread, and futex |
 | `syscall/memory/` | mmap, munmap, mprotect, and related memory operations |
 | `syscall/signal.rs` | signal system calls |
@@ -96,7 +96,7 @@ Each read returns complete `signalfd_siginfo` records, and poll/select use the c
 Linux programs can communicate through IPv4 and IPv6 TCP and UDP on the local loopback interface.
 `AF_INET` uses `127.0.0.1`, and `AF_INET6` uses `::1`.
 The service translates Linux addresses and flags into requests to net.
-External interfaces and Unix domain sockets remain future work.
+External interfaces and pathname Unix domain sockets remain future work.
 IPv6 sockets are IPv6-only. IPv4-mapped addresses return `EAFNOSUPPORT`, and nonzero scope identifiers return `EINVAL`.
 External destinations return `ENETUNREACH`, and binding an external address returns `EADDRNOTAVAIL`.
 Linux IPv6 addresses use the 28-byte `sockaddr_in6` layout. Endpoint queries report this full length even when the output buffer is shorter.
@@ -171,6 +171,35 @@ UDP reports `EFAULT` if a payload copy faults, including after an earlier iovec 
 A successful short UDP receive consumes the whole datagram.
 Blocking reads, writes, and accepts support signal interruption and `SA_RESTART`.
 A broken stream write raises `SIGPIPE` unless `sendto` or `sendmsg` supplies `MSG_NOSIGNAL`.
+
+## Unix Socket Pairs
+
+`socketpair` creates two connected `AF_UNIX` endpoints inside the compatibility service without involving the network service.
+The supported types are `SOCK_STREAM` and `SOCK_DGRAM` with protocol zero.
+`socketpair` accepts `SOCK_NONBLOCK` and `SOCK_CLOEXEC` alongside the type, rejects other Linux domains with `EAFNOSUPPORT`, and reports unsupported types or protocols with `EPROTONOSUPPORT`.
+Pathname Unix sockets, `bind`, `listen`, and `accept` remain unsupported; `connect` on an already connected pair returns `EISCONN`.
+Endpoint queries report the two-byte `AF_UNIX` family for the unnamed pair.
+
+Each endpoint owns one 64 KiB queue in each direction, so both sides can read and write independently.
+A stream transfer may return a short count when the receive queue fills, and blocking writers wait until the peer makes room.
+A datagram is accepted whole or not at all, preserves empty payloads, and is limited to 65,507 bytes.
+A short datagram receive discards the remaining payload, `MSG_PEEK` preserves the message, and `MSG_TRUNC` reports its complete length.
+`MSG_DONTWAIT` applies per call, while `O_NONBLOCK` belongs to the shared open file description.
+`MSG_NOSIGNAL` suppresses `SIGPIPE` on a broken stream write, and the other unsupported message flags return `EOPNOTSUPP`.
+
+`shutdown` closes one or both directions of a single endpoint.
+After a write shutdown, the local side can still read, and the peer reads queued bytes followed by end of file.
+Further writes on the shut-down side return `EPIPE`, as do writes to a peer that shut down its reading side.
+Closing the last descriptor for one endpoint has the same effect as shutting down both of its directions: queued data becomes readable first, and later writes to the closed peer fail with `EPIPE`.
+`poll`, `pselect6`, and `ppoll` report data, write capacity, end of file, and hangup; a waiting process is woken when the peer transfers data or closes an endpoint.
+
+The socket options `SO_TYPE`, `SO_ERROR`, `SO_RCVBUF`, `SO_SNDBUF`, `SO_RCVTIMEO`, and `SO_SNDTIMEO` apply to a local pair.
+Unknown options return `ENOPROTOOPT`, and setting most other options returns `EOPNOTSUPP`.
+Timeouts belong to the endpoint's open file description and behave like network socket timeouts without a native attempt to recover.
+Endpoint state is shared by duplicated and inherited descriptors, so `dup`, `dup3`, and `fork` observe the same queues, shutdown state, nonblocking flag, and timeouts.
+Unnamed endpoints do not participate in the pathname namespace.
+
+`fstat` reports a socket mode and a stable pair identity for both endpoints.
 
 ## Address Space
 

@@ -38,10 +38,11 @@ fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) ->
         None => return Outcome::Complete(Err(EBADF)),
     };
     let request = match description.as_ref() {
-        OpenFileDescription::Socket { .. } => {
+        OpenFileDescription::Socket { .. } | OpenFileDescription::SocketPair { .. } => {
             return Outcome::Complete(buffer.write(
                 process,
                 fs::Metadata {
+                    inode: socket_inode(&description),
                     mode: 0o140777,
                     links: 1,
                     ..fs::Metadata::default()
@@ -332,4 +333,11 @@ fn write_statx(process: &Process<'_>, address: usize, info: fs::Metadata) -> Sys
         .write(address, &bytes)
         .map_err(|_| EFAULT)?;
     Ok(0)
+}
+
+fn socket_inode(description: &OpenFileDescription<'_>) -> u64 {
+    match description {
+        OpenFileDescription::SocketPair { state, .. } => state.inode(),
+        _ => 0,
+    }
 }

@@ -62,7 +62,7 @@ pub(in crate::syscall) fn read<'a>(
         return Outcome::Complete(Err(EBADF));
     };
     match descriptor.description.as_ref() {
-        OpenFileDescription::Socket { .. } => {
+        OpenFileDescription::Socket { .. } | OpenFileDescription::SocketPair { .. } => {
             return super::super::socket::io(process, fd_raw, buffer, offset, false);
         }
         OpenFileDescription::Pipe { .. } => {
@@ -170,7 +170,7 @@ pub(in crate::syscall) fn write<'a>(
         return Outcome::Complete(Err(EBADF));
     };
     match descriptor.description.as_ref() {
-        OpenFileDescription::Socket { .. } => {
+        OpenFileDescription::Socket { .. } | OpenFileDescription::SocketPair { .. } => {
             return super::super::socket::io(process, fd_raw, buffer, offset, true);
         }
         OpenFileDescription::Terminal { .. } => {
@@ -257,6 +257,7 @@ pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome
             OpenFileDescription::Directory { session, .. } => session.start_fsync(),
             OpenFileDescription::Terminal { .. }
             | OpenFileDescription::Socket { .. }
+            | OpenFileDescription::SocketPair { .. }
             | OpenFileDescription::Pipe { .. }
             | OpenFileDescription::Eventfd { .. }
             | OpenFileDescription::Timerfd { .. }
@@ -326,6 +327,7 @@ pub(in crate::syscall) fn seek<'a>(
         }
         match descriptor.description.as_ref() {
             OpenFileDescription::Socket { .. }
+            | OpenFileDescription::SocketPair { .. }
             | OpenFileDescription::Terminal { .. }
             | OpenFileDescription::Pipe { .. } => {
                 return Err(ESPIPE);

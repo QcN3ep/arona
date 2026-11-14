@@ -207,6 +207,7 @@ fn socket_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
     for name in [
         "stream.c",
         "datagram.c",
+        "socketpair.c",
         "options.c",
         "ipv6.c",
         &format!("{isa}.S"),

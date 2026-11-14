@@ -9,6 +9,7 @@ use crate::{
     syscall::{abi::*, wait},
 };
 use alloc::{boxed::Box, rc::Rc};
+use core::cell::Cell;
 
 pub(super) fn dispatch<'a>(
     process: &Process<'a>,
@@ -20,7 +21,13 @@ pub(super) fn dispatch<'a>(
     let level = args[1] as u32;
     let name = args[2] as u32;
     if level == 1 && matches!(name, 20 | 21) {
-        return timeout(process, state, args, write);
+        return timeout(
+            process,
+            &state.receive_timeout,
+            &state.send_timeout,
+            args,
+            write,
+        );
     }
     if !write && level == 1 && name == 3 {
         return Ok(Pending::Value(
@@ -78,17 +85,14 @@ pub(super) fn dispatch<'a>(
     )?)))
 }
 
-fn timeout<'a>(
+pub(super) fn timeout<'a>(
     process: &Process<'a>,
-    state: &Socket<'a>,
+    receive: &Cell<Option<u64>>,
+    send: &Cell<Option<u64>>,
     args: [usize; 6],
     write: bool,
 ) -> Result<Pending<'a>, Errno> {
-    let setting = if args[2] as u32 == 20 {
-        &state.receive_timeout
-    } else {
-        &state.send_timeout
-    };
+    let setting = if args[2] as u32 == 20 { receive } else { send };
     if write {
         if (args[4] as i32) < 16 {
             return Err(EINVAL);

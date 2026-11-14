@@ -188,6 +188,7 @@ fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         b"exec",
         b"lifecycle",
         b"udp",
+        b"pair",
         b"options",
         b"ipv6",
     ] {

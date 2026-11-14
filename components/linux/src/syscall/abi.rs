@@ -91,6 +91,7 @@ pub(super) const GETGID: usize = 176;
 pub(super) const GETEGID: usize = 177;
 pub(super) const GETTID: usize = 178;
 pub(super) const SOCKET: usize = 198;
+pub(super) const SOCKETPAIR: usize = 199;
 pub(super) const BIND: usize = 200;
 pub(super) const LISTEN: usize = 201;
 pub(super) const ACCEPT: usize = 202;

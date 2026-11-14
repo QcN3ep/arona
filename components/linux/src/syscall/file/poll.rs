@@ -163,6 +163,12 @@ fn readiness(description: &OpenFileDescription<'_>, process: &Process<'_>, index
     }
     match description {
         OpenFileDescription::Socket { .. } => unreachable!(),
+        OpenFileDescription::SocketPair { state, .. } => {
+            let ready = state.readiness();
+            (if ready.readable { INPUT } else { 0 })
+                | (if ready.writable { OUTPUT } else { 0 })
+                | (if ready.hangup { HANGUP } else { 0 })
+        }
         OpenFileDescription::Pipe { end, .. } => {
             let ready = end.readiness();
             ready | if ready & 1 != 0 { 0x40 } else { 0 } | if ready & 4 != 0 { 0x100 } else { 0 }
