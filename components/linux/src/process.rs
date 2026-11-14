@@ -96,6 +96,12 @@ pub(crate) struct Shared {
     pub shm: Rc<RefCell<crate::shm::Table>>,
 }
 
+/// Options that are not part of the image or argument environment of a new process.
+pub(crate) struct StartOptions<'a> {
+    pub random: Option<&'a [u8; 16]>,
+    pub mount: bool,
+}
+
 pub(crate) struct Process<'a> {
     pub namespace: Rc<PidNamespace>,
     pub pid: usize,
@@ -122,6 +128,9 @@ pub(crate) struct Process<'a> {
     pub credentials: Credentials,
     pub limits: crate::limits::Limits,
     pub cpu_limited: bool,
+    /// Granted by the launching program and inherited by forks; user mount calls
+    /// require it together with root credentials.
+    pub mount: bool,
     pub shm: Rc<RefCell<crate::shm::Table>>,
     pub attaches: BTreeMap<usize, crate::shm::Attach>,
     pub membarrier: Membarrier,
@@ -158,7 +167,7 @@ impl<'a> Process<'a> {
         images: &ImageSet<'_>,
         arguments: &Arguments,
         terminal: alloc::rc::Rc<crate::file::terminal::Terminal>,
-        random: Option<&[u8; 16]>,
+        options: StartOptions<'_>,
         shared: &Shared,
     ) -> Result<Self, Error> {
         let namespace = Rc::clone(&shared.namespace);
@@ -167,8 +176,14 @@ impl<'a> Process<'a> {
         let machine = images.image.machine;
         let entry = images.entry();
         let limits = crate::limits::Limits::default();
-        let (address_space, stack) =
-            AddressSpace::load(parent, port, images, arguments, random, limits.stack())?;
+        let (address_space, stack) = AddressSpace::load(
+            parent,
+            port,
+            images,
+            arguments,
+            options.random,
+            limits.stack(),
+        )?;
         let native = address_space.native.create_thread(
             UserEntry {
                 pc: entry as u64,
@@ -244,6 +259,7 @@ impl<'a> Process<'a> {
             status: ExitStatus { code: 0, signal: 0 },
             limits,
             cpu_limited: false,
+            mount: options.mount,
         })
     }
 

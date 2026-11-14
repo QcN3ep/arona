@@ -2,39 +2,36 @@
 
 //! Linux `mount` and `umount2` calls backed by the file service namespace.
 
-use super::super::abi::{
-    EBUSY, EINVAL, ENODEV, ENOENT, ENOTDIR, EOPNOTSUPP, EPERM, Errno, SyscallResult,
-};
+use super::super::abi::{EINVAL, ENODEV, ENOENT, ENOTDIR, EOPNOTSUPP, EPERM, Errno, SyscallResult};
 use super::{Pending, completion, filesystem_error, open, outcome, path::Lookup};
-use crate::{file::OpenFileDescription, process::Process, syscall::Outcome};
+use crate::{
+    file::OpenFileDescription,
+    process::Process,
+    syscall::{AT_FDCWD, Outcome},
+};
 use alloc::{rc::Rc, vec::Vec};
 use runtime::{Call, Handle};
 
 // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/linux/mount.h?h=v6.12
-const MS_NOSUID: u32 = 1 << 1;
-const MS_NODEV: u32 = 1 << 2;
-const MS_NOEXEC: u32 = 1 << 3;
 const MS_SILENT: u32 = 1 << 15;
 const MS_NOATIME: u32 = 1 << 10;
 const MS_NODIRATIME: u32 = 1 << 11;
 const MS_RELATIME: u32 = 1 << 21;
 const MS_STRICTATIME: u32 = 1 << 24;
 const MS_LAZYTIME: u32 = 1 << 25;
-const SUPPORTED_FLAGS: u32 = MS_NOSUID
-    | MS_NODEV
-    | MS_NOEXEC
-    | MS_SILENT
-    | MS_NOATIME
-    | MS_NODIRATIME
-    | MS_RELATIME
-    | MS_STRICTATIME
-    | MS_LAZYTIME;
+// MS_NOSUID, MS_NODEV, and MS_NOEXEC change how a mount is interpreted; the
+// namespace does not store or enforce them yet, so reject them instead of
+// accepting flags with no effect. SILENT and the atime flags have no distinct
+// behavior for an in-memory volume.
+const SUPPORTED_FLAGS: u32 =
+    MS_SILENT | MS_NOATIME | MS_NODIRATIME | MS_RELATIME | MS_STRICTATIME | MS_LAZYTIME;
 
-const AT_FDCWD: usize = (-100i32) as usize;
-
-// User mounts may only appear on writable volumes. The file service enforces the
-// same boundary by rejecting targets on the read-only boot archive, but checking
-// the canonical path here avoids sending a request that the service would deny.
+// A user mount is checked in two layers. The Linux layer restricts the canonical
+// target to a writable root and its mount call is gated by the process mount
+// capability. The file service independently requires the target to resolve
+// below an existing mount, which keeps a client from shadowing the boot archive
+// even if it bypasses this check; doing the first check here avoids a request the
+// service would deny.
 const USER_MOUNT_ROOTS: &[&[u8]] = &[b"/tmp", b"/var"];
 
 #[derive(Clone, Copy)]
@@ -86,7 +83,9 @@ fn start<'a>(
         check_privileged(process)?;
         let target = match operation {
             Operation::Mount => {
-                let _source = optional_string(process, arguments[0])?;
+                // The source name is ignored, but its pointer is still validated so an
+                // unreadable source reports EFAULT like Linux.
+                optional_string(process, arguments[0])?;
                 let target = open::path_bytes(process, arguments[1])?;
                 if target.is_empty() {
                     return Err(ENOENT);
@@ -94,7 +93,8 @@ fn start<'a>(
                 if optional_string(process, arguments[2])? != b"tmpfs" {
                     return Err(ENODEV);
                 }
-                if arguments[3] as u32 & !SUPPORTED_FLAGS != 0 {
+                let flags = u32::try_from(arguments[3]).map_err(|_| EINVAL)?;
+                if flags & !SUPPORTED_FLAGS != 0 {
                     return Err(EINVAL);
                 }
                 if !optional_string(process, arguments[4])?.is_empty() {
@@ -185,6 +185,10 @@ impl<'a> Mount<'a> {
                     Ok(path) => path,
                     Err(error) => return Some(Err(filesystem_error(error))),
                 };
+                // The canonical path is enough for the mount-control request. The
+                // resolved directory session would keep the target filesystem busy
+                // and make its own unmount fail with EBUSY.
+                self._directory = None;
                 let request = match self.operation {
                     Operation::Mount if mount_target_allowed(&path) => {
                         self.mounts.start_mount_tmpfs(&path)
@@ -199,10 +203,7 @@ impl<'a> Mount<'a> {
             }
             Stage::Request(request) => {
                 let result = completion(request.try_complete())?;
-                return Some(result.map(|()| 0).map_err(|error| match self.operation {
-                    Operation::Mount => filesystem_error(error),
-                    Operation::Unmount => umount_error(error),
-                }));
+                return Some(result.map(|()| 0).map_err(filesystem_error));
             }
         }
         None
@@ -210,7 +211,9 @@ impl<'a> Mount<'a> {
 }
 
 fn check_privileged(process: &Process<'_>) -> Result<(), Errno> {
-    if process.credentials.uid == 0 && process.credentials.euid == 0 {
+    // Every guest starts as uid 0, so root credentials alone cannot distinguish an
+    // ordinary program from one that init or a test granted mount permission.
+    if process.mount && process.credentials.uid == 0 && process.credentials.euid == 0 {
         Ok(())
     } else {
         Err(EPERM)
@@ -228,15 +231,5 @@ fn optional_string(process: &Process<'_>, address: usize) -> Result<Vec<u8>, Err
         Ok(Vec::new())
     } else {
         open::path_bytes(process, address)
-    }
-}
-
-fn umount_error(error: fs::Error) -> Errno {
-    match error {
-        // A missing mount table entry for an existing path is EINVAL rather than
-        // the ENOENT that a missing path reports through metadata.
-        fs::Error::InvalidRequest => EINVAL,
-        fs::Error::Busy => EBUSY,
-        error => filesystem_error(error),
     }
 }

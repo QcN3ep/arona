@@ -3,6 +3,8 @@
 .section .text
 .global _start
 _start:
+    ld.d $a0, $sp, 0
+    addi.d $a1, $sp, 8
     bl fs_main
     li.d $a7, 94
     syscall 0

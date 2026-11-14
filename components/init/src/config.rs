@@ -48,6 +48,9 @@ pub struct Program {
     pub terminal: Option<Terminal>,
     #[serde(default)]
     pub restart: Restart,
+    /// Grant the program permission to mount and unmount in-memory volumes.
+    #[serde(default)]
+    pub mount: bool,
 }
 
 #[derive(Clone, Copy, Deserialize)]

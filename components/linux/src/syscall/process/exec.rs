@@ -33,7 +33,7 @@ pub(in crate::syscall) fn start<'a>(
     args: [usize; 6],
 ) -> Outcome<'a> {
     let result = (|| {
-        let lookup = Lookup::new(process, (-100i32) as usize, args[0])?;
+        let lookup = Lookup::new(process, crate::syscall::AT_FDCWD, args[0])?;
         let argv = strings(process, args[1])?;
         let envp = strings(process, args[2])?;
         let arguments = Arguments {
@@ -110,7 +110,7 @@ impl<'a> Pending<'a> {
         if self.depth >= MAX_INTERPRETERS {
             return Err(ELOOP);
         }
-        let lookup = Lookup::from_name(process, (-100i32) as usize, interpreter.to_vec())?;
+        let lookup = Lookup::from_name(process, crate::syscall::AT_FDCWD, interpreter.to_vec())?;
         let executable = Executable::new(files, lookup.directory(), interpreter).map_err(error)?;
         self.depth += 1;
         script_arguments(&mut self.arguments, interpreter, argument);

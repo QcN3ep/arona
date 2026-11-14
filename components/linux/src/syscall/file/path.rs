@@ -35,7 +35,7 @@ impl<'a> Lookup<'a> {
     ) -> Result<Self, Errno> {
         let anchor = if name.starts_with(b"/") {
             None
-        } else if directory as i32 == -100 {
+        } else if directory == crate::syscall::AT_FDCWD {
             process.cwd.clone()
         } else {
             let description =
@@ -148,7 +148,7 @@ fn start<'a>(
     args: [usize; 6],
 ) -> Result<Pending<'a>, Errno> {
     let (directory, name) = match number {
-        abi::CHDIR => ((-100i32) as usize, args[0]),
+        abi::CHDIR => (crate::syscall::AT_FDCWD, args[0]),
         abi::SYMLINKAT => (args[1], args[2]),
         _ => (args[0], args[1]),
     };

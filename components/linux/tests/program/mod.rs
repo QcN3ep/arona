@@ -134,7 +134,7 @@ fn tmpfs(files: &fs::Client<'_>, mounts: &fs::Control<'_>) {
         before.free_blocks
     );
     mounts
-        .mount_tmpfs(b"/allocation", 2 * 1024 * 1024 * 1024, until)
+        .mount_tmpfs(b"/allocation", 8 * 1024 * 1024, until)
         .unwrap();
     let file = files.create_bytes(b"/allocation/file", until).unwrap();
     assert_eq!(
@@ -153,11 +153,13 @@ fn tmpfs(files: &fs::Client<'_>, mounts: &fs::Control<'_>) {
 
 fn mount_target_bounds(mounts: &fs::Control<'_>) {
     let control = mounts.mount_control(service::deadline()).unwrap();
-    let mut denied = control.start_mount_tmpfs(b"/bin").unwrap();
-    assert_eq!(
-        denied.wait(WaitMode::Until(service::deadline())),
-        Err(fs::Error::InvalidRequest)
-    );
+    for path in [b"/bin".as_slice(), b"/etc", b"/"] {
+        let mut denied = control.start_mount_tmpfs(path).unwrap();
+        assert_eq!(
+            denied.wait(WaitMode::Until(service::deadline())),
+            Err(fs::Error::InvalidRequest)
+        );
+    }
 }
 
 fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
@@ -169,6 +171,7 @@ fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                     path: b"/bin/linux-socket",
                     arguments: &[b"/bin/linux-socket", mode],
                     environment: &[],
+                    mount: false,
                 },
                 output(),
             )
@@ -252,6 +255,7 @@ fn mqueue(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                     path: b"/bin/linux-mqueue",
                     arguments: &[b"/bin/linux-mqueue", mode],
                     environment: &[],
+                    mount: false,
                 },
                 output(),
             )
@@ -288,6 +292,7 @@ fn socket_memory(
                 path: b"/bin/linux-socket",
                 arguments: &[b"/bin/linux-socket", b"memory"],
                 environment: &[],
+                mount: false,
             },
             output(),
         )
@@ -349,6 +354,7 @@ fn filesystem(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) 
                 path: b"/bin/linux-fs-test",
                 arguments: &[b"/bin/linux-fs-test"],
                 environment: &[],
+                mount: true,
             },
             output(),
         )
@@ -361,7 +367,30 @@ fn filesystem(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) 
             signal: 0
         })
     );
-    output().write_all(b"Linux tmpfs tests passed\n").unwrap();
+    // The same image launched without the mount capability must not reach the
+    // file service, even though its uid is 0.
+    let denied = linux
+        .start_run(
+            Program {
+                path: b"/bin/linux-fs-test",
+                arguments: &[b"/bin/linux-fs-test", b"denied"],
+                environment: &[],
+                mount: false,
+            },
+            output(),
+        )
+        .unwrap()
+        .wait(WaitMode::Forever);
+    assert_eq!(
+        denied,
+        Ok(ExitStatus {
+            code: 42,
+            signal: 0
+        })
+    );
+    output()
+        .write_all(b"Linux filesystem tests passed\n")
+        .unwrap();
 }
 
 fn writable(
@@ -390,6 +419,7 @@ fn writable(
                     path: b"/bin/linux-test",
                     arguments: &[b"/bin/linux-test", mode],
                     environment: &[b"ARONA_TEST=yes"],
+                    mount: false,
                 },
                 output(),
             )
@@ -521,6 +551,7 @@ fn fs_misc(
                     path: b"/bin/linux-fs-misc",
                     arguments: &[b"/bin/linux-fs-misc", mode],
                     environment: &[],
+                    mount: false,
                 },
                 output(),
             )
@@ -789,6 +820,7 @@ fn execution(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                     path: b"/bin/linux-test",
                     arguments: &[b"/bin/linux-test", mode],
                     environment: &[b"ARONA_TEST=yes"],
+                    mount: false,
                 },
                 output(),
             )
@@ -892,6 +924,7 @@ fn layouts(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                         path,
                         arguments: &[path, b"normal"],
                         environment: &[b"ARONA_TEST=yes"],
+                        mount: false,
                     },
                     output(),
                     WaitMode::Forever
@@ -911,6 +944,7 @@ fn layouts(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                     path: b"/bin/linux-script",
                     arguments: &[b"/bin/linux-script", b"tail"],
                     environment: &[b"ARONA_TEST=yes"],
+                    mount: false,
                 },
                 output(),
                 WaitMode::Forever
@@ -938,6 +972,7 @@ fn malformed(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                     path,
                     arguments: &[path, b"normal"],
                     environment: &[b"ARONA_TEST=yes"],
+                    mount: false,
                 },
                 output(),
                 WaitMode::Forever
@@ -952,6 +987,7 @@ fn malformed(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                     path: b"/bin/linux-test",
                     arguments: &[b"/bin/linux-test", b"normal"],
                     environment: &[b"ARONA_TEST=yes"],
+                    mount: false,
                 },
                 output(),
                 WaitMode::Forever
@@ -983,6 +1019,7 @@ fn terminal(
                 path: b"/bin/linux-test",
                 arguments: &[b"/bin/linux-test", b"Terminal"],
                 environment: &[b"ARONA_TEST=yes"],
+                mount: false,
             },
             output(),
             input,

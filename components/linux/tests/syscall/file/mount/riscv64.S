@@ -4,6 +4,8 @@
 .option norelax
 .global _start
 _start:
+    ld a0, 0(sp)
+    addi a1, sp, 8
     call fs_main
     li a7, 94
     ecall

@@ -92,6 +92,11 @@ impl Tmpfs {
         self.volume.borrow().statistics()
     }
 
+    /// Capacity reserved by this volume, used for the namespace budget.
+    pub(crate) fn limit(&self) -> usize {
+        self.volume.borrow().capacity
+    }
+
     pub fn busy(&self) -> bool {
         Rc::strong_count(&self.volume) != 1
     }

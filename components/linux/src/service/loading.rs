@@ -20,6 +20,7 @@ pub(super) struct Loading<'a> {
     terminal: Rc<Terminal>,
     executable: Chain<'a>,
     interpreters: usize,
+    mount: bool,
 }
 
 impl<'a> Loading<'a> {
@@ -33,8 +34,11 @@ impl<'a> Loading<'a> {
             if request.tag != protocol::RUN || !matches!(request.handles().len(), 2 | 3) {
                 return Err(Error::InvalidRequest);
             }
-            let [length, argc, envc] = *request.words() else {
-                return Err(Error::InvalidRequest);
+            let (length, argc, envc, mount) = match *request.words() {
+                [length, argc, envc, flags] if flags & !protocol::RUN_MOUNT == 0 => {
+                    (length, argc, envc, flags & protocol::RUN_MOUNT != 0)
+                }
+                _ => return Err(Error::InvalidRequest),
             };
             let convert = |value| usize::try_from(value).map_err(|_| Error::InvalidRequest);
             let frames = request
@@ -71,15 +75,17 @@ impl<'a> Loading<'a> {
                 arguments,
                 Rc::new(Terminal::new(task, output, input)?),
                 stage,
+                mount,
             ))
         })();
         match decoded {
-            Ok((arguments, terminal, stage)) => Ok(Self {
+            Ok((arguments, terminal, stage, mount)) => Ok(Self {
                 reply,
                 arguments,
                 terminal,
                 executable: stage,
                 interpreters: 0,
+                mount,
             }),
             Err(error) => Err((error, reply)),
         }
@@ -124,7 +130,10 @@ impl<'a> Loading<'a> {
                 &ImageSet { image, interpreter },
                 &self.arguments,
                 Rc::clone(&self.terminal),
-                loaded.main.random.as_ref(),
+                crate::process::StartOptions {
+                    random: loaded.main.random.as_ref(),
+                    mount: self.mount,
+                },
                 shared,
             )
             .map(Some);

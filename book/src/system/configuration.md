@@ -33,9 +33,14 @@ init runs `/bin/sh -i`, connects the UART as its terminal, and restarts the shel
 | `env` | Environment variables; defaults to an empty table |
 | `terminal` | Optional; currently accepts `console`, which connects the application to console input and output |
 | `restart` | Restart policy after exit; defaults to `never` |
+| `mount` | Grants `mount` and `umount2`; defaults to `false` |
 
 init uses `path` as `argv[0]`, then appends `args`.
 Each entry in `env` is encoded as `KEY=VALUE` and passed to the execution service; in the example above, `PATH` makes the shell look up external commands in `/bin`, and `PS1` sets the prompt to `arona$ `.
+
+A program can mount and unmount in-memory volumes only when `mount = true` is set for it and it still has root credentials; without the grant both calls report `EPERM`.
+The grant is inherited by forks and retained across exec.
+File-service administration keeps its own limits: the target must resolve through an existing mount, and all tmpfs volumes, including the startup mount, share a 256 MiB budget.
 
 The configuration parser rejects unknown fields, duplicate or empty application names, non-absolute program paths, and NUL bytes in arguments and environment variables.
 Environment variable names are non-empty strings that do not contain `=`.

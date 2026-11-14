@@ -10,6 +10,8 @@ use crate::Error;
 
 pub(crate) const START: u64 = 0;
 pub(crate) const RUN: u64 = 1;
+/// The running program may issue `mount` and `umount2`.
+pub(crate) const RUN_MOUNT: u64 = 1;
 pub(crate) const CHANNEL_RIGHTS: Rights = Rights::READ_WRITE.union(Rights::WAIT);
 
 pub(crate) struct Arguments {

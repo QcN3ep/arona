@@ -50,7 +50,6 @@ const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 const AT_EMPTY_PATH: u32 = 0x1000;
 const UTIME_NOW: i64 = 0x3fff_ffff;
 const UTIME_OMIT: i64 = 0x3fff_fffe;
-const AT_FDCWD: i32 = -100;
 
 pub(in crate::syscall) fn start<'a>(
     process: &Process<'a>,
@@ -69,7 +68,7 @@ pub(in crate::syscall) fn start<'a>(
             if flags & AT_EMPTY_PATH == 0 {
                 return Err(ENOENT);
             }
-            if arguments[0] as i32 == AT_FDCWD {
+            if arguments[0] == crate::syscall::AT_FDCWD {
                 Target::Path {
                     directory: process.cwd.clone(),
                     name: b".".to_vec(),

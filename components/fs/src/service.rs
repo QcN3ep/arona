@@ -59,6 +59,11 @@ fn load_archive(mut startup: ReceivedMessage) -> Result<Archive, Error> {
     )
 }
 
+struct MountChannel {
+    channel: Handle<Channel>,
+    id: u64,
+}
+
 pub fn serve(
     task: &Handle<runtime::Task>,
     control: Handle<Channel>,
@@ -66,13 +71,21 @@ pub fn serve(
 ) -> Result<(), Error> {
     let mut clients = Vec::new();
     let mut mounts = Vec::new();
+    let mut next_mount = 0;
     let mut files = Vec::new();
     loop {
         poll_files(namespace, &mut files)?;
         match control.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
-                    let response = admin(task, namespace, &mut clients, &mut mounts, request);
+                    let response = admin(
+                        task,
+                        namespace,
+                        &mut clients,
+                        &mut mounts,
+                        &mut next_mount,
+                        request,
+                    );
                     protocol::respond(reply, response)?;
                 }
             }
@@ -111,7 +124,7 @@ pub fn serve(
         items.extend(
             mounts
                 .iter()
-                .map(|channel| WaitItem::new(channel, ipc::READABLE | ipc::PEER_CLOSED)),
+                .map(|mount| WaitItem::new(&mount.channel, ipc::READABLE | ipc::PEER_CLOSED)),
         );
         items.extend(
             files
@@ -122,19 +135,20 @@ pub fn serve(
     }
 }
 
-fn poll_mounts(namespace: &Namespace, mounts: &mut Vec<Handle<Channel>>) -> Result<(), Error> {
+fn poll_mounts(namespace: &Namespace, mounts: &mut Vec<MountChannel>) -> Result<(), Error> {
     let mut index = 0;
     while index < mounts.len() {
-        match mounts[index].receive(WaitMode::Poll) {
+        match mounts[index].channel.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
-                    protocol::respond(reply, mount_admin(namespace, request))?;
+                    protocol::respond(reply, mount_admin(namespace, mounts[index].id, request))?;
                 }
                 index += 1;
             }
             Err(runtime::Error::Kernel(KernelError::WouldBlock)) => index += 1,
             Err(runtime::Error::Kernel(KernelError::EndOfStream)) => {
-                mounts.swap_remove(index);
+                let mount = mounts.swap_remove(index);
+                namespace.release_user_mounts(mount.id);
             }
             Err(error) => return Err(error.into()),
         }
@@ -172,7 +186,8 @@ fn admin(
     task: &Handle<runtime::Task>,
     namespace: &Namespace,
     clients: &mut Vec<Handle<Channel>>,
-    mounts: &mut Vec<Handle<Channel>>,
+    mounts: &mut Vec<MountChannel>,
+    next_mount: &mut u64,
     mut request: ReceivedMessage,
 ) -> Result<Message, Error> {
     match (request.tag, request.words()) {
@@ -180,10 +195,12 @@ fn admin(
             clients.push(take_channel(&mut request, Rights::READ | Rights::WAIT)?);
         }
         (protocol::CONNECT_MOUNT, []) if request.handles().len() == 1 => {
-            mounts.push(take_channel(
-                &mut request,
-                Rights::READ_WRITE | Rights::WAIT,
-            )?);
+            let channel = take_channel(&mut request, Rights::READ_WRITE | Rights::WAIT)?;
+            mounts.push(MountChannel {
+                channel,
+                id: *next_mount,
+            });
+            *next_mount += 1;
         }
         (protocol::MOUNT, [length, start, size]) if request.handles().len() == 2 => {
             let (length, start, size) = (*length, *start, *size);
@@ -207,15 +224,19 @@ fn admin(
     Ok(Message::new(protocol::SUCCESS, &[])?)
 }
 
-fn mount_admin(namespace: &Namespace, mut request: ReceivedMessage) -> Result<Message, Error> {
+fn mount_admin(
+    namespace: &Namespace,
+    channel: u64,
+    mut request: ReceivedMessage,
+) -> Result<Message, Error> {
     match (request.tag, request.words()) {
         (protocol::MOUNT_TMPFS, [length]) if request.handles().len() == 1 => {
             let length = *length;
-            namespace.mount_tmpfs_user(&path(&mut request, length)?)?;
+            namespace.mount_user_tmpfs(&path(&mut request, length)?, channel)?;
         }
         (protocol::UNMOUNT_TMPFS, [length]) if request.handles().len() == 1 => {
             let length = *length;
-            namespace.unmount_tmpfs(&path(&mut request, length)?)?;
+            namespace.unmount_user_tmpfs(&path(&mut request, length)?, channel)?;
         }
         _ => return Err(Error::InvalidRequest),
     }

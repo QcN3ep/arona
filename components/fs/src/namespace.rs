@@ -14,6 +14,12 @@ use crate::{
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::cell::{Cell, RefCell};
 
+/// Total capacity of all tmpfs volumes mounted in the namespace.
+///
+/// Each volume has its own 64 MiB limit; the global limit keeps a client from
+/// bypassing that boundary by mounting many small volumes.
+const MAX_MEMORY_MOUNT_BYTES: usize = 256 * 1024 * 1024;
+
 pub struct Namespace {
     archive: Archive,
     next_directory: Cell<u64>,
@@ -29,8 +35,8 @@ struct MountEntry {
 /// Owner of a mount table entry.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum MountOwner {
-    /// A client mount created through the mount-control channel.
-    User,
+    /// A client mount created through a specific mount-control channel.
+    User(u64),
     /// A startup or disk mount created by the administrative control.
     Service,
 }
@@ -43,6 +49,14 @@ enum Mounted {
 }
 
 impl Mounted {
+    /// Capacity this filesystem reserves from the global in-memory volume budget.
+    fn memory_limit(&self) -> usize {
+        match self {
+            Self::Ext4(_) | Self::Fat32(_) => 0,
+            Self::Tmpfs(filesystem) => filesystem.limit(),
+        }
+    }
+
     fn statistics(&self) -> Result<crate::Statistics, Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.statistics(),
@@ -57,10 +71,6 @@ impl Mounted {
             Self::Fat32(filesystem) => filesystem.unmount(),
             Self::Tmpfs(filesystem) => filesystem.unmount(),
         }
-    }
-
-    fn is_tmpfs(&self) -> bool {
-        matches!(self, Self::Tmpfs(_))
     }
 
     fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
@@ -329,19 +339,23 @@ impl Namespace {
     }
 
     /// Mounts a tmpfs on an existing directory for a user mount request.
-    pub fn mount_tmpfs_user(&self, path: &[u8]) -> Result<(), Error> {
+    pub fn mount_user_tmpfs(&self, path: &[u8], channel: u64) -> Result<(), Error> {
         let path = normalize(path)?;
         let metadata = self.metadata(&path)?;
         if metadata.mode & 0o170000 != 0o040000 {
             return Err(Error::NotDirectory);
         }
-        // A user mount may only be placed on a writable volume. Placing one on
-        // the read-only boot archive would let a client shadow system files for
-        // every process that resolves through the global namespace.
+        // A user mount must sit at or below an existing mount. Placing one in the
+        // read-only boot archive would let a client shadow system files for every
+        // process that resolves through the global namespace.
         if mounted_at(&self.mounts.borrow(), &path).is_none() {
             return Err(Error::InvalidRequest);
         }
-        self.install(&path, Mounted::Tmpfs(Tmpfs::new()?), MountOwner::User)
+        self.install(
+            &path,
+            Mounted::Tmpfs(Tmpfs::new()?),
+            MountOwner::User(channel),
+        )
     }
 
     fn check_install(&self, path: &[u8]) -> Result<(), Error> {
@@ -358,6 +372,17 @@ impl Namespace {
     fn install(&self, path: &[u8], filesystem: Mounted, owner: MountOwner) -> Result<(), Error> {
         let path = normalize(path)?;
         self.check_install(&path)?;
+        let mounts = self.mounts.borrow();
+        let total = mounts
+            .values()
+            .map(|entry| entry.filesystem.memory_limit())
+            .sum::<usize>()
+            .checked_add(filesystem.memory_limit())
+            .ok_or(Error::NoSpace)?;
+        if total > MAX_MEMORY_MOUNT_BYTES {
+            return Err(Error::NoSpace);
+        }
+        drop(mounts);
         self.mounts
             .borrow_mut()
             .insert(path, MountEntry { filesystem, owner });
@@ -365,12 +390,52 @@ impl Namespace {
         Ok(())
     }
 
+    /// Unmounts a service mount, first dropping user mounts nested below it so a
+    /// leftover client mount cannot keep the target busy during shutdown.
     pub fn unmount(&self, path: &[u8]) -> Result<(), Error> {
         self.remove_mount(path, None)
     }
 
-    pub fn unmount_tmpfs(&self, path: &[u8]) -> Result<(), Error> {
-        self.remove_mount(path, Some(MountOwner::User))
+    pub fn unmount_user_tmpfs(&self, path: &[u8], channel: u64) -> Result<(), Error> {
+        self.remove_mount(path, Some(MountOwner::User(channel)))
+    }
+
+    /// Drops every mount the given mount-control channel created.
+    ///
+    /// Open sessions keep their volume alive, so this only removes the table
+    /// entries and their budget charge. The channel's owner is exiting and its
+    /// guests are gone, so there is no need to synchronously unmount the volumes.
+    pub fn release_user_mounts(&self, channel: u64) {
+        let paths: Vec<Vec<u8>> = self
+            .mounts
+            .borrow()
+            .iter()
+            .filter(|(_, entry)| entry.owner == MountOwner::User(channel))
+            .map(|(path, _)| path.clone())
+            .collect();
+        self.release_paths(paths);
+    }
+
+    /// Drops user mounts nested below an administrative unmount target so a
+    /// leftover tmpfs cannot keep a service mount busy during shutdown.
+    fn release_user_mounts_under(&self, path: &[u8]) {
+        let paths: Vec<Vec<u8>> = self
+            .mounts
+            .borrow()
+            .iter()
+            .filter(|(other, entry)| {
+                *other != path && beneath(other, path) && matches!(entry.owner, MountOwner::User(_))
+            })
+            .map(|(other, _)| other.clone())
+            .collect();
+        self.release_paths(paths);
+    }
+
+    fn release_paths(&self, mut paths: Vec<Vec<u8>>) {
+        paths.sort_by_key(|path| core::cmp::Reverse(path.len()));
+        for path in paths {
+            self.mounts.borrow_mut().remove(&path);
+        }
     }
 
     fn remove_mount(&self, path: &[u8], owner: Option<MountOwner>) -> Result<(), Error> {
@@ -387,6 +452,15 @@ impl Namespace {
             if owner.is_some_and(|owner| entry.owner != owner) {
                 return Err(Error::InvalidRequest);
             }
+        }
+        // The administrative unmount owns the subtree, so its nested user mounts
+        // go first. Validate the target above so a failed probe changes nothing.
+        if owner.is_none() {
+            self.release_user_mounts_under(&path);
+        }
+        {
+            let mounts = self.mounts.borrow();
+            let entry = mounts.get(&path).ok_or(Error::NotFound)?;
             if mounts
                 .keys()
                 .any(|other| other != &path && beneath(other, &path))
@@ -506,9 +580,7 @@ impl Namespace {
             return Err(Error::ReadOnly);
         };
         if !beneath(&target, prefix)
-            || mounts
-                .keys()
-                .any(|other| other != prefix && beneath(&target, other))
+            || mounted_at(&mounts, &target).is_none_or(|(target, _)| target != prefix)
         {
             return Err(Error::CrossDevice);
         }
@@ -570,9 +642,7 @@ impl Namespace {
             return Err(Error::ReadOnly);
         };
         if !beneath(&target, prefix)
-            || mounts
-                .keys()
-                .any(|other| other != prefix && beneath(&target, other))
+            || mounted_at(&mounts, &target).is_none_or(|(target, _)| target != prefix)
         {
             return Err(Error::CrossDevice);
         }

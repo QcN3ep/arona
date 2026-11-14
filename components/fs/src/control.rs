@@ -105,7 +105,7 @@ impl<'a> MountControl<'a> {
         if !channel
             .info()?
             .rights
-            .contains(Rights::READ_WRITE | Rights::WAIT)
+            .contains(Rights::READ_WRITE | Rights::WAIT | Rights::DUPLICATE)
         {
             return Err(Error::InvalidRequest);
         }

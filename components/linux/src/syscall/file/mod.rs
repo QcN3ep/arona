@@ -10,7 +10,6 @@ mod device;
 mod directory;
 mod eventfd;
 mod io;
-// TODO: Add mount and umount2 after directory sessions retain mount identity.
 mod metadata;
 mod mount;
 mod net;

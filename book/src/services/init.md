@@ -24,8 +24,9 @@ The archive page frame is then handed to the file service, and init reads the re
 | 4 | If a block device is present, detect ext4 or FAT32 on its full range and mount it at `/var` |
 | 5 | Open the UART output session, start logger, and hand over the KernelLog and the optional persistence file |
 | 6 | Establish the local log facade, start net with a separate RNG session, and wait for loopback readiness |
-| 7 | Start linux and hand over the file, RTC, random number, network, and kernel log sessions |
+| 7 | Start linux and hand over the file, RTC, random number, network, kernel log, and mount-control sessions |
 | 8 | Record `System services ready`, read the configuration, and enter the supervision loop |
+
 
 fs starts first because it establishes file access capability directly from the archive; init then mounts a tmpfs at `/tmp` so temporary files do not depend on persistent storage. devmgr next provides device sessions, letting persistent storage and serial output join the system.
 After the `/var` mount succeeds, init creates the log directory, opens or creates `/var/log/system.log`, and hands the file session to logger.
@@ -46,8 +47,9 @@ If loading fails midway, the ChildTask reclaims the child Task under constructio
 
 ## Configured Applications
 
-Each `[[program]]` in `/etc/init.toml` declares a name, executor, path, arguments, environment, terminal, and restart policy.
+Each `[[program]]` in `/etc/init.toml` declares a name, executor, path, arguments, environment, terminal, restart policy, and whether it may mount in-memory volumes.
 Linux programs in the configuration are loaded by the linux service, and init retains the asynchronous run request to observe their exit.
+The `mount` field defaults to `false`; granting it, together with root credentials, is required for `mount` and `umount2`, and the service's mount-control channel is only handed to the Linux service.
 
 When `terminal = "console"`, init opens the corresponding UART session and gives it to the execution service.
 The application's console session and logger's output session are established separately, and devmgr allocates input and output permissions according to the access mode.

@@ -14,6 +14,7 @@
 #define O_TRUNC 0x200
 #define EPERM 1
 #define ENOENT 2
+#define ENOSPC 28
 #define EBUSY 16
 #define ENODEV 19
 #define EEXIST 17
@@ -133,6 +134,31 @@ static void mounted_tmpfs(const char *point, const char *file) {
     CHECK(SC(35, AT_FDCWD, P(point), AT_REMOVEDIR) == 0);
 }
 
+static void mounted_links(void) {
+    const char *point = "/tmp/arona-links";
+    const char *first = "/tmp/arona-links/first";
+    const char *second = "/tmp/arona-links/second";
+    const char *third = "/tmp/arona-links/third";
+    CHECK(SC(34, AT_FDCWD, P(point), 0755) == 0);
+    CHECK(SC(40, P("tmpfs"), P(point), P("tmpfs"), 0, 0) == 0);
+    long fd = open_file(first, O_RDWR | O_CREAT, 0600);
+    CHECK(fd >= 0);
+    write_all(fd, "rename", 6);
+    CHECK(SC(57, fd) == 0);
+    // renameat and linkat stay inside the mounted tmpfs, not crossing its parent.
+    CHECK(SC(38, AT_FDCWD, P(first), AT_FDCWD, P(second)) == 0);
+    CHECK(open_file(first, O_RDONLY, 0) == -ENOENT);
+    CHECK(SC(37, AT_FDCWD, P(second), AT_FDCWD, P(third)) == 0);
+    fd = open_file(third, O_RDONLY, 0);
+    CHECK(fd >= 0);
+    char content[6] = {0};
+    read_exact(fd, content, 6);
+    CHECK(content[0] == 'r' && content[5] == 'e');
+    CHECK(SC(57, fd) == 0);
+    CHECK(SC(39, P(point), 0) == 0);
+    CHECK(SC(35, AT_FDCWD, P(point), AT_REMOVEDIR) == 0);
+}
+
 static void nested(void) {
     CHECK(SC(34, AT_FDCWD, P("/tmp/arona-nest"), 0755) == 0);
     CHECK(SC(40, P("tmpfs"), P("/tmp/arona-nest"), P("tmpfs"), 0, 0) == 0);
@@ -144,6 +170,11 @@ static void nested(void) {
     CHECK(SC(57, fd) == 0);
     // The outer mount cannot be removed while a nested mount exists.
     CHECK(SC(39, P("/tmp/arona-nest"), 0) == -EBUSY);
+    CHECK(SC(38, AT_FDCWD, P("/tmp/arona-nest/inner/file"), AT_FDCWD,
+             P("/tmp/arona-nest/inner/renamed")) == 0);
+    fd = open_file("/tmp/arona-nest/inner/renamed", O_RDONLY, 0);
+    CHECK(fd >= 0);
+    CHECK(SC(57, fd) == 0);
     CHECK(SC(39, P("/tmp/arona-nest/inner"), 0) == 0);
     CHECK(open_file("/tmp/arona-nest/inner/file", O_RDONLY, 0) == -ENOENT);
     CHECK(SC(39, P("/tmp/arona-nest"), 0) == 0);
@@ -158,6 +189,14 @@ static void errors(void) {
     CHECK(SC(40, P("ext4"), P("/tmp/arona-plain"), P("ext4"), 0, 0) == -ENODEV);
     // Read-only and bind-style flags are not implemented for memory mounts.
     CHECK(SC(40, P("tmpfs"), P("/tmp/arona-plain"), P("tmpfs"), 1, 0) == -EINVAL);
+    // MS_NOSUID, MS_NODEV, and MS_NOEXEC are rejected until the namespace
+    // enforces them instead of silently accepting a no-op.
+    CHECK(SC(40, P("tmpfs"), P("/tmp/arona-plain"), P("tmpfs"), 2, 0) == -EINVAL);
+    CHECK(SC(40, P("tmpfs"), P("/tmp/arona-plain"), P("tmpfs"), 4, 0) == -EINVAL);
+    CHECK(SC(40, P("tmpfs"), P("/tmp/arona-plain"), P("tmpfs"), 8, 0) == -EINVAL);
+    // The flag word must be validated as a full 32-bit value; high bits are not
+    // truncated into a supported flag.
+    CHECK(SC(40, P("tmpfs"), P("/tmp/arona-plain"), P("tmpfs"), 0x100000000L, 0) == -EINVAL);
     CHECK(SC(40, P("tmpfs"), P("/tmp/arona-plain"), P("tmpfs"), 4096, 0) == -EINVAL);
     CHECK(SC(40, P("tmpfs"), P("/tmp/arona-plain"), P("tmpfs"), 0, P("size=1m")) == -EINVAL);
     // Umounting a directory that is not a mount point is invalid.
@@ -174,12 +213,56 @@ static void errors(void) {
     CHECK(SC(35, AT_FDCWD, P("/tmp/arona-plain"), AT_REMOVEDIR) == 0);
 }
 
-int fs_main(void) {
+static void memory_budget(void) {
+    const char *points[4] = {
+        "/tmp/arona-budget-0",
+        "/tmp/arona-budget-1",
+        "/tmp/arona-budget-2",
+        "/tmp/arona-budget-3",
+    };
+    for (int index = 0; index < 4; ++index) {
+        CHECK(SC(34, AT_FDCWD, P(points[index]), 0755) == 0);
+    }
+    // The startup /tmp volume already reserves part of the global 256 MiB
+    // budget, so only a limited number of default-size volumes fit.
+    CHECK(SC(40, P("none"), P(points[0]), P("tmpfs"), 0, 0) == 0);
+    CHECK(SC(40, P("none"), P(points[1]), P("tmpfs"), 0, 0) == 0);
+    CHECK(SC(40, P("none"), P(points[2]), P("tmpfs"), 0, 0) == 0);
+    CHECK(SC(40, P("none"), P(points[3]), P("tmpfs"), 0, 0) == -ENOSPC);
+    // Unmounting releases the volume's share, so the same target can be mounted
+    // again.
+    CHECK(SC(39, P(points[1]), 0) == 0);
+    CHECK(SC(40, P("none"), P(points[3]), P("tmpfs"), 0, 0) == 0);
+    CHECK(SC(39, P(points[0]), 0) == 0);
+    CHECK(SC(39, P(points[2]), 0) == 0);
+    CHECK(SC(39, P(points[3]), 0) == 0);
+    for (int index = 0; index < 4; ++index) {
+        CHECK(SC(35, AT_FDCWD, P(points[index]), AT_REMOVEDIR) == 0);
+    }
+}
+
+static void denied_mount(void) {
+    const char *point = "/tmp/arona-denied-root";
+    CHECK(SC(34, AT_FDCWD, P(point), 0755) == 0);
+    // The process was launched without the mount capability even though it is
+    // root, so both mount and umount2 are rejected before reaching the service.
+    CHECK(SC(40, P("none"), P(point), P("tmpfs"), 0, 0) == -EPERM);
+    CHECK(SC(39, P("/tmp"), 0) == -EPERM);
+    CHECK(SC(35, AT_FDCWD, P(point), AT_REMOVEDIR) == 0);
+}
+
+int fs_main(int argc, char **argv) {
+    if (argc > 1 && argv[1][0] == 'd') {
+        denied_mount();
+        return 42;
+    }
     temporary();
     mounted_tmpfs("/tmp/arona-mnt", "/tmp/arona-mnt/file");
     mounted_tmpfs("/var/arona-mnt", "/var/arona-mnt/file");
+    mounted_links();
     nested();
     errors();
+    memory_budget();
     // Credential checks reject mounting and unmounting for non-root callers.
     CHECK(SC(146, 1000) == 0);
     CHECK(SC(40, P("tmpfs"), P("/tmp/arona-denied"), P("tmpfs"), 0, 0) == -EPERM);

@@ -5,6 +5,9 @@
 // TODO: Support epoll.
 
 pub(crate) mod abi;
+
+/// Linux `AT_FDCWD`, the directory descriptor value used for relative paths.
+pub(crate) const AT_FDCWD: usize = (-100i32) as usize;
 mod file;
 mod memory;
 mod mqueue;

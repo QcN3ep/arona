@@ -14,6 +14,8 @@ pub struct Program<'a> {
     pub path: &'a [u8],
     pub arguments: &'a [&'a [u8]],
     pub environment: &'a [&'a [u8]],
+    /// Allows the program to issue `mount` and `umount2`; false by default.
+    pub mount: bool,
 }
 
 #[derive(Default)]
@@ -136,6 +138,7 @@ impl<'a> Control<'a> {
                 bytes.len() as u64,
                 program.arguments.len() as u64,
                 program.environment.len() as u64,
+                u64::from(program.mount),
             ],
         )?;
         transfer(&mut request, frames, Rights::READ)?;

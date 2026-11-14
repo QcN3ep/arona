@@ -139,8 +139,11 @@ pub fn shutdown(system: System<'_>, action: PowerAction) -> Result<usize, InitEr
     report.info(format_args!("Flushing file service"));
     if mounted {
         report.info(format_args!("Unmounting /var"));
-        mounts.unmount(b"/var", service::deadline()?)?;
-        report.info(format_args!("Unmounted /var"));
+        if let Err(error) = mounts.unmount(b"/var", service::deadline()?) {
+            report.info(format_args!("Unmounting /var failed: {error:?}"));
+        } else {
+            report.info(format_args!("Unmounted /var"));
+        }
     }
     drop(mounts);
     stop_service(filesystem, &mut report, "file service")?;
@@ -320,6 +323,7 @@ impl ProgramState {
             path: program.path.as_bytes(),
             arguments: &arguments,
             environment: &environment,
+            mount: program.mount,
         };
         let execution = match program.executor {
             Executor::Linux => match input {

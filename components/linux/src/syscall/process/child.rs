@@ -159,6 +159,7 @@ fn spawn<'a>(
                 .collect()
         },
         membarrier: process.membarrier,
+        mount: process.mount,
         cpu_ns: 0,
         timers: crate::process::timer::Timers::default(),
         status: crate::ExitStatus { code: 0, signal: 0 },

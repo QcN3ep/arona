@@ -6,8 +6,8 @@ The kernel hands the program's calls and exceptions to it through a TrapPort.
 
 ## Starting a Linux Program
 
-init provides the service with file and network clients, a read-only kernel log, and optional RTC and random number sessions.
-The execution request contains the program path, argv, envp, and terminal session.
+init provides the service with file and network clients, a read-only kernel log, optional RTC and random number sessions, and the mount-control channel.
+The execution request contains the program path, argv, envp, terminal session, and the mount grant.
 `Control::start_run` returns an asynchronous call, and the request completes with an exit status after the program ends.
 
 The loading process proceeds in stages:
@@ -103,17 +103,21 @@ Opening `/proc/net` itself returns `ENOTDIR`, and an unknown name below the virt
 
 `mount` accepts the `tmpfs` filesystem type and resolves the target directory through the file service before adding a mount table entry.
 The source name is ignored, read-only and bind-style flags are rejected, and nonzero data options currently report `EINVAL`.
-Mount targets must lie below `/tmp` or `/var`; other targets, including the boot archive system directories, report `EPERM` before a request reaches the file service.
+`MS_NOSUID`, `MS_NODEV`, and `MS_NOEXEC` are rejected because the namespace does not store or enforce them; the accepted silent and atime flags do not change behavior for an in-memory volume.
+The flag word is checked as a 32-bit value, so set bits above bit 31 are rejected rather than truncated.
+Mount targets must lie below `/tmp` or `/var`; other targets, including the boot archive system directories, are resolved through the file service and then report `EPERM` before the mount request is sent to the mount-control channel.
 The file service also rejects mounting on the read-only boot archive, so the namespace boundary does not depend on the compatibility layer alone.
-`umount2` removes tmpfs mounts created through `mount` and reports `ENOENT` for a missing target, `EINVAL` for a path that is not one of those mounts, and `EBUSY` for a mount with nested entries.
+`umount2` removes tmpfs mounts created through `mount` and reports `ENOENT` for a missing target, `EINVAL` for a path that is not one of those mounts, and `EBUSY` for a mount with nested entries or open file and directory sessions.
 The startup `/tmp` mount and disk mounts are not removable through `umount2`.
 The compatibility layer does not expose disk mounts to programs.
 Both calls are dispatched as pending operations, so waiting for the file service does not stall other guests or timer handling.
+All tmpfs volumes, including the startup `/tmp` volume, share a 256 MiB global budget in the file service in addition to the 64 MiB per-volume limit; a mount that would exceed the budget reports `ENOSPC`, and unmounting releases its share.
 
-`mount` and `umount2` check that the caller's uid and euid are 0.
-Every Linux process starts with both set to 0, so the check currently rejects only a process that has already dropped its credentials; it does not distinguish ordinary guest programs.
+`mount` and `umount2` require both root credentials and a process mount capability.
+The capability is off for every program by default; `/etc/init.toml` grants it per program with `mount = true`, and the test harness grants it explicitly to the filesystem scenario.
+A process without the capability reports `EPERM` before the target is resolved or a request reaches the file service, even when its uid and euid are 0.
+Forks inherit the capability, and exec keeps it on the process.
 The file service accepts mount requests only on the dedicated mount-control channel that `Control::mount_control` creates for the Linux service; init passes that channel during startup, guest code cannot reach it directly, and the service derives mount ownership from the channel rather than from request data.
-Restricting mounting to selected programs requires assigning real nonzero identities to the remaining processes, which is not implemented yet.
 
 Path operations convert the current directory or dirfd into a file service directory anchor.
 Permission modes, umask, and open flags are interpreted in the compatibility layer, while the actual file content and persistence are handled by the file service.

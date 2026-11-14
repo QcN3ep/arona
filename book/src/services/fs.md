@@ -47,11 +47,13 @@ For example, after ext4 is mounted at `/var`, resolving `/var/log/system.log` sw
 When listing a directory, mount points are merged into the parent directory's entries.
 A tmpfs mount creates an empty directory hierarchy in memory, while an ext4 mount also checks the disk range occupancy.
 Mounting at an existing mount point or above a nested mount reports a busy mount, while mounting below an existing mount is allowed.
-Unmounting a path that is not a mount, has nested mounts, or still has open ext4 references reports the corresponding error.
+Unmounting a path through the mount-control channel reports the corresponding error when it is not a mount, has nested mounts, or still has open file or directory sessions; an administrative unmount instead releases user mounts nested below its target.
 The file service exposes tmpfs mounting and unmounting through `MountControl` so the Linux compatibility layer can implement `mount` and `umount2` without exposing disk mounts.
+When a mount-control channel closes, the file service removes the user mounts that channel created; open sessions keep their volumes alive.
 The mount-control channel accepts only tmpfs mount requests and in-memory unmount requests; disk mounting and administrative unmounting are rejected there, and mount ownership follows the channel that created the mount rather than a request word.
-A user mount may only be placed on a writable volume: a target on the read-only boot archive is rejected, so a client cannot shadow system files in the global namespace.
+A user mount must sit at or below an existing mount: a target in the read-only boot archive is rejected, so a client cannot shadow system files in the global namespace.
 Only tmpfs mounts created through that interface can be unmounted through it; the startup `/tmp` mount and disk mounts report an invalid request.
+All tmpfs volumes mounted in the namespace, including the startup `/tmp` volume, share a 256 MiB budget in addition to each volume's 64 MiB limit; a mount that would exceed it reports `NoSpace` (`ENOSPC` to Linux callers), and unmounting releases the volume's share.
 
 The directory anchor interface supports relative directory lookup.
 The resolver handles absolute paths, relative paths, `.`, `..`, duplicate separators, and symbolic links.
@@ -66,13 +68,14 @@ A rename or link that would move a directory containing nested mounts is rejecte
 ## In-Memory tmpfs
 
 A tmpfs volume stores nodes in an ordered map and keeps regular file data, symbolic link targets, and directory entries in memory.
-The root inode is created at mount time, and `/tmp` is mounted by the file service before any client connects.
+The root inode is created at mount time. init requests a default-capacity tmpfs at `/tmp` through the control channel right after establishing its file client, and the file service records that mount as service-owned.
 Each regular file grows and shrinks on write, append, and truncate; writes past the end fill the hole with zeros.
 Hard links share an inode and link count, renames adjust link counts and reject cycles, and deleting the last name removes the directory entry.
 An open session keeps its inode and data alive after the last name is removed, and the last close releases the data.
 The volume tracks the total bytes used against a 64 MiB limit and reports `ENOSPC` when a write would exceed it.
 `statfs` reports the tmpfs magic, block size, capacity, free blocks, and inode counters.
-Unmounting drops the mount table entry; new path operations no longer reach the volume, while open file sessions keep the old volume alive until they close.
+Unmounting fails with `Busy` while any file or directory session still references the volume; the mount table entry is removed only after the sessions close and the unmount succeeds.
+Closing the mount-control channel also removes its user mounts, without waiting for their sessions.
 
 ## Block Device Access
 
