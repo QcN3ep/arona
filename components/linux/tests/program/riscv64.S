@@ -103,6 +103,8 @@ auxv_done:
     beq s3, t1, identity_replaced
     li t1, 75
     beq s3, t1, fork_process
+    li t1, 104
+    beq s3, t1, hwclock_test
     li t1, 86
     bne s3, t1, .Lnot_v
     ld t0, 16(sp)

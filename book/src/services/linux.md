@@ -274,6 +274,11 @@ Terminal output is finally submitted through devmgr's UART session.
 ## Time and System Information
 
 The monotonic clock and sleep use native time capabilities, and realtime queries are obtained through the RTC session.
+`/dev/rtc`, `/dev/rtc0`, and `/dev/misc/rtc` are virtual character devices backed by that session, and BusyBox `hwclock` opens them in this fallback order.
+They support `open`, `read` of one 36-byte `struct rtc_time`, and the `RTC_RD_TIME` and `RTC_SET_TIME` ioctls.
+`read` returns UTC fields in binary form with a 24-hour clock, months counted from zero, and years since 1900.
+`RTC_SET_TIME` requires effective user ID 0 and returns `EPERM` otherwise, while malformed calendars return `EINVAL`.
+The `RTC_AIE`, `RTC_UIE`, `RTC_PIE`, and `RTC_WIE` controls return `EINVAL` because alarm and interrupt support is not implemented, and other ioctls return `ENOTTY`.
 `clock_gettime`, `clock_getres`, `gettimeofday`, `nanosleep`, and `clock_nanosleep` handle time requests within their respective parameter ranges.
 `getrandom` obtains numbers through the random number device session.
 `uname` returns Linux compatibility identifiers, the Arona version, and the machine type.

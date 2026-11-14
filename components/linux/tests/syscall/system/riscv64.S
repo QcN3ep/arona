@@ -253,4 +253,344 @@ timer_syscall:
     ld a5, 40(t0)
     ecall
     ret
+
+# RTC device paths, rtc_time conversion, and permission checks.
+.global hwclock_test
+hwclock_test:
+    addi sp, sp, -512
+    la a1, hwclock_rtc
+    li a0, -100
+    li a2, 2
+    li a3, 0
+    li a7, 56
+    ecall
+    li s8, 1
+    bltz a0, system_failure
+    mv s6, a0
+
+    # Save the current time so the suite can be restored afterwards.
+    mv a0, s6
+    li a1, 0x80247009
+    mv a2, sp
+    li a7, 29
+    ecall
+    expect 0
+    mv s0, sp
+    jal ra, hwclock_check_fields
+    ld t0, 0(sp)
+    sd t0, 440(sp)
+    ld t0, 8(sp)
+    sd t0, 448(sp)
+    ld t0, 16(sp)
+    sd t0, 456(sp)
+    ld t0, 24(sp)
+    sd t0, 464(sp)
+    lw t0, 32(sp)
+    sw t0, 472(sp)
+
+    # A known time: 2025-03-09 12:34:56 UTC.
+    li t0, 56
+    sw t0, 40(sp)
+    li t0, 34
+    sw t0, 44(sp)
+    li t0, 12
+    sw t0, 48(sp)
+    li t0, 9
+    sw t0, 52(sp)
+    li t0, 2
+    sw t0, 56(sp)
+    li t0, 125
+    sw t0, 60(sp)
+    sw zero, 64(sp)
+    li t0, 67
+    sw t0, 68(sp)
+    sw zero, 72(sp)
+
+    # Months are zero-based, so month 12 is invalid.
+    li t0, 12
+    sw t0, 56(sp)
+    mv a0, s6
+    li a1, 0x4024700a
+    addi a2, sp, 40
+    li a7, 29
+    ecall
+    expect -22
+    li t0, 2
+    sw t0, 56(sp)
+
+    # Days outside the month and February 30 are invalid.
+    li t0, 32
+    sw t0, 52(sp)
+    mv a0, s6
+    li a1, 0x4024700a
+    addi a2, sp, 40
+    li a7, 29
+    ecall
+    expect -22
+    li t0, 1
+    sw t0, 56(sp)
+    li t0, 30
+    sw t0, 52(sp)
+    mv a0, s6
+    li a1, 0x4024700a
+    addi a2, sp, 40
+    li a7, 29
+    ecall
+    expect -22
+    li t0, 2
+    sw t0, 56(sp)
+    li t0, 9
+    sw t0, 52(sp)
+
+    # The valid value is written and read back.
+    mv a0, s6
+    li a1, 0x4024700a
+    addi a2, sp, 40
+    li a7, 29
+    ecall
+    expect 0
+    mv a0, s6
+    li a1, 0x80247009
+    addi a2, sp, 96
+    li a7, 29
+    ecall
+    expect 0
+    addi s0, sp, 96
+    jal ra, hwclock_check_target
+
+    # Alarm controls are unsupported and unknown commands are not RTC ioctls.
+    mv a0, s6
+    li a1, 0x00007001
+    mv a2, sp
+    li a7, 29
+    ecall
+    expect -22
+    mv a0, s6
+    li a1, 0
+    li a2, 0
+    li a7, 29
+    ecall
+    expect -25
+
+    # Writing needs root credentials; the saved identity allows returning to root.
+    li a0, 1
+    li a1, 1
+    li a2, 0
+    li a7, 147
+    ecall
+    expect 0
+    mv a0, s6
+    li a1, 0x4024700a
+    addi a2, sp, 40
+    li a7, 29
+    ecall
+    expect -1
+    mv a0, s6
+    li a1, 0x80247009
+    addi a2, sp, 96
+    li a7, 29
+    ecall
+    expect 0
+    li a0, 1
+    li a1, 0
+    li a2, 0
+    li a7, 147
+    ecall
+    expect 0
+    li a0, 0
+    li a1, 0
+    li a2, 0
+    li a7, 147
+    ecall
+    expect 0
+
+    # read(2) returns one rtc_time and rejects short buffers.
+    mv a0, s6
+    addi a1, sp, 96
+    li a2, 36
+    li a7, 63
+    ecall
+    li s8, 2
+    li t0, 36
+    bne a0, t0, system_failure
+    addi s0, sp, 96
+    jal ra, hwclock_check_target
+    mv a0, s6
+    addi a1, sp, 136
+    li a2, 8
+    li a7, 63
+    ecall
+    expect -22
+    mv a0, s6
+    li a7, 57
+    ecall
+    expect 0
+
+    # All three device paths support reads and writes.
+    la s4, hwclock_paths
+    li s5, 3
+.Lhwclock_path:
+    ld a1, 0(s4)
+    li a0, -100
+    li a2, 2
+    li a3, 0
+    li a7, 56
+    ecall
+    li s8, 3
+    bltz a0, system_failure
+    mv s6, a0
+    mv a0, s6
+    li a1, 0x80247009
+    addi a2, sp, 96
+    li a7, 29
+    ecall
+    expect 0
+    addi s0, sp, 96
+    jal ra, hwclock_check_fields
+    mv a0, s6
+    li a1, 0x4024700a
+    addi a2, sp, 40
+    li a7, 29
+    ecall
+    expect 0
+    mv a0, s6
+    li a1, 0x80247009
+    addi a2, sp, 96
+    li a7, 29
+    ecall
+    expect 0
+    addi s0, sp, 96
+    jal ra, hwclock_check_target
+    mv a0, s6
+    li a7, 57
+    ecall
+    expect 0
+    addi s4, s4, 8
+    addi s5, s5, -1
+    bnez s5, .Lhwclock_path
+
+    # Restore the original time.
+    la a1, hwclock_rtc
+    li a0, -100
+    li a2, 1
+    li a3, 0
+    li a7, 56
+    ecall
+    li s8, 4
+    bltz a0, system_failure
+    mv s6, a0
+    mv a0, s6
+    li a1, 0x4024700a
+    addi a2, sp, 440
+    li a7, 29
+    ecall
+    expect 0
+    mv a0, s6
+    li a1, 0x80247009
+    addi a2, sp, 96
+    li a7, 29
+    ecall
+    expect 0
+    lw t0, 96(sp)
+    lw t1, 440(sp)
+    beq t0, t1, .Lhwclock_restore_second
+    addi t1, t1, 1
+    bne t0, t1, .Lhwclock_bad_restore
+.Lhwclock_restore_second:
+    lw t0, 100(sp)
+    lw t1, 444(sp)
+    bne t0, t1, .Lhwclock_bad_restore
+    lw t0, 104(sp)
+    lw t1, 448(sp)
+    bne t0, t1, .Lhwclock_bad_restore
+    lw t0, 108(sp)
+    lw t1, 452(sp)
+    bne t0, t1, .Lhwclock_bad_restore
+    lw t0, 112(sp)
+    lw t1, 456(sp)
+    bne t0, t1, .Lhwclock_bad_restore
+    lw t0, 116(sp)
+    lw t1, 460(sp)
+    bne t0, t1, .Lhwclock_bad_restore
+    j .Lhwclock_restored
+.Lhwclock_bad_restore:
+    li s8, 5
+    j system_failure
+.Lhwclock_restored:
+    mv a0, s6
+    li a7, 57
+    ecall
+    expect 0
+    li a0, 42
+    li a7, 94
+    ecall
+    j hwclock_test
+
+# s0 points at an rtc_time; s8 holds the caller line marker.
+hwclock_check_fields:
+    lw t0, 20(s0)
+    li t1, 70
+    blt t0, t1, system_failure
+    li t1, 201
+    bge t0, t1, system_failure
+    lw t0, 16(s0)
+    li t1, 12
+    bgeu t0, t1, system_failure
+    lw t0, 12(s0)
+    beqz t0, system_failure
+    li t1, 32
+    bgeu t0, t1, system_failure
+    lw t0, 8(s0)
+    li t1, 24
+    bgeu t0, t1, system_failure
+    lw t0, 4(s0)
+    li t1, 60
+    bgeu t0, t1, system_failure
+    lw t0, 0(s0)
+    li t1, 60
+    bgeu t0, t1, system_failure
+    lw t0, 24(s0)
+    li t1, 7
+    bgeu t0, t1, system_failure
+    lw t0, 28(s0)
+    li t1, 366
+    bgeu t0, t1, system_failure
+    ret
+
+hwclock_check_target:
+    lw t0, 0(s0)
+    li t1, 56
+    bltu t0, t1, system_failure
+    li t1, 59
+    bgeu t0, t1, system_failure
+    lw t0, 4(s0)
+    li t1, 34
+    bne t0, t1, system_failure
+    lw t0, 8(s0)
+    li t1, 12
+    bne t0, t1, system_failure
+    lw t0, 12(s0)
+    li t1, 9
+    bne t0, t1, system_failure
+    lw t0, 16(s0)
+    li t1, 2
+    bne t0, t1, system_failure
+    lw t0, 20(s0)
+    li t1, 125
+    bne t0, t1, system_failure
+    ret
+
+.section .rodata
+hwclock_rtc:
+    .asciz "/dev/rtc"
+hwclock_rtc0:
+    .asciz "/dev/rtc0"
+hwclock_misc:
+    .asciz "/dev/misc/rtc"
+.balign 8
+hwclock_paths:
+    .quad hwclock_rtc
+    .quad hwclock_rtc0
+    .quad hwclock_misc
+
 .section .note.GNU-stack,"",@progbits

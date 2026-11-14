@@ -253,4 +253,316 @@ timer_syscall:
     ld.d $a5, $t0, 40
     syscall 0
     jr $ra
+
+# RTC device paths, rtc_time conversion, and permission checks.
+.global hwclock_test
+hwclock_test:
+    addi.d $sp, $sp, -512
+    la.local $a1, hwclock_rtc
+    li.d $a0, -100
+    li.d $a2, 2
+    li.d $a3, 0
+    invoke 56
+    li.d $s8, 1
+    blt $a0, $zero, system_failure
+    move $s6, $a0
+
+    # Save the current time so the suite can be restored afterwards.
+    move $a0, $s6
+    li.d $a1, 0x80247009
+    move $a2, $sp
+    invoke 29
+    expect 0
+    move $s0, $sp
+    bl hwclock_check_fields
+    ld.d $t0, $sp, 0
+    st.d $t0, $sp, 440
+    ld.d $t0, $sp, 8
+    st.d $t0, $sp, 448
+    ld.d $t0, $sp, 16
+    st.d $t0, $sp, 456
+    ld.d $t0, $sp, 24
+    st.d $t0, $sp, 464
+    ld.w $t0, $sp, 32
+    st.w $t0, $sp, 472
+
+    # A known time: 2025-03-09 12:34:56 UTC.
+    li.d $t0, 56
+    st.w $t0, $sp, 40
+    li.d $t0, 34
+    st.w $t0, $sp, 44
+    li.d $t0, 12
+    st.w $t0, $sp, 48
+    li.d $t0, 9
+    st.w $t0, $sp, 52
+    li.d $t0, 2
+    st.w $t0, $sp, 56
+    li.d $t0, 125
+    st.w $t0, $sp, 60
+    st.w $zero, $sp, 64
+    li.d $t0, 67
+    st.w $t0, $sp, 68
+    st.w $zero, $sp, 72
+
+    # Months are zero-based, so month 12 is invalid.
+    li.d $t0, 12
+    st.w $t0, $sp, 56
+    move $a0, $s6
+    li.d $a1, 0x4024700a
+    addi.d $a2, $sp, 40
+    invoke 29
+    expect -22
+    li.d $t0, 2
+    st.w $t0, $sp, 56
+
+    # Days outside the month and February 30 are invalid.
+    li.d $t0, 32
+    st.w $t0, $sp, 52
+    move $a0, $s6
+    li.d $a1, 0x4024700a
+    addi.d $a2, $sp, 40
+    invoke 29
+    expect -22
+    li.d $t0, 1
+    st.w $t0, $sp, 56
+    li.d $t0, 30
+    st.w $t0, $sp, 52
+    move $a0, $s6
+    li.d $a1, 0x4024700a
+    addi.d $a2, $sp, 40
+    invoke 29
+    expect -22
+    li.d $t0, 2
+    st.w $t0, $sp, 56
+    li.d $t0, 9
+    st.w $t0, $sp, 52
+
+    # The valid value is written and read back.
+    move $a0, $s6
+    li.d $a1, 0x4024700a
+    addi.d $a2, $sp, 40
+    invoke 29
+    expect 0
+    move $a0, $s6
+    li.d $a1, 0x80247009
+    addi.d $a2, $sp, 96
+    invoke 29
+    expect 0
+    addi.d $s0, $sp, 96
+    bl hwclock_check_target
+
+    # Alarm controls are unsupported and unknown commands are not RTC ioctls.
+    move $a0, $s6
+    li.d $a1, 0x00007001
+    move $a2, $sp
+    invoke 29
+    expect -22
+    move $a0, $s6
+    li.d $a1, 0
+    li.d $a2, 0
+    invoke 29
+    expect -25
+
+    # Writing needs root credentials; the saved identity allows returning to root.
+    li.d $a0, 1
+    li.d $a1, 1
+    li.d $a2, 0
+    invoke 147
+    expect 0
+    move $a0, $s6
+    li.d $a1, 0x4024700a
+    addi.d $a2, $sp, 40
+    invoke 29
+    expect -1
+    move $a0, $s6
+    li.d $a1, 0x80247009
+    addi.d $a2, $sp, 96
+    invoke 29
+    expect 0
+    li.d $a0, 1
+    li.d $a1, 0
+    li.d $a2, 0
+    invoke 147
+    expect 0
+    li.d $a0, 0
+    li.d $a1, 0
+    li.d $a2, 0
+    invoke 147
+    expect 0
+
+    # read(2) returns one rtc_time and rejects short buffers.
+    move $a0, $s6
+    addi.d $a1, $sp, 96
+    li.d $a2, 36
+    invoke 63
+    li.d $s8, 2
+    li.d $t0, 36
+    bne $a0, $t0, system_failure
+    addi.d $s0, $sp, 96
+    bl hwclock_check_target
+    move $a0, $s6
+    addi.d $a1, $sp, 136
+    li.d $a2, 8
+    invoke 63
+    expect -22
+    move $a0, $s6
+    invoke 57
+    expect 0
+
+    # All three device paths support reads and writes.
+    la.local $s4, hwclock_paths
+    li.d $s5, 3
+.Lhwclock_path:
+    ld.d $a1, $s4, 0
+    li.d $a0, -100
+    li.d $a2, 2
+    li.d $a3, 0
+    invoke 56
+    li.d $s8, 3
+    blt $a0, $zero, system_failure
+    move $s6, $a0
+    move $a0, $s6
+    li.d $a1, 0x80247009
+    addi.d $a2, $sp, 96
+    invoke 29
+    expect 0
+    addi.d $s0, $sp, 96
+    bl hwclock_check_fields
+    move $a0, $s6
+    li.d $a1, 0x4024700a
+    addi.d $a2, $sp, 40
+    invoke 29
+    expect 0
+    move $a0, $s6
+    li.d $a1, 0x80247009
+    addi.d $a2, $sp, 96
+    invoke 29
+    expect 0
+    addi.d $s0, $sp, 96
+    bl hwclock_check_target
+    move $a0, $s6
+    invoke 57
+    expect 0
+    addi.d $s4, $s4, 8
+    addi.d $s5, $s5, -1
+    bne $s5, $zero, .Lhwclock_path
+
+    # Restore the original time.
+    la.local $a1, hwclock_rtc
+    li.d $a0, -100
+    li.d $a2, 1
+    li.d $a3, 0
+    invoke 56
+    li.d $s8, 4
+    blt $a0, $zero, system_failure
+    move $s6, $a0
+    move $a0, $s6
+    li.d $a1, 0x4024700a
+    addi.d $a2, $sp, 440
+    invoke 29
+    expect 0
+    move $a0, $s6
+    li.d $a1, 0x80247009
+    addi.d $a2, $sp, 96
+    invoke 29
+    expect 0
+    ld.w $t0, $sp, 96
+    ld.w $t1, $sp, 440
+    beq $t0, $t1, .Lhwclock_restore_second
+    addi.d $t1, $t1, 1
+    bne $t0, $t1, .Lhwclock_bad_restore
+.Lhwclock_restore_second:
+    ld.w $t0, $sp, 100
+    ld.w $t1, $sp, 444
+    bne $t0, $t1, .Lhwclock_bad_restore
+    ld.w $t0, $sp, 104
+    ld.w $t1, $sp, 448
+    bne $t0, $t1, .Lhwclock_bad_restore
+    ld.w $t0, $sp, 108
+    ld.w $t1, $sp, 452
+    bne $t0, $t1, .Lhwclock_bad_restore
+    ld.w $t0, $sp, 112
+    ld.w $t1, $sp, 456
+    bne $t0, $t1, .Lhwclock_bad_restore
+    ld.w $t0, $sp, 116
+    ld.w $t1, $sp, 460
+    bne $t0, $t1, .Lhwclock_bad_restore
+    b .Lhwclock_restored
+.Lhwclock_bad_restore:
+    li.d $s8, 5
+    b system_failure
+.Lhwclock_restored:
+    move $a0, $s6
+    invoke 57
+    expect 0
+    li.d $a0, 42
+    invoke 94
+    b hwclock_test
+
+# s0 points at an rtc_time; s8 holds the caller line marker.
+hwclock_check_fields:
+    ld.w $t0, $s0, 20
+    li.d $t1, 70
+    blt $t0, $t1, system_failure
+    li.d $t1, 201
+    bge $t0, $t1, system_failure
+    ld.w $t0, $s0, 16
+    li.d $t1, 12
+    bgeu $t0, $t1, system_failure
+    ld.w $t0, $s0, 12
+    beqz $t0, system_failure
+    li.d $t1, 32
+    bgeu $t0, $t1, system_failure
+    ld.w $t0, $s0, 8
+    li.d $t1, 24
+    bgeu $t0, $t1, system_failure
+    ld.w $t0, $s0, 4
+    li.d $t1, 60
+    bgeu $t0, $t1, system_failure
+    ld.w $t0, $s0, 0
+    li.d $t1, 60
+    bgeu $t0, $t1, system_failure
+    ld.w $t0, $s0, 24
+    li.d $t1, 7
+    bgeu $t0, $t1, system_failure
+    ld.w $t0, $s0, 28
+    li.d $t1, 366
+    bgeu $t0, $t1, system_failure
+    jr $ra
+
+hwclock_check_target:
+    ld.w $t0, $s0, 0
+    li.d $t1, 56
+    bltu $t0, $t1, system_failure
+    li.d $t1, 59
+    bgeu $t0, $t1, system_failure
+    ld.w $t0, $s0, 4
+    li.d $t1, 34
+    bne $t0, $t1, system_failure
+    ld.w $t0, $s0, 8
+    li.d $t1, 12
+    bne $t0, $t1, system_failure
+    ld.w $t0, $s0, 12
+    li.d $t1, 9
+    bne $t0, $t1, system_failure
+    ld.w $t0, $s0, 16
+    li.d $t1, 2
+    bne $t0, $t1, system_failure
+    ld.w $t0, $s0, 20
+    li.d $t1, 125
+    bne $t0, $t1, system_failure
+    jr $ra
+
+.section .rodata
+hwclock_rtc:
+    .asciz "/dev/rtc"
+hwclock_rtc0:
+    .asciz "/dev/rtc0"
+hwclock_misc:
+    .asciz "/dev/misc/rtc"
+.balign 8
+hwclock_paths:
+    .dword hwclock_rtc
+    .dword hwclock_rtc0
+    .dword hwclock_misc
 .section .note.GNU-stack,"",@progbits

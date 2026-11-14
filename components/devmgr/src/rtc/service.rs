@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Time queries and close handling for RTC sessions.
+//! Time queries, time writes, and close handling for RTC sessions.
 
-use super::{Rtc, session::NOW};
+use super::{
+    Timestamp,
+    session::{NOW, SET},
+};
 use crate::{
     Error,
-    device::{BUSY, INVALID_REQUEST, OpenRequest, SUCCESS, UNAVAILABLE},
+    device::{BUSY, INVALID_REQUEST, OpenRequest, SUCCESS, UNAVAILABLE, UNSUPPORTED},
 };
 use alloc::vec::Vec;
 use runtime::{
@@ -13,7 +16,7 @@ use runtime::{
     ipc::{self, Message, ReceivedMessage, WaitItem, WaitMode},
 };
 
-pub fn run(rtc: &mut Rtc<'_>, control: &Handle<Channel>, device: u32) -> Result<(), Error> {
+pub fn run(rtc: &mut super::Rtc<'_>, control: &Handle<Channel>, device: u32) -> Result<(), Error> {
     let mut connections: Vec<Handle<Channel>> = Vec::new();
     loop {
         let mut again = false;
@@ -61,24 +64,22 @@ pub fn run(rtc: &mut Rtc<'_>, control: &Handle<Channel>, device: u32) -> Result<
     }
 }
 
-fn receive(rtc: &mut Rtc<'_>, mut message: ReceivedMessage) -> Result<(), Error> {
+fn receive(rtc: &mut super::Rtc<'_>, mut message: ReceivedMessage) -> Result<(), Error> {
     let Some(reply) = message.take_reply() else {
         return Ok(());
     };
-    if message.tag != NOW || !message.words().is_empty() || !message.handles().is_empty() {
+    if !message.handles().is_empty() {
         deliver(reply, INVALID_REQUEST, &[])?;
         return Ok(());
     }
-    match rtc.now() {
-        Ok(time) => {
-            deliver(
+    if message.tag == NOW && message.words().is_empty() {
+        return match rtc.now() {
+            Ok(time) => deliver(
                 reply,
                 SUCCESS,
                 &[time.seconds as u64, time.nanoseconds.into()],
-            )?;
-        }
-        Err(error) => {
-            deliver(
+            ),
+            Err(error) => deliver(
                 reply,
                 if error == Error::Busy {
                     BUSY
@@ -86,10 +87,31 @@ fn receive(rtc: &mut Rtc<'_>, mut message: ReceivedMessage) -> Result<(), Error>
                     UNAVAILABLE
                 },
                 &[],
-            )?;
+            ),
         }
+        .map(|_| ());
     }
-    Ok(())
+    if message.tag == SET {
+        let status = match message.words() {
+            [seconds, nanoseconds]
+                if *nanoseconds < 1_000_000_000 && *seconds <= i64::MAX as u64 =>
+            {
+                match rtc.set(Timestamp {
+                    seconds: *seconds as i64,
+                    nanoseconds: *nanoseconds as u32,
+                }) {
+                    Ok(()) => SUCCESS,
+                    Err(Error::InvalidRequest) => INVALID_REQUEST,
+                    Err(Error::Unsupported) => UNSUPPORTED,
+                    Err(Error::Busy) => BUSY,
+                    Err(_) => UNAVAILABLE,
+                }
+            }
+            _ => INVALID_REQUEST,
+        };
+        return deliver(reply, status, &[]).map(|_| ());
+    }
+    deliver(reply, INVALID_REQUEST, &[]).map(|_| ())
 }
 
 fn deliver(reply: Handle<Reply>, tag: u64, words: &[u64]) -> Result<bool, Error> {

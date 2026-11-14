@@ -102,6 +102,8 @@ auxv_done:
     beq $s3, $t1, identity_replaced
     li.d $t1, 75
     beq $s3, $t1, fork_process
+    li.d $t1, 104
+    beq $s3, $t1, hwclock_test
     li.d $t1, 86
     bne $s3, $t1, .Lnot_v
     ld.d $t0, $sp, 16

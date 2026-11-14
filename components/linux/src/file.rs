@@ -80,6 +80,9 @@ pub(crate) enum OpenFileDescription<'a> {
         kind: Virtual,
         flags: Cell<u32>,
     },
+    Rtc {
+        flags: Cell<u32>,
+    },
     VirtualFile {
         data: Vec<u8>,
         inode: u64,
@@ -212,6 +215,15 @@ impl<'a> Descriptor<'a> {
             close_on_exec,
         }
     }
+    pub fn rtc(flags: u32, close_on_exec: bool) -> Self {
+        Self {
+            description: Rc::new(OpenFileDescription::Rtc {
+                flags: Cell::new(flags),
+            }),
+            close_on_exec,
+        }
+    }
+
     pub fn virtual_file(kind: Virtual, flags: u32, close_on_exec: bool) -> Self {
         Self {
             description: Rc::new(OpenFileDescription::Virtual {
@@ -272,7 +284,8 @@ impl<'a> OpenFileDescription<'a> {
             | Self::Timerfd { flags, .. }
             | Self::Signalfd { flags, .. }
             | Self::Virtual { flags, .. }
-            | Self::VirtualFile { flags, .. } => flags.get(),
+            | Self::VirtualFile { flags, .. }
+            | Self::Rtc { flags } => flags.get(),
         }
     }
 
@@ -287,7 +300,8 @@ impl<'a> OpenFileDescription<'a> {
         | Self::Timerfd { flags, .. }
         | Self::Signalfd { flags, .. }
         | Self::Virtual { flags, .. }
-        | Self::VirtualFile { flags, .. }) = self;
+        | Self::VirtualFile { flags, .. }
+        | Self::Rtc { flags }) = self;
         flags.set((flags.get() & !(O_APPEND | O_NONBLOCK)) | (value & (O_APPEND | O_NONBLOCK)));
     }
 

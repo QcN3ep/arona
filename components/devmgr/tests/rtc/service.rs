@@ -3,7 +3,7 @@
 use super::{check_time, deadline};
 use devmgr::{
     Error,
-    rtc::{self, Rtc, Session},
+    rtc::{self, Rtc, Session, Timestamp},
 };
 use runtime::{
     Device, Handle, Rights,
@@ -48,6 +48,37 @@ pub fn exercise(configuration: rtc::Configuration, id: u32, grant: Handle<Device
     let reconnected = Session::open(process::task(), &control, id, deadline()).unwrap();
     assert!(reconnected.now(deadline()).unwrap() >= other);
     malformed_request(&control, id);
+    let baseline = reconnected.now(deadline()).unwrap();
+    let target = Timestamp {
+        seconds: baseline.seconds + 300,
+        nanoseconds: 0,
+    };
+    reconnected.set(target, deadline()).unwrap();
+    let changed = reconnected.now(deadline()).unwrap();
+    assert!(
+        (target.seconds..target.seconds + 2).contains(&changed.seconds),
+        "unexpected service time: {changed:?}"
+    );
+    assert_eq!(
+        reconnected.set(
+            Timestamp {
+                seconds: baseline.seconds,
+                nanoseconds: 1_000_000_000,
+            },
+            deadline()
+        ),
+        Err(Error::InvalidRequest)
+    );
+    let mut written = reconnected
+        .start_set(Timestamp {
+            seconds: target.seconds + 10,
+            nanoseconds: 0,
+        })
+        .unwrap();
+    written.wait(WaitMode::Until(deadline())).unwrap();
+    let next = reconnected.now(deadline()).unwrap();
+    assert!((target.seconds + 10..target.seconds + 12).contains(&next.seconds));
+    assert_eq!(reconnected.set(baseline, deadline()), Ok(()));
     assert!(reconnected.now(deadline()).unwrap() >= other);
     drop(control);
     worker.join().unwrap();
@@ -65,7 +96,14 @@ fn malformed_request(control: &Handle<runtime::Channel>, id: u32) {
         })
         .unwrap();
     assert_eq!(control.call(&mut message, Some(deadline())).unwrap().tag, 0);
-    for (tag, words) in [(u64::MAX, &[][..]), (2, &[1][..])] {
+    for (tag, words) in [
+        (u64::MAX, &[][..]),
+        (2, &[1][..]),
+        (3, &[][..]),
+        (3, &[1][..]),
+        (3, &[u64::MAX, 0][..]),
+        (3, &[1, 1_000_000_000][..]),
+    ] {
         let response = client
             .call(&mut Message::new(tag, words).unwrap(), Some(deadline()))
             .unwrap();

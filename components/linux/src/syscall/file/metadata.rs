@@ -101,6 +101,18 @@ fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) ->
                 },
             ));
         }
+        OpenFileDescription::Rtc { .. } => {
+            return Outcome::Complete(buffer.write(
+                process,
+                fs::Metadata {
+                    device: 0x0103,
+                    inode: 0x11,
+                    mode: 0o020600,
+                    links: 1,
+                    ..fs::Metadata::default()
+                },
+            ));
+        }
         OpenFileDescription::Virtual { kind, .. } => {
             return Outcome::Complete(buffer.write(
                 process,

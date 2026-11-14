@@ -100,6 +100,9 @@ pub(in crate::syscall) fn openat<'a>(
                 return open_virtual(process, flags, Virtual::Random)
                     .map(|fd| Outcome::Complete(Ok(fd)));
             }
+            b"/dev/rtc" | b"/dev/rtc0" | b"/dev/misc/rtc" => {
+                return open_rtc(process, flags).map(|fd| Outcome::Complete(Ok(fd)));
+            }
             _ => {}
         }
         let lookup = super::path::Lookup::from_name(process, directory, name)?;
@@ -167,6 +170,19 @@ fn open_virtual(process: &mut Process<'_>, flags: u32, kind: Virtual) -> Result<
                 status_flags(flags, 3 | O_NONBLOCK),
                 flags & O_CLOEXEC != 0,
             ),
+            0,
+        )
+        .ok_or(EMFILE)
+}
+
+fn open_rtc(process: &mut Process<'_>, flags: u32) -> Result<usize, Errno> {
+    if flags & O_DIRECTORY != 0 {
+        return Err(ENOTDIR);
+    }
+    process
+        .files
+        .insert(
+            Descriptor::rtc(flags & (3 | O_NONBLOCK), flags & O_CLOEXEC != 0),
             0,
         )
         .ok_or(EMFILE)

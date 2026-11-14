@@ -13,6 +13,7 @@ use runtime::{
 };
 
 pub(super) const NOW: u64 = 2;
+pub(super) const SET: u64 = 3;
 
 pub struct Session {
     channel: Handle<Channel>,
@@ -83,6 +84,34 @@ impl Session {
         let response = call(&self.channel, &mut Message::new(NOW, &[])?, deadline)?;
         timestamp(response)
     }
+
+    pub fn start_set(&self, time: Timestamp) -> Result<Pending<()>, Error> {
+        Ok(Pending::new(
+            self.channel.start_call(&mut set_message(time)?)?,
+            (),
+            |(), response| {
+                if !response_result(response)?.words().is_empty() {
+                    return Err(runtime::Error::Protocol.into());
+                }
+                Ok(())
+            },
+        ))
+    }
+
+    pub fn set(&self, time: Timestamp, deadline: u64) -> Result<(), Error> {
+        let response = call(&self.channel, &mut set_message(time)?, deadline)?;
+        if !response.words().is_empty() {
+            return Err(runtime::Error::Protocol.into());
+        }
+        Ok(())
+    }
+}
+
+fn set_message(time: Timestamp) -> Result<Message, Error> {
+    Ok(Message::new(
+        SET,
+        &[time.seconds as u64, time.nanoseconds.into()],
+    )?)
 }
 
 fn call(

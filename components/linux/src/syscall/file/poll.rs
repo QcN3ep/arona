@@ -208,6 +208,7 @@ fn readiness(description: &OpenFileDescription<'_>, process: &Process<'_>, index
                 | if terminal.failed() { ERROR | HANGUP } else { 0 }
         }
         OpenFileDescription::Virtual { .. } => INPUT | OUTPUT,
+        OpenFileDescription::Rtc { .. } => INPUT,
     }
 }
 

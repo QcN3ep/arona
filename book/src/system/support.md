@@ -43,7 +43,7 @@ init starts applications according to `/etc/init.toml` and enforces restart poli
 | Native sockets | IPv4 TCP/UDP loopback, readiness subscriptions, recoverable requests, and asynchronous close |
 | Ethernet frames | Modern VirtIO PCI net, copied RX/TX, MTU, MAC, and link change waits |
 | Random numbers | Modern VirtIO PCI RNG |
-| RTC | Goldfish and Loongson LS7A time reads |
+| RTC | Goldfish and Loongson LS7A time reads and writes, Linux `/dev/rtc` ioctls |
 | Root file tree | Files, directories, and links in the cpio newc archive |
 | Persistent files | 4 KiB block ext4, extents, directory modification, JBD2 transactions and recovery |
 | Log files | logger record append, history recovery, tail handling, and fsync |

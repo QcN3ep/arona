@@ -16,7 +16,7 @@ The device manager stores the device instance identity, resource group, driver c
 | Block device | VirtIO MMIO block or VirtIO PCI block | capacity, read/write, flush, request cancellation and acknowledgment |
 | Ethernet | VirtIO PCI net | exclusive copied frame RX/TX, MAC, MTU, link state |
 | Random numbers | VirtIO PCI RNG | read device random bytes |
-| RTC | Goldfish RTC, Loongson LS7A RTC | read Unix time |
+| RTC | Goldfish RTC, Loongson LS7A RTC | read and set Unix time |
 | Power | Device Tree `syscon` with poweroff/reboot operations | capability query, shutdown, reboot |
 
 The manager returns ready instances by device type and cursor.
@@ -90,6 +90,9 @@ When the device supports the FLUSH feature, the service provides the correspondi
 
 The RNG driver submits a writable DMA buffer; after the device completes, it reads the random bytes and returns them to the client.
 The RTC driver reads seconds and nanoseconds through its registers, and the LS7A path converts the calendar registers into Unix time.
+A session can also write Unix time. The driver validates the UTC calendar, accepts years from 1970 to 2100, programs the Goldfish nanosecond counter or the LS7A TOY registers, and reads the value back before reporting success.
+The LS7A path writes the year before the calendar fields, so a leap-day target is not normalized by the previous year, and it rejects subsecond targets because the TOY registers store whole seconds.
+The Goldfish path writes the low and high halves of the 64-bit nanosecond counter in that order.
 
 ## Power Operations
 

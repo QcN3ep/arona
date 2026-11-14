@@ -6,8 +6,9 @@
 mod service;
 
 use devmgr::{
+    Error,
     device::DeviceDescription,
-    rtc::{self, Rtc, Timestamp},
+    rtc::{self, Calendar, Rtc, Timestamp},
 };
 use runtime::{
     DeviceSet, Handle, ObjectType,
@@ -54,9 +55,95 @@ fn exercise_device(devices: &Handle<DeviceSet>, id: u32) -> bool {
     let second = rtc.now().unwrap();
     check_time(second);
     assert!(second.seconds > first.seconds);
+    exercise_set(&mut rtc, second);
     drop(rtc);
     service::exercise(configuration, id, grant);
     true
+}
+
+fn exercise_set(rtc: &mut Rtc<'_>, baseline: Timestamp) {
+    assert_eq!(
+        Timestamp::from_calendar(2024, 2, 29, 0, 0, 0),
+        Ok(Timestamp {
+            seconds: 1_709_164_800,
+            nanoseconds: 0,
+        })
+    );
+    assert_eq!(
+        Timestamp {
+            seconds: 951_868_799,
+            nanoseconds: 0,
+        }
+        .calendar(),
+        Ok(Calendar {
+            year: 2000,
+            month: 2,
+            day: 29,
+            hour: 23,
+            minute: 59,
+            second: 59,
+            weekday: 2,
+            year_day: 59,
+        })
+    );
+    for fields in [
+        (2025, 13, 1),
+        (2025, 0, 1),
+        (2025, 2, 29),
+        (2024, 2, 30),
+        (2025, 4, 31),
+        (2025, 1, 1),
+    ] {
+        let (year, month, day) = fields;
+        let hour = 0;
+        let minute = 0;
+        let second = 0;
+        let expected = if fields == (2025, 1, 1) {
+            Ok(Timestamp {
+                seconds: 1_735_689_600,
+                nanoseconds: 0,
+            })
+        } else {
+            Err(Error::InvalidRequest)
+        };
+        assert_eq!(
+            Timestamp::from_calendar(year, month, day, hour, minute, second),
+            expected
+        );
+    }
+    let target = Timestamp {
+        seconds: baseline.seconds + 120,
+        nanoseconds: 0,
+    };
+    rtc.set(target).unwrap();
+    let changed = rtc.now().unwrap();
+    assert!(
+        (target.seconds..target.seconds + 2).contains(&changed.seconds),
+        "unexpected written time: {changed:?}"
+    );
+    for invalid in [
+        Timestamp {
+            seconds: -1,
+            nanoseconds: 0,
+        },
+        Timestamp {
+            seconds: i64::MAX,
+            nanoseconds: 0,
+        },
+        Timestamp {
+            seconds: baseline.seconds,
+            nanoseconds: 1_000_000_000,
+        },
+    ] {
+        assert_eq!(rtc.set(invalid), Err(Error::InvalidRequest));
+    }
+    assert_eq!(
+        rtc.set(Timestamp {
+            seconds: baseline.seconds,
+            nanoseconds: 0,
+        }),
+        Ok(())
+    );
 }
 
 fn check_time(time: Timestamp) {

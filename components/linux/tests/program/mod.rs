@@ -340,6 +340,7 @@ fn writable(
         b"j-interp",
         b"writable",
         b"vector",
+        b"hwclock",
     ] {
         let result = run(mode).wait(WaitMode::Forever);
         let expected = ExitStatus {

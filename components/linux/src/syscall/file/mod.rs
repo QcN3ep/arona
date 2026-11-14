@@ -14,6 +14,7 @@ mod open;
 pub(in crate::syscall) mod path;
 mod pipe;
 mod poll;
+mod rtc;
 mod signalfd;
 mod statistics;
 mod terminal;
@@ -80,6 +81,13 @@ pub(super) fn dispatch<'a>(
         return Some(outcome);
     }
     Some(match number {
+        abi::IOCTL if rtc::is_rtc(process, arguments[0]) => Outcome::Complete(rtc::ioctl(
+            process,
+            services,
+            arguments[0],
+            arguments[1],
+            arguments[2],
+        )),
         abi::IOCTL => terminal::start(process, index, arguments[0], arguments[1], arguments[2]),
         abi::PIPE2 => Outcome::Complete(pipe::create(process, arguments[0], arguments[1])),
         abi::PPOLL => poll::start(process, arguments, false),

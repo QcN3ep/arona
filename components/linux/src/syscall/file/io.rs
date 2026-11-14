@@ -71,6 +71,9 @@ pub(in crate::syscall) fn read<'a>(
         OpenFileDescription::Virtual { .. } => {
             return virtual_read(process, fd_raw, buffer, offset, services);
         }
+        OpenFileDescription::Rtc { .. } => {
+            return super::rtc::read(process, fd_raw, buffer, offset, services);
+        }
         OpenFileDescription::Directory { .. } => return Outcome::Complete(Err(EISDIR)),
         OpenFileDescription::Regular { .. } => {}
         _ if offset.is_some() => return Outcome::Complete(Err(ESPIPE)),
@@ -180,6 +183,9 @@ pub(in crate::syscall) fn write<'a>(
             return super::pipe::start(process, fd_raw, buffer, offset, true);
         }
         OpenFileDescription::Virtual { .. } => return virtual_write(process, fd_raw, buffer),
+        OpenFileDescription::Rtc { .. } => {
+            return Outcome::Complete(super::rtc::write(process, fd_raw));
+        }
         OpenFileDescription::Eventfd { .. } => {
             return if offset.is_some() {
                 Outcome::Complete(Err(ESPIPE))
@@ -263,7 +269,8 @@ pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome
             | OpenFileDescription::Timerfd { .. }
             | OpenFileDescription::Signalfd { .. }
             | OpenFileDescription::Virtual { .. }
-            | OpenFileDescription::VirtualFile { .. } => {
+            | OpenFileDescription::VirtualFile { .. }
+            | OpenFileDescription::Rtc { .. } => {
                 return Err(EINVAL);
             }
         }
@@ -329,7 +336,8 @@ pub(in crate::syscall) fn seek<'a>(
             OpenFileDescription::Socket { .. }
             | OpenFileDescription::SocketPair { .. }
             | OpenFileDescription::Terminal { .. }
-            | OpenFileDescription::Pipe { .. } => {
+            | OpenFileDescription::Pipe { .. }
+            | OpenFileDescription::Rtc { .. } => {
                 return Err(ESPIPE);
             }
             OpenFileDescription::Eventfd { .. }
