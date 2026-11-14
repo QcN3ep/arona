@@ -190,3 +190,21 @@ Repeated unknown addresses are aggregated by PC and bytes without assigning a pr
 Supply component symbols explicitly with `--image bin/fs=PATH/TO/fs`, repeated for other archive entries as needed.
 Each supplied ELF must contain debug information and match the load segments of that archive entry.
 These files are saved for inspection. They do not establish which user address space executed an instruction.
+
+## Comparing Saved Runs
+
+```sh
+cargo xtask perf diff target/perf/BEFORE target/perf/AFTER
+```
+
+This command writes `diff.md` and `diff.json` in the second directory without building or running the guest.
+It checks saved file checksums and requires matching ISA, case, collection mode, QEMU configuration, firmware, and collector.
+System runs must also use the same workload name, work units, boundary expressions, and completion message.
+Guest builds may differ. The caller must keep workload inputs and completion semantics comparable.
+
+The comparison shows exact instruction counts and their difference, followed by counts per work unit.
+JSON stores the signed integer difference as a decimal string. Percentages and per-unit values use floating point.
+Profile comparisons also show image, function, and source-line changes, including unknown counts and coverage.
+Groups match exact image names and function names or source locations. Names retain any symbol hashes.
+Unmatched groups appear as added or removed. Absolute PCs are not matched across builds.
+The Markdown report shows the 20 largest changes in each grouping. JSON retains every group.

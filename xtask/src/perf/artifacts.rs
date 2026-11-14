@@ -63,7 +63,7 @@ pub(super) fn prepare(options: &Options, root: &Path, run: &Path) -> Result<Valu
     Ok(manifest)
 }
 
-fn filenames(target: Target, case: &str) -> Vec<&'static str> {
+pub(super) fn filenames(target: Target, case: &str) -> Vec<&'static str> {
     if case == "system" {
         return system::files(target);
     }

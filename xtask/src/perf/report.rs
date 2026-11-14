@@ -33,6 +33,21 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), S
 }
 
 pub(super) fn generate(directory: &Path, metadata: &Value) -> Result<(), String> {
+    let (report, warnings) = build(directory, metadata)?;
+    fs::write(directory.join("report.log"), warnings.join("\n"))
+        .map_err(|error| error.to_string())?;
+    fs::write(
+        directory.join("report.json"),
+        serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    fs::write(directory.join("report.md"), markdown(&report)?)
+        .map_err(|error| error.to_string())?;
+    println!("Hotspot report: {}", directory.join("report.md").display());
+    Ok(())
+}
+
+pub(super) fn build(directory: &Path, metadata: &Value) -> Result<(Value, Vec<String>), String> {
     if metadata["mode"] != "profile"
         || !matches!(metadata["case"].as_str(), Some("calibration" | "system"))
     {
@@ -97,32 +112,22 @@ pub(super) fn generate(directory: &Path, metadata: &Value) -> Result<(), String>
         }).collect::<Vec<_>>(),
         "windows": windows,
     });
-    fs::write(directory.join("report.log"), warnings.join("\n"))
-        .map_err(|error| error.to_string())?;
-    fs::write(
-        directory.join("report.json"),
-        serde_json::to_vec_pretty(&report).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    fs::write(directory.join("report.md"), markdown(&report)?)
-        .map_err(|error| error.to_string())?;
-    println!("Hotspot report: {}", directory.join("report.md").display());
-    Ok(())
+    Ok((report, warnings))
 }
 
-fn read_json(path: &Path) -> Result<Value, String> {
+pub(super) fn read_json(path: &Path) -> Result<Value, String> {
     serde_json::from_slice(&fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?)
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 
-fn check_digest(path: &Path, expected: &Value) -> Result<(), String> {
+pub(super) fn check_digest(path: &Path, expected: &Value) -> Result<(), String> {
     if expected.as_str() != Some(artifacts::digest(path)?.as_str()) {
         return Err(format!("checksum mismatch: {}", path.display()));
     }
     Ok(())
 }
 
-fn number(value: &Value) -> Result<u64, String> {
+pub(super) fn number(value: &Value) -> Result<u64, String> {
     value
         .as_u64()
         .ok_or_else(|| "invalid profile instruction count".to_owned())
@@ -286,7 +291,7 @@ fn group(rows: &[Value], field: &str, total: u64) -> Result<Vec<Value>, String> 
         .collect())
 }
 
-fn cell(value: &str) -> String {
+pub(super) fn cell(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
