@@ -19,6 +19,7 @@ Use the toolchain pinned in `rust-toolchain.toml` and run commands from the repo
 cargo fmt --all -- --check                         # Check formatting
 cargo clippy --locked --workspace --all-targets -- -D warnings --force-warn clippy::too_many_lines
 cargo test --locked --workspace --tests            # Run host integration tests
+cargo xtask test riscv64 --release                 # Run QEMU integration tests
 cargo xtask build riscv64 --release                # Build services and kernel
 cargo xtask run loongarch64 --release              # Build and boot in QEMU
 cargo xtask book                                   # Build the handbook

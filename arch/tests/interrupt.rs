@@ -2,6 +2,11 @@
 
 #![no_std]
 #![no_main]
+#![feature(custom_test_frameworks)]
+#![test_runner(support::run)]
+#![reexport_test_harness_main = "test_main"]
+
+mod support;
 
 #[cfg(feature = "runtime-tests")]
 extern crate alloc;
@@ -40,6 +45,8 @@ const UART: usize = 0xffff_ffc0_0020_0000;
 const UART: usize = 0xffff_8000_0060_01e0;
 
 const MILLISECOND: u64 = 1_000_000;
+static BOOT_FIRST: AtomicUsize = AtomicUsize::new(0);
+static BOOT_SECOND: AtomicUsize = AtomicUsize::new(0);
 static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
 static DEVICE_TESTS: AtomicBool = AtomicBool::new(false);
 static MODE: AtomicUsize = AtomicUsize::new(0);
@@ -65,11 +72,20 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
     // SAFETY: The range must be exclusive writable BSS not yet used by the boot entry point.
     unsafe { start.write_bytes(0, length) };
     uart().init().unwrap();
+    BOOT_FIRST.store(first, Ordering::Relaxed);
+    BOOT_SECOND.store(second, Ordering::Relaxed);
+    test_main();
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+fn run_environment(_suite: &str) {
     uart()
         .write(format_args!("Interrupt controller tests started\n"))
         .unwrap();
     #[cfg(feature = "runtime-tests")]
-    let suite = select_program();
+    let suite = _suite;
     arch::hardware::bind();
     hardware::trap()
         .install(
@@ -80,7 +96,10 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
             handle,
         )
         .unwrap();
-    let (cpu_id, tree, program) = isa::boot(first, second);
+    let (cpu_id, tree, program) = isa::boot(
+        BOOT_FIRST.load(Ordering::Relaxed),
+        BOOT_SECOND.load(Ordering::Relaxed),
+    );
     // SAFETY: The test must exclusively own this hardware description; it is read-only after initialization.
     let hardware = unsafe { &mut *core::ptr::addr_of_mut!(HARDWARE) };
     tree.dump(hardware).unwrap();
@@ -135,11 +154,137 @@ unsafe extern "C" fn __wrap__start_native(first: usize, second: usize) -> ! {
             .unwrap();
     }
     #[cfg(feature = "runtime-tests")]
-    run_program(suite, program, devices);
+    if suite != "interrupt" {
+        run_program(suite, program, devices);
+    }
     uart()
         .write(format_args!("Interrupt controller tests passed\n"))
         .unwrap();
-    hardware::cpu().halt()
+}
+
+#[kernel_tests::ktest]
+fn controller() {
+    run_environment("interrupt");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn device() {
+    run_environment("device");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn service() {
+    run_environment("service");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn init() {
+    run_environment("init");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn linux() {
+    run_environment("linux");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn net_service() {
+    run_environment("net-service");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn dma() {
+    run_environment("dma");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest("DMA domain poisoned; DMA frames retained: Busy")]
+fn dma_drop() {
+    run_environment("dma-drop");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest("DMA domain poisoned; DMA frames retained: Busy")]
+fn dma_revoke() {
+    run_environment("dma-revoke");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn block() {
+    run_environment("block");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn rng() {
+    run_environment("rng");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn power() {
+    run_environment("power");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn net() {
+    run_environment("net");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn lwip() {
+    run_environment("lwip");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn rtc() {
+    run_environment("rtc");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn fs() {
+    run_environment("fs");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn pci_firmware() {
+    run_environment("pci-firmware");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn pci_exhausted() {
+    run_environment("pci-exhausted");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn pci_rollback() {
+    run_environment("pci-rollback");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn uart_driver() {
+    run_environment("device");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn logger() {
+    run_environment("device");
 }
 
 #[cfg(feature = "runtime-tests")]
@@ -253,48 +398,6 @@ fn run_program(
         uart()
             .write(format_args!("Device service tests passed\n"))
             .unwrap();
-    }
-}
-
-#[cfg(feature = "runtime-tests")]
-fn select_program() -> &'static str {
-    uart().write(format_args!("Test suite: ")).unwrap();
-    let mut input = [0; 16];
-    let mut length = 0;
-    loop {
-        // SAFETY: UART must retain a readable boot mapping and be exclusively used by the test.
-        let byte = unsafe {
-            while ((UART + 5) as *const u8).read_volatile() & 1 == 0 {
-                core::hint::spin_loop();
-            }
-            (UART as *const u8).read_volatile()
-        };
-        if byte == b'\n' || byte == b'\r' {
-            return match &input[..length] {
-                b"device" => "device",
-                b"service" => "service",
-                b"init" => "init",
-                b"linux" => "linux",
-                b"net-service" => "net-service",
-                b"dma" => "dma",
-                b"block" => "block",
-                b"rng" => "rng",
-                b"power" => "power",
-                b"net" => "net",
-                b"lwip" => "lwip",
-                b"rtc" => "rtc",
-                b"fs" => "fs",
-                b"dma-drop" => "dma-drop",
-                b"dma-revoke" => "dma-revoke",
-                b"pci-firmware" => "pci-firmware",
-                b"pci-exhausted" => "pci-exhausted",
-                b"pci-rollback" => "pci-rollback",
-                _ => panic!("unknown device test suite"),
-            };
-        }
-        assert!(length < input.len(), "test suite name is too long");
-        input[length] = byte;
-        length += 1;
     }
 }
 

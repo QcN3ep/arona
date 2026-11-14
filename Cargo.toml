@@ -6,6 +6,7 @@ members = [
     "kernel",
     "arch",
     "kernel-tests",
+    "kernel-tests/macros",
     "abi",
     "components/runtime",
     "components/init",

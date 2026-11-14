@@ -71,9 +71,18 @@ version = "0.2.0"
 dependencies = [
  "arona-abi",
  "arona-kernel",
+ "arona-ktest",
  "arona-runtime",
  "arrayvec",
  "spin",
+]
+
+[[package]]
+name = "arona-ktest"
+version = "0.2.0"
+dependencies = [
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

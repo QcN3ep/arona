@@ -2,6 +2,11 @@
 
 #![no_std]
 #![no_main]
+#![feature(custom_test_frameworks)]
+#![test_runner(support::run)]
+#![reexport_test_harness_main = "test_main"]
+
+mod support;
 
 use core::marker::PhantomPinned;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -69,6 +74,14 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     // SAFETY: UART must be the boot UART mapping of the current ISA and must be used only by the test.
     let uart = unsafe { Uart::new(UART) };
     uart.init().unwrap();
+    test_main();
+    halt()
+}
+
+#[kernel_tests::ktest]
+fn allocations() {
+    // SAFETY: The test exclusively owns the mapped and initialized boot console.
+    let uart = unsafe { Uart::new(UART) };
     uart.write(format_args!("Heap allocator tests started\n"))
         .unwrap();
     assert!(HeapBox::try_new(1u64).is_err());
@@ -76,7 +89,6 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     run_allocations(manager);
     uart.write(format_args!("Heap allocator tests passed\n"))
         .unwrap();
-    halt()
 }
 
 fn initialize() -> &'static MemoryManager {

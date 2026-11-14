@@ -2,14 +2,18 @@
 
 #![no_std]
 #![no_main]
+#![feature(custom_test_frameworks)]
+#![test_runner(support::run)]
+#![reexport_test_harness_main = "test_main"]
+
+mod support;
 
 use core::{
     alloc::Layout,
     sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
 };
 
-use arch::device::uart::Uart;
-use kernel::{
+use ::kernel::{
     hardware::{
         self,
         cpu::InterruptState,
@@ -25,6 +29,7 @@ use kernel::{
     },
     trap::{Trap, TrapEvent, TrapOrigin, TrapOutcome},
 };
+use arch::device::uart::Uart;
 
 #[cfg(target_arch = "riscv64")]
 #[path = "riscv64/execution.rs"]
@@ -45,6 +50,7 @@ const RAM: u64 = 0x0200_0000;
 const STACK_SIZE: usize = 16 * 1024;
 const ROUNDS: usize = 8;
 static CONTEXTS: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
+static FIRMWARE: AtomicUsize = AtomicUsize::new(0);
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
 static RETIRED: AtomicUsize = AtomicUsize::new(0);
 static KERNEL_ROUNDS: AtomicUsize = AtomicUsize::new(0);
@@ -87,10 +93,15 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
         start.write_bytes(0, length);
     }
     uart().init().unwrap();
-    uart()
-        .write(format_args!("Execution tests started\n"))
-        .unwrap();
-    let manager = initialize();
+    FIRMWARE.store(firmware, Ordering::Relaxed);
+    test_main();
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+fn prepare(kernel_tests: bool) {
+    initialize();
     hardware::trap()
         .install(
             VirtRange {
@@ -100,37 +111,89 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
             handle,
         )
         .unwrap();
-    let suite = select_suite();
-    if suite != Suite::Execution {
+    if kernel_tests {
         hardware::timer()
-            .initialize(isa::frequency(firmware))
+            .initialize(isa::frequency(FIRMWARE.load(Ordering::Relaxed)))
             .unwrap();
         KERNEL_TESTS.store(true, Ordering::Relaxed);
-        match suite {
-            Suite::Kernel => {
-                kernel_tests::run::<Platform>();
-                uart().write(format_args!("Kernel tests passed\n")).unwrap();
-            }
-            Suite::Runtime => {
-                kernel_tests::run_program::<Platform>();
-                uart()
-                    .write(format_args!("Runtime tests passed\n"))
-                    .unwrap();
-            }
-            Suite::Process => {
-                kernel_tests::run_process::<Platform>();
-                uart()
-                    .write(format_args!("Process tests passed\n"))
-                    .unwrap();
-            }
-            Suite::Execution => unreachable!(),
-        }
-        hardware::cpu().halt()
     }
-    run_execution(manager)
 }
 
-fn run_execution(manager: &'static MemoryManager) -> ! {
+#[kernel_tests::ktest]
+fn contexts() {
+    prepare(false);
+    run_execution(memory::manager());
+}
+
+mod kernel {
+    use super::{Platform, prepare};
+
+    fn initialize() {
+        prepare(true);
+        ::kernel::thread::scheduler::initialize().unwrap();
+    }
+
+    #[kernel_tests::ktest]
+    fn threads() {
+        prepare(true);
+        kernel_tests::run_threads::<Platform>();
+    }
+
+    #[kernel_tests::ktest]
+    fn memory() {
+        initialize();
+        kernel_tests::run_concurrent_memory();
+    }
+
+    #[kernel_tests::ktest]
+    fn tasks() {
+        initialize();
+        kernel_tests::run_tasks();
+    }
+
+    #[kernel_tests::ktest]
+    fn ipc() {
+        initialize();
+        kernel_tests::run_ipc();
+    }
+
+    #[kernel_tests::ktest]
+    fn syscalls() {
+        initialize();
+        kernel_tests::run_syscalls(<Platform as kernel_tests::Platform>::syscall_code());
+    }
+
+    #[kernel_tests::ktest]
+    fn user_threads() {
+        initialize();
+        kernel_tests::run_user_threads(
+            <Platform as kernel_tests::Platform>::user_code(),
+            <Platform as kernel_tests::Platform>::set_floating_enabled,
+        );
+    }
+
+    #[kernel_tests::ktest]
+    fn traps() {
+        initialize();
+        kernel_tests::run_traps::<Platform>();
+    }
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn runtime() {
+    prepare(true);
+    kernel_tests::run_program::<Platform>();
+}
+
+#[cfg(feature = "runtime-tests")]
+#[kernel_tests::ktest]
+fn process() {
+    prepare(true);
+    kernel_tests::run_process::<Platform>();
+}
+
+fn run_execution(manager: &'static MemoryManager) {
     let stacks: [HeapAllocation; 3] = core::array::from_fn(|index| {
         let stack = manager
             .allocate_heap(Layout::from_size_align(STACK_SIZE, PAGE_SIZE).unwrap())
@@ -195,13 +258,12 @@ fn run_execution(manager: &'static MemoryManager) -> ! {
     uart()
         .write(format_args!("Execution tests passed\n"))
         .unwrap();
-    hardware::cpu().halt()
 }
 
 struct Platform;
 
 impl kernel_tests::Platform for Platform {
-    fn return_values(state: &mut kernel::hardware::execution::UserState, values: [usize; 3]) {
+    fn return_values(state: &mut ::kernel::hardware::execution::UserState, values: [usize; 3]) {
         isa::return_values(state, values);
     }
     #[cfg(feature = "runtime-tests")]
@@ -231,41 +293,6 @@ impl kernel_tests::Platform for Platform {
                 PAGE_SIZE / 8,
             )
         }
-    }
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Suite {
-    Execution,
-    Kernel,
-    Runtime,
-    Process,
-}
-
-fn select_suite() -> Suite {
-    uart().write(format_args!("Test suite: ")).unwrap();
-    let mut input = [0u8; 16];
-    let mut length = 0;
-    loop {
-        // SAFETY: UART must retain a readable boot mapping and be exclusively used by the test.
-        let byte = unsafe {
-            while ((UART + 5) as *const u8).read_volatile() & 1 == 0 {
-                core::hint::spin_loop();
-            }
-            (UART as *const u8).read_volatile()
-        };
-        if byte == b'\n' || byte == b'\r' {
-            return match &input[..length] {
-                b"execution" => Suite::Execution,
-                b"kernel" => Suite::Kernel,
-                b"runtime" => Suite::Runtime,
-                b"process" => Suite::Process,
-                _ => panic!("unknown execution test suite"),
-            };
-        }
-        assert!(length < input.len(), "test suite name is too long");
-        input[length] = byte;
-        length += 1;
     }
 }
 

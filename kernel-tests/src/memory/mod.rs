@@ -77,7 +77,7 @@ pub fn run(regions: &[MemoryRegion]) {
     heap_allocator::run();
 }
 
-pub(super) fn concurrent() {
+pub fn concurrent() {
     frame::concurrent();
 }
 

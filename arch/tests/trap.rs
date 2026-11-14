@@ -2,6 +2,11 @@
 
 #![no_std]
 #![no_main]
+#![feature(custom_test_frameworks)]
+#![test_runner(support::run)]
+#![reexport_test_harness_main = "test_main"]
+
+mod support;
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -30,10 +35,11 @@ const UART: usize = 0xffff_ffc0_0020_0000;
 #[cfg(target_arch = "loongarch64")]
 const UART: usize = 0xffff_8000_0060_01e0;
 
-const CASE: &str = match option_env!("ARONA_TRAP_TEST") {
-    Some(case) => case,
-    None => "interrupt",
-};
+static CASE: spin::Once<&'static str> = spin::Once::new();
+
+fn case() -> &'static str {
+    CASE.get().copied().unwrap()
+}
 
 static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
 static FLOATING: AtomicBool = AtomicBool::new(false);
@@ -71,8 +77,16 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     // SAFETY: The range must be exclusive writable BSS not yet used by the boot entry point.
     unsafe { start.write_bytes(0, length) };
     uart().init().unwrap();
+    test_main();
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+fn run_case(name: &'static str) {
+    CASE.call_once(|| name);
     uart()
-        .write(format_args!("Trap tests started: {CASE}\n"))
+        .write(format_args!("Trap tests started: {name}\n"))
         .unwrap();
     arch::hardware::bind();
     hardware::trap()
@@ -84,7 +98,7 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
             handle,
         )
         .unwrap();
-    match CASE {
+    match name {
         "interrupt" => {
             for floating in [false, true] {
                 FLOATING.store(floating, Ordering::Relaxed);
@@ -114,21 +128,74 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
         }
         _ => panic!("unknown trap test case"),
     }
-    hardware::cpu().halt()
+}
+
+#[kernel_tests::ktest]
+fn interrupt() {
+    run_case("interrupt");
+}
+
+#[kernel_tests::ktest]
+fn user() {
+    run_case("user");
+}
+
+#[kernel_tests::ktest("FATAL TRAP: Kernel", "IllegalInstruction", "entry=KernelException")]
+fn fault() {
+    run_case("fault");
+}
+
+#[kernel_tests::ktest(
+    "FATAL TRAP: Kernel",
+    "SoftwareInterrupt",
+    "sp=0x0",
+    "entry=InvalidStack"
+)]
+fn bad_stack() {
+    run_case("bad-stack");
+}
+
+#[kernel_tests::ktest("FATAL TRAP: Kernel", "IllegalInstruction", "entry=Reentrant")]
+fn reentry() {
+    run_case("reentry");
+}
+
+#[cfg(target_arch = "loongarch64")]
+#[kernel_tests::ktest]
+fn refill() {
+    run_case("refill");
+}
+
+#[cfg(target_arch = "loongarch64")]
+#[kernel_tests::ktest("FATAL TRAP: Kernel", "PageFault", "sp=0x0", "entry=KernelException")]
+fn refill_kernel() {
+    run_case("refill-kernel");
+}
+
+#[cfg(target_arch = "loongarch64")]
+#[kernel_tests::ktest("FATAL TRAP: Kernel", "class: BoundsCheck", "entry=KernelException")]
+fn bounds() {
+    run_case("bounds");
+}
+
+#[cfg(target_arch = "loongarch64")]
+#[kernel_tests::ktest("FATAL TRAP: Kernel", "class: Arithmetic", "entry=KernelException")]
+fn arithmetic() {
+    run_case("arithmetic");
 }
 
 fn handle(trap: Trap) -> TrapOutcome {
     assert_eq!(hardware::cpu().interrupt_state(), InterruptState::Disabled);
     assert!(!isa::floating_enabled());
     #[cfg(target_arch = "loongarch64")]
-    if CASE == "refill" {
+    if case() == "refill" {
         return isa::handle_refill(trap);
     }
     match trap.event {
         TrapEvent::SoftwareInterrupt => {
             assert_eq!(trap.origin, TrapOrigin::Kernel);
             isa::acknowledge();
-            if CASE == "reentry" {
+            if case() == "reentry" {
                 isa::fault();
             }
             if FLOATING.load(Ordering::Relaxed) {
@@ -160,6 +227,7 @@ fn handle(trap: Trap) -> TrapOutcome {
                     uart()
                         .write(format_args!("Trap tests passed: user\n"))
                         .unwrap();
+                    support::pass();
                     hardware::cpu().halt()
                 }
                 _ => panic!("invalid user register state"),
@@ -219,7 +287,7 @@ fn enter_user() -> ! {
     USER_LEAF.store(parent.address() as usize, Ordering::Relaxed);
     let user_code = isa::user_code as *const () as usize;
     #[cfg(target_arch = "loongarch64")]
-    let user_code = if CASE == "refill" {
+    let user_code = if case() == "refill" {
         isa::refill_user as *const () as usize
     } else {
         user_code

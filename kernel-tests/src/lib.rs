@@ -9,6 +9,8 @@ extern crate alloc;
 
 use kernel::trap::{Trap, TrapOrigin, TrapOutcome};
 
+pub use ktest::ktest;
+
 mod device;
 mod ipc;
 mod memory;
@@ -18,8 +20,14 @@ mod thread;
 mod trap;
 
 pub use device::{run as run_devices, run_dma_failure};
+pub use ipc::run as run_ipc;
+pub use memory::concurrent as run_concurrent_memory;
 pub use memory::{run as run_memory, validate_regions as validate_memory_regions};
+pub use syscall::run as run_syscalls;
 pub use syscall::{handle_program, run_device_program, run_init_program, run_service_program};
+pub use task::run as run_tasks;
+pub use thread::{run as run_threads, run_user as run_user_threads};
+pub use trap::run as run_traps;
 
 pub trait Platform {
     fn return_values(state: &mut kernel::hardware::execution::UserState, values: [usize; 3]);
@@ -29,16 +37,6 @@ pub trait Platform {
     fn program() -> Option<&'static [u8]> {
         None
     }
-}
-
-pub fn run<P: Platform>() {
-    thread::run::<P>();
-    memory::concurrent();
-    task::run();
-    ipc::run();
-    syscall::run(P::syscall_code());
-    thread::run_user(P::user_code(), P::set_floating_enabled);
-    trap::run::<P>();
 }
 
 pub fn run_program<P: Platform>() {

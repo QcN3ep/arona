@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
+
+[package]
+name = "arona-ktest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+test = false
+bench = false
+
+[lints]
+workspace = true
+
+[dependencies]
+quote = "1"
+syn = { version = "2", features = ["full"] }

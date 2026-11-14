@@ -11,6 +11,7 @@ Reading from the bottom up, `abi` defines handover types, `kernel` provides reso
 | `kernel/` | `arona-kernel` | Privileged kernel mechanisms and hardware interface definitions |
 | `arch/` | `arona-arch` | Hardware interface implementations and the kernel executable |
 | `kernel-tests/` | `arona-kernel-tests` | Kernel integration tests executed through real hardware capabilities |
+| `kernel-tests/macros/` | `arona-ktest` | Attribute macro for collecting bare-metal test cases |
 | `components/runtime/` | `arona-runtime` | Native Rust runtime environment and kernel call wrappers |
 | `components/init/` | `arona-init` | Starting base services and supervising configured applications |
 | `components/devmgr/` | `arona-devmgr` | Device management, drivers, and device sessions |
