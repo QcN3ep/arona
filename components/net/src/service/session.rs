@@ -6,6 +6,8 @@ use super::{
 };
 use crate::{Error, Readiness, protocol as p};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
+use net::{AddressFamily, Endpoint, SocketInfo, SocketKind, SocketState};
 use runtime::{
     Channel, Event, Handle, Reply, Rights,
     ipc::{self, Message, ReceivedMessage, WaitItem, WaitMode},
@@ -14,13 +16,18 @@ use runtime::{
 
 pub(super) struct Session {
     pub channel: Handle<Channel>,
-    pub kind: Option<net::SocketKind>,
+    pub kind: Option<SocketKind>,
     pub socket: Option<lwip::Socket>,
     observer: Option<lwip::Subscription>,
     work: Option<Work>,
     retired: u64,
     watchers: Vec<Watcher>,
+    pub(super) listening: bool,
+    inode: u64,
+    pub(super) uid: u32,
 }
+
+static NEXT_INODE: AtomicU64 = AtomicU64::new(1);
 struct Watcher {
     channel: Handle<Channel>,
     event: Handle<Event>,
@@ -49,15 +56,53 @@ impl Session {
             work: None,
             retired: 0,
             watchers: Vec::new(),
+            listening: false,
+            inode: 0,
+            uid: 0,
         }
     }
     pub(super) fn install(&mut self, socket: lwip::Socket, observer: lwip::Subscription) {
         self.kind = Some(match socket.kind() {
-            lwip::SocketKind::Tcp => net::SocketKind::Tcp,
-            lwip::SocketKind::Udp => net::SocketKind::Udp,
+            lwip::SocketKind::Tcp => SocketKind::Tcp,
+            lwip::SocketKind::Udp => SocketKind::Udp,
         });
         self.socket = Some(socket);
         self.observer = Some(observer);
+        self.listening = false;
+        self.inode = NEXT_INODE.fetch_add(1, Ordering::Relaxed);
+    }
+    /// Snapshot one live socket for `/proc/net`; sockets being torn down are skipped.
+    pub(super) fn info(&mut self) -> Option<SocketInfo> {
+        let socket = self.socket.as_mut()?;
+        let kind = self.kind?;
+        let family = match socket.family() {
+            lwip::AddressFamily::Ipv4 => AddressFamily::Ipv4,
+            lwip::AddressFamily::Ipv6 => AddressFamily::Ipv6,
+        };
+        let local = socket.local_endpoint().ok()?;
+        let local = Endpoint {
+            address: local.address,
+            port: local.port,
+        };
+        let peer = socket.peer_endpoint().ok().map(|endpoint| Endpoint {
+            address: endpoint.address,
+            port: endpoint.port,
+        });
+        let state = match (kind, self.listening, peer.is_some(), local.port) {
+            (SocketKind::Tcp, true, _, _) => SocketState::Listen,
+            (_, _, true, _) => SocketState::Established,
+            (SocketKind::Udp, false, false, port) if port != 0 => SocketState::Unconnected,
+            _ => SocketState::Close,
+        };
+        Some(SocketInfo {
+            kind,
+            family,
+            local,
+            peer,
+            state,
+            inode: self.inode,
+            uid: self.uid,
+        })
     }
     pub(super) fn queued(&self) -> bool {
         self.work

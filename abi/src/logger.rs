@@ -4,6 +4,8 @@
 
 pub const MAX_RECORD_SIZE: usize = 1024;
 pub const HEADER_SIZE: usize = 32;
+/// Capacity of the kernel log ring shared by the kernel writer and syslog readers.
+pub const BUFFER_SIZE: usize = 64 * 1024;
 
 const TRUNCATED: u32 = 1;
 const TIMESTAMP: u32 = 2;

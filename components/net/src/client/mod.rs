@@ -4,7 +4,11 @@ mod operation;
 mod subscription;
 pub use subscription::{PendingReadiness, PendingSubscription, Subscription};
 
-use crate::{AddressFamily, Error, Readiness, Request, SocketKind, protocol as p};
+use crate::{
+    AddressFamily, DEVICE_RECORD, DeviceInfo, Error, Readiness, Request, SOCKET_RECORD, SocketInfo,
+    SocketKind, Table, protocol as p,
+};
+use alloc::vec::Vec;
 use runtime::{
     Channel, FrameAllocation, Handle, Rights, Task,
     ipc::{Message, ReceivedMessage, WaitMode},
@@ -63,6 +67,16 @@ impl<'a> Client<'a> {
         kind: SocketKind,
         family: AddressFamily,
     ) -> Result<Socket<'a>, Error> {
+        self.start_socket_in_as(kind, family, 0)
+    }
+
+    /// Begin creation with the owner identity reported by `/proc/net`.
+    pub fn start_socket_in_as(
+        &self,
+        kind: SocketKind,
+        family: AddressFamily,
+        uid: u32,
+    ) -> Result<Socket<'a>, Error> {
         let (channel, server) = self.task.channel(p::OWNED_CHANNEL, p::OWNED_CHANNEL)?;
         let mut request = Message::new(p::ATTACH, &[])?;
         p::push(&mut request, server, p::OWNED_CHANNEL)?;
@@ -79,6 +93,7 @@ impl<'a> Client<'a> {
                     AddressFamily::Ipv4 => 4,
                     AddressFamily::Ipv6 => 6,
                 },
+                u64::from(uid),
             ],
             None,
         )?;
@@ -101,6 +116,58 @@ impl<'a> Client<'a> {
             Completion::Done => Ok(socket),
             _ => Err(Error::InvalidRequest),
         }
+    }
+
+    /// Snapshot every socket and interface owned by the network service.
+    pub fn table(&self, deadline: u64) -> Result<Table, Error> {
+        let mut response = call(&self.channel, &mut Message::new(p::TABLE, &[])?, deadline)?;
+        status(response.tag)?;
+        let &[socket_count, device_count] = response.words() else {
+            return Err(Error::InvalidRequest);
+        };
+        let length = |count: u64, size: usize| {
+            usize::try_from(count)
+                .ok()
+                .and_then(|count| count.checked_mul(size))
+                .ok_or(Error::InvalidRequest)
+        };
+        let sockets = length(socket_count, SOCKET_RECORD)?;
+        let devices = length(device_count, DEVICE_RECORD)?;
+        let total = sockets.checked_add(devices).ok_or(Error::InvalidRequest)?;
+        let frames = p::take::<FrameAllocation>(&mut response, Rights::READ)?;
+        if !response.handles().is_empty() {
+            return Err(Error::InvalidRequest);
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(total)
+            .map_err(|_| Error::NoMemory)?;
+        bytes.resize(total, 0);
+        frames.read(0, &mut bytes)?;
+        let mut table = Table {
+            sockets: Vec::new(),
+            devices: Vec::new(),
+        };
+        table
+            .sockets
+            .try_reserve_exact(sockets / SOCKET_RECORD)
+            .map_err(|_| Error::NoMemory)?;
+        table
+            .devices
+            .try_reserve_exact(devices / DEVICE_RECORD)
+            .map_err(|_| Error::NoMemory)?;
+        let (socket_bytes, device_bytes) = bytes.split_at(sockets);
+        for record in socket_bytes.as_chunks::<SOCKET_RECORD>().0 {
+            table
+                .sockets
+                .push(SocketInfo::decode(record).ok_or(Error::InvalidRequest)?);
+        }
+        for record in device_bytes.as_chunks::<DEVICE_RECORD>().0 {
+            table
+                .devices
+                .push(DeviceInfo::decode(record).ok_or(Error::InvalidRequest)?);
+        }
+        Ok(table)
     }
 }
 

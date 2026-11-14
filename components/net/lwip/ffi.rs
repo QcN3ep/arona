@@ -5,6 +5,47 @@
 use crate::{AddressFamily, Error, IpAddr, Ipv4Addr, Ipv6Addr};
 use core::ffi::c_void;
 
+/// One interface snapshot returned by the C bridge.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct Device {
+    name: [u8; 2],
+    flags: u8,
+    has_ipv4: u8,
+    ipv4: [u8; 4],
+    netmask: [u8; 4],
+    gateway: [u8; 4],
+    mtu: u16,
+}
+
+const _: () = assert!(core::mem::size_of::<Device>() == 18);
+const _: () = assert!(core::mem::align_of::<Device>() == 2);
+
+impl Device {
+    pub(super) fn empty() -> Self {
+        Self {
+            name: [0; 2],
+            flags: 0,
+            has_ipv4: 0,
+            ipv4: [0; 4],
+            netmask: [0; 4],
+            gateway: [0; 4],
+            mtu: 0,
+        }
+    }
+
+    pub(super) fn interface(self) -> crate::Interface {
+        crate::Interface {
+            name: self.name,
+            flags: self.flags,
+            ipv4: (self.has_ipv4 & 1 != 0).then(|| Ipv4Addr::from(self.ipv4)),
+            netmask: Ipv4Addr::from(self.netmask),
+            gateway: Ipv4Addr::from(self.gateway),
+            mtu: self.mtu,
+        }
+    }
+}
+
 #[repr(C)]
 pub(super) struct Endpoint {
     address: [u8; 16],
@@ -140,4 +181,9 @@ unsafe extern "C" {
     /// fd must be live and exclusively owned. Success invalidates the socket;
     /// failure retains ownership. No other operation may race with closing.
     pub fn arona_lwip_close(fd: i32) -> i32;
+    /// # Safety
+    ///
+    /// Startup must have completed; output must be writable for capacity
+    /// records, or null when capacity is zero.
+    pub fn arona_lwip_devices(output: *mut Device, capacity: i32) -> i32;
 }

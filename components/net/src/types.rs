@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+pub use alloc::vec::Vec;
 pub use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use runtime::{Error as RuntimeError, KernelError};
 
@@ -43,6 +44,191 @@ impl Endpoint {
 pub enum SocketKind {
     Tcp,
     Udp,
+}
+
+/// State shown by `/proc/net/tcp` and `/proc/net/udp`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SocketState {
+    Established,
+    Listen,
+    Close,
+    Unconnected,
+}
+
+/// One live socket as observed by the network service.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SocketInfo {
+    pub kind: SocketKind,
+    pub family: AddressFamily,
+    pub local: Endpoint,
+    pub peer: Option<Endpoint>,
+    pub state: SocketState,
+    pub inode: u64,
+    pub uid: u32,
+}
+
+/// Fixed-width wire record used for socket table snapshots.
+pub const SOCKET_RECORD: usize = 56;
+
+/// One network interface as observed by the network service.
+///
+/// `flags` uses the bits in [`DeviceInfo::UP`], [`DeviceInfo::LINK_UP`], and
+/// [`DeviceInfo::BROADCAST`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeviceInfo {
+    pub name: [u8; 2],
+    pub flags: u8,
+    pub ipv4: Option<Ipv4Addr>,
+    pub netmask: Ipv4Addr,
+    pub gateway: Ipv4Addr,
+    pub mtu: u16,
+}
+
+impl DeviceInfo {
+    pub const UP: u8 = 1;
+    pub const LINK_UP: u8 = 2;
+    pub const BROADCAST: u8 = 4;
+}
+
+/// Fixed-width wire record used for interface snapshots.
+pub const DEVICE_RECORD: usize = 20;
+
+/// A snapshot of the sockets and interfaces owned by the network service.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Table {
+    pub sockets: Vec<SocketInfo>,
+    pub devices: Vec<DeviceInfo>,
+}
+
+impl DeviceInfo {
+    pub fn encode(self) -> [u8; DEVICE_RECORD] {
+        let mut output = [0; DEVICE_RECORD];
+        output[..2].copy_from_slice(&self.name);
+        output[2] = self.flags;
+        output[3] = u8::from(self.ipv4.is_some());
+        if let Some(ipv4) = self.ipv4 {
+            output[4..8].copy_from_slice(&ipv4.octets());
+        }
+        output[8..12].copy_from_slice(&self.netmask.octets());
+        output[12..16].copy_from_slice(&self.gateway.octets());
+        output[16..18].copy_from_slice(&self.mtu.to_le_bytes());
+        output
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != DEVICE_RECORD {
+            return None;
+        }
+        let name = <[u8; 2]>::try_from(&bytes[..2]).ok()?;
+        let flags = bytes[2];
+        let ipv4 = if bytes[3] & 1 != 0 {
+            Some(Ipv4Addr::from(<[u8; 4]>::try_from(&bytes[4..8]).ok()?))
+        } else {
+            None
+        };
+        let netmask = Ipv4Addr::from(<[u8; 4]>::try_from(&bytes[8..12]).ok()?);
+        let gateway = Ipv4Addr::from(<[u8; 4]>::try_from(&bytes[12..16]).ok()?);
+        Some(Self {
+            name,
+            flags,
+            ipv4,
+            netmask,
+            gateway,
+            mtu: u16::from_le_bytes(bytes[16..18].try_into().ok()?),
+        })
+    }
+}
+
+impl SocketInfo {
+    pub fn encode(self) -> [u8; SOCKET_RECORD] {
+        let mut output = [0; SOCKET_RECORD];
+        output[0] = match self.kind {
+            SocketKind::Tcp => 0,
+            SocketKind::Udp => 1,
+        };
+        output[1] = match self.family {
+            AddressFamily::Ipv4 => 4,
+            AddressFamily::Ipv6 => 6,
+        };
+        output[2] = match self.state {
+            SocketState::Established => 0,
+            SocketState::Listen => 1,
+            SocketState::Close => 2,
+            SocketState::Unconnected => 3,
+        };
+        output[3] = u8::from(self.peer.is_some());
+        output[4..6].copy_from_slice(&self.local.port.to_le_bytes());
+        output[6..8].copy_from_slice(&self.peer.map_or(0, |peer| peer.port).to_le_bytes());
+        write_address(&mut output[8..24], self.local.address);
+        if let Some(peer) = self.peer {
+            write_address(&mut output[24..40], peer.address);
+        }
+        output[40..48].copy_from_slice(&self.inode.to_le_bytes());
+        output[48..52].copy_from_slice(&self.uid.to_le_bytes());
+        output
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != SOCKET_RECORD {
+            return None;
+        }
+        let kind = match bytes[0] {
+            0 => SocketKind::Tcp,
+            1 => SocketKind::Udp,
+            _ => return None,
+        };
+        let family = match bytes[1] {
+            4 => AddressFamily::Ipv4,
+            6 => AddressFamily::Ipv6,
+            _ => return None,
+        };
+        let state = match bytes[2] {
+            0 => SocketState::Established,
+            1 => SocketState::Listen,
+            2 => SocketState::Close,
+            3 => SocketState::Unconnected,
+            _ => return None,
+        };
+        let local = Endpoint {
+            address: read_address(&bytes[8..24], family)?,
+            port: u16::from_le_bytes(bytes[4..6].try_into().ok()?),
+        };
+        let peer = if bytes[3] & 1 != 0 {
+            Some(Endpoint {
+                address: read_address(&bytes[24..40], family)?,
+                port: u16::from_le_bytes(bytes[6..8].try_into().ok()?),
+            })
+        } else {
+            None
+        };
+        Some(Self {
+            kind,
+            family,
+            local,
+            peer,
+            state,
+            inode: u64::from_le_bytes(bytes[40..48].try_into().ok()?),
+            uid: u32::from_le_bytes(bytes[48..52].try_into().ok()?),
+        })
+    }
+}
+
+fn write_address(output: &mut [u8], address: IpAddr) {
+    match address {
+        IpAddr::V4(address) => output[..4].copy_from_slice(&address.octets()),
+        IpAddr::V6(address) => output.copy_from_slice(&address.octets()),
+    }
+}
+
+fn read_address(bytes: &[u8], family: AddressFamily) -> Option<IpAddr> {
+    match family {
+        AddressFamily::Ipv4 => Some(IpAddr::V4(Ipv4Addr::from(
+            <[u8; 4]>::try_from(&bytes[..4]).ok()?,
+        ))),
+        AddressFamily::Ipv6 => Some(IpAddr::V6(Ipv6Addr::from(
+            <[u8; 16]>::try_from(bytes).ok()?,
+        ))),
+    }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Shutdown {

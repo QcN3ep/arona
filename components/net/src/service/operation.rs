@@ -10,7 +10,7 @@ use runtime::{
 };
 
 pub(super) enum Command {
-    Create(lwip::SocketKind, lwip::AddressFamily),
+    Create(lwip::SocketKind, lwip::AddressFamily, u32),
     Bind(lwip::Endpoint),
     Listen(u8),
     Connect(lwip::Endpoint),
@@ -104,18 +104,14 @@ impl Command {
             _ => Err(Error::Unsupported),
         };
         let command = match *request.words() {
-            [_, p::CREATE, value @ 0..=1, family @ (4 | 6)] if kind.is_none() => Self::Create(
-                if value == 0 {
-                    lwip::SocketKind::Tcp
-                } else {
-                    lwip::SocketKind::Udp
-                },
-                if family == 4 {
-                    lwip::AddressFamily::Ipv4
-                } else {
-                    lwip::AddressFamily::Ipv6
-                },
-            ),
+            [_, p::CREATE, value @ 0..=1, family @ (4 | 6)] if kind.is_none() => {
+                Self::Create(create_kind(value), create_family(family), 0)
+            }
+            [_, p::CREATE, value @ 0..=1, family @ (4 | 6), uid]
+                if kind.is_none() && uid <= u32::MAX as u64 =>
+            {
+                Self::Create(create_kind(value), create_family(family), uid as u32)
+            }
             [_, p::BIND, header, high, low] => Self::Bind(endpoint(&[header, high, low])?),
             [_, p::LISTEN, backlog] if backlog <= u8::MAX as u64 => Self::Listen(backlog as u8),
             [_, p::CONNECT, header, high, low] => Self::Connect(endpoint(&[header, high, low])?),
@@ -205,11 +201,12 @@ impl Command {
         stack: &lwip::Stack,
         reserve: Result<(), Error>,
     ) -> Result<(Output, Option<Session>), Error> {
-        if let Self::Create(kind, family) = self {
+        if let Self::Create(kind, family, uid) = self {
             let (socket, observer) = stack
                 .socket_with_subscription(kind, family)
                 .map_err(error)?;
             session.install(socket, observer);
+            session.uid = uid;
             return Ok((Output::done(), None));
         }
         let socket = session.socket.as_mut().ok_or(Error::Closed)?;
@@ -220,6 +217,7 @@ impl Command {
             }
             Self::Listen(backlog) => {
                 socket.listen(backlog).map_err(error)?;
+                session.listening = true;
                 Output::done()
             }
             Self::Connect(endpoint) => {
@@ -244,6 +242,7 @@ impl Command {
                 let (client, server) =
                     process::task().channel(p::OWNED_CHANNEL, p::OWNED_CHANNEL)?;
                 let mut child = Session::new(server);
+                child.uid = session.uid;
                 let (accepted, observer, peer) =
                     socket.accept_with_subscription().map_err(error)?;
                 child.install(accepted, observer);
@@ -278,6 +277,23 @@ impl Command {
         Ok((output, None))
     }
 }
+
+fn create_kind(value: u64) -> lwip::SocketKind {
+    if value == 0 {
+        lwip::SocketKind::Tcp
+    } else {
+        lwip::SocketKind::Udp
+    }
+}
+
+fn create_family(value: u64) -> lwip::AddressFamily {
+    if value == 4 {
+        lwip::AddressFamily::Ipv4
+    } else {
+        lwip::AddressFamily::Ipv6
+    }
+}
+
 fn wire_endpoint(value: lwip::Endpoint) -> [u64; 3] {
     p::endpoint(net::Endpoint {
         address: value.address,

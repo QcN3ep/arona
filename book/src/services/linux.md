@@ -6,7 +6,7 @@ The kernel hands the program's calls and exceptions to it through a TrapPort.
 
 ## Starting a Linux Program
 
-init provides the service with file and network clients and optional RTC and random number sessions.
+init provides the service with file and network clients, a read-only kernel log, and optional RTC and random number sessions.
 The execution request contains the program path, argv, envp, and terminal session.
 `Control::start_run` returns an asynchronous call, and the request completes with an exit status after the program ends.
 
@@ -63,6 +63,28 @@ Selected files under `/proc` and `/sys` expose read-only snapshots taken when th
 These include process status and arguments, mount information, the release version, and the online CPU list.
 Virtual character descriptions implement `/dev/null` and `/dev/zero`, while `/dev/random` and `/dev/urandom` read from the configured random number session.
 `/dev/console` and `/dev/tty` open the terminal that owns the calling process, so console reads, writes, and ioctls use the same line discipline as the standard streams.
+
+## Kernel Log
+
+`init` transfers a read-only `KernelLog` handle to the Linux service, and the `syslog` call reads the same 64 KiB kernel ring that logger consumes.
+Each record is formatted as `<level>[seconds.microseconds] target: message` before it is copied to the guest.
+`SYSLOG_ACTION_SIZE_BUFFER` reports the ring capacity, while `SIZE_UNREAD`, `READ`, `READ_ALL`, `READ_CLEAR`, and `CLEAR` operate on one service-wide cursor.
+`READ` consumes bytes from the cursor, `READ_ALL` returns the newest bytes that fit without moving it, and `READ_CLEAR` combines both.
+`CLEAR` advances the earliest visible record for syslog readers and leaves the ring intact for logger and other kernel readers.
+This compatibility layer has no capability sets, so effective uid zero stands in for `CAP_SYSLOG`.
+Only `OPEN` and `CLOSE` are available to unprivileged processes; control and read actions return `EPERM` otherwise.
+Console level actions report `EINVAL` because the service does not own the physical console.
+Invalid actions and lengths return `EINVAL`, and an unusable destination buffer returns `EFAULT`.
+
+## Network Tables
+
+`/proc/net/dev`, `/proc/net/route`, `/proc/net/tcp`, `/proc/net/tcp6`, `/proc/net/udp`, `/proc/net/udp6`, and `/proc/net/unix` are read-only snapshots taken when a descriptor is opened.
+Socket rows come from the network service's live session table and use the Linux text layout with hexadecimal addresses, ports, states, uid, and inode.
+TCP listeners report state `0A`, established connections report `01`, and unconnected or closed entries report `07`.
+Interface rows come from lwIP's interface list, and `/proc/net/route` derives a connected route from each IPv4 address and netmask.
+The loopback-only stack does not track interface byte counters yet, so the `/proc/net/dev` counters are zero.
+No Unix-domain sockets are implemented, so `/proc/net/unix` contains only its header.
+Opening `/proc/net` itself returns `ENOTDIR`, and an unknown name below the virtual mounts returns `ENOENT`.
 
 | Operation group | Implemented calls |
 |---|---|

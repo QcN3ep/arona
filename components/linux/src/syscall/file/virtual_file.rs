@@ -2,8 +2,9 @@
 
 //! Read-only virtual files mounted at `/proc` and `/sys`.
 
-use super::{Buffer, fd};
+use super::{Buffer, fd, net};
 use crate::{
+    Services,
     file::OpenFileDescription,
     memory::Origin,
     process::Process,
@@ -30,6 +31,7 @@ pub(super) enum File {
     ProcStat(usize),
     CpuOnline,
     OsRelease,
+    Net(net::File),
 }
 
 impl File {
@@ -46,10 +48,11 @@ impl File {
             Self::ProcStat(pid) => 0x7072_2000 + pid as u64,
             Self::CpuOnline => 0x7379_0001,
             Self::OsRelease => 0x7379_0002,
+            Self::Net(file) => file.inode(),
         }
     }
 
-    pub fn content(self, process: &Process<'_>) -> Result<Vec<u8>, Errno> {
+    pub fn content(self, process: &Process<'_>, services: &Services<'_>) -> Result<Vec<u8>, Errno> {
         Ok(match self {
             Self::ProcSelfStatus => status(process),
             Self::ProcSelfMaps => maps(process, false)?,
@@ -72,6 +75,7 @@ impl File {
             Self::ProcStat(pid) => stat(process, pid)?,
             Self::CpuOnline => b"0\n".to_vec(),
             Self::OsRelease => alloc::format!("{}\n", env!("CARGO_PKG_VERSION")).into_bytes(),
+            Self::Net(file) => return net::content(file, services),
         })
     }
 }
@@ -88,6 +92,13 @@ pub(super) fn resolve(process: &Process<'_>, path: &[u8]) -> Option<File> {
         b"/proc/mounts" => File::ProcMounts,
         b"/sys/devices/system/cpu/online" => File::CpuOnline,
         b"/sys/kernel/osrelease" => File::OsRelease,
+        b"/proc/net/dev" => File::Net(net::File::Dev),
+        b"/proc/net/route" => File::Net(net::File::Route),
+        b"/proc/net/tcp" => File::Net(net::File::Tcp),
+        b"/proc/net/tcp6" => File::Net(net::File::Tcp6),
+        b"/proc/net/udp" => File::Net(net::File::Udp),
+        b"/proc/net/udp6" => File::Net(net::File::Udp6),
+        b"/proc/net/unix" => File::Net(net::File::Unix),
         _ => return resolve_pid(process, path),
     })
 }

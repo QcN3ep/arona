@@ -24,7 +24,7 @@ mod memory;
 mod random;
 mod sys;
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 pub use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use core::{
     cell::Cell,
@@ -117,6 +117,26 @@ pub enum SocketKind {
     Udp,
 }
 
+/// One interface snapshot taken from the lwIP interface list.
+///
+/// `flags` uses [`Interface::UP`], [`Interface::LINK_UP`], and
+/// [`Interface::BROADCAST`]. `netmask` and `gateway` are zero when unset.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Interface {
+    pub name: [u8; 2],
+    pub flags: u8,
+    pub ipv4: Option<Ipv4Addr>,
+    pub netmask: Ipv4Addr,
+    pub gateway: Ipv4Addr,
+    pub mtu: u16,
+}
+
+impl Interface {
+    pub const UP: u8 = 1;
+    pub const LINK_UP: u8 = 2;
+    pub const BROADCAST: u8 = 4;
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OptionName {
     ReuseAddress,
@@ -185,6 +205,45 @@ impl Stack {
             )
         };
         Ok((Socket::from_result(fd, shared)?, subscription))
+    }
+
+    /// Snapshot the configured interfaces through the lwIP core thread.
+    pub fn devices(&self) -> Result<Vec<Interface>, Error> {
+        // SAFETY: Startup completed; a null output with zero capacity only
+        // requests the interface count.
+        let count = unsafe { ffi::arona_lwip_devices(core::ptr::null_mut(), 0) };
+        if count < 0 {
+            return Err(Error::Other(count));
+        }
+        let count = usize::try_from(count).map_err(|_| Error::InvalidArgument)?;
+        let mut devices = Vec::new();
+        devices
+            .try_reserve_exact(count)
+            .map_err(|_| Error::NoMemory)?;
+        if count == 0 {
+            return Ok(devices);
+        }
+        let mut records = Vec::new();
+        records
+            .try_reserve_exact(count)
+            .map_err(|_| Error::NoMemory)?;
+        records.resize(count, ffi::Device::empty());
+        let capacity = i32::try_from(count).map_err(|_| Error::InvalidArgument)?;
+        // SAFETY: records owns writable storage for capacity Device records.
+        let written = unsafe { ffi::arona_lwip_devices(records.as_mut_ptr(), capacity) };
+        if written < 0 {
+            return Err(Error::Other(written));
+        }
+        let written = usize::try_from(written)
+            .map_err(|_| Error::InvalidArgument)?
+            .min(count);
+        devices.extend(
+            records[..written]
+                .iter()
+                .copied()
+                .map(ffi::Device::interface),
+        );
+        Ok(devices)
     }
 
     pub fn socket(&self, kind: SocketKind) -> Result<Socket, Error> {

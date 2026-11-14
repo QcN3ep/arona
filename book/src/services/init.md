@@ -24,7 +24,7 @@ The archive page frame is then handed to the file service, and init reads the re
 | 4 | Query the first block device and, if present, mount its full range as ext4 at `/var` |
 | 5 | Open the UART output session, start logger, and hand over the KernelLog and the optional persistence file |
 | 6 | Establish the local log facade, start net with a separate RNG session, and wait for loopback readiness |
-| 7 | Start linux and hand over the file, RTC, and random number sessions |
+| 7 | Start linux and hand over the file, RTC, random number, network, and kernel log sessions |
 | 8 | Record `System services ready`, read the configuration, and enter the supervision loop |
 
 fs starts first because it establishes file access capability directly from the archive; init then mounts a tmpfs at `/tmp` so temporary files do not depend on persistent storage. devmgr next provides device sessions, letting persistent storage and serial output join the system.

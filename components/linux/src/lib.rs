@@ -13,6 +13,7 @@ mod client;
 pub mod elf;
 mod file;
 mod limits;
+mod log;
 mod memory;
 mod process;
 mod protocol;
@@ -21,6 +22,7 @@ mod stack;
 mod syscall;
 
 pub use client::{Control, Program, Services};
+pub use log::Log;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {

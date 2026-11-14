@@ -157,6 +157,7 @@ fn build_guest(
         ("program", "program"),
         ("process/terminal", "process-terminal"),
         ("syscall/system", "system"),
+        ("syscall/system/syslog", "syslog"),
         ("syscall/signal", "signal"),
         ("syscall/process", "process"),
         ("syscall/process/futex", "futex"),
@@ -251,6 +252,7 @@ fn socket_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
         "socketpair.c",
         "options.c",
         "ipv6.c",
+        "proc.c",
         &format!("{isa}.S"),
     ] {
         let object = directory.join(format!("socket-{name}.o"));

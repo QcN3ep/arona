@@ -34,6 +34,11 @@ UDP receive capacity is adjustable, while TCP capacities and send capacities are
 Linux I/O timeouts stay in the Linux service because native operations make one nonblocking attempt.
 `Socket::kind` reports the socket type, and `Socket::family` reports its address family.
 `TakeError` reads and clears the pending connection error.
+`Client::start_socket_in_as` records the creating process identity, which Linux passes from the caller's effective uid.
+`Client::table` takes one snapshot of live sessions and interfaces through the service.
+Each socket reports its kind, family, local and peer endpoints, TCP or UDP state, inode, and uid.
+Each interface reports the lwIP name, flags, IPv4 address, netmask, gateway, and MTU.
+The reply carries fixed-width records in one page-frame handle, so callers decode no Rust or C structure layout.
 
 The service performs a nonblocking attempt for each socket operation.
 It returns `WouldBlock` when that attempt cannot make progress and `InProgress` when a connection is still being established.
@@ -163,6 +168,7 @@ Other threads submit work through lwIP mailboxes and wait for completion through
 These facilities use `runtime::sync`, which keeps queued messages and semaphore counts independently of Event notifications.
 The protocol thread yields between messages so other Arona threads can run during continuous protocol work.
 
+The adapter also snapshots `netif_list` through the lwIP core thread when the service answers a table request.
 The adapter also provides a recursive protection lock for lwIP's shared bookkeeping.
 A thread-local nesting count allows the holder to enter that lock again.
 Each thread has its own errno storage for socket errors.

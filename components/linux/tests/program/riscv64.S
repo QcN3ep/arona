@@ -123,6 +123,8 @@ auxv_done:
     beq s3, t1, futex_restart
     li t1, 83
     beq s3, t1, system_basics
+    li t1, 76
+    beq s3, t1, system_syslog
     li t1, 79
     beq s3, t1, configured_exit
     li t1, 67

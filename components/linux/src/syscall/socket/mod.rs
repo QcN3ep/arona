@@ -38,7 +38,7 @@ pub(super) fn dispatch<'a>(
     args: [usize; 6],
 ) -> Option<Outcome<'a>> {
     if number == SOCKET {
-        return Some(outcome(create(services, args)));
+        return Some(outcome(create(process, services, args)));
     }
     if number == SOCKETPAIR {
         return Some(Outcome::Complete(local::create(process, args)));
@@ -174,7 +174,11 @@ fn connect(
     })
 }
 
-fn create<'a>(services: &crate::Services<'a>, args: [usize; 6]) -> Result<Pending<'a>, Errno> {
+fn create<'a>(
+    process: &Process<'_>,
+    services: &crate::Services<'a>,
+    args: [usize; 6],
+) -> Result<Pending<'a>, Errno> {
     let family = match args[0] as i32 {
         2 => net::AddressFamily::Ipv4,
         10 => net::AddressFamily::Ipv6,
@@ -190,7 +194,7 @@ fn create<'a>(services: &crate::Services<'a>, args: [usize; 6]) -> Result<Pendin
         .net
         .as_ref()
         .ok_or(ENETUNREACH)?
-        .start_socket_in(kind, family)
+        .start_socket_in_as(kind, family, process.credentials.euid)
         .map_err(error)?;
     Ok(Pending::Create {
         native: Some(native),

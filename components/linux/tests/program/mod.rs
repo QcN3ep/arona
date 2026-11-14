@@ -28,6 +28,11 @@ fn main() {
         .unwrap()
         .downcast::<DeviceSet>()
         .unwrap();
+    let kernel_log = startup
+        .take_handle(0)
+        .unwrap()
+        .downcast::<runtime::KernelLog>()
+        .unwrap();
     drop(startup);
     let native = service::read(&archive, "/bin/linux");
     let machine = Machine::from_header(&native).unwrap();
@@ -41,7 +46,7 @@ fn main() {
         .mount_tmpfs(b"/tmp", 64 * 1024, service::deadline())
         .unwrap();
     let (_linux, channel) = service::launch(&native, machine, linux::service::REQUIRED_RIGHTS);
-    let mut services = service::resources(&device_service);
+    let mut services = service::resources(&device_service, &kernel_log);
     let (_net, net_channel) = service::launch(
         &net,
         machine,
@@ -57,7 +62,7 @@ fn main() {
         service::deadline(),
     )
     .unwrap();
-    services.entropy = service::resources(&device_service).entropy;
+    services.entropy = service::resources(&device_service, &kernel_log).entropy;
     services.net = Some(net.connect().unwrap());
     let linux = Control::start_with_services(
         process::task(),
@@ -193,6 +198,7 @@ fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         b"pair",
         b"options",
         b"ipv6",
+        b"proc",
     ] {
         let result = run(mode).wait(WaitMode::Forever);
         if result
@@ -358,6 +364,7 @@ fn writable(
     path_session(files);
     tmpfs_path_session(files);
     for mode in [
+        b"Log".as_slice(),
         b"metadata".as_slice(),
         b"directory",
         b"path",

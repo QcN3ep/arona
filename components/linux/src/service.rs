@@ -104,7 +104,7 @@ fn bootstrap(
     mut startup: ReceivedMessage,
 ) -> Result<(fs::Client<'_>, Machine, Services<'_>), Error> {
     let flags = match startup.words() {
-        [flags] if flags & !7 == 0 => *flags,
+        [flags] if flags & !15 == 0 => *flags,
         _ => return Err(Error::InvalidRequest),
     };
     if startup.tag != protocol::START || startup.handles().len() != 1 + flags.count_ones() as usize
@@ -157,6 +157,18 @@ fn bootstrap(
             .map_err(|_| Error::InvalidRequest)?,
         );
     }
+    let kernel_log = if flags & 8 != 0 {
+        Some(
+            startup
+                .take_handle(0)
+                .unwrap()
+                .downcast()
+                .map_err(|_| Error::InvalidRequest)?,
+        )
+    } else {
+        None
+    };
+    services.log = crate::Log::new(kernel_log);
     Ok((files, machine, services))
 }
 

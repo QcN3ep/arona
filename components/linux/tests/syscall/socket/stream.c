@@ -7,6 +7,7 @@ extern void socketpair_main(void);
 extern void datagram_memory(void);
 extern void socket_options(void);
 extern void socket_ipv6(void);
+extern void socket_proc(void);
 static unsigned char payload[131072];
 static volatile unsigned signals;
 
@@ -409,6 +410,7 @@ int socket_main(const char *mode) {
     else if (*mode == 'f') fork_socket();
     else if (*mode == 'e') exec_socket(mode);
     else if (*mode == 'l') lifecycle();
+    else if (*mode == 'p') socket_proc();
     else if (mode[1] == 'e') server();
     else { signal_socket(0, 0); signal_socket(0x10000000, 0); signal_socket(0x10000000, 1); }
     return 42;

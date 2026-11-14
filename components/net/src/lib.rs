@@ -20,6 +20,7 @@ pub use client::{
     Client, Completion, Control, Data, PendingReadiness, PendingSubscription, Socket, Subscription,
 };
 pub use types::{
-    AddressFamily, CancelOutcome, Endpoint, Error, IpAddr, Ipv4Addr, Ipv6Addr, OptionName,
-    Readiness, Request, Shutdown, SocketKind,
+    AddressFamily, CancelOutcome, DEVICE_RECORD, DeviceInfo, Endpoint, Error, IpAddr, Ipv4Addr,
+    Ipv6Addr, OptionName, Readiness, Request, SOCKET_RECORD, Shutdown, SocketInfo, SocketKind,
+    SocketState, Table,
 };

@@ -7,11 +7,9 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use abi::logger::{HEADER_SIZE, MAX_RECORD_SIZE, Record};
+use abi::logger::{BUFFER_SIZE, HEADER_SIZE, MAX_RECORD_SIZE, Record};
 use arrayvec::ArrayString;
 use spin::Mutex;
-
-const BUFFER_SIZE: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReadError {

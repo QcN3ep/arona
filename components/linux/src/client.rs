@@ -21,6 +21,7 @@ pub struct Services<'a> {
     pub clock: Option<devmgr::rtc::Session>,
     pub entropy: Option<devmgr::rng::Session<'a>>,
     pub net: Option<net::Client<'a>>,
+    pub log: crate::Log,
 }
 
 pub struct Control<'a> {
@@ -42,12 +43,13 @@ impl<'a> Control<'a> {
         task: &'a Handle<Task>,
         channel: Handle<Channel>,
         files: fs::Client<'_>,
-        services: Services<'_>,
+        mut services: Services<'_>,
         deadline: u64,
     ) -> Result<Self, Error> {
         let flags = u64::from(services.clock.is_some())
             | (u64::from(services.entropy.is_some()) << 1)
-            | (u64::from(services.net.is_some()) << 2);
+            | (u64::from(services.net.is_some()) << 2)
+            | (u64::from(services.log.kernel().is_some()) << 3);
         let mut request = Message::new(protocol::START, &[flags])?;
         transfer(&mut request, files.into_channel(), CHANNEL_RIGHTS)?;
         if let Some(clock) = services.clock {
@@ -58,6 +60,9 @@ impl<'a> Control<'a> {
         }
         if let Some(net) = services.net {
             transfer(&mut request, net.into_channel(), CHANNEL_RIGHTS)?;
+        }
+        if let Some(kernel_log) = services.log.take_kernel() {
+            transfer(&mut request, kernel_log, Rights::READ | Rights::TRANSFER)?;
         }
         let response = channel
             .call(&mut request, Some(deadline))

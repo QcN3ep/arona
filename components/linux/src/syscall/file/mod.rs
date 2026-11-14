@@ -12,6 +12,7 @@ mod eventfd;
 mod io;
 // TODO: Add mount and umount2 after directory sessions retain mount identity.
 mod metadata;
+mod net;
 mod open;
 pub(in crate::syscall) mod path;
 mod pipe;
@@ -108,6 +109,7 @@ pub(super) fn dispatch<'a>(
         abi::OPENAT => openat(
             process,
             files,
+            services,
             arguments[0],
             arguments[1],
             arguments[2],

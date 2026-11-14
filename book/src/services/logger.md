@@ -38,6 +38,8 @@ When a new record makes the total exceed the capacity, whole records are evicted
 Sequence numbers keep increasing, and readers maintain their own cursors.
 
 Control's `read` finds the first user record whose sequence number is greater than or equal to the cursor, and `read_kernel` reads kernel records from the KernelLog.
+The Linux compatibility service receives a read-only KernelLog handle for its `syslog` call and formats kernel records into text there, using its own cursor.
+The service's `CLEAR` action advances only that syslog view; the ring remains available to logger and other kernel readers.
 The result is output through a page frame provided by the caller, and decoding borrows the caller's slice.
 `print_kernel` reads and outputs one kernel record and returns its sequence number, by which the caller advances the cursor.
 

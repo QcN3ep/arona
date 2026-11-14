@@ -6,7 +6,7 @@ mod session;
 use crate::{Error, Readiness, protocol as p};
 use alloc::vec::Vec;
 use runtime::{
-    Channel, Handle,
+    Channel, Handle, Rights,
     ipc::{self, Message, WaitItem, WaitMode},
     process, thread,
 };
@@ -38,7 +38,14 @@ pub fn run(control: Handle<Channel>) -> Result<(), Error> {
     loop {
         match control.receive(WaitMode::Poll) {
             Ok(mut message) => {
-                if message.tag == p::ATTACH
+                if message.tag == p::TABLE
+                    && message.words().is_empty()
+                    && message.handles().len() == 1
+                    && let Some(reply) = message.take_reply()
+                    && let Err(error) = table(&reply, &mut sessions, &stack)
+                {
+                    let _ = respond(&reply, code(error), &[]);
+                } else if message.tag == p::ATTACH
                     && message.words().is_empty()
                     && message.handles().len() == 1
                     && let Ok(channel) = p::take(&mut message, p::OWNED_CHANNEL)
@@ -86,6 +93,49 @@ pub fn run(control: Handle<Channel>) -> Result<(), Error> {
         }
         ipc::wait_many(&waits, WaitMode::Forever)?;
     }
+}
+
+fn table(
+    reply: &Handle<runtime::Reply>,
+    sessions: &mut [Option<Session>],
+    stack: &lwip::Stack,
+) -> Result<(), Error> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(sessions.len() * net::SOCKET_RECORD + net::DEVICE_RECORD)
+        .map_err(|_| Error::NoMemory)?;
+    let mut sockets = 0u64;
+    for session in sessions.iter_mut().flatten() {
+        let Some(info) = session.info() else {
+            continue;
+        };
+        bytes.extend_from_slice(&info.encode());
+        sockets += 1;
+    }
+    let devices = stack.devices().map_err(error)?;
+    let device_count = u64::try_from(devices.len()).map_err(|_| Error::InvalidRequest)?;
+    for device in &devices {
+        let info = net::DeviceInfo {
+            name: device.name,
+            flags: device.flags,
+            ipv4: device.ipv4,
+            netmask: device.netmask,
+            gateway: device.gateway,
+            mtu: device.mtu,
+        };
+        bytes.extend_from_slice(&info.encode());
+    }
+    let mut frames = process::task().allocate(
+        bytes.len().max(1).div_ceil(4096) as u64,
+        Rights::READ_WRITE | Rights::READ | Rights::TRANSFER,
+    )?;
+    if !bytes.is_empty() {
+        frames.write(0, &bytes)?;
+    }
+    let mut response = Message::new(0, &[sockets, device_count])?;
+    p::push(&mut response, frames, Rights::READ | Rights::TRANSFER)?;
+    reply.send(&mut response)?;
+    Ok(())
 }
 
 fn error(error: lwip::Error) -> Error {

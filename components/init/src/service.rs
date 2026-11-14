@@ -154,6 +154,7 @@ pub fn start_linux(
     filesystem: &fs::Control<'static>,
     devices: &Handle<Channel>,
     network: &net::Control<'static>,
+    kernel_log: &Handle<KernelLog>,
 ) -> Result<(Service, linux::Control<'static>), InitError> {
     let (service, channel) = launch(
         loader,
@@ -175,6 +176,7 @@ pub fn start_linux(
             clock,
             entropy,
             net: Some(network.connect()?),
+            log: linux::Log::new(Some(kernel_log.try_clone(Rights::READ | Rights::TRANSFER)?)),
         },
         deadline()?,
     )?;

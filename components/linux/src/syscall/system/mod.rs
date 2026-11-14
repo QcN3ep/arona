@@ -4,6 +4,7 @@
 
 mod clock;
 mod random;
+mod syslog;
 mod timer;
 mod usage;
 
@@ -45,6 +46,7 @@ pub(super) fn dispatch<'a>(
         abi::SYSINFO => Outcome::Complete(usage::sysinfo(process, args[0])),
         abi::TIMES => Outcome::Complete(usage::times(process, args[0])),
         abi::GETRUSAGE => Outcome::Complete(usage::getrusage(process, args[0], args[1])),
+        abi::SYSLOG => return syslog::dispatch(process, services, args),
         _ => return None,
     })
 }

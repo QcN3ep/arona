@@ -121,7 +121,10 @@ pub fn deadline() -> u64 {
     runtime::thread::now_ns().unwrap() + 30_000_000_000
 }
 
-pub fn resources(service: &Handle<Channel>) -> linux::Services<'static> {
+pub fn resources(
+    service: &Handle<Channel>,
+    kernel_log: &Handle<runtime::KernelLog>,
+) -> linux::Services<'static> {
     let until = deadline();
     let device = |kind| {
         loop {
@@ -152,5 +155,10 @@ pub fn resources(service: &Handle<Channel>) -> linux::Services<'static> {
             )
             .unwrap(),
         ),
+        log: linux::Log::new(Some(
+            kernel_log
+                .try_clone(Rights::READ | Rights::TRANSFER)
+                .unwrap(),
+        )),
     }
 }

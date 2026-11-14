@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 #include "lwip/tcpip.h"
+#include "lwip/netif.h"
+#include "lwip/priv/tcpip_priv.h"
 #include "lwip/sockets.h"
 #include "lwip/errno.h"
 #include "lwip/sys.h"
@@ -199,4 +201,74 @@ int arona_lwip_option(int fd, int option, int *value, int set) {
   if (set) { return lwip_setsockopt(fd, level, name, value, sizeof(*value)); }
   socklen_t size = sizeof(*value);
   return lwip_getsockopt(fd, level, name, value, &size);
+}
+
+struct arona_lwip_device {
+  uint8_t name[2];
+  uint8_t flags;
+  uint8_t has_ipv4;
+  uint8_t ipv4[4];
+  uint8_t netmask[4];
+  uint8_t gateway[4];
+  uint16_t mtu;
+};
+_Static_assert(sizeof(struct arona_lwip_device) == 18, "Rust device size");
+
+#define ARONA_DEVICE_UP 1
+#define ARONA_DEVICE_LINK_UP 2
+#define ARONA_DEVICE_BROADCAST 4
+
+struct arona_lwip_device_request {
+  struct tcpip_api_call_data call;
+  struct arona_lwip_device *output;
+  int capacity;
+  int count;
+};
+
+static err_t arona_lwip_collect_devices(struct tcpip_api_call_data *data) {
+  struct arona_lwip_device_request *request =
+      (struct arona_lwip_device_request *)data;
+  struct netif *netif;
+  int index = 0;
+  NETIF_FOREACH(netif) {
+    if (index < request->capacity) {
+      struct arona_lwip_device *device = &request->output[index];
+      memset(device, 0, sizeof(*device));
+      device->name[0] = netif->name[0];
+      device->name[1] = netif->name[1];
+      if (netif->flags & NETIF_FLAG_UP) { device->flags |= ARONA_DEVICE_UP; }
+      if (netif->flags & NETIF_FLAG_LINK_UP) {
+        device->flags |= ARONA_DEVICE_LINK_UP;
+      }
+      if (netif->flags & NETIF_FLAG_BROADCAST) {
+        device->flags |= ARONA_DEVICE_BROADCAST;
+      }
+      device->mtu = netif->mtu;
+#if LWIP_IPV4
+      const ip4_addr_t *address = netif_ip4_addr(netif);
+      if (!ip4_addr_isany(address)) {
+        device->has_ipv4 = 1;
+        memcpy(device->ipv4, &address->addr, 4);
+        memcpy(device->netmask, &netif_ip4_netmask(netif)->addr, 4);
+        memcpy(device->gateway, &netif_ip4_gw(netif)->addr, 4);
+      }
+#endif
+    }
+    index++;
+  }
+  request->count = index;
+  return ERR_OK;
+}
+
+int arona_lwip_devices(struct arona_lwip_device *output, int capacity) {
+  if (capacity < 0) { return -1; }
+  struct arona_lwip_device_request request;
+  memset(&request, 0, sizeof(request));
+  request.output = output;
+  request.capacity = capacity;
+  request.count = 0;
+  if (tcpip_api_call(arona_lwip_collect_devices, &request.call) != ERR_OK) {
+    return -1;
+  }
+  return request.count;
 }

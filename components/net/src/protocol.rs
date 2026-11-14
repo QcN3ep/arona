@@ -17,6 +17,7 @@ pub const CANCEL: u64 = 4;
 pub const ACK: u64 = 5;
 pub const SNAPSHOT: u64 = 6;
 pub const SUBSCRIBE: u64 = 7;
+pub const TABLE: u64 = 8;
 pub const MAX_STREAM: usize = 65536;
 pub const MAX_DATAGRAM: usize = 65507;
 // lwIP includes the IP header in its 16-bit packet length.

@@ -15,6 +15,7 @@ use super::super::{
 };
 use super::{O_CLOEXEC, Pending, completion, filesystem_error, outcome, virtual_file};
 use crate::{
+    Services,
     elf::PAGE_SIZE,
     file::{Descriptor, O_APPEND, O_DSYNC, O_NONBLOCK, O_PATH, OpenFileDescription, Virtual},
     process::Process,
@@ -39,6 +40,7 @@ pub(in crate::syscall) struct Open<'a> {
 pub(in crate::syscall) fn openat<'a>(
     process: &mut Process<'a>,
     files: &fs::Client<'a>,
+    services: &Services<'_>,
     directory: usize,
     address: usize,
     flags: usize,
@@ -78,11 +80,15 @@ pub(in crate::syscall) fn openat<'a>(
             return Err(EINVAL);
         }
         let name = path(process, address)?;
-        if matches!(name.as_slice(), b"/proc" | b"/proc/" | b"/sys" | b"/sys/") {
+        if matches!(
+            name.as_slice(),
+            b"/proc" | b"/proc/" | b"/proc/net" | b"/proc/net/" | b"/sys" | b"/sys/"
+        ) {
             return Err(ENOTDIR);
         }
         if name.starts_with(b"/proc/") || name.starts_with(b"/sys/") {
-            return open_snapshot(process, &name, flags).map(|fd| Outcome::Complete(Ok(fd)));
+            return open_snapshot(process, services, &name, flags)
+                .map(|fd| Outcome::Complete(Ok(fd)));
         }
         if let Some(result) = super::super::mqueue::open_path(process, &name, flags) {
             return match result {
@@ -142,7 +148,12 @@ pub(in crate::syscall) fn openat<'a>(
     operation.unwrap_or_else(|error| Outcome::Complete(Err(error)))
 }
 
-fn open_snapshot(process: &mut Process<'_>, name: &[u8], flags: u32) -> Result<usize, Errno> {
+fn open_snapshot(
+    process: &mut Process<'_>,
+    services: &Services<'_>,
+    name: &[u8],
+    flags: u32,
+) -> Result<usize, Errno> {
     let Some(file) = virtual_file::resolve(process, name) else {
         return Err(ENOENT);
     };
@@ -152,7 +163,7 @@ fn open_snapshot(process: &mut Process<'_>, name: &[u8], flags: u32) -> Result<u
     if flags & (3 | O_CREAT | O_TRUNC) != 0 {
         return Err(EROFS);
     }
-    let data = file.content(process)?;
+    let data = file.content(process, services)?;
     process
         .files
         .insert(
