@@ -64,6 +64,9 @@ pub(in crate::syscall) fn settime(
     old: usize,
 ) -> SyscallResult {
     let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
+    if descriptor.description.path_only() {
+        return Err(EBADF);
+    }
     let OpenFileDescription::Timerfd { state, .. } = descriptor.description.as_ref() else {
         return Err(EINVAL);
     };
@@ -103,6 +106,9 @@ pub(in crate::syscall) fn gettime(
     address: usize,
 ) -> SyscallResult {
     let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
+    if descriptor.description.path_only() {
+        return Err(EBADF);
+    }
     let OpenFileDescription::Timerfd { state, .. } = descriptor.description.as_ref() else {
         return Err(EINVAL);
     };

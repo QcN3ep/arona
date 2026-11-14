@@ -104,14 +104,18 @@ impl Tmpfs {
     }
 
     pub fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
-        self.open_node(path, false)
+        self.open_node(path, false, false)
     }
 
     pub fn open_directory(&self, path: &[u8]) -> Result<File, Error> {
-        self.open_node(path, true)
+        self.open_node(path, true, false)
     }
 
-    fn open_node(&self, path: &[u8], directory: bool) -> Result<File, Error> {
+    pub fn open_path(&self, path: &[u8]) -> Result<File, Error> {
+        self.open_node(path, false, true)
+    }
+
+    fn open_node(&self, path: &[u8], directory: bool, path_only: bool) -> Result<File, Error> {
         let mut volume = self.volume.borrow_mut();
         let inode = volume.lookup(path)?;
         let node = volume.nodes.get(&inode).ok_or(Error::InvalidData)?;
@@ -122,7 +126,7 @@ impl Tmpfs {
                 Error::IsDirectory
             });
         }
-        if node.is_symlink() {
+        if node.is_symlink() && !path_only {
             return Err(Error::InvalidRequest);
         }
         let count = volume.open.entry(inode).or_insert(0);
@@ -659,7 +663,13 @@ impl ReadAt for File {
             .borrow()
             .nodes
             .get(&self.inode)
-            .map_or(0, |node| node.data.len())
+            .map_or(0, |node| {
+                if node.is_symlink() {
+                    node.target.len()
+                } else {
+                    node.data.len()
+                }
+            })
     }
 
     fn read_at(&self, offset: usize, output: &mut [u8]) -> Result<usize, Error> {
@@ -668,9 +678,14 @@ impl ReadAt for File {
         if node.is_directory() {
             return Err(Error::IsDirectory);
         }
-        let start = offset.min(node.data.len());
-        let count = output.len().min(node.data.len() - start);
-        output[..count].copy_from_slice(&node.data[start..start + count]);
+        let data = if node.is_symlink() {
+            &node.target
+        } else {
+            &node.data
+        };
+        let start = offset.min(data.len());
+        let count = output.len().min(data.len() - start);
+        output[..count].copy_from_slice(&data[start..start + count]);
         Ok(count)
     }
 }

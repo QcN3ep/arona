@@ -313,6 +313,13 @@ pub(super) fn start<'a>(
     command: usize,
     address: usize,
 ) -> Outcome<'a> {
+    if process
+        .files
+        .get(raw as i32 as usize)
+        .is_some_and(|descriptor| descriptor.description.path_only())
+    {
+        return Outcome::Complete(Err(EBADF));
+    }
     if matches!(
         command as u32,
         0x5402..=0x5404 | 0x5409 | 0x540a | 0x540b | 0x5410 | 0x5425
@@ -371,6 +378,9 @@ pub(super) fn ioctl(
     address: usize,
 ) -> SyscallResult {
     let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
+    if descriptor.description.path_only() {
+        return Err(EBADF);
+    }
     if command == 0x5421 {
         let mut value = [0; 4];
         process
@@ -399,9 +409,6 @@ pub(super) fn ioctl(
     let OpenFileDescription::Terminal { terminal, .. } = descriptor.description.as_ref() else {
         return Err(ENOTTY);
     };
-    if descriptor.description.path_only() {
-        return Err(ENOTTY);
-    }
     terminal_ioctl(process, terminal, command as u32, address)
 }
 

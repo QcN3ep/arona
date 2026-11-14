@@ -42,6 +42,9 @@ pub(in crate::syscall) fn create<'a>(
     if raw as i32 != -1 {
         let index = fd(raw)?;
         let descriptor = process.files.get(index).ok_or(EBADF)?;
+        if descriptor.description.path_only() {
+            return Err(EBADF);
+        }
         let OpenFileDescription::Signalfd { mask: current, .. } = descriptor.description.as_ref()
         else {
             return Err(EINVAL);

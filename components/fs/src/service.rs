@@ -26,6 +26,7 @@ struct FileSession {
 
 enum Node {
     File(File),
+    Path(File),
     Directory(Rc<Directory>),
 }
 
@@ -264,6 +265,14 @@ fn list(
 }
 
 fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Error> {
+    if matches!(node, Node::Path(_))
+        && !matches!(
+            request.tag,
+            protocol::METADATA | protocol::STATFS | protocol::READ_LINK
+        )
+    {
+        return Err(Error::InvalidRequest);
+    }
     match (request.tag, request.words()) {
         (protocol::LIST, [start, 1]) if request.handles().len() == 1 => {
             let start = *start;
@@ -275,7 +284,7 @@ fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Er
         }
         (protocol::FSYNC, []) if request.handles().is_empty() => {
             match node {
-                Node::File(file) => file.fsync()?,
+                Node::File(file) | Node::Path(file) => file.fsync()?,
                 Node::Directory(directory) => directory.fsync()?,
             }
             Ok(Message::new(protocol::SUCCESS, &[])?)
@@ -283,7 +292,7 @@ fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Er
         (protocol::METADATA, []) if request.handles().len() == 1 => {
             let mut output = take_frames(&mut request, Rights::WRITE)?;
             let metadata = match node {
-                Node::File(file) => file.metadata()?,
+                Node::File(file) | Node::Path(file) => file.metadata()?,
                 Node::Directory(directory) => directory.metadata()?,
             };
             output.write(0, &metadata.encode())?;
@@ -292,11 +301,20 @@ fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Er
         (protocol::STATFS, []) if request.handles().len() == 1 => {
             let mut output = take_frames(&mut request, Rights::WRITE)?;
             let statistics = match node {
-                Node::File(file) => file.statistics()?,
+                Node::File(file) | Node::Path(file) => file.statistics()?,
                 Node::Directory(directory) => directory.statistics()?,
             };
             output.write(0, &statistics.encode())?;
             Ok(Message::new(protocol::SUCCESS, &[])?)
+        }
+        (protocol::READ_LINK, []) if request.handles().len() == 1 => {
+            let Node::Path(file) = node else {
+                return Err(Error::InvalidRequest);
+            };
+            let bytes = file.read_link()?;
+            let mut output = take_frames(&mut request, Rights::WRITE)?;
+            output.write(0, &bytes)?;
+            Ok(Message::new(protocol::SUCCESS, &[bytes.len() as u64])?)
         }
         (protocol::SET_ATTRIBUTES, []) if request.handles().len() == 1 => {
             let input = take_frames(&mut request, Rights::READ)?;
@@ -304,7 +322,7 @@ fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Er
             input.read(0, &mut bytes)?;
             let attributes = crate::Attributes::decode(&bytes)?;
             match node {
-                Node::File(file) => file.set_attributes(attributes)?,
+                Node::File(file) | Node::Path(file) => file.set_attributes(attributes)?,
                 Node::Directory(directory) => directory.set_attributes(attributes)?,
             }
             Ok(Message::new(protocol::SUCCESS, &[])?)
@@ -318,7 +336,7 @@ fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Er
             list(directory.read_dir()?, start, &mut output)
         }
         _ => match node {
-            Node::File(file) => file_request(file, request),
+            Node::File(file) | Node::Path(file) => file_request(file, request),
             Node::Directory(_) => Err(Error::IsDirectory),
         },
     }
@@ -392,7 +410,13 @@ fn open(namespace: &Namespace, mut request: ReceivedMessage) -> Result<FileSessi
             protocol::CREATE => Node::File(namespace.create(&path)?),
             protocol::OPEN_DIRECTORY => Node::Directory(Rc::new(namespace.open_directory(&path)?)),
             protocol::OPEN if options.is_some() => {
-                Node::File(namespace.open_with(&path, options.unwrap())?)
+                let options = options.unwrap();
+                let file = namespace.open_with(&path, options)?;
+                if options.path_only {
+                    Node::Path(file)
+                } else {
+                    Node::File(file)
+                }
             }
             _ => Node::File(namespace.open_bytes(&path)?),
         },
@@ -474,7 +498,9 @@ fn take_channel(request: &mut ReceivedMessage, rights: Rights) -> Result<Handle<
 
 fn session_response(node: &Node) -> Result<Message, Error> {
     Ok(match node {
-        Node::File(file) => Message::new(protocol::SUCCESS, &[file.len() as u64])?,
+        Node::File(file) | Node::Path(file) => {
+            Message::new(protocol::SUCCESS, &[file.len() as u64])?
+        }
         Node::Directory(directory) => Message::new(protocol::SUCCESS, &[0, directory.id])?,
     })
 }

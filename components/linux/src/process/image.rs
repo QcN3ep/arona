@@ -132,6 +132,7 @@ impl<'a> Executable<'a> {
             directory,
             path,
             fs::OpenOptions {
+                path_only: false,
                 write: false,
                 create: false,
                 exclusive: false,

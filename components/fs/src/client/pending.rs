@@ -153,6 +153,21 @@ impl<'a> Client<'a> {
 }
 
 impl File<'_> {
+    pub fn start_read_link(&self) -> Result<PendingRead, Error> {
+        let frames = output_buffer(self.task, PAGE_SIZE)?;
+        let mut request = Message::new(protocol::READ_LINK, &[])?;
+        transfer(
+            &mut request,
+            frames.try_clone(Rights::WRITE | Rights::TRANSFER)?,
+            Rights::WRITE,
+        )?;
+        Ok(Pending::new(
+            self.channel.start_call(&mut request)?,
+            (frames, PAGE_SIZE),
+            complete_read,
+        ))
+    }
+
     pub fn start_statistics(&self) -> Result<PendingStatistics, Error> {
         statistics_call(
             self.task,

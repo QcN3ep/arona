@@ -9,6 +9,7 @@
 .endm
 
 .macro expect value
+    li s11, \@
     li t0, \value
     bne a0, t0, file_failure
 .endm
@@ -509,7 +510,9 @@ files:
     la a1, data_path
     li a2, 0x200000
     invoke 56
-    expect -95
+    bltz a0, file_failure
+    invoke 57
+    expect 0
     li a0, -100
     la a1, null_path
     li a2, 2
@@ -648,14 +651,67 @@ files:
     invoke 46
     expect -9
     mv a0, s0
-    invoke 74
+    invoke 82
+    expect -9
+    mv a0, s0
+    li a1, 4
+    li a2, 2048
+    invoke 25
+    expect -9
+    mv a0, s0
+    li a1, 3
+    invoke 25
+    expect 0x200000
+    mv a0, s0
+    li a1, 0x5403
+    mv a2, sp
+    invoke 29
+    expect -9
+    mv a0, s0
+    li a1, 0x5421
+    mv a2, sp
+    invoke 29
+    expect -9
+    li a0, 0
+    li a1, 4096
+    li a2, 1
+    li a3, 2
+    mv a4, s0
+    li a5, 0
+    invoke 222
+    expect -9
+    sw s0, 0(sp)
+    li t0, 1
+    sh t0, 4(sp)
+    sh zero, 6(sp)
+    sd zero, 16(sp)
+    sd zero, 24(sp)
+    mv a0, sp
+    li a1, 1
+    addi a2, sp, 16
+    li a3, 0
+    invoke 73
+    expect 1
+    lhu t0, 6(sp)
+    li t1, 32
+    bne t0, t1, file_failure
+    li t0, 1
+    sll t0, t0, s0
+    sd t0, 0(sp)
+    addi a0, s0, 1
+    mv a1, sp
+    li a2, 0
+    li a3, 0
+    addi a4, sp, 16
+    li a5, 0
+    invoke 72
     expect -9
     mv a0, s0
     invoke 57
     expect 0
     # An O_PATH directory anchors relative opens but rejects directory reads.
     li a0, -100
-    la a1, root_path
+    la a1, path_root
     li a2, 0x210000
     invoke 56
     bltz a0, file_failure
@@ -663,7 +719,7 @@ files:
     mv a0, s0
     mv a1, sp
     li a2, 8
-    invoke 217
+    invoke 61
     expect -9
     mv a0, s0
     la a1, relative_path
@@ -678,7 +734,7 @@ files:
     invoke 57
     expect 0
     # O_PATH ignores the access mode, and O_PATH|O_DIRECTORY still rejects files.
-    open_data 0x200003
+    open_data 0x80200003
     bltz a0, file_failure
     mv s0, a0
     mv a0, s0
@@ -697,7 +753,7 @@ files:
     addi sp, sp, 16
     ret
 file_failure:
-    li a0, 3
+    addi a0, s11, 3
     invoke 94
     j file_failure
 
@@ -710,6 +766,7 @@ file_failure:
  null_data: .ascii "abc"
  relative_path: .asciz "etc/linux-data"
  trailing_path: .asciz "/etc/linux-data/"
+ path_root: .asciz "/"
  root_path: .asciz "/bin"
  missing_path: .asciz "/etc/absent"
  empty_path: .asciz ""

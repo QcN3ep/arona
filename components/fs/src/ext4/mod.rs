@@ -57,14 +57,18 @@ impl Ext4 {
     }
 
     pub fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
-        self.open_node(path, false)
+        self.open_node(path, false, false)
     }
 
     pub fn open_directory(&self, path: &[u8]) -> Result<File, Error> {
-        self.open_node(path, true)
+        self.open_node(path, true, false)
     }
 
-    fn open_node(&self, path: &[u8], directory: bool) -> Result<File, Error> {
+    pub fn open_path(&self, path: &[u8]) -> Result<File, Error> {
+        self.open_node(path, false, true)
+    }
+
+    fn open_node(&self, path: &[u8], directory: bool, path_only: bool) -> Result<File, Error> {
         let mut volume = self.volume.borrow_mut();
         let inode = volume.lookup(path)?;
         if inode.directory() != directory {
@@ -74,7 +78,7 @@ impl Ext4 {
                 Error::IsDirectory
             });
         }
-        if inode.symlink() {
+        if inode.symlink() && !path_only {
             return Err(Error::InvalidRequest);
         }
         let identity = volume

@@ -284,6 +284,13 @@ pub(in crate::syscall) fn seek<'a>(
     if process
         .files
         .get(fd_raw as i32 as usize)
+        .is_some_and(|descriptor| descriptor.description.path_only())
+    {
+        return Outcome::Complete(Err(EBADF));
+    }
+    if process
+        .files
+        .get(fd_raw as i32 as usize)
         .is_some_and(|descriptor| {
             matches!(
                 descriptor.description.as_ref(),
