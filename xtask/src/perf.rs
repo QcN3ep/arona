@@ -23,7 +23,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const WINDOWS: [&str; 8] = [
+const WINDOWS: [&str; 9] = [
     "empty",
     "straight",
     "loop",
@@ -32,6 +32,7 @@ const WINDOWS: [&str; 8] = [
     "interrupt",
     "retranslation",
     "source",
+    "mappings",
 ];
 const PASSED: &str = "Perf calibration passed";
 const FAILED: &str = "Perf calibration failed:";
@@ -121,7 +122,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), S
     let directory = target_directory(&root).join("perf").join(&name);
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let mut metadata = json!({
-        "schema": 2, "status": "preparing", "target": options.target.triple(),
+        "status": "preparing", "target": options.target.triple(),
         "case": "calibration", "mode": if options.profile { "profile" } else { "count" }, "plugin_api": 7,
         "timeout_seconds": options.timeout.as_secs(),
     });
@@ -147,7 +148,7 @@ fn collect(
 ) -> Result<(), String> {
     let manifest = artifacts::prepare(options, root, directory)?;
     let saved = directory.join("artifacts");
-    let windows = read_windows(&saved.join("symbols.elf"))?;
+    let (windows, context) = read_windows(&saved.join("symbols.elf"))?;
     let plugin = build_plugin(root, directory)?;
     let mut command = qemu_command(options.target, root);
     let version = command_output(Command::new(command.get_program()).arg("--version"))?;
@@ -164,6 +165,7 @@ fn collect(
             directory,
             &windows,
             options.profile,
+            context,
         )?)
         .arg("-qmp")
         .arg(format!("unix:{}/qmp,server=on,wait=off", control.display()));
@@ -177,6 +179,7 @@ fn collect(
     metadata["collector"] = json!({
         "plugin_sha256": artifacts::digest(&plugin)?,
         "source_sha256": artifacts::digest(&directory.join("count.c"))?,
+        "context_header_sha256": artifacts::digest(&directory.join("context.h"))?,
         "compiler": command_output(Command::new(env::var_os("CC").unwrap_or_else(|| "cc".into())).arg("--version"))?,
     });
     metadata["command"] = json!(command.get_program().to_string_lossy());
@@ -189,7 +192,7 @@ fn collect(
     metadata["status"] = json!("running");
     save_metadata(directory, metadata)?;
     measure(command, control, directory, options.timeout)?;
-    validate_counts(directory, &windows, options.profile)?;
+    validate_counts(directory, &windows)?;
     metadata["counts_sha256"] = json!(artifacts::digest(&directory.join("counts.json"))?);
     if options.profile {
         report::generate(directory, metadata)?;
@@ -232,6 +235,11 @@ fn build_plugin(root: &Path, directory: &Path) -> Result<PathBuf, String> {
     let output = directory.join("count.so");
     fs::copy(root.join("xtask/perf/count.c"), directory.join("count.c"))
         .map_err(|error| error.to_string())?;
+    fs::copy(
+        root.join("xtask/perf/context.h"),
+        directory.join("context.h"),
+    )
+    .map_err(|error| error.to_string())?;
     let mut command = Command::new(env::var_os("CC").unwrap_or_else(|| "cc".into()));
     command
         .args([
@@ -273,7 +281,7 @@ fn command_output(command: &mut Command) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|error| error.to_string())
 }
 
-fn read_windows(executable: &Path) -> Result<Vec<Window>, String> {
+fn read_windows(executable: &Path) -> Result<(Vec<Window>, u64), String> {
     let output = command_output(
         Command::new("llvm-nm")
             .args(["--format=posix", "--defined-only", "--no-demangle"])
@@ -295,22 +303,22 @@ fn read_windows(executable: &Path) -> Result<Vec<Window>, String> {
             .copied()
             .ok_or_else(|| format!("missing calibration symbol: {name}_{suffix}"))
     };
-    WINDOWS
+    let windows = WINDOWS
         .into_iter()
-        .filter(|name| *name != "source" || symbols.contains_key("__arona_perf_source_start"))
         .map(|name| {
             Ok(Window {
                 name,
                 start: symbol(name, "start")?,
                 end: symbol(name, "end")?,
-                expected: if name == "source" {
+                expected: if matches!(name, "source" | "mappings") {
                     None
                 } else {
                     Some(symbol(name, "expected")?)
                 },
             })
         })
-        .collect()
+        .collect::<Result<_, String>>()?;
+    Ok((windows, symbol("context", "address")?))
 }
 
 fn plugin_options(
@@ -318,6 +326,7 @@ fn plugin_options(
     directory: &Path,
     windows: &[Window],
     profile: bool,
+    context: u64,
 ) -> Result<String, String> {
     let escape = |path: &Path| {
         path.to_str()
@@ -339,7 +348,8 @@ fn plugin_options(
         .map_err(|error| error.to_string())?;
     }
     if profile {
-        options.push_str(",profile=static-calibration");
+        use std::fmt::Write;
+        write!(options, ",profile=on,context={context:x}").map_err(|error| error.to_string())?;
     }
     Ok(options)
 }
@@ -473,13 +483,11 @@ fn measure(
     }
 }
 
-fn validate_counts(directory: &Path, expected: &[Window], profile: bool) -> Result<(), String> {
+fn validate_counts(directory: &Path, expected: &[Window]) -> Result<(), String> {
     let bytes = fs::read(directory.join("counts.json"))
         .map_err(|error| format!("cannot read instruction counts: {error}; see qemu.log"))?;
     let counts: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    let schema = if profile { 2 } else { 1 };
-    if counts["schema"] != schema
-        || counts["plugin_api"] != 7
+    if counts["plugin_api"] != 7
         || counts["valid"] != true
         || counts["metric"] != "guest_instruction_dispatches"
     {

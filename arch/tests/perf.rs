@@ -5,6 +5,9 @@
 
 use arch::device::uart::Uart;
 
+#[path = "perf/mappings.rs"]
+mod mappings;
+
 #[cfg(target_arch = "riscv64")]
 #[path = "riscv64/perf.rs"]
 mod isa;
@@ -41,6 +44,8 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     assert_eq!(isa::interrupt(), 1);
     assert_eq!(isa::retranslation(), 3);
     assert_eq!(isa::source(), 12);
+    mappings::prepare();
+    assert_eq!(isa::mappings(), 110);
     uart()
         .write(format_args!("Perf calibration passed\n"))
         .unwrap();
