@@ -29,6 +29,7 @@ fn create_write_read_round_trip() {
     assert_eq!(file.len(), 11);
     assert_eq!(read(&file), b"hello world".to_vec());
     assert_eq!(tmpfs.metadata(b"/a").unwrap().size, 11);
+    assert_eq!(file.metadata().unwrap().blocks, 8);
 
     file.truncate(2).unwrap();
     assert_eq!(file.len(), 2);
@@ -45,6 +46,11 @@ fn writes_beyond_the_file_are_zero_filled() {
     file.write_at(4, b"xy").unwrap();
     assert_eq!(file.len(), 6);
     assert_eq!(read(&file), b"\0\0\0\0xy".to_vec());
+    let free = tmpfs.statistics().unwrap().free_blocks;
+    assert_eq!(file.write_at(usize::MAX, b"").unwrap(), 0);
+    assert_eq!(file.len(), 6);
+    assert_eq!(read(&file), b"\0\0\0\0xy".to_vec());
+    assert_eq!(tmpfs.statistics().unwrap().free_blocks, free);
 }
 
 #[test]
@@ -124,18 +130,36 @@ fn rename_rejects_replacing_a_non_empty_directory() {
     tmpfs.mkdir(b"/a").unwrap();
     tmpfs.mkdir(b"/b").unwrap();
     tmpfs.create(b"/b/f").unwrap();
+    let files = tmpfs.statistics().unwrap().files;
     assert_eq!(tmpfs.rename(b"/a", b"/b").unwrap_err(), Error::NotEmpty);
+    assert!(tmpfs.read_dir(b"/a").unwrap().is_empty());
+    assert_eq!(names(&tmpfs.read_dir(b"/b").unwrap()), [b"f"]);
+    assert_eq!(tmpfs.statistics().unwrap().files, files);
+    tmpfs.unlink(b"/b/f").unwrap();
+    let replaced = tmpfs.open_directory(b"/b").unwrap();
+    tmpfs.rename(b"/a", b"/b").unwrap();
+    assert_eq!(replaced.metadata().unwrap().links, 0);
+    drop(replaced);
+    assert_eq!(tmpfs.statistics().unwrap().files, files - 2);
 }
 
 #[test]
 fn unlink_removes_entries_and_rejects_inhabited_directories() {
     let tmpfs = Tmpfs::new().unwrap();
+    let initial = tmpfs.statistics().unwrap().files;
     tmpfs.mkdir(b"/d").unwrap();
     tmpfs.create(b"/d/f").unwrap();
     assert_eq!(tmpfs.unlink(b"/d").unwrap_err(), Error::NotEmpty);
+    assert_eq!(names(&tmpfs.read_dir(b"/d").unwrap()), [b"f"]);
+    assert_eq!(tmpfs.metadata(b"/d").unwrap().links, 2);
     tmpfs.unlink(b"/d/f").unwrap();
     assert_eq!(tmpfs.metadata(b"/d/f").unwrap_err(), Error::NotFound);
+    let directory = tmpfs.open_directory(b"/d").unwrap();
     tmpfs.unlink(b"/d").unwrap();
+    assert_eq!(directory.metadata().unwrap().links, 0);
+    assert_eq!(tmpfs.statistics().unwrap().files, initial + 1);
+    drop(directory);
+    assert_eq!(tmpfs.statistics().unwrap().files, initial);
     assert_eq!(tmpfs.metadata(b"/d").unwrap_err(), Error::NotFound);
     assert_eq!(tmpfs.unlink(b"/d").unwrap_err(), Error::NotFound);
 }
@@ -209,10 +233,19 @@ fn capacity_limits_writes_and_reports_free_space() {
     file.write_at(0, &vec![7; 8192]).unwrap();
     assert_eq!(tmpfs.statistics().unwrap().free_blocks, 0);
     assert_eq!(file.write_at(8192, b"x").unwrap_err(), Error::NoSpace);
-    assert_eq!(
-        tmpfs.create(b"/b").unwrap().truncate(4096).unwrap_err(),
-        Error::NoSpace
-    );
+    assert_eq!(file.len(), 8192);
+    assert_eq!(read(&file), vec![7; 8192]);
+    assert_eq!(file.metadata().unwrap().blocks, 16);
+    assert_eq!(tmpfs.statistics().unwrap().free_blocks, 0);
+    let other = tmpfs.create(b"/b").unwrap();
+    assert_eq!(other.truncate(4096).unwrap_err(), Error::NoSpace);
+    assert_eq!(other.len(), 0);
+    assert_eq!(tmpfs.statistics().unwrap().free_blocks, 0);
+    assert_eq!(file.append(b"x").unwrap_err(), Error::NoSpace);
+    assert_eq!(read(&file), vec![7; 8192]);
+    assert_eq!(file.truncate(usize::MAX).unwrap_err(), Error::FileTooLarge);
+    assert_eq!(read(&file), vec![7; 8192]);
+    assert_eq!(tmpfs.statistics().unwrap().free_blocks, 0);
     assert!(matches!(
         Tmpfs::with_capacity(100),
         Err(Error::InvalidRequest)
@@ -270,6 +303,7 @@ fn attributes_are_stored_and_validated() {
         .unwrap_err(),
         Error::InvalidRequest
     );
+    assert_eq!(file.metadata().unwrap(), metadata);
 }
 
 #[test]

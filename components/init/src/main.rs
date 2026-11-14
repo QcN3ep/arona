@@ -80,7 +80,7 @@ fn main() -> Result<usize, InitError> {
     let archive = Archive::new(frames, length)?;
     let loader = program::Loader::new(archive.open("/bin/init")?)?;
     let (filesystem, mounts, files) = service::start_fs(&loader, archive)?;
-    mounts.mount_tmpfs(b"/tmp", service::deadline()?)?;
+    mounts.mount_tmpfs(b"/tmp", 0, service::deadline()?)?;
     let (devmgr, device_control) = service::start_devmgr(&loader, &files, &devices)?;
     let persistent_log = if let Some(id) = devmgr::device::next(
         &device_control,

@@ -156,9 +156,10 @@ fn admin(
             let disk = Rc::new(Disk::new(task, session)?);
             namespace.mount(&path, disk, start, size)?;
         }
-        (protocol::TMPFS, [length]) if request.handles().len() == 1 => {
-            let length = *length;
-            namespace.mount_tmpfs(&path(&mut request, length)?)?;
+        (protocol::TMPFS, [length, capacity]) if request.handles().len() == 1 => {
+            let (length, capacity) = (*length, *capacity);
+            let capacity = usize::try_from(capacity).map_err(|_| Error::InvalidRequest)?;
+            namespace.mount_tmpfs(&path(&mut request, length)?, capacity)?;
         }
         (protocol::UNMOUNT, [length]) if request.handles().len() == 1 => {
             let length = *length;

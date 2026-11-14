@@ -84,7 +84,8 @@ A valid volume without a journal is accessed through the read-only path.
 init mounts one at `/tmp` during startup, so programs can create temporary files even when no persistent volume exists.
 The backend keeps directories, regular files, and symbolic links, and maintains link counts, attributes, and mount identity like the other backends.
 
-Writes grow a file to the requested offset and zero-fill the gap; sizes are limited to 2 GiB and to the volume capacity, and a write past the capacity reports `NoSpace`.
+Writes zero-fill gaps and limit file size to 2 GiB and the volume capacity.
+A write that exceeds capacity or cannot allocate memory returns `NoSpace` without changing the file.
 Unlinking a file with an open session removes the name but keeps the content until the last session closes.
 `statfs` reports the fixed 4096-byte block size, the capacity in blocks, the inode count, and the 255-byte name limit.
 Mounting merges the new root into the parent directory entry list, and the unmount path refuses to release a volume that still has open sessions.
