@@ -94,6 +94,7 @@ impl Vfork {
 pub(crate) struct Shared {
     pub namespace: Rc<PidNamespace>,
     pub shm: Rc<RefCell<crate::shm::Table>>,
+    pub mappings: Rc<crate::memory::files::Registry>,
 }
 
 /// Options that are not part of the image or argument environment of a new process.
@@ -183,6 +184,7 @@ impl<'a> Process<'a> {
             arguments,
             options.random,
             limits.stack(),
+            Rc::clone(&shared.mappings),
         )?;
         let native = address_space.native.create_thread(
             UserEntry {

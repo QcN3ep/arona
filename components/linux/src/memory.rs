@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+pub(crate) mod files;
+
 // TODO: Support demand paging, page reclamation, and swapping.
 
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
@@ -20,7 +22,8 @@ const HUGE_FRAMES: u64 = (HUGE_PAGE_SIZE / PAGE_SIZE) as u64;
 pub(crate) struct AddressSpace {
     pub native: Rc<SupervisedTask>,
     heap: Range<usize>,
-    pages: RefCell<BTreeMap<usize, Page>>,
+    pages: Rc<RefCell<BTreeMap<usize, Page>>>,
+    registry: Rc<files::Registry>,
     stack_origin: Rc<Origin>,
     heap_origin: Rc<Origin>,
     /// Ranges held by an in-flight huge mapping, shared with its [`Reservation`].
@@ -86,6 +89,7 @@ pub(super) struct Page {
     pub offset: u64,
     pub backing: PageBacking,
     pub huge: bool,
+    pub file: Option<files::View>,
     pub origin: Option<Rc<Origin>>,
     /// File offset of this page for file-backed origins, otherwise zero.
     pub file_offset: u64,
@@ -157,6 +161,7 @@ impl AddressSpace {
         arguments: &Arguments,
         random: Option<&[u8; 16]>,
         stack: usize,
+        registry: Rc<files::Registry>,
     ) -> Result<(Self, usize), Error> {
         let main_path = Rc::new(arguments.path.clone());
         let interpreter_path = images.image.interpreter.map(|path| Rc::new(path.to_vec()));
@@ -187,10 +192,12 @@ impl AddressSpace {
             .0
             .pages()
             .end;
+        let native = Rc::new(SupervisedTask::new(parent, port)?);
         let address_space = Self {
-            native: Rc::new(SupervisedTask::new(parent, port)?),
+            pages: registry.register(&native),
+            native,
+            registry,
             heap: start..start,
-            pages: RefCell::new(BTreeMap::new()),
             stack_origin: Rc::new(Origin::Stack),
             heap_origin: Rc::new(Origin::Heap),
             pending: Rc::new(RefCell::new(Vec::new())),
@@ -222,6 +229,30 @@ impl AddressSpace {
             stack,
         )?;
         Ok((address_space, stack))
+    }
+
+    pub fn registry(&self) -> Rc<files::Registry> {
+        Rc::clone(&self.registry)
+    }
+
+    pub fn synchronize_files(&self) -> Result<(), runtime::Error> {
+        self.registry.synchronize()
+    }
+
+    pub fn record_file(
+        &self,
+        range: Range<usize>,
+        view: files::View,
+        offset: u64,
+        origin: Option<Rc<Origin>>,
+    ) {
+        for address in (range.start..range.end).step_by(PAGE_SIZE) {
+            if let Some(page) = self.pages.borrow_mut().get_mut(&address) {
+                page.file = Some(view.clone());
+                page.file_offset = offset + (address - range.start) as u64;
+                page.origin = origin.clone();
+            }
+        }
     }
 
     /// Returns the number of bytes currently mapped into the address space.
@@ -586,6 +617,7 @@ impl AddressSpace {
                     offset: offset + index,
                     backing,
                     huge: true,
+                    file: None,
                     origin: None,
                     file_offset: 0,
                 },
@@ -794,6 +826,7 @@ impl AddressSpace {
                 origin: origin.clone(),
                 file_offset: 0,
                 huge: false,
+                file: None,
             });
         }
         Ok(pages)
@@ -849,7 +882,11 @@ impl AddressSpace {
                 .get(&cursor)
                 .cloned()
                 .ok_or(runtime::Error::Protocol)?;
-            if matches!(page.backing, PageBacking::ReadOnlyFile)
+            if (matches!(page.backing, PageBacking::ReadOnlyFile)
+                || page
+                    .file
+                    .as_ref()
+                    .is_some_and(|view| view.file.shared && !view.file.writable))
                 && permissions == Permissions::ReadWrite
             {
                 return Err(runtime::Error::Kernel(runtime::KernelError::Denied));
@@ -953,13 +990,27 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// Checks that the range is mapped; shared huge page mappings need no write-back.
+    /// Synchronizes the shared files backing a fully mapped range.
     pub fn msync(&self, range: Range<usize>) -> Result<(), runtime::Error> {
         let pages = self.pages.borrow();
+        let mut sources = Vec::new();
         for address in range.step_by(PAGE_SIZE) {
-            if !pages.contains_key(&address) {
+            let Some(page) = pages.get(&address) else {
                 return Err(runtime::Error::Kernel(runtime::KernelError::BadAddress));
+            };
+            if let Some(view) = &page.file
+                && view.file.shared
+                && view.file.writable
+                && !sources
+                    .iter()
+                    .any(|file: &Rc<files::File>| Rc::ptr_eq(file, &view.file))
+            {
+                sources.push(Rc::clone(&view.file));
             }
+        }
+        drop(pages);
+        for file in sources {
+            file.source.sync().map_err(|_| runtime::Error::Protocol)?;
         }
         Ok(())
     }
@@ -1118,6 +1169,7 @@ impl AddressSpace {
                         0
                     },
                     huge: false,
+                    file: None,
                 },
             );
         }
@@ -1210,17 +1262,21 @@ impl AddressSpace {
         self.read(address, &mut value).map_err(|_| EFAULT)?;
         let pages = self.pages.borrow();
         let page = pages.get(&(address & !(PAGE_SIZE - 1))).ok_or(EFAULT)?;
-        let key = if !private && let PageBacking::SystemV(id) = page.backing {
-            (
-                0,
-                id * 2 + 1,
-                page.offset as usize * PAGE_SIZE + address % PAGE_SIZE,
+        use crate::process::futex::Key;
+        let key = if private {
+            Key::Private(pid, address)
+        } else if let Some(view) = &page.file
+            && view.file.shared
+        {
+            Key::File(
+                view.file.source.device,
+                view.file.source.inode,
+                page.file_offset + (address % PAGE_SIZE) as u64,
             )
-        } else if private {
-            (pid, address, 0)
+        } else if let PageBacking::SystemV(id) = page.backing {
+            Key::SystemV(id, page.offset as usize * PAGE_SIZE + address % PAGE_SIZE)
         } else {
-            (
-                0,
+            Key::Anonymous(
                 Rc::as_ptr(&page.frames) as usize,
                 page.offset as usize * PAGE_SIZE + address % PAGE_SIZE,
             )
@@ -1254,10 +1310,12 @@ impl AddressSpace {
         port: &Handle<TrapPort>,
         share: bool,
     ) -> Result<Self, runtime::Error> {
+        let native = Rc::new(SupervisedTask::new(parent, port)?);
         let child = Self {
-            native: Rc::new(SupervisedTask::new(parent, port)?),
+            pages: self.registry.register(&native),
+            native,
+            registry: Rc::clone(&self.registry),
             heap: self.heap.clone(),
-            pages: RefCell::new(BTreeMap::new()),
             stack_origin: Rc::clone(&self.stack_origin),
             heap_origin: Rc::clone(&self.heap_origin),
             pending: Rc::new(RefCell::new(Vec::new())),
@@ -1294,12 +1352,17 @@ impl AddressSpace {
                     // REFERENCE: https://man7.org/linux/man-pages/man2/fork.2.html
                     // File-backed and shared huge mappings stay aliased after fork.
                     // Only an anonymous private block is copied for the child.
-                    let (frames, offset) =
-                        if share || !matches!(page.backing, PageBacking::Anonymous) {
-                            (Rc::clone(&page.frames), page.offset)
-                        } else {
-                            (copy_huge_block(parent, page)?, 0)
-                        };
+                    let (frames, offset) = if share
+                        || page
+                            .file
+                            .as_ref()
+                            .map_or(!matches!(page.backing, PageBacking::Anonymous), |view| {
+                                view.file.shared
+                            }) {
+                        (Rc::clone(&page.frames), page.offset)
+                    } else {
+                        (copy_huge_block(parent, page)?, 0)
+                    };
                     child.map_huge(
                         frames,
                         offset,
@@ -1308,21 +1371,31 @@ impl AddressSpace {
                         permissions,
                         page.backing,
                     )?;
+                    if let Some(view) = &page.file {
+                        child.record_file(
+                            address..address + HUGE_PAGE_SIZE,
+                            view.clone(),
+                            page.file_offset,
+                            page.origin.clone(),
+                        );
+                    }
                 }
                 continue;
             }
-            let (frames, offset) =
-                if share || matches!(page.backing, PageBacking::Shared | PageBacking::SystemV(_)) {
-                    (Rc::clone(&page.frames), page.offset)
-                } else {
-                    let mut bytes = [0; PAGE_SIZE];
-                    page.frames
-                        .read(page.offset as usize * PAGE_SIZE, &mut bytes)?;
-                    let mut frames =
-                        parent.allocate(1, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
-                    frames.write(0, &bytes)?;
-                    (Rc::new(frames), 0)
-                };
+            let (frames, offset) = if share
+                || page.file.as_ref().is_some_and(|view| view.file.shared)
+                || matches!(page.backing, PageBacking::Shared | PageBacking::SystemV(_))
+            {
+                (Rc::clone(&page.frames), page.offset)
+            } else {
+                let mut bytes = [0; PAGE_SIZE];
+                page.frames
+                    .read(page.offset as usize * PAGE_SIZE, &mut bytes)?;
+                let mut frames =
+                    parent.allocate(1, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
+                frames.write(0, &bytes)?;
+                (Rc::new(frames), 0)
+            };
             child.map_frames(
                 frames,
                 offset,
@@ -1333,6 +1406,7 @@ impl AddressSpace {
                 page.origin.clone(),
                 page.file_offset,
             )?;
+            child.pages.borrow_mut().get_mut(&address).unwrap().file = page.file.clone();
         }
         Ok(child)
     }

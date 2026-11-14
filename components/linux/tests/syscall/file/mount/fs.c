@@ -310,7 +310,11 @@ static void hugepages(void) {
     CHECK(SC(222, 0, HUGE, 3, MAP_SHARED, writable, 0) == -EACCES);
     CHECK(SC(222, 0, HUGE, 3, MAP_PRIVATE, writable, 0) == -EACCES);
     CHECK(SC(57, writable) == 0);
-    CHECK(SC(222, 0, HUGE, 3, MAP_PRIVATE, fd, 0) == -EOPNOTSUPP);
+    long private_file = SC(222, 0, HUGE, 3, MAP_PRIVATE, fd, 0);
+    CHECK(private_file > 0);
+    *(volatile unsigned char *)private_file = 'Q';
+    CHECK(SC(67, fd, P(&byte), 1, 0) == 1 && byte == 'A');
+    CHECK(SC(215, private_file, HUGE) == 0);
     CHECK(SC(57, fd) == 0);
     CHECK(SC(35, AT_FDCWD, P(name), 0) == 0);
     CHECK(open_file(name, O_RDONLY, 0) == -ENOENT);
@@ -415,33 +419,34 @@ static void hugepages(void) {
     CHECK(SC(57, limited) == 0);
     CHECK(SC(35, AT_FDCWD, P(limited_name), 0) == 0);
 
-    // Truncating a mapped block cannot refund its volume charge. A fresh volume
-    // fits 32 blocks, so the 33rd mapping reports ENOSPC even though every file
-    // was truncated back to zero; unmapping then lets statfs report the space again.
+    // Shrinking invalidates all views. Growing rebinds them to the same fresh block.
     const char *ledger_name = "/tmp/arona-huge-ledger/ledger";
     CHECK(SC(34, AT_FDCWD, P("/tmp/arona-huge-ledger"), 0755) == 0);
     CHECK(SC(40, P("none"), P("/tmp/arona-huge-ledger"), P("hugetlbfs"), 0, 0) == 0);
     long ledger = open_file(ledger_name, O_RDWR | O_CREAT | O_TRUNC, 0600);
     CHECK(ledger >= 0);
-    long ledger_addresses[40];
-    long ledger_count = 0;
-    for (long iteration = 0; iteration < 40; ++iteration) {
-        CHECK(SC(46, ledger, HUGE) == 0);
-        long mapped = SC(222, 0, HUGE, 3, MAP_SHARED, ledger, 0);
-        if (mapped < 0) {
-            CHECK(mapped == -ENOSPC);
-            break;
-        }
-        ledger_addresses[ledger_count++] = mapped;
-        CHECK(SC(46, ledger, 0) == 0);
+    CHECK(SC(46, ledger, HUGE) == 0);
+    long old = SC(222, 0, HUGE, 3, MAP_SHARED, ledger, 0);
+    CHECK(old > 0);
+    *(volatile unsigned char *)old = 'X';
+    CHECK(SC(46, ledger, 0) == 0);
+    child = SC(220, 17, 0, 0, 0, 0);
+    CHECK(child >= 0);
+    if (child == 0) {
+        (void)*(volatile unsigned char *)old;
+        SC(94, 0);
+        for (;;) {}
     }
-    CHECK(ledger_count == 32);
-    for (long index = 0; index < ledger_count; ++index) {
-        CHECK(SC(215, ledger_addresses[index], HUGE) == 0);
-    }
-    long stats[15];
-    CHECK(SC(44, ledger, P(stats)) == 0);
-    CHECK(stats[3] >= 16000);
+    status = 0;
+    CHECK(SC(260, child, P(&status), 0, 0) == child && (status & 127) == 7);
+    CHECK(SC(46, ledger, HUGE) == 0);
+    CHECK(*(volatile unsigned char *)old == 0);
+    long fresh_view = SC(222, 0, HUGE, 3, MAP_SHARED, ledger, 0);
+    CHECK(fresh_view > 0);
+    *(volatile unsigned char *)old = 'N';
+    CHECK(*(volatile unsigned char *)fresh_view == 'N');
+    CHECK(SC(215, old, HUGE) == 0);
+    CHECK(SC(215, fresh_view, HUGE) == 0);
 
     // A partial huge unmap is rejected before earlier runs are removed.
     const long mixed = 0x24000000L;

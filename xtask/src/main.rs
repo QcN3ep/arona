@@ -184,6 +184,7 @@ fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, S
     // The huge page volume is mounted at /dev/hugepages, so path lookup requires the directory.
     append_entry(&mut bytes, "dev", 0o040755, &[])?;
     append_entry(&mut bytes, "dev/hugepages", 0o040755, &[])?;
+    append_entry(&mut bytes, "dev/shm", 0o041777, &[])?;
     if test == Some("linux") {
         linux_test::append(options, &root, &target_directory, &mut bytes)?;
     }
@@ -193,6 +194,7 @@ fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, S
     let mut reserved = vec![
         "dev",
         "dev/hugepages",
+        "dev/shm",
         "bin/init",
         "bin/devmgr",
         "bin/logger",
@@ -207,6 +209,7 @@ fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, S
             "bin/linux-mqueue",
             "bin/linux-fs-misc",
             "bin/linux-shm",
+            "bin/linux-file-shm",
             "bin/linux-noexec",
             "bin/linux-compact",
             "bin/linux-separate-headers",

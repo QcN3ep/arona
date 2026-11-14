@@ -19,6 +19,12 @@ pub(super) fn append(
         0o100755,
         &block_guest(options, root, target_directory)?,
     )?;
+    append_entry(
+        bytes,
+        "bin/linux-file-shm",
+        0o100755,
+        &file_shm_guest(options, root, target_directory)?,
+    )?;
     let (executable, compact) = build_guest(options, root, target_directory)?;
     let image = fs::read(executable).map_err(|error| error.to_string())?;
     append_entry(bytes, "bin/linux-test", 0o100755, &image)?;
@@ -563,6 +569,22 @@ fn block_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec
         "syscall/file/block",
         "linux-block",
         &["test.c"],
+        isa,
+    )
+}
+
+fn file_shm_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<u8>, String> {
+    let isa = match options.target {
+        Target::Riscv64 => "riscv64",
+        Target::LoongArch64 => "loongarch64",
+    };
+    compile_guest(
+        options,
+        root,
+        target,
+        "syscall/memory/shm",
+        "linux-file-shm",
+        &["shm.c"],
         isa,
     )
 }

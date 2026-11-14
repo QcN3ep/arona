@@ -128,6 +128,7 @@ pub fn poll(process: &mut Process<'_>, index: usize) -> Result<bool, Error> {
 }
 
 pub fn resume(process: &mut Process<'_>, index: usize, mut context: Context) -> Result<(), Error> {
+    process.address_space.synchronize_files()?;
     if process.signals.borrow().stopped {
         process.threads[index].held = Some(context);
         return Ok(());

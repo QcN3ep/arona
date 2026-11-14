@@ -159,7 +159,7 @@ file_mappings:
     move $a4, $s0
     li.d $a5, 0
     invoke 222
-    expect -95
+    expect -13
     li.d $a0, 0
     li.d $a1, 4096
     li.d $a2, 3

@@ -160,7 +160,7 @@ file_mappings:
     mv a4, s0
     li a5, 0
     invoke 222
-    expect -95
+    expect -13
     li a0, 0
     li a1, 4096
     li a2, 3

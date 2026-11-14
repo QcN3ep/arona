@@ -48,6 +48,9 @@ fn main() {
     mounts
         .mount_hugepages(b"/dev/hugepages", service::deadline())
         .unwrap();
+    mounts
+        .mount_tmpfs(b"/dev/shm", 64 * 1024, service::deadline())
+        .unwrap();
     mount_target_bounds(&mounts, &files);
     let (_linux, channel) = service::launch(&native, machine, linux::service::REQUIRED_RIGHTS);
     let mut services = service::resources(&device_service, &kernel_log, Some(reserved));
@@ -98,6 +101,26 @@ fn main() {
     tmpfs(&files, &mounts);
     fs_misc(&linux, &files, &output);
     shared_memory(&linux, &output);
+    let status = linux
+        .start_run(
+            Program {
+                path: b"/bin/linux-file-shm",
+                arguments: &[b"/bin/linux-file-shm"],
+                environment: &[],
+                mount: false,
+            },
+            output(),
+        )
+        .unwrap()
+        .wait(WaitMode::Forever)
+        .unwrap();
+    assert_eq!(
+        status,
+        ExitStatus {
+            code: 42,
+            signal: 0
+        }
+    );
     block(&linux, &device_service, &output);
     terminal(&linux, &output, &device_service, console);
     mounts.unmount(b"/var", service::deadline()).unwrap();

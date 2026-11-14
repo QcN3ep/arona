@@ -48,6 +48,7 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
     let shared = crate::process::Shared {
         namespace: Rc::new(crate::process::namespace::PidNamespace::new()),
         shm: Rc::new(RefCell::new(crate::shm::Table::new())),
+        mappings: Rc::default(),
     };
     let port = alloc::rc::Rc::new(task.trap_port(Rights::READ | Rights::WAIT)?);
     reply.send(&mut Message::new(0, &[])?)?;

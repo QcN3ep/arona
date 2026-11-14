@@ -81,6 +81,7 @@ fn main() -> Result<usize, InitError> {
     let loader = program::Loader::new(archive.open("/bin/init")?)?;
     let (filesystem, mounts, files) = service::start_fs(&loader, archive)?;
     mounts.mount_tmpfs(b"/tmp", 0, service::deadline()?)?;
+    mounts.mount_tmpfs(b"/dev/shm", 0, service::deadline()?)?;
     mounts.mount_hugepages(b"/dev/hugepages", service::deadline()?)?;
     let (devmgr, device_control) = service::start_devmgr(&loader, &files, &devices)?;
     let mut reserved_disk = None;

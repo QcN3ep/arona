@@ -9,7 +9,13 @@ use alloc::{
 use core::cell::{Cell, RefCell};
 use runtime::{FrameAllocation, Handle};
 
-pub(crate) type Key = (usize, usize, usize);
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum Key {
+    Private(usize, usize),
+    Anonymous(usize, usize),
+    SystemV(usize, usize),
+    File(u64, u64, u64),
+}
 
 // REFERENCE: https://man7.org/linux/man-pages/man2/set_robust_list.2.html
 /// Bits of a futex word that record the owning thread ID.

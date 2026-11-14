@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Asynchronous probes, reads, and commits for file-backed mappings.
-//!
-//! A huge page file needs one file-service request per 2 MiB block. Materializing
-//! those blocks synchronously inside the trap dispatcher would stall every other
-//! guest and timer event for the whole mapping, so the mapping is a state machine:
-//! first probe the descriptor, then request blocks one at a time, and install the
-//! address space only after every block is available.
+//! Asynchronous file probes and page acquisition for file-backed mappings.
 
 use super::{
     HUGE_PAGE_SIZE, HugeRequest, MAP_PRIVATE, O_WRONLY, PageBacking, allocate_huge,
@@ -19,7 +13,7 @@ use crate::{
     memory::{HugeBlock, Origin, Page, Reservation},
     process::Process,
     syscall::{
-        abi::{EACCES, EINVAL, EIO, ENOMEM, EOPNOTSUPP, EOVERFLOW, Errno, SyscallResult},
+        abi::{EACCES, EINVAL, EIO, ENOMEM, EOVERFLOW, Errno, SyscallResult},
         file::{completion, filesystem_error},
     },
 };
@@ -33,9 +27,10 @@ pub(in crate::syscall) enum Pending<'a> {
 
 const MAPPING_TIMEOUT_NS: u64 = 10_000_000_000;
 
-// TODO: Invalidate existing mappings after file truncation.
 pub(in crate::syscall) struct FileMapping<'a> {
     origin: Option<Rc<Origin>>,
+    file: Option<Rc<crate::memory::files::File>>,
+    initial: Option<(usize, u64)>,
     description: Rc<OpenFileDescription<'a>>,
     request: Stage,
     /// Arguments of the original call, shared by every stage of the mapping.
@@ -53,6 +48,8 @@ pub(super) enum Stage {
     /// Asynchronous huge page probe; also the first stage of ordinary mappings.
     Info(fs::client::PendingHugepageInfo),
     Metadata(fs::client::PendingMetadata),
+    Source(fs::client::PendingMapping),
+    MapPage(fs::client::PendingHugeMap),
     MapHuge(fs::client::PendingHugeMap),
     Read(fs::client::PendingRead),
     Prepare,
@@ -78,6 +75,8 @@ impl<'a> FileMapping<'a> {
     ) -> Self {
         Self {
             origin,
+            file: None,
+            initial: None,
             description,
             request,
             arguments,
@@ -112,6 +111,8 @@ impl Pending<'_> {
             Self::Complete(_) => None,
             Self::File(mapping) => match &mapping.request {
                 Stage::Info(request) => Some(request.call()),
+                Stage::Source(request) => Some(request.call()),
+                Stage::MapPage(request) => Some(request.call()),
                 Stage::Metadata(request) => Some(request.call()),
                 Stage::MapHuge(request) => Some(request.call()),
                 Stage::Read(request) => Some(request.call()),
@@ -143,7 +144,60 @@ impl FileMapping<'_> {
                 if let Err(error) = self.begin_huge(process, hugepage) {
                     return Some(Err(error));
                 }
-                self.start_metadata()
+                self.start_source()
+            }
+            Stage::Source(request) => {
+                let source = match completion(request.try_complete()) {
+                    Some(Ok(source)) => source,
+                    Some(Err(error)) => return self.fail(filesystem_error(error)),
+                    None => return self.wait(),
+                };
+                let (size, generation) = match source.state() {
+                    Ok(state) => state,
+                    Err(error) => return self.fail(filesystem_error(error)),
+                };
+                self.size = size;
+                self.initial = Some((size, generation));
+                if let Some(huge) = &mut self.huge {
+                    huge.size = size as u64;
+                }
+                self.file = Some(Rc::new(crate::memory::files::File {
+                    source,
+                    observed: core::cell::Cell::new((size, generation)),
+                    shared: self.arguments.flags & 3 != MAP_PRIVATE,
+                    writable: self.arguments.flags & 3 != MAP_PRIVATE
+                        && self.description.flags() & 3 != super::O_RDONLY,
+                }));
+                process.address_space.registry().track(self.file.as_ref()?);
+                self.request = Stage::Prepare;
+                if self.huge.is_some() {
+                    self.advance_huge(process)
+                } else {
+                    self.advance_ordinary(process)
+                }
+            }
+            Stage::MapPage(request) => {
+                let frames = match completion(request.try_complete()) {
+                    Some(Ok(frames)) => frames,
+                    Some(Err(error)) => return self.fail(filesystem_error(error)),
+                    None => return self.wait(),
+                };
+                let file = self.file.as_ref()?;
+                self.pages.push(Page {
+                    frames: Rc::new(frames),
+                    offset: 0,
+                    backing: if file.writable {
+                        PageBacking::File
+                    } else {
+                        PageBacking::ReadOnlyFile
+                    },
+                    origin: self.origin.clone(),
+                    file_offset: (self.arguments.offset + self.pages.len() * PAGE_SIZE) as u64,
+                    huge: false,
+                    file: None,
+                });
+                self.request = Stage::Prepare;
+                self.advance_ordinary(process)
             }
             Stage::Metadata(request) => {
                 let metadata = match completion(request.try_complete()) {
@@ -182,11 +236,25 @@ impl FileMapping<'_> {
                     Ok(address) => address,
                     Err(error) => return self.fail(error),
                 };
+                let frames = if self.arguments.flags & 3 == MAP_PRIVATE {
+                    match crate::memory::files::copy(
+                        &process.address_space.native,
+                        &frames,
+                        HUGE_PAGE_SIZE,
+                    ) {
+                        Ok(frames) => frames,
+                        Err(error) => return self.fail(mapping_error(error)),
+                    }
+                } else {
+                    Rc::new(frames)
+                };
                 huge.blocks.push(HugeBlock {
                     address,
-                    frames: Rc::new(frames),
+                    frames,
                     permissions,
-                    backing: if self.description.flags() & 3 == super::O_RDONLY {
+                    backing: if self.arguments.flags & 3 != MAP_PRIVATE
+                        && self.description.flags() & 3 == super::O_RDONLY
+                    {
                         PageBacking::ReadOnlyFile
                     } else {
                         PageBacking::File
@@ -242,10 +310,45 @@ impl FileMapping<'_> {
             return Some(Err(EACCES));
         }
         if self.arguments.flags & 3 != MAP_PRIVATE {
-            // TODO: Support MAP_SHARED for ordinary files; huge page files are mapped directly.
-            return Some(Err(EOPNOTSUPP));
+            if self.description.flags() & 3 == super::O_RDONLY
+                && self.arguments.permissions == Permissions::ReadWrite
+            {
+                return Some(Err(EACCES));
+            }
+            return self.start_source();
         }
         self.start_metadata()
+    }
+
+    fn start_source(&mut self) -> Option<SyscallResult> {
+        let OpenFileDescription::Regular { file, .. } = self.description.as_ref() else {
+            return self.fail(EINVAL);
+        };
+        match file.start_mapping_source() {
+            Ok(request) => {
+                self.request = Stage::Source(request);
+                self.arm_deadline();
+                None
+            }
+            Err(error) => self.fail(filesystem_error(error)),
+        }
+    }
+
+    fn view(&self) -> Result<Option<crate::memory::files::View>, Errno> {
+        self.file
+            .as_ref()
+            .map(|file| {
+                let (size, generation) = file.source.state().map_err(filesystem_error)?;
+                if Some((size, generation)) != self.initial {
+                    return Err(crate::syscall::abi::EAGAIN);
+                }
+                Ok(crate::memory::files::View {
+                    file: Rc::clone(file),
+                    generation,
+                    size,
+                })
+            })
+            .transpose()
     }
 
     fn start_metadata(&mut self) -> Option<SyscallResult> {
@@ -315,10 +418,8 @@ impl FileMapping<'_> {
                 None => return self.fail(ENOMEM),
             };
             if (chunk_offset as u64) < size {
-                let OpenFileDescription::Regular { file, .. } = self.description.as_ref() else {
-                    return self.fail(EINVAL);
-                };
-                let request = match file.start_map_huge(chunk_offset) {
+                let file = self.file.as_ref()?;
+                let request = match file.source.start_map(chunk_offset, file.writable) {
                     Ok(request) => request,
                     Err(error) => return self.fail(filesystem_error(error)),
                 };
@@ -347,6 +448,7 @@ impl FileMapping<'_> {
     }
 
     fn finish_huge(&mut self, process: &Process<'_>) -> SyscallResult {
+        let view = self.view()?;
         let Some(huge) = self.huge.as_ref() else {
             return Err(EINVAL);
         };
@@ -363,6 +465,14 @@ impl FileMapping<'_> {
             .address_space
             .install_huge(&huge.blocks, replace)
             .map_err(|error| huge_error(error, exact, replace))?;
+        if let Some(view) = view {
+            process.address_space.record_file(
+                start..start + self.arguments.length,
+                view,
+                self.arguments.offset as u64,
+                self.origin.clone(),
+            );
+        }
         Ok(start)
     }
 
@@ -381,6 +491,16 @@ impl FileMapping<'_> {
         while self.pages.len() < self.length / PAGE_SIZE {
             let offset = self.arguments.offset + self.pages.len() * PAGE_SIZE;
             if offset < self.size {
+                if let Some(file) = &self.file {
+                    return match file.source.start_map(offset, file.writable) {
+                        Ok(request) => {
+                            self.request = Stage::MapPage(request);
+                            self.arm_deadline();
+                            None
+                        }
+                        Err(error) => self.fail(filesystem_error(error)),
+                    };
+                }
                 let OpenFileDescription::Regular { file, .. } = self.description.as_ref() else {
                     unreachable!()
                 };
@@ -405,6 +525,13 @@ impl FileMapping<'_> {
                 Ok(page) => self.pages.push(page),
                 Err(error) => return Some(Err(error)),
             }
+        }
+        let view = match self.view() {
+            Ok(view) => view,
+            Err(error) => return self.fail(error),
+        };
+        for page in &mut self.pages {
+            page.file = view.clone();
         }
         Some(
             process
@@ -455,5 +582,6 @@ fn page(
         origin,
         file_offset,
         huge: false,
+        file: None,
     })
 }

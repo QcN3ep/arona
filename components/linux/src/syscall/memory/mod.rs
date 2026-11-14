@@ -342,11 +342,7 @@ pub(super) fn check_huge_file_mapping(
         // mapping needs write access.
         return Err(EACCES);
     }
-    if flags & 3 == MAP_PRIVATE {
-        // TODO: Copy a huge page block on the first private write.
-        return Err(EOPNOTSUPP);
-    }
-    if mode == O_RDONLY && permissions == Permissions::ReadWrite {
+    if flags & 3 == MAP_SHARED && mode == O_RDONLY && permissions == Permissions::ReadWrite {
         return Err(EACCES);
     }
     Ok(())

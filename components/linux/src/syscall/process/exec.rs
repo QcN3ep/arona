@@ -185,6 +185,7 @@ fn replace(
         arguments,
         random,
         process.limits.stack(),
+        process.address_space.registry(),
     )
     .map_err(error)?;
     if process

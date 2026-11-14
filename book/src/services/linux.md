@@ -108,17 +108,17 @@ Missing disks and partitions return `ENOENT` or `ENXIO`.
 | Mounting | `mount`, `umount2` |
 | Waiting and pipes | `pipe2`, `eventfd2`, `ppoll`, `pselect6` |
 
-`mount` accepts the `tmpfs` filesystem type and resolves the target directory through the file service before adding a mount table entry.
+`mount` accepts `tmpfs` and `hugetlbfs` and resolves the target directory through the file service before adding a mount table entry.
 The source name is ignored, read-only and bind-style flags are rejected, and nonzero data options currently report `EINVAL`.
 `MS_NOSUID`, `MS_NODEV`, and `MS_NOEXEC` are rejected because the namespace does not store or enforce them; the accepted silent and atime flags do not change behavior for an in-memory volume.
 The flag word is checked as a 32-bit value, so set bits above bit 31 are rejected rather than truncated.
 Mount targets must lie below `/tmp` or `/var`; other targets, including the boot archive system directories, are resolved through the file service and then report `EPERM` before the mount request is sent to the mount-control channel.
 The file service also rejects mounting on the read-only boot archive, so the namespace boundary does not depend on the compatibility layer alone.
-`umount2` removes tmpfs mounts created through `mount` and reports `ENOENT` for a missing target, `EINVAL` for a path that is not one of those mounts, and `EBUSY` for a mount with nested entries or open file and directory sessions.
+`umount2` removes in-memory mounts created through `mount` and reports `ENOENT` for a missing target, `EINVAL` for a path that is not one of those mounts, and `EBUSY` for a mount with nested entries or open file and directory sessions.
 The startup `/tmp` mount and disk mounts are not removable through `umount2`.
 The compatibility layer does not expose disk mounts to programs.
 Both calls are dispatched as pending operations, so waiting for the file service does not stall other guests or timer handling.
-All tmpfs volumes, including the startup `/tmp` volume, share a 256 MiB global budget in the file service in addition to the 64 MiB per-volume limit; a mount that would exceed the budget reports `ENOSPC`, and unmounting releases its share.
+In-memory volumes share a 256 MiB capacity budget. User mounts reserve 64 MiB each, while administrative mounts can select a capacity. Mounting beyond the total returns `ENOSPC`, and unmounting releases the reservation.
 
 `mount` and `umount2` require both root credentials and a process mount capability.
 The capability is off for every program by default; `/etc/init.toml` grants it per program with `mount = true`, and the test harness grants it explicitly to the filesystem scenario.
@@ -315,26 +315,25 @@ Unnamed endpoints do not participate in the pathname namespace.
 
 The compatibility layer's AddressSpace records program mappings and their backing page frames and operates the native address space through the supervised Task.
 `brk` manages the heap range after the data segment.
-`mmap` establishes anonymous or file-private mappings and handles address hints, page alignment, `MAP_FIXED` replacement, and `MAP_FIXED_NOREPLACE`.
+`mmap` establishes anonymous and file-backed mappings and handles address hints, page alignment, `MAP_FIXED` replacement, and `MAP_FIXED_NOREPLACE`.
 Anonymous shared mappings retain a shared backing relationship between the relevant processes.
 
-Huge mappings are selected either by the `MAP_HUGETLB` flag, with the optional `MAP_HUGE_2MB` encoding, or by mapping a file from the huge page volume.
-Addresses, lengths, and file offsets must be multiples of 2 MiB, otherwise the call returns `EINVAL`.
-An anonymous huge mapping of any 2 MiB multiple is allocated and mapped one block at a time, so a request above 2 MiB succeeds when enough contiguous blocks are available.
-A mapping is bounded by the address space and by the kernel mapping-record budget, which is global to the user address space and counts base-page, reserved, and large-leaf records together: each 2 MiB block consumes one record, so a single mapping holds at most `MAX_USER_MAPPING_RECORDS` blocks and a longer request reports `ENOMEM` before any block is allocated. The complete target range is checked before the first block is materialized.
-File-backed huge pages request one block from the file service per 2 MiB chunk.
-The compatibility layer probes the descriptor's huge page size asynchronously and then requests the chunks one at a time; each wait lets the service handle other guests, traps, and timers.
-The blocks are installed only after every chunk has been materialized, so `MAP_FIXED` keeps the previous mapping when any request fails and a non-fixed mapping holds its address range until installation.
-Each file-service wait is bounded; when the service does not answer before the deadline, the pending mapping reports `EIO` and releases the reservation and any blocks already obtained.
-Ordinary file mappings use the same probe before their metadata request, so they no longer perform a synchronous huge page query.
-Only `MAP_SHARED` is supported for huge page files; `MAP_PRIVATE` returns `EOPNOTSUPP` instead of aliasing the file's blocks, and each fork copies a private anonymous block while shared blocks stay shared.
-The descriptor access mode constrains the mapping: an `O_RDONLY` descriptor with a writable mapping and an `O_WRONLY` descriptor with any mapping report `EACCES`.
-`getpagesize` and `AT_PAGESZ` remain 4 KiB.
-A mapping that extends beyond the end of a huge page file maps the trailing chunks with no access, so touching them raises `SIGBUS`.
-`mprotect` on a huge mapping is not supported. Unmapping a range that covers only part of a huge mapping reports `EINVAL` before any part of the range is removed, so the address space is unchanged.
+Mounted regular files support shared mappings through pages held by the file service.
+Ordinary reads and writes use the same pages, and `msync` writes them back to the backing filesystem.
+A mapping keeps its open file identity after closing the descriptor or unlinking the name.
+Truncation revokes access beyond the new end in every guest address space before resuming the caller.
+Access to that range raises `SIGBUS`, and growing the file makes it accessible again with fresh contents.
+Read-only shared mappings cannot gain write permission through `mprotect`.
+Private mappings copy file contents, while shared mappings retain the same backing across fork.
+The boot archive supports private mappings.
 
-File-private mappings read content through the file service, allocate and fill the backing page frames, and then map them with the requested permissions.
-`munmap` and `mprotect` modify the native mapping and the compatibility layer records.
+Huge mappings use `MAP_HUGETLB`, optionally with `MAP_HUGE_2MB`, or a file under `/dev/hugepages`.
+Lengths round up to 2 MiB, while fixed addresses and file offsets require that alignment.
+File blocks are requested asynchronously and installed after all requests succeed.
+A failed request releases its reservation and preserves the previous `MAP_FIXED` target.
+Both shared and private huge file mappings are supported.
+`mprotect` and `munmap` operate on complete huge leaves and reject partial leaves before changing the range.
+`getpagesize` and `AT_PAGESZ` remain 4 KiB.
 
 `mremap` resizes a mapping in place when the adjacent address range is free, and shrinking unmaps the excess tail.
 `MREMAP_MAYMOVE` permits relocation: the compatibility layer moves the recorded pages and their frame references instead of copying the contents, and zero-fills any pages added by a growth.
@@ -364,7 +363,7 @@ Every attachment of a segment maps the same frames, so writes through one attach
 A failed attachment leaves no mapping or attachment count behind.
 `SHM_REMAP` is not supported and returns `EINVAL`.
 
-`shmdt` requires the exact start address of an attachment. It removes the mapping first and then accounts the detachment, so a failure keeps the attachment intact, and it reports `EINVAL` when `munmap` or `mremap` has already moved the mapping. A fixed `mmap` replacement that would overlap an attachment is rejected for the same reason.
+`shmdt` uses the original attachment address and removes only its surviving pages. Partial unmaps keep one attachment count until the final page is removed. Fixed replacements that overlap an attachment are rejected.
 A fork copies the parent's attachments into the child and counts each inherited mapping in `nattch`, while a vfork child shares the address space and only inherits the mapping. An inherited attachment can be detached by the child.
 exec and process exit release every attachment owned by the process.
 
