@@ -259,6 +259,9 @@ fn wait(
         .collect();
     for input in &inputs {
         items.push(WaitItem::new(input.call(), READABLE));
+        if let Some(call) = input.echo_call() {
+            items.push(WaitItem::new(call, READABLE));
+        }
     }
     for terminal in terminals.values() {
         // One wake covers every writer the terminal holds stopped; the loop re-polls

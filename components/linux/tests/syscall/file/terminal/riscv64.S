@@ -317,7 +317,22 @@ raw_read:
     lhu t0, 128(sp)
     li t1, 0x7978
     bne t0, t1, terminal_failure
-    # Injected input passes through the discipline like typed input.
+    # Injected input echoes before the next physical input arrives.
+    li t0, 8
+    sw t0, 12(sp)
+    li t0, 1
+    sb t0, 23(sp)
+    sb zero, 22(sp)
+    li a0, 0
+    li a1, 0x5402
+    mv a2, sp
+    invoke 29
+    expect 0
+    li a0, 1
+    la a1, injected_prompt
+    li a2, 24
+    invoke 64
+    expect 24
     li t0, 90
     sb t0, 112(sp)
     li a0, 0
@@ -332,6 +347,14 @@ raw_read:
     expect 1
     lbu t0, 128(sp)
     li t1, 90
+    bne t0, t1, terminal_failure
+    li a0, 0
+    addi a1, sp, 128
+    li a2, 1
+    invoke 63
+    expect 1
+    lbu t0, 128(sp)
+    li t1, 89
     bne t0, t1, terminal_failure
     # The discipline buffers no pending output of its own.
     li a0, 0
@@ -393,6 +416,26 @@ raw_read:
     li a1, 0x540a
     li a2, 0
     invoke 29
+    expect 0
+    li a0, 1
+    li a1, 4
+    li a2, 2048
+    invoke 25
+    expect 0
+    li a0, 1
+    la a1, flow_byte
+    li a2, 1
+    invoke 64
+    expect -11
+    li a0, 1
+    la a1, flow_byte
+    li a2, 0
+    invoke 64
+    expect 0
+    li a0, 1
+    li a1, 4
+    li a2, 0
+    invoke 25
     expect 0
     li a0, 17
     li a1, 0
@@ -619,6 +662,7 @@ terminal_default: .quad 0, 0, 0
 terminal_ignore: .quad 1, 0, 0
 minimum_prompt: .ascii "Linux terminal minimum\n"
 interbyte_prompt: .ascii "Linux terminal interbyte\n"
+injected_prompt: .ascii "Linux terminal injected "
 signal_prompt: .ascii "Linux terminal signal\n"
 suspend_prompt: .ascii "Linux terminal suspend\n"
 resume_prompt: .ascii "Linux terminal resume\n"

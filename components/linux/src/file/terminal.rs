@@ -31,13 +31,9 @@ struct State {
 }
 
 pub(crate) struct Input {
-    request: InputRequest,
+    request: devmgr::uart::PendingRead,
+    echo_request: Option<devmgr::device::Pending<usize, usize>>,
     echo: VecDeque<u8>,
-}
-
-enum InputRequest {
-    Read(devmgr::uart::PendingRead),
-    Echo(devmgr::device::Pending<usize, usize>),
 }
 
 impl Terminal {
@@ -196,7 +192,8 @@ impl Terminal {
         } else {
             source.start_read(devmgr::uart::MAX_BYTES).map(|request| {
                 *input = Some(Input {
-                    request: InputRequest::Read(request),
+                    request,
+                    echo_request: None,
                     echo: VecDeque::new(),
                 });
                 true
@@ -264,11 +261,14 @@ impl Terminal {
             self.output.flush()?;
             return Ok(());
         }
-        let queue: VecDeque<u8> = echo.into();
-        let request = echo_request(&self.output, &queue)?;
         *input = Some(Input {
-            request,
-            echo: queue,
+            request: self
+                .source
+                .as_ref()
+                .unwrap()
+                .start_read(devmgr::uart::MAX_BYTES)?,
+            echo_request: None,
+            echo: echo.into(),
         });
         Ok(())
     }
@@ -426,49 +426,56 @@ fn echo_byte(byte: u8, local: u32, echo: &mut Vec<u8>) {
 
 impl Input {
     pub fn call(&self) -> &Handle<Call> {
-        match &self.request {
-            InputRequest::Read(request) => request.call(),
-            InputRequest::Echo(request) => request.call(),
-        }
+        self.request.call()
     }
+
+    pub fn echo_call(&self) -> Option<&Handle<Call>> {
+        Some(self.echo_request.as_ref()?.call())
+    }
+
     fn poll(
         &mut self,
         terminal: &Terminal,
         source: &devmgr::uart::Session,
     ) -> Result<bool, devmgr::Error> {
-        let result = match &mut self.request {
-            InputRequest::Read(request) => request.try_complete().map(|(bytes, _)| {
+        let mut progress = false;
+        match self.request.try_complete() {
+            Ok((bytes, _)) => {
                 self.echo.extend(terminal.receive(bytes));
-            }),
-            InputRequest::Echo(request) => request.try_complete().and_then(|count| {
-                if count == 0 || count > self.echo.len() {
-                    return Err(devmgr::Error::Runtime(runtime::Error::Protocol));
-                }
-                self.echo.drain(..count);
-                Ok(())
-            }),
-        };
-        match result {
+                self.request = source.start_read(devmgr::uart::MAX_BYTES)?;
+                progress = true;
+            }
             Err(devmgr::Error::Runtime(runtime::Error::Kernel(
                 runtime::KernelError::WouldBlock,
-            ))) => return Ok(false),
+            ))) => {}
             Err(error) => return Err(error),
-            Ok(()) => {}
         }
-        self.request = if self.echo.is_empty() {
-            InputRequest::Read(source.start_read(devmgr::uart::MAX_BYTES)?)
-        } else {
-            echo_request(&terminal.output, &self.echo)?
-        };
-        Ok(true)
+        if let Some(request) = &mut self.echo_request {
+            match request.try_complete() {
+                Ok(count) => {
+                    if count == 0 || count > self.echo.len().min(devmgr::uart::MAX_BYTES) {
+                        return Err(devmgr::Error::Runtime(runtime::Error::Protocol));
+                    }
+                    self.echo.drain(..count);
+                    self.echo_request = None;
+                    progress = true;
+                }
+                Err(devmgr::Error::Runtime(runtime::Error::Kernel(
+                    runtime::KernelError::WouldBlock,
+                ))) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        if self.echo_request.is_none() && !self.echo.is_empty() {
+            let bytes: Vec<_> = self
+                .echo
+                .iter()
+                .copied()
+                .take(devmgr::uart::MAX_BYTES)
+                .collect();
+            self.echo_request = Some(terminal.output.start_write(&bytes)?);
+            progress = true;
+        }
+        Ok(progress)
     }
-}
-
-/// Submits the first chunk of a pending echo queue for output.
-fn echo_request(
-    output: &devmgr::uart::Session,
-    echo: &VecDeque<u8>,
-) -> Result<InputRequest, devmgr::Error> {
-    let bytes: Vec<_> = echo.iter().copied().take(devmgr::uart::MAX_BYTES).collect();
-    Ok(InputRequest::Echo(output.start_write(&bytes)?))
 }
