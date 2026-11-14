@@ -176,7 +176,10 @@ fn readiness(description: &OpenFileDescription<'_>, process: &Process<'_>, index
         OpenFileDescription::Regular { .. } | OpenFileDescription::Directory { .. } => {
             INPUT | OUTPUT
         }
-        OpenFileDescription::VirtualFile { .. } => INPUT,
+        OpenFileDescription::VirtualFile { .. }
+        | OpenFileDescription::VirtualDirectory { .. }
+        | OpenFileDescription::MqueueFile { .. } => INPUT,
+        OpenFileDescription::MessageQueue { .. } => INPUT | OUTPUT,
         OpenFileDescription::Signalfd { mask, .. } => {
             if super::signalfd::ready(process, index, mask.get()) {
                 INPUT

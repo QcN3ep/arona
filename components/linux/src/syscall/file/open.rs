@@ -84,6 +84,12 @@ pub(in crate::syscall) fn openat<'a>(
         if name.starts_with(b"/proc/") || name.starts_with(b"/sys/") {
             return open_snapshot(process, &name, flags).map(|fd| Outcome::Complete(Ok(fd)));
         }
+        if let Some(result) = super::super::mqueue::open_path(process, &name, flags) {
+            return match result {
+                Ok(fd) => Ok(Outcome::Complete(Ok(fd))),
+                Err(error) => Ok(Outcome::Complete(Err(error))),
+            };
+        }
         if name == b"/dev/tty" {
             return open_terminal(process, flags).map(|fd| Outcome::Complete(Ok(fd)));
         }
@@ -258,7 +264,10 @@ pub(super) fn path(process: &Process<'_>, address: usize) -> Result<Vec<u8>, Err
     Ok(path)
 }
 
-pub(super) fn path_bytes(process: &Process<'_>, mut address: usize) -> Result<Vec<u8>, Errno> {
+pub(in crate::syscall) fn path_bytes(
+    process: &Process<'_>,
+    mut address: usize,
+) -> Result<Vec<u8>, Errno> {
     let mut path = Vec::new();
     while path.len() < PATH_MAX {
         let mut bytes = [0; 256];

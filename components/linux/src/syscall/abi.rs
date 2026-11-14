@@ -97,6 +97,14 @@ pub(super) const GETGID: usize = 176;
 pub(super) const GETEGID: usize = 177;
 pub(super) const GETTID: usize = 178;
 pub(super) const SYSINFO: usize = 179;
+// POSIX message queues follow the asm-generic numbering. The x86_64 numbers
+// (240-245) collide with accept4 and recvmmsg here and are not used.
+pub(super) const MQ_OPEN: usize = 180;
+pub(super) const MQ_UNLINK: usize = 181;
+pub(super) const MQ_TIMEDSEND: usize = 182;
+pub(super) const MQ_TIMEDRECEIVE: usize = 183;
+pub(super) const MQ_NOTIFY: usize = 184;
+pub(super) const MQ_GETSETATTR: usize = 185;
 pub(super) const SOCKET: usize = 198;
 pub(super) const SOCKETPAIR: usize = 199;
 pub(super) const BIND: usize = 200;

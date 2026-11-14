@@ -61,9 +61,13 @@ impl File {
                 env!("CARGO_PKG_VERSION")
             )
             .into_bytes(),
-            Self::ProcMounts => {
-                b"proc /proc proc ro,relatime 0 0\nsysfs /sys sysfs ro,relatime 0 0\n".to_vec()
-            }
+            Self::ProcMounts => concat!(
+                "proc /proc proc ro,relatime 0 0\n",
+                "sysfs /sys sysfs ro,relatime 0 0\n",
+                "mqueue /dev/mqueue mqueue rw,nosuid,nodev,noexec,relatime 0 0\n",
+            )
+            .as_bytes()
+            .to_vec(),
             Self::ProcCmdline(pid) => cmdline(process, pid)?,
             Self::ProcStat(pid) => stat(process, pid)?,
             Self::CpuOnline => b"0\n".to_vec(),

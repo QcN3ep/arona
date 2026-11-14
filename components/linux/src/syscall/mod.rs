@@ -7,6 +7,7 @@
 pub(crate) mod abi;
 mod file;
 mod memory;
+mod mqueue;
 mod process;
 mod rusage;
 mod signal;
@@ -58,6 +59,7 @@ enum Operation<'a> {
     Socket(socket::Pending<'a>),
     Memory(memory::Pending<'a>),
     System(system::Pending),
+    Mqueue(mqueue::Pending<'a>),
 }
 
 impl<'a> Operation<'a> {
@@ -74,6 +76,7 @@ impl<'a> Operation<'a> {
             Self::File(operation) => operation.waits(items),
             Self::Socket(operation) => operation.waits(items),
             Self::System(operation) => operation.waits(items),
+            Self::Mqueue(operation) => operation.waits(items),
             Self::Memory(operation) => {
                 if let Some(call) = operation.call() {
                     items.push(runtime::ipc::WaitItem::new(call, runtime::ipc::READABLE));
@@ -95,6 +98,7 @@ impl<'a> Operation<'a> {
             Self::File(operation) => operation.poll(process, index, files),
             Self::Socket(operation) => operation.poll(process),
             Self::System(operation) => operation.poll(process),
+            Self::Mqueue(operation) => operation.poll(process),
             Self::Memory(operation) => operation.poll(process),
         }
     }
@@ -123,6 +127,8 @@ pub(crate) fn dispatch<'a>(
     {
         outcome
     } else if let Some(outcome) = socket::dispatch(process, services, number, arguments) {
+        outcome
+    } else if let Some(outcome) = mqueue::dispatch(process, services, number, arguments) {
         outcome
     } else if let Some(outcome) = file::dispatch(process, index, files, services, number, arguments)
     {
@@ -297,6 +303,7 @@ impl Operation<'_> {
             Self::File(file) => return file.interrupt(process),
             Self::Socket(socket) => return socket.interrupt(),
             Self::System(system) => system.interrupt(process)?,
+            Self::Mqueue(_) => return Some((false, Err(abi::EINTR))),
             Self::Memory(_) => return None,
         };
         Some((false, result))

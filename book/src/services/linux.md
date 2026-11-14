@@ -41,6 +41,7 @@ When there is no progress, the relevant Calls, events, thread exits, and ports a
 | Implementation group | Corresponding content |
 |---|---|
 | `syscall/file/` | open, I/O, path, directory, metadata, pipe, poll, and terminal |
+| `syscall/mqueue.rs` | POSIX message queues and the `/dev/mqueue` attribute view |
 | `syscall/socket/` | TCP and UDP sockets, local Unix socket pairs, messages, addresses, options, and pending I/O |
 | `syscall/process/` | clone, exec, exit, wait, identity, thread, and futex |
 | `syscall/memory/` | mmap, munmap, mprotect, mremap, and related memory operations |
@@ -90,6 +91,53 @@ Their shared timer wakes blocked reads and readiness waits, including after anot
 
 Signal descriptors expose matching pending signals from the reading thread and its process.
 Each read returns complete `signalfd_siginfo` records, and poll/select use the calling thread when checking readiness.
+
+## POSIX Message Queues
+
+The compatibility service implements POSIX message queues with the asm-generic call numbers 180 through 185: `mq_open`, `mq_unlink`, `mq_timedsend`, `mq_timedreceive`, `mq_notify`, and `mq_getsetattr`.
+These are the numbers used by RISC-V and LoongArch, which share the generic table.
+The x86_64 numbers 240 through 245 are not accepted because 242 and 243 collide with `accept4` and `recvmmsg` in this ABI.
+
+A queue name must begin with `/`, contain exactly one nonempty path component, and fit within 255 bytes.
+The registry belongs to the compatibility service, so all Linux processes it manages see the same queues.
+A queue records its creator's effective user and group IDs, its permission bits after umask, `mq_maxmsg`, and `mq_msgsize`.
+`mq_open` accepts `O_RDONLY` or `O_WRONLY`, together with `O_CREAT`, `O_EXCL`, `O_NONBLOCK`, and `O_CLOEXEC`.
+An existing queue is reopened when the requested read or write access is allowed by its owner, group, or other bits; root bypasses the check.
+`O_CREAT` without `O_EXCL` on an existing name ignores the supplied attributes, and `O_CREAT | O_EXCL` returns `EEXIST`.
+When `O_CREAT` is given without an attribute buffer, the queue uses 10 messages and 8,192 bytes per message.
+Explicit attributes must have positive `mq_maxmsg` and `mq_msgsize` values, currently bounded at 1,024 messages and 65,536 bytes.
+
+Each message stores its priority and data.
+`mq_timedsend` rejects data longer than `mq_msgsize` with `EMSGSIZE` and priorities at or above 32,768 with `EINVAL`.
+Queues deliver higher priorities first and preserve FIFO order between equal priorities.
+`mq_timedreceive` requires an output buffer at least as large as `mq_msgsize` and reports the message length plus its priority.
+A full queue or an empty queue returns `EAGAIN` on a nonblocking description, and otherwise saves the calling thread as a pending operation.
+Pending sends and receives accept an absolute `CLOCK_REALTIME` timeout, which the service converts through the RTC session into a monotonic deadline.
+Expiry returns `ETIMEDOUT`; a delivered signal returns `EINTR`.
+Invalid timeout values return `EINVAL`, and a timeout request without an available RTC session returns `EOPNOTSUPP`.
+
+`mq_getsetattr` reports `mq_flags`, `mq_maxmsg`, `mq_msgsize`, and the current message count, and changes only the `O_NONBLOCK` flag.
+The flag belongs to the open file description, so duplicated and inherited descriptors observe the change together, while separate `mq_open` calls keep independent flags.
+`mq_unlink` removes the name when called by the owner or root; other callers receive `EACCES`.
+Open descriptors continue to send and receive after unlink, and the queue object is destroyed when both the registry and the last descriptor release it.
+A queue that remains linked after its last descriptor closes keeps its queued messages for the next open.
+`fork` copies the descriptors by reference and `dup` shares the same description.
+`mq_open` reports the usual `EFAULT`, `ENOENT`, `EEXIST`, `EINVAL`, `EACCES`, `EMFILE`, and `ENAMETOOLONG` failures.
+
+`mq_notify` registers one one-shot notification per queue.
+`SIGEV_SIGNAL` validates the signal number and records the signal value, while `SIGEV_NONE` consumes the registration without delivering a signal.
+A second registration returns `EBUSY`, and a null event removes the caller's registration.
+When a message is added to an empty queue and no receiver is blocked, the service raises the signal through the normal process signal queue; registration on an already nonempty queue delivers immediately.
+`SIGEV_THREAD` and `SIGEV_THREAD_ID` return `EOPNOTSUPP` because running a guest callback thread is not implemented, and invalid notification kinds or signal numbers return `EINVAL`.
+Process exit clears registrations owned by that process.
+
+`/dev/mqueue` is a virtual path view backed by the queue registry rather than a mounted filesystem.
+Opening the directory returns a read-only directory descriptor whose `getdents64` output lists `.`, `..`, and the current queue names.
+Opening `/dev/mqueue/<name>` returns a read-only file that formats the queue state as `QSIZE:<count> NOTIFY:<kind> SIGEV:<signo>` for each read.
+`newfstatat` and `statx` report the directory mode or the queue's synthetic inode, permission bits, and attribute-file size; an unknown name returns `ENOENT`.
+`unlinkat` with a queue path performs the same removal as `mq_unlink`.
+Writing an attribute file returns `EROFS`, opening it for writing returns `EROFS`, and the virtual directory cannot be removed.
+Because this is a path view, it currently has no mount operation or device number beyond the line it adds to `/proc/mounts`.
 
 ## Network Sockets
 

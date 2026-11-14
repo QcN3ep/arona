@@ -32,7 +32,10 @@ pub(in crate::syscall) fn read<'a>(
 ) -> Outcome<'a> {
     let operation = (|| {
         let description = Rc::clone(&process.files.get(fd(raw)?).ok_or(EBADF)?.description);
-        if !matches!(description.as_ref(), OpenFileDescription::Directory { .. }) {
+        if !matches!(
+            description.as_ref(),
+            OpenFileDescription::Directory { .. } | OpenFileDescription::VirtualDirectory { .. }
+        ) {
             return Err(ENOTDIR);
         }
         if description.path_only() {
@@ -61,18 +64,26 @@ impl ReadDirectory<'_> {
             self.position = Some(self.description.position()?);
         }
         let position = self.position.as_ref().unwrap();
-        if self.request.is_none() {
-            let OpenFileDescription::Directory { session, .. } = self.description.as_ref() else {
-                unreachable!()
-            };
-            match session.start_read_dir_all(position.get()) {
-                Ok(request) => self.request = Some(request),
-                Err(error) => return Some(Err(filesystem_error(error))),
+        let entries = match self.description.as_ref() {
+            OpenFileDescription::Directory { session, .. } => {
+                if self.request.is_none() {
+                    match session.start_read_dir_all(position.get()) {
+                        Ok(request) => self.request = Some(request),
+                        Err(error) => return Some(Err(filesystem_error(error))),
+                    }
+                }
+                match completion(self.request.as_mut().unwrap().try_complete())? {
+                    Ok(entries) => entries,
+                    Err(error) => return Some(Err(filesystem_error(error))),
+                }
             }
-        }
-        let entries = match completion(self.request.as_mut().unwrap().try_complete())? {
-            Ok(entries) => entries,
-            Err(error) => return Some(Err(filesystem_error(error))),
+            OpenFileDescription::VirtualDirectory { .. } => {
+                let mut entries = super::super::mqueue::entries(&process.namespace.mqueues);
+                let start = position.get().min(entries.len());
+                entries.drain(..start);
+                entries
+            }
+            _ => return Some(Err(ENOTDIR)),
         };
         let mut copied = 0;
         // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/linux/dirent.h?h=v6.12

@@ -198,6 +198,7 @@ fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, S
     if test == Some("linux") {
         reserved.extend([
             "bin/linux-test",
+            "bin/linux-mqueue",
             "bin/linux-noexec",
             "bin/linux-compact",
             "bin/linux-separate-headers",

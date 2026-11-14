@@ -78,6 +78,7 @@ fn main() {
         .unwrap()
     };
     sockets(&linux, &output);
+    mqueue(&linux, &output);
     socket_memory(&linux, &files, &output);
     execution(&linux, &output);
     layouts(&linux, &output);
@@ -212,6 +213,46 @@ fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         );
     }
     output().write_all(b"Linux socket tests passed\n").unwrap();
+}
+
+fn mqueue(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
+    output().write_all(b"Linux mqueue tests started\n").unwrap();
+    for mode in [
+        b"basic".as_slice(),
+        b"priority",
+        b"block",
+        b"notify",
+        b"path",
+        b"lifecycle",
+        b"perm",
+    ] {
+        let result = linux
+            .start_run(
+                Program {
+                    path: b"/bin/linux-mqueue",
+                    arguments: &[b"/bin/linux-mqueue", mode],
+                    environment: &[],
+                },
+                output(),
+            )
+            .unwrap()
+            .wait(WaitMode::Until(
+                runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
+            ));
+        let expected = ExitStatus {
+            code: 42,
+            signal: 0,
+        };
+        if result != Ok(expected) {
+            let output = output();
+            output
+                .write_all(alloc::format!("Mqueue scenario {mode:?}: {result:?}\n").as_bytes())
+                .unwrap();
+            output.flush().unwrap();
+        }
+        assert_eq!(result.unwrap(), expected);
+    }
+    output().write_all(b"Linux mqueue tests passed\n").unwrap();
 }
 
 fn socket_memory(

@@ -33,7 +33,7 @@ pub(super) use buffer::Buffer;
 pub(super) use directory::read as getdents;
 pub(super) use io::{read, seek, sync, truncate, write};
 pub(super) use metadata::{fstat, statat};
-pub(super) use open::openat;
+pub(super) use open::{openat, path_bytes};
 
 pub(super) const O_CLOEXEC: u32 = 0x80000;
 

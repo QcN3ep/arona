@@ -84,6 +84,12 @@ pub(super) fn dispatch<'a>(
     number: usize,
     args: [usize; 6],
 ) -> Option<Outcome<'a>> {
+    if number == abi::UNLINKAT
+        && let Ok(path) = open::path_bytes(process, args[1])
+        && let Some(result) = crate::syscall::mqueue::unlink_path(process, &path, args[2])
+    {
+        return Some(Outcome::Complete(result));
+    }
     Some(match number {
         abi::FCHDIR => Outcome::Complete((|| {
             let anchor = Rc::clone(&process.files.get(fd(args[0])?).ok_or(EBADF)?.description);

@@ -11,6 +11,8 @@ use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::cell::Cell;
 use runtime::{Event, Handle, Timer};
 
+use crate::process::mqueue::Queue;
+
 pub(crate) const O_APPEND: u32 = 0x400;
 pub(crate) const O_NONBLOCK: u32 = 0x800;
 pub(crate) const O_DSYNC: u32 = 0x1000;
@@ -86,6 +88,21 @@ pub(crate) enum OpenFileDescription<'a> {
     VirtualFile {
         data: Vec<u8>,
         inode: u64,
+        flags: Cell<u32>,
+        offset: Cell<usize>,
+    },
+    VirtualDirectory {
+        inode: u64,
+        flags: Cell<u32>,
+        offset: Cell<usize>,
+        busy: Cell<bool>,
+    },
+    MessageQueue {
+        queue: Rc<Queue>,
+        flags: Cell<u32>,
+    },
+    MqueueFile {
+        queue: Rc<Queue>,
         flags: Cell<u32>,
         offset: Cell<usize>,
     },
@@ -263,6 +280,39 @@ impl<'a> Descriptor<'a> {
         }
     }
 
+    pub fn virtual_directory(inode: u64, flags: u32, close_on_exec: bool) -> Self {
+        Self {
+            description: Rc::new(OpenFileDescription::VirtualDirectory {
+                inode,
+                flags: Cell::new(flags & 3),
+                offset: Cell::new(0),
+                busy: Cell::new(false),
+            }),
+            close_on_exec,
+        }
+    }
+
+    pub fn message_queue(queue: Rc<Queue>, flags: u32, close_on_exec: bool) -> Self {
+        Self {
+            description: Rc::new(OpenFileDescription::MessageQueue {
+                queue,
+                flags: Cell::new(flags),
+            }),
+            close_on_exec,
+        }
+    }
+
+    pub fn mqueue_file(queue: Rc<Queue>, flags: u32, close_on_exec: bool) -> Self {
+        Self {
+            description: Rc::new(OpenFileDescription::MqueueFile {
+                queue,
+                flags: Cell::new(flags & 3),
+                offset: Cell::new(0),
+            }),
+            close_on_exec,
+        }
+    }
+
     pub fn duplicate(&self, close_on_exec: bool) -> Self {
         Self {
             description: Rc::clone(&self.description),
@@ -285,7 +335,10 @@ impl<'a> OpenFileDescription<'a> {
             | Self::Signalfd { flags, .. }
             | Self::Virtual { flags, .. }
             | Self::VirtualFile { flags, .. }
-            | Self::Rtc { flags } => flags.get(),
+            | Self::Rtc { flags }
+            | Self::VirtualDirectory { flags, .. }
+            | Self::MessageQueue { flags, .. }
+            | Self::MqueueFile { flags, .. } => flags.get(),
         }
     }
 
@@ -301,7 +354,10 @@ impl<'a> OpenFileDescription<'a> {
         | Self::Signalfd { flags, .. }
         | Self::Virtual { flags, .. }
         | Self::VirtualFile { flags, .. }
-        | Self::Rtc { flags }) = self;
+        | Self::Rtc { flags }
+        | Self::VirtualDirectory { flags, .. }
+        | Self::MessageQueue { flags, .. }
+        | Self::MqueueFile { flags, .. }) = self;
         flags.set((flags.get() & !(O_APPEND | O_NONBLOCK)) | (value & (O_APPEND | O_NONBLOCK)));
     }
 
@@ -313,7 +369,9 @@ impl<'a> OpenFileDescription<'a> {
 
     pub fn position(self: &Rc<Self>) -> Option<FilePosition<'a>> {
         let busy = match self.as_ref() {
-            Self::Regular { busy, .. } | Self::Directory { busy, .. } => busy,
+            Self::Regular { busy, .. }
+            | Self::Directory { busy, .. }
+            | Self::VirtualDirectory { busy, .. } => busy,
             _ => return None,
         };
         if busy.replace(true) {
@@ -329,7 +387,8 @@ impl FilePosition<'_> {
     pub fn get(&self) -> usize {
         let offset = match self.description.as_ref() {
             OpenFileDescription::Regular { offset, .. }
-            | OpenFileDescription::Directory { offset, .. } => offset,
+            | OpenFileDescription::Directory { offset, .. }
+            | OpenFileDescription::VirtualDirectory { offset, .. } => offset,
             _ => unreachable!(),
         };
         offset.get()
@@ -338,7 +397,8 @@ impl FilePosition<'_> {
     pub fn set(&self, position: usize) {
         let offset = match self.description.as_ref() {
             OpenFileDescription::Regular { offset, .. }
-            | OpenFileDescription::Directory { offset, .. } => offset,
+            | OpenFileDescription::Directory { offset, .. }
+            | OpenFileDescription::VirtualDirectory { offset, .. } => offset,
             _ => unreachable!(),
         };
         offset.set(position);
@@ -349,7 +409,8 @@ impl Drop for FilePosition<'_> {
     fn drop(&mut self) {
         let busy = match self.description.as_ref() {
             OpenFileDescription::Regular { busy, .. }
-            | OpenFileDescription::Directory { busy, .. } => busy,
+            | OpenFileDescription::Directory { busy, .. }
+            | OpenFileDescription::VirtualDirectory { busy, .. } => busy,
             _ => unreachable!(),
         };
         busy.set(false);

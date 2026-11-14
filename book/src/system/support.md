@@ -54,7 +54,7 @@ For ext4's on-disk layout and transaction handling, see the [File Service](../se
 ## Linux Program Environment
 
 The Linux compatibility service accepts static ELF64 `ET_EXEC` binaries for the current machine.
-It provides call paths for files, directories, pipes, terminals, processes and threads, signals, memory mapping, clocks, interval timers, and random numbers.
+It provides call paths for files, directories, pipes, terminals, processes and threads, signals, memory mapping, clocks, interval timers, random numbers, and POSIX message queues with their `/dev/mqueue` view.
 For the exact range of calls and input forms, see the [Linux Compatibility Service](../services/linux.md).
 
 Interactive terminals use UART sessions and the compatibility layer's line discipline.

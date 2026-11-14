@@ -2,6 +2,7 @@
 
 pub(crate) mod futex;
 pub(crate) mod image;
+pub(crate) mod mqueue;
 pub(crate) mod namespace;
 pub(crate) mod signal;
 pub(crate) mod terminal;

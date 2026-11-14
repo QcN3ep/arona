@@ -129,6 +129,44 @@ fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) ->
                 },
             ));
         }
+        OpenFileDescription::MessageQueue { queue, .. } => {
+            return Outcome::Complete(buffer.write(
+                process,
+                fs::Metadata {
+                    inode: queue.inode(),
+                    mode: 0o100000 | queue.mode(),
+                    links: 1,
+                    uid: queue.uid(),
+                    gid: queue.gid(),
+                    ..fs::Metadata::default()
+                },
+            ));
+        }
+        OpenFileDescription::MqueueFile { queue, .. } => {
+            return Outcome::Complete(buffer.write(
+                process,
+                fs::Metadata {
+                    inode: queue.inode(),
+                    mode: 0o100444,
+                    links: 1,
+                    size: crate::syscall::mqueue::attribute_len(queue) as u64,
+                    uid: queue.uid(),
+                    gid: queue.gid(),
+                    ..fs::Metadata::default()
+                },
+            ));
+        }
+        OpenFileDescription::VirtualDirectory { inode, .. } => {
+            return Outcome::Complete(buffer.write(
+                process,
+                fs::Metadata {
+                    inode: *inode,
+                    mode: 0o041777,
+                    links: 2,
+                    ..fs::Metadata::default()
+                },
+            ));
+        }
     };
     outcome(
         request
@@ -204,6 +242,12 @@ fn lookup<'a>(
     };
     if path.is_empty() && flags & 0x1000 != 0 {
         return empty_stat(process, files, directory, buffer);
+    }
+    if let Some(result) = crate::syscall::mqueue::path_metadata(process, &path) {
+        return Outcome::Complete(match result {
+            Ok(info) => buffer.write(process, info),
+            Err(error) => Err(error),
+        });
     }
     let operation = (|| {
         if path.is_empty() {

@@ -4,7 +4,7 @@
 
 use super::super::{
     Outcome,
-    abi::{EBADF, EFBIG, EINVAL, EIO, EISDIR, EOPNOTSUPP, EOVERFLOW, ESPIPE, SyscallResult},
+    abi::{EBADF, EFBIG, EINVAL, EIO, EISDIR, EOPNOTSUPP, EOVERFLOW, EROFS, ESPIPE, SyscallResult},
 };
 use super::{Buffer, Pending, buffer::IoVectors, completion, fd, filesystem_error, outcome};
 use crate::{
@@ -74,7 +74,27 @@ pub(in crate::syscall) fn read<'a>(
         OpenFileDescription::Rtc { .. } => {
             return super::rtc::read(process, fd_raw, buffer, offset, services);
         }
-        OpenFileDescription::Directory { .. } => return Outcome::Complete(Err(EISDIR)),
+        OpenFileDescription::Directory { .. } | OpenFileDescription::VirtualDirectory { .. } => {
+            return Outcome::Complete(Err(EISDIR));
+        }
+        OpenFileDescription::MessageQueue { .. } => return Outcome::Complete(Err(EBADF)),
+        OpenFileDescription::MqueueFile {
+            queue,
+            offset: position,
+            ..
+        } => {
+            if descriptor.description.flags() & 3 == 1 {
+                return Outcome::Complete(Err(EBADF));
+            }
+            let result = match offset {
+                Some(offset) if offset > i64::MAX as usize => Err(EINVAL),
+                Some(offset) => {
+                    super::super::mqueue::read_attribute(process, queue, offset, buffer)
+                }
+                None => super::super::mqueue::read_attribute_file(process, queue, position, buffer),
+            };
+            return Outcome::Complete(result);
+        }
         OpenFileDescription::Regular { .. } => {}
         _ if offset.is_some() => return Outcome::Complete(Err(ESPIPE)),
         OpenFileDescription::Terminal { .. } => {
@@ -196,7 +216,13 @@ pub(in crate::syscall) fn write<'a>(
         OpenFileDescription::Timerfd { .. } | OpenFileDescription::Signalfd { .. } => {
             return Outcome::Complete(Err(if offset.is_some() { ESPIPE } else { EINVAL }));
         }
-        OpenFileDescription::Directory { .. } => return Outcome::Complete(Err(EBADF)),
+        OpenFileDescription::Directory { .. } | OpenFileDescription::VirtualDirectory { .. } => {
+            return Outcome::Complete(Err(EBADF));
+        }
+        OpenFileDescription::MessageQueue { .. } => {
+            return Outcome::Complete(Err(if offset.is_some() { ESPIPE } else { EINVAL }));
+        }
+        OpenFileDescription::MqueueFile { .. } => return Outcome::Complete(Err(EROFS)),
         OpenFileDescription::Regular { .. } => {}
         OpenFileDescription::VirtualFile { .. } => unreachable!(),
     }
@@ -270,7 +296,10 @@ pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome
             | OpenFileDescription::Signalfd { .. }
             | OpenFileDescription::Virtual { .. }
             | OpenFileDescription::VirtualFile { .. }
-            | OpenFileDescription::Rtc { .. } => {
+            | OpenFileDescription::Rtc { .. }
+            | OpenFileDescription::VirtualDirectory { .. }
+            | OpenFileDescription::MessageQueue { .. }
+            | OpenFileDescription::MqueueFile { .. } => {
                 return Err(EINVAL);
             }
         }
@@ -327,6 +356,52 @@ pub(in crate::syscall) fn seek<'a>(
             Ok(0)
         });
     }
+    let descriptor = match fd(fd_raw).ok().and_then(|fd| process.files.get(fd)) {
+        Some(descriptor) => descriptor,
+        None => return Outcome::Complete(Err(EBADF)),
+    };
+    match descriptor.description.as_ref() {
+        OpenFileDescription::MqueueFile {
+            queue,
+            offset: current,
+            ..
+        } => {
+            let length = super::super::mqueue::attribute_len(queue);
+            let base = match whence as u32 {
+                0 => 0,
+                1 => current.get(),
+                2 => length,
+                _ => return Outcome::Complete(Err(EINVAL)),
+            };
+            let position = base as i128 + i128::from(offset as i64);
+            if position < 0 {
+                return Outcome::Complete(Err(EINVAL));
+            }
+            if position > i128::from(i64::MAX) {
+                return Outcome::Complete(Err(EOVERFLOW));
+            }
+            current.set(position as usize);
+            return Outcome::Complete(Ok(position as usize));
+        }
+        OpenFileDescription::VirtualDirectory {
+            offset: current, ..
+        } => {
+            if whence as u32 >= 2 {
+                return Outcome::Complete(Err(EINVAL));
+            }
+            let position = current.get() as i128 + i128::from(offset as i64);
+            if position < 0 {
+                return Outcome::Complete(Err(EINVAL));
+            }
+            if position > i128::from(i64::MAX) {
+                return Outcome::Complete(Err(EOVERFLOW));
+            }
+            current.set(position as usize);
+            return Outcome::Complete(Ok(position as usize));
+        }
+        OpenFileDescription::MessageQueue { .. } => return Outcome::Complete(Err(ESPIPE)),
+        _ => {}
+    }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         if descriptor.description.path_only() {
@@ -344,7 +419,10 @@ pub(in crate::syscall) fn seek<'a>(
             | OpenFileDescription::Timerfd { .. }
             | OpenFileDescription::Signalfd { .. }
             | OpenFileDescription::Virtual { .. }
-            | OpenFileDescription::VirtualFile { .. } => {
+            | OpenFileDescription::VirtualFile { .. }
+            | OpenFileDescription::MqueueFile { .. }
+            | OpenFileDescription::VirtualDirectory { .. }
+            | OpenFileDescription::MessageQueue { .. } => {
                 unreachable!()
             }
             OpenFileDescription::Directory { .. } if whence as u32 == 2 => return Err(EINVAL),

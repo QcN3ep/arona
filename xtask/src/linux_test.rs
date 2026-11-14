@@ -22,6 +22,12 @@ pub(super) fn append(
         0o100755,
         &socket_guest(options, root, target_directory)?,
     )?;
+    append_entry(
+        bytes,
+        "bin/linux-mqueue",
+        0o100755,
+        &mqueue_guest(options, root, target_directory)?,
+    )?;
     append_entry(bytes, "bin/linux-noexec", 0o100644, &image)?;
     let mut compact = fs::read(compact).map_err(|error| error.to_string())?;
     append_entry(bytes, "bin/linux-compact", 0o100755, &compact)?;
@@ -270,6 +276,71 @@ fn socket_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
         objects.push(object);
     }
     let executable = directory.join("linux-socket");
+    let mut link = Command::new("ld.lld");
+    link.args([
+        "-static",
+        "--entry=_start",
+        "-z",
+        "max-page-size=4096",
+        "-Ttext=0x400000",
+    ])
+    .args(&objects)
+    .arg("-o")
+    .arg(&executable);
+    execute(link)?;
+    fs::read(executable).map_err(|error| error.to_string())
+}
+
+fn mqueue_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<u8>, String> {
+    let (isa, triple) = match options.target {
+        Target::Riscv64 => ("riscv64", "riscv64-unknown-linux-gnu"),
+        Target::LoongArch64 => ("loongarch64", "loongarch64-unknown-linux-gnu"),
+    };
+    let directory = target
+        .join(options.target.triple())
+        .join(options.profile())
+        .join("linux-tests");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let mut objects = Vec::new();
+    let source = directory.join("mqueue.c.o");
+    let mut compile = Command::new("clang");
+    compile.arg(format!("--target={triple}")).args([
+        "-c",
+        "-O2",
+        "-ffreestanding",
+        "-fno-builtin",
+        "-fno-stack-protector",
+        "-fno-pic",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ]);
+    if isa == "riscv64" {
+        compile.arg("-mno-relax");
+    } else {
+        compile.args(["-mno-lsx", "-mno-lasx"]);
+    }
+    compile
+        .arg(root.join("components/linux/tests/mqueue/mqueue.c"))
+        .arg("-o")
+        .arg(&source);
+    execute(compile)?;
+    objects.push(source);
+    let entry = directory.join(format!("mqueue-{isa}.o"));
+    let mut assemble = Command::new("clang");
+    assemble
+        .arg(format!("--target={triple}"))
+        .args(["-c", "-x", "assembler"]);
+    if isa == "riscv64" {
+        assemble.arg("-mno-relax");
+    }
+    assemble
+        .arg(root.join(format!("components/linux/tests/mqueue/{isa}.S")))
+        .arg("-o")
+        .arg(&entry);
+    execute(assemble)?;
+    objects.push(entry);
+    let executable = directory.join("linux-mqueue");
     let mut link = Command::new("ld.lld");
     link.args([
         "-static",

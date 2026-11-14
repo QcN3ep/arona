@@ -19,6 +19,7 @@ pub(crate) struct PidNamespace {
     pub processes: RefCell<BTreeMap<usize, ProcessRecord>>,
     pub(super) threads: RefCell<BTreeMap<usize, ThreadRecord>>,
     pub futexes: Rc<super::futex::Futexes>,
+    pub mqueues: Rc<super::mqueue::Queues>,
 }
 
 pub(crate) struct ProcessRecord {
@@ -83,6 +84,7 @@ impl PidNamespace {
             processes: RefCell::new(BTreeMap::new()),
             threads: RefCell::new(BTreeMap::new()),
             futexes: Rc::default(),
+            mqueues: Rc::new(super::mqueue::Queues::new()),
         }
     }
     pub fn allocate(&self) -> Option<usize> {
@@ -406,6 +408,7 @@ impl PidNamespace {
     }
 
     pub fn exit(&self, pid: usize, status: ExitStatus, cpu_ns: u64) {
+        self.mqueues.release(pid);
         self.release_terminal(pid);
         let connected = self.connected_groups();
         let parent = self.parent(pid);
