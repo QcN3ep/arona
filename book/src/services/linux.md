@@ -228,8 +228,10 @@ In canonical mode, input characters first enter the line buffer, and a line is d
 Raw mode handles characters directly according to the termios settings, and read timing is determined by parameters such as `VMIN` and `VTIME`.
 
 Terminal ioctls query and modify attributes, window, and controlling terminal state.
-Exclusive terminals reject further opens of the controlling terminal, injected input passes through the line discipline like typed characters, and output flow control stops and resumes output, holding writers until it resumes.
-Drain and POSIX break requests wait for the output queue to empty; the set and clear break requests are accepted without a signal because the console device carries none, and `TIOCOUTQ` reports no output because the discipline queues none of its own.
+Exclusive mode blocks new opens of the controlling terminal, and injected input follows the line discipline.
+Stopping output blocks ordinary writers until it resumes and makes nonblocking writes return `EAGAIN`.
+Drain and POSIX break requests wait for queued output.
+The UART interface does not generate a break signal.
 The foreground process group determines the recipients of terminal control character signals, and the session and process group state work with the Shell to complete job control.
 Terminal output is finally submitted through devmgr's UART session.
 
