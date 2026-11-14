@@ -3,6 +3,25 @@
 use core::arch::{global_asm, naked_asm};
 
 #[unsafe(naked)]
+pub extern "C" fn source() -> usize {
+    naked_asm!(
+        "addi.d $sp, $sp, -16",
+        "st.d $ra, $sp, 0",
+        ".global __arona_perf_source_start",
+        ".set __arona_perf_source_start, .",
+        "nop",
+        "bl {body}",
+        ".global __arona_perf_source_end",
+        ".set __arona_perf_source_end, .",
+        "nop",
+        "ld.d $ra, $sp, 0",
+        "addi.d $sp, $sp, 16",
+        "jr $ra",
+        body = sym super::source_body,
+    );
+}
+
+#[unsafe(naked)]
 pub extern "C" fn empty() -> usize {
     naked_asm!(
         "move $a0, $zero",
@@ -140,9 +159,11 @@ pub extern "C" fn interrupt() -> usize {
 
 #[unsafe(naked)]
 pub extern "C" fn retranslation() -> usize {
+    // The XOR changes the callee's add-immediate operand from one to two.
     naked_asm!(
         "la.abs $t5, __arona_perf_retranslated",
         "ld.w $t3, $t5, 0",
+        "xori $t3, $t3, 3 << 10",
         "move $a0, $zero",
         ".global __arona_perf_retranslation_start",
         ".set __arona_perf_retranslation_start, .",
@@ -154,6 +175,9 @@ pub extern "C" fn retranslation() -> usize {
         ".global __arona_perf_retranslation_end",
         ".set __arona_perf_retranslation_end, .",
         "nop",
+        "xori $t3, $t3, 3 << 10",
+        "st.w $t3, $t5, 0",
+        "ibar 0",
         "jr $ra",
         ".global __arona_perf_retranslation_expected",
         ".equ __arona_perf_retranslation_expected, 8",

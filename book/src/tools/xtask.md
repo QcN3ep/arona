@@ -132,3 +132,23 @@ cargo xtask perf run riscv64 --artifacts target/perf/RUN_DIRECTORY
 The saved build profile and guest files are reused without rebuilding the guest, and results go to a new directory.
 Checksums and ELF correspondence are checked again. Missing, damaged, or unsupported artifacts cause an error.
 The host plugin is rebuilt for each run and its source and checksum are recorded.
+
+Use `--mode profile` to collect instruction hotspots and generate a report:
+
+```sh
+cargo xtask perf run riscv64 --release --case calibration --mode profile
+cargo xtask perf report target/perf/RUN_DIRECTORY
+```
+
+Profiling also requires `llvm-symbolizer` and `llvm-objdump`.
+It currently supports the calibration image's fixed boot mapping. It does not resolve multiple address spaces.
+`counts.json` retains instruction addresses, bytes, and counts for each interval.
+`report.md` and `report.json` group these counts by image, function or symbol, and source line, with instruction disassembly and inline frames.
+Each group includes unknown entries, and each grouping sums to that interval's total.
+Only the innermost inline frame receives the count. Enclosing frames provide context.
+Each calibration interval is one work unit.
+
+The report command runs offline and reads only the saved artifacts.
+Missing symbols leave function and line counts unknown. Missing source files do not prevent reporting recorded locations.
+Changed code that does not match the saved ELF remains unknown and retains its captured disassembly.
+Damaged files and inconsistent counts cause an error. Tool diagnostics are saved in `report.log`.
