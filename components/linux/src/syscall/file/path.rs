@@ -12,7 +12,7 @@ use super::super::{
     Outcome,
     abi::{self, EBADF, EFAULT, EINVAL, ENOTDIR, EOPNOTSUPP, ERANGE, Errno, SyscallResult},
 };
-use super::{Pending, completion, fd, filesystem_error, open, outcome};
+use super::{Pending, completion, fd, filesystem_error, open, outcome, virtual_file};
 use crate::{
     file::{Descriptor, OpenFileDescription},
     process::Process,
@@ -94,10 +94,13 @@ pub(super) fn dispatch<'a>(
             Ok(0)
         })()),
         abi::GETCWD => getcwd(process, args[0], args[1]),
+        abi::READLINKAT => match virtual_link(process, args) {
+            Some(result) => Outcome::Complete(result),
+            None => outcome(start(process, files, number, args)),
+        },
         abi::CHDIR
         | abi::MKDIRAT
         | abi::UNLINKAT
-        | abi::READLINKAT
         | abi::SYMLINKAT
         | abi::LINKAT
         | abi::RENAMEAT
@@ -213,6 +216,27 @@ fn start<'a>(
         request,
         _anchors: anchors,
     }))
+}
+
+/// Handle `readlinkat` for the virtual `/proc/<pid>/exe` links.
+fn virtual_link(process: &Process<'_>, args: [usize; 6]) -> Option<SyscallResult> {
+    let name = open::path_bytes(process, args[1]).ok()?;
+    let Some(target) = virtual_file::link(process, &name) else {
+        // A virtual regular file is not a symbolic link.
+        return virtual_file::resolve(process, &name).map(|_| Err(EINVAL));
+    };
+    let length = args[3];
+    if length as isize <= 0 {
+        return Some(Err(EINVAL));
+    }
+    let count = target.len().min(length);
+    Some(
+        process
+            .address_space
+            .write(args[2], &target[..count])
+            .map(|()| count)
+            .map_err(|_| EFAULT),
+    )
 }
 
 fn getcwd<'a>(process: &Process<'a>, address: usize, length: usize) -> Outcome<'a> {

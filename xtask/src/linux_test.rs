@@ -179,30 +179,35 @@ fn build_guest(
         execute(assemble)?;
         objects.push(object);
     }
-    let object = directory.join("system-timer.o");
-    let mut compile = Command::new("clang");
-    compile.arg(format!("--target={triple}")).args([
-        "-c",
-        "-O2",
-        "-ffreestanding",
-        "-fno-builtin",
-        "-fno-stack-protector",
-        "-fno-pic",
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-    ]);
-    if isa == "riscv64" {
-        compile.arg("-mno-relax");
-    } else {
-        compile.args(["-mno-lsx", "-mno-lasx"]);
+    for (source, name) in [
+        ("syscall/system/timer.c", "system-timer"),
+        ("syscall/file/proc.c", "syscall-file-proc"),
+    ] {
+        let object = directory.join(format!("{name}.o"));
+        let mut compile = Command::new("clang");
+        compile.arg(format!("--target={triple}")).args([
+            "-c",
+            "-O2",
+            "-ffreestanding",
+            "-fno-builtin",
+            "-fno-stack-protector",
+            "-fno-pic",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+        ]);
+        if isa == "riscv64" {
+            compile.arg("-mno-relax");
+        } else {
+            compile.args(["-mno-lsx", "-mno-lasx"]);
+        }
+        compile
+            .arg(root.join("components/linux/tests").join(source))
+            .arg("-o")
+            .arg(&object);
+        execute(compile)?;
+        objects.push(object);
     }
-    compile
-        .arg(root.join("components/linux/tests/syscall/system/timer.c"))
-        .arg("-o")
-        .arg(&object);
-    execute(compile)?;
-    objects.push(object);
     for (name, address) in [("linux-test", "0x400000"), ("linux-compact", "0x11000")] {
         let mut link = Command::new("ld.lld");
         link.args(["-static", "--entry=_start", "-z", "max-page-size=4096"])

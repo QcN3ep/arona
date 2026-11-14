@@ -114,7 +114,13 @@ impl Pending {
             let result = self.finish(process, pid, event);
             if result.is_ok() && self.options & 0x1000000 == 0 {
                 if matches!(event, Event::Exit(_)) {
-                    process.namespace.processes.borrow_mut().remove(&pid);
+                    let mut records = process.namespace.processes.borrow_mut();
+                    if let Some(record) = records.remove(&pid)
+                        && let Some(parent) = records.get_mut(&process.pid)
+                    {
+                        parent.children.add(record.usage);
+                        parent.children.add(record.children);
+                    }
                 } else if let Some(record) = process.namespace.processes.borrow_mut().get_mut(&pid)
                 {
                     record.change = None;
@@ -181,15 +187,14 @@ impl Pending {
     }
 }
 
-fn rusage(process: &Process<'_>, pid: usize) -> [u8; 144] {
-    let cpu_ns = process
+fn rusage(process: &Process<'_>, pid: usize) -> [u8; crate::syscall::rusage::RUSAGE_SIZE] {
+    let usage = process
         .namespace
         .processes
         .borrow()
         .get(&pid)
-        .map_or(0, |record| record.cpu_ns);
-    let mut bytes = [0; 144];
-    bytes[..8].copy_from_slice(&((cpu_ns / 1_000_000_000) as i64).to_le_bytes());
-    bytes[8..16].copy_from_slice(&(((cpu_ns % 1_000_000_000) / 1000) as i64).to_le_bytes());
-    bytes
+        .map_or(Default::default(), |record| {
+            crate::syscall::rusage::with_children(record.usage, record.children)
+        });
+    crate::syscall::rusage::encode(usage)
 }

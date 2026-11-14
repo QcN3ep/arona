@@ -25,13 +25,44 @@ pub(crate) struct ProcessRecord {
     pub uid: u32,
     pub parent: usize,
     pub group: usize,
-    pub(super) session: usize,
+    pub(crate) session: usize,
     pub(super) terminal: Option<Rc<crate::file::terminal::Terminal>>,
     executed: bool,
     pub status: Option<ExitStatus>,
     pub change: Option<ChildChange>,
-    pub cpu_ns: u64,
     pub signals: Rc<RefCell<Signals>>,
+    pub program: Vec<u8>,
+    pub argv: Vec<Vec<u8>>,
+    pub start_ns: u64,
+    pub state: u8,
+    pub threads: usize,
+    pub vsize: u64,
+    pub rss: u64,
+    /// Resource usage accumulated so far by this process.
+    pub usage: Usage,
+    /// Resource usage of this process's reaped children.
+    pub children: Usage,
+}
+
+/// CPU time, faults, and peak resident memory in bytes.
+///
+/// Mappings are populated eagerly, so the kernel never services a page fault
+/// for these processes and both fault counters stay zero.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Usage {
+    pub cpu_ns: u64,
+    pub min_flt: u64,
+    pub maj_flt: u64,
+    pub max_rss: u64,
+}
+
+impl Usage {
+    pub fn add(&mut self, other: Self) {
+        self.cpu_ns = self.cpu_ns.saturating_add(other.cpu_ns);
+        self.min_flt = self.min_flt.saturating_add(other.min_flt);
+        self.maj_flt = self.maj_flt.saturating_add(other.maj_flt);
+        self.max_rss = self.max_rss.max(other.max_rss);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -62,6 +93,7 @@ impl PidNamespace {
         self.next.set(id + 1);
         Some(id)
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn register(
         &self,
         pid: usize,
@@ -69,6 +101,9 @@ impl PidNamespace {
         group: usize,
         session: usize,
         signals: &Rc<RefCell<Signals>>,
+        program: &[u8],
+        argv: &[Vec<u8>],
+        start_ns: u64,
     ) {
         let terminal = self
             .processes
@@ -91,8 +126,16 @@ impl PidNamespace {
                 executed: false,
                 status: None,
                 change: None,
-                cpu_ns: 0,
                 signals: Rc::clone(signals),
+                program: program.to_vec(),
+                argv: argv.to_vec(),
+                start_ns,
+                state: b'R',
+                threads: 1,
+                vsize: 0,
+                rss: 0,
+                usage: Usage::default(),
+                children: Usage::default(),
             },
         );
     }
@@ -107,6 +150,15 @@ impl PidNamespace {
     }
     pub fn remove_thread(&self, tid: usize) {
         self.threads.borrow_mut().remove(&tid);
+    }
+    /// Resolve a process or thread identifier to an existing process identifier.
+    pub fn process_id(&self, id: usize) -> Option<usize> {
+        let pid = self
+            .threads
+            .borrow()
+            .get(&id)
+            .map_or(id, |thread| thread.pid);
+        self.processes.borrow().contains_key(&pid).then_some(pid)
     }
     pub fn parent(&self, pid: usize) -> usize {
         self.processes
@@ -181,9 +233,11 @@ impl PidNamespace {
         Ok(pid)
     }
 
-    pub fn exec(&self, pid: usize) {
+    pub fn exec(&self, pid: usize, program: &[u8], argv: &[Vec<u8>]) {
         if let Some(record) = self.processes.borrow_mut().get_mut(&pid) {
             record.executed = true;
+            record.program = program.to_vec();
+            record.argv = argv.to_vec();
         }
     }
 
@@ -366,11 +420,17 @@ impl PidNamespace {
         if let Some(record) = processes.get_mut(&pid) {
             record.status = Some(status);
             record.change = None;
-            record.cpu_ns = cpu_ns;
+            record.state = b'Z';
+            record.threads = 0;
+            record.usage.cpu_ns = cpu_ns;
         }
         let uid = processes.get(&pid).map_or(0, |record| record.uid);
-        if autoreap {
-            processes.remove(&pid);
+        if autoreap
+            && let Some(record) = processes.remove(&pid)
+            && let Some(parent) = processes.get_mut(&parent)
+        {
+            parent.children.add(record.usage);
+            parent.children.add(record.children);
         }
         processes.retain(|_, record| record.parent != 0 || record.status.is_none());
         drop(processes);

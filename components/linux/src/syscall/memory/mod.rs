@@ -14,7 +14,7 @@ use super::{
 use crate::{
     elf::PAGE_SIZE,
     file::OpenFileDescription,
-    memory::{AddressSpace, MappedPage, PageBacking},
+    memory::{AddressSpace, MappedPage, Origin, PageBacking},
     process::Process,
 };
 use alloc::{rc::Rc, vec::Vec};
@@ -98,7 +98,7 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
     if description.path_only() {
         return Err(EBADF);
     }
-    let OpenFileDescription::Regular { file, .. } = description.as_ref() else {
+    let OpenFileDescription::Regular { file, path, .. } = description.as_ref() else {
         return Err(ENODEV);
     };
     if description.flags() & 3 == 1 {
@@ -108,9 +108,13 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
         .checked_add(length)
         .filter(|end| *end <= i64::MAX as usize)
         .ok_or(EOVERFLOW)?;
+    let origin = path
+        .as_ref()
+        .map(|path| Rc::new(Origin::File(Rc::clone(path))));
     let request = Stage::Metadata(file.start_metadata().map_err(filesystem_error)?);
     Ok(Pending::File(FileMapping {
         description,
+        origin,
         request,
         address: (address != 0).then_some(address & !(PAGE_SIZE - 1)),
         length,

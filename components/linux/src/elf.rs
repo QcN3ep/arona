@@ -40,6 +40,8 @@ pub struct Image<'a> {
     pub entry: usize,
     pub segments: Vec<Segment<'a>>,
     pub headers: &'a [u8],
+    /// File offset of `headers`, used to label the program-header mapping.
+    pub headers_offset: usize,
     pub phdr: Option<usize>,
     /// PT_INTERP path without its trailing NUL.
     pub interpreter: Option<&'a [u8]>,
@@ -66,6 +68,8 @@ pub struct Segment<'a> {
     pub memory: Range<usize>,
     pub data: &'a [u8],
     pub permissions: Permissions,
+    /// File offset of the segment data.
+    pub offset: usize,
 }
 
 impl Machine {
@@ -114,6 +118,7 @@ impl<'a> Image<'a> {
             entry,
             segments: layout.segments,
             headers,
+            headers_offset: offset,
             phdr: layout.phdr,
             interpreter: layout.interpreter,
             base,
@@ -272,6 +277,7 @@ impl<'a> Segment<'a> {
             memory: start..end,
             data,
             permissions,
+            offset,
         }))
     }
 

@@ -203,7 +203,11 @@ fn replace(
     let native_id = native.id().map_err(super::error)?;
     native.start().map_err(super::error)?;
     let thread_signals = Rc::clone(&process.threads[index].signals);
+    // Exec keeps the process CPU-time accounting, so include the retired threads.
     for thread in &process.threads {
+        process.cpu_ns = process
+            .cpu_ns
+            .saturating_add(thread.native.cpu_time_ns().unwrap_or(0));
         process.namespace.remove_thread(thread.tid);
     }
     process.threads.clear();
@@ -236,7 +240,9 @@ fn replace(
     process.timers.rebase_cpu(process.cpu_time_ns());
     process.program.clone_from(&arguments.path);
     process.argv.clone_from(&arguments.argv);
-    process.namespace.exec(process.pid);
+    process
+        .namespace
+        .exec(process.pid, &arguments.path, &arguments.argv);
     if let Some(vfork) = process.vfork.take() {
         vfork.release();
     }

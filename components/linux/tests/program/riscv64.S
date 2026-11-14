@@ -104,7 +104,13 @@ auxv_done:
     li t1, 75
     beq s3, t1, fork_process
     li t1, 86
-    beq s3, t1, vfork_process
+    bne s3, t1, .Lnot_v
+    ld t0, 16(sp)
+    lbu t0, 1(t0)
+    li t1, 102
+    beq t0, t1, vfork_process
+    j files_virtual
+.Lnot_v:
     li t1, 74
     beq s3, t1, futex_basics
     li t1, 72
@@ -125,8 +131,8 @@ auxv_done:
     beq s3, t1, files_pipe
     li t1, 82
     beq s3, t1, files_poll
-    li t1, 86
-    beq s3, t1, files_virtual
+    li t1, 76
+    beq s3, t1, proc_stats
     li t1, 77
     beq s3, t1, mapping_bus_fault
     li t1, 70
@@ -344,11 +350,32 @@ heap_reused_zero:
     bne a0, t0, failure
     ret
 
+proc_stats:
+    ld a0, 16(sp)
+    call proc_stats_main
+    li a0, 42
+    li a7, 94
+    ecall
+    j proc_stats
+
 configured_exit:
     li a0, 0
     li a7, 94
     ecall
     j configured_exit
+
+.global test_syscall
+test_syscall:
+    mv a7, a0
+    mv t0, a1
+    ld a0, 0(t0)
+    ld a1, 8(t0)
+    ld a2, 16(t0)
+    ld a3, 24(t0)
+    ld a4, 32(t0)
+    ld a5, 40(t0)
+    ecall
+    ret
 .section .rodata
 message:
     .ascii "Linux ABI guest write\nLinux partial write: "

@@ -84,6 +84,8 @@ pub(crate) struct Process<'a> {
     pub cwd: Option<alloc::rc::Rc<crate::file::OpenFileDescription<'a>>>,
     pub program: Vec<u8>,
     pub argv: Vec<Vec<u8>>,
+    /// Peak resident bytes reached by this process.
+    pub max_rss: u64,
     pub machine: Machine,
     pub vfork: Option<Rc<Vfork>>,
     pub umask: u16,
@@ -113,6 +115,7 @@ impl<'a> Process<'a> {
         namespace: Rc<PidNamespace>,
     ) -> Result<Self, Error> {
         let pid = namespace.allocate().ok_or(Error::NoMemory)?;
+        let start_ns = runtime::thread::now_ns().unwrap_or(0);
         let machine = images.image.machine;
         let entry = images.entry();
         let (address_space, stack) = AddressSpace::load(parent, port, images, arguments, random)?;
@@ -135,7 +138,16 @@ impl<'a> Process<'a> {
         native.start()?;
         let signals = Rc::default();
         let thread_signals = Rc::default();
-        namespace.register(pid, 0, pid, pid, &signals);
+        namespace.register(
+            pid,
+            0,
+            pid,
+            pid,
+            &signals,
+            &arguments.path,
+            &arguments.argv,
+            start_ns,
+        );
         namespace.register_thread(pid, pid, &thread_signals);
         if terminal.has_input() {
             namespace
@@ -169,6 +181,7 @@ impl<'a> Process<'a> {
             cwd: None,
             program: arguments.path.clone(),
             argv: arguments.argv.clone(),
+            max_rss: 0,
             machine,
             vfork: None,
             umask: 0o022,
@@ -220,6 +233,7 @@ impl<'a> Process<'a> {
         files: &fs::Client<'a>,
         services: &crate::Services<'a>,
     ) -> Result<bool, Error> {
+        self.refresh_record();
         let mut progress = timer::poll(self)?;
         progress |= self.terminal.poll();
         if self.terminal.failed() {
@@ -306,5 +320,46 @@ impl<'a> Process<'a> {
 
     pub fn status(&self) -> ExitStatus {
         self.status
+    }
+
+    /// Total CPU time of every thread that has run or is running in this process.
+    pub fn cpu_ns(&self) -> u64 {
+        self.threads.iter().fold(self.cpu_ns, |total, thread| {
+            total.saturating_add(thread.native.cpu_time_ns().unwrap_or(0))
+        })
+    }
+
+    /// Bytes represented by the process's current mappings.
+    pub fn resident_bytes(&self) -> u64 {
+        self.address_space.mapped_bytes() as u64
+    }
+
+    /// Publish the values that other processes read from `/proc/<pid>`.
+    fn refresh_record(&mut self) {
+        let cpu_ns = self.cpu_ns();
+        let resident = self.resident_bytes();
+        self.max_rss = self.max_rss.max(resident);
+        let state = if self.signals.borrow().stopped {
+            b'T'
+        } else if self.threads.iter().any(|thread| {
+            matches!(
+                thread.native.state().map(|state| state.0),
+                Ok(ThreadState::Running | ThreadState::Ready)
+            )
+        }) {
+            b'R'
+        } else {
+            b'S'
+        };
+        let threads = self.threads.len();
+        let max_rss = self.max_rss;
+        if let Some(record) = self.namespace.processes.borrow_mut().get_mut(&self.pid) {
+            record.state = state;
+            record.threads = threads;
+            record.vsize = resident;
+            record.rss = resident;
+            record.usage.cpu_ns = cpu_ns;
+            record.usage.max_rss = max_rss;
+        }
     }
 }

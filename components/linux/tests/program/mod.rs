@@ -333,6 +333,7 @@ fn writable(
         b"Vfork",
         b"Identity",
         b"Virtual",
+        b"Live",
         b"Control",
         b"Exec",
         b"z-pie",

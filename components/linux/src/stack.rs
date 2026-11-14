@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use crate::memory::{AddressSpace, PageBacking};
+use crate::memory::{AddressSpace, Origin, PageBacking};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use runtime::{Rights, memory::Permissions};
@@ -22,7 +22,7 @@ pub(crate) fn build(
     random: Option<&[u8; 16]>,
 ) -> Result<usize, Error> {
     let task = &space.native;
-    let (phdr, top) = load_headers(space, image)?;
+    let (phdr, top) = load_headers(space, image, &arguments.path)?;
     let auxv = auxiliary(image, phdr, interpreter_base);
     let strings = core::iter::once(&arguments.path)
         .chain(&arguments.argv)
@@ -97,11 +97,17 @@ pub(crate) fn build(
         base,
         Permissions::ReadWrite,
         PageBacking::Anonymous,
+        Some(space.stack_origin()),
+        0,
     )?;
     Ok(base + stack)
 }
 
-fn load_headers(space: &AddressSpace, image: &Image<'_>) -> Result<(usize, usize), Error> {
+fn load_headers(
+    space: &AddressSpace,
+    image: &Image<'_>,
+    program: &[u8],
+) -> Result<(usize, usize), Error> {
     let task = &space.native;
     let top = task.task().address_range()?.end;
     Ok(if let Some(address) = image.phdr {
@@ -122,6 +128,8 @@ fn load_headers(space: &AddressSpace, image: &Image<'_>) -> Result<(usize, usize
             address,
             Permissions::ReadOnly,
             PageBacking::File,
+            Some(Rc::new(Origin::File(Rc::new(program.to_vec())))),
+            image.headers_offset as u64,
         )?;
         (address, address)
     })

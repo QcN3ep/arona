@@ -142,6 +142,99 @@ system_basics:
     invoke 278
     expect -22
     bl timer_selftest
+    # sysinfo reports real memory, process, and uptime data.
+    move $a0, $sp
+    invoke 179
+    expect 0
+    ld.d $t0, $sp, 32
+    beqz $t0, system_failure
+    ld.d $t0, $sp, 40
+    beqz $t0, system_failure
+    ld.d $t1, $sp, 32
+    bltu $t1, $t0, system_failure
+    ld.wu $t0, $sp, 104
+    li.d $t1, 1
+    bne $t0, $t1, system_failure
+    ld.hu $t0, $sp, 80
+    beqz $t0, system_failure
+    li.d $a0, 0
+    invoke 179
+    expect -14
+
+    # times reports clock ticks for the process and its children.
+    addi.d $a0, $sp, 128
+    invoke 153
+    blt $a0, $zero, system_failure
+    ld.d $t0, $sp, 128
+    blt $t0, $zero, system_failure
+    li.d $a0, 0
+    invoke 153
+    expect -14
+
+    # getrusage rejects unknown targets and faults on a null buffer.
+    li.d $a0, 2
+    addi.d $a1, $sp, 192
+    invoke 165
+    expect -22
+    li.d $a0, 0
+    li.d $a1, 0
+    invoke 165
+    expect -14
+
+    # A terminated child contributes to children CPU time and usage.
+    li.d $a0, 17
+    li.d $a1, 0
+    li.d $a2, 0
+    li.d $a3, 0
+    li.d $a4, 0
+    invoke 220
+    beqz $a0, .Lchild_burn
+    blt $a0, $zero, system_failure
+    move $s2, $a0
+    move $a0, $s2
+    addi.d $a1, $sp, 160
+    li.d $a2, 0
+    li.d $a3, 0
+    invoke 260
+    bne $a0, $s2, system_failure
+    ld.w $t0, $sp, 160
+    bnez $t0, system_failure
+    addi.d $a0, $sp, 128
+    invoke 153
+    blt $a0, $zero, system_failure
+    ld.d $t0, $sp, 144
+    beqz $t0, system_failure
+    li.d $a0, -1
+    addi.d $a1, $sp, 192
+    invoke 165
+    expect 0
+    ld.d $t0, $sp, 192
+    ld.d $t1, $sp, 200
+    or $t0, $t0, $t1
+    beqz $t0, system_failure
+    li.d $a0, 0
+    addi.d $a1, $sp, 192
+    invoke 165
+    expect 0
+    ld.d $t0, $sp, 224
+    beqz $t0, system_failure
+    ld.d $t0, $sp, 256
+    bnez $t0, system_failure
+    ld.d $t0, $sp, 264
+    bnez $t0, system_failure
+    ld.d $t0, $sp, 320
+    bnez $t0, system_failure
+    ld.d $t0, $sp, 328
+    bnez $t0, system_failure
+    b .Lsystem_done
+.Lchild_burn:
+    li.d $t0, 200000000
+1:
+    addi.d $t0, $t0, -1
+    bnez $t0, 1b
+    li.d $a0, 0
+    invoke 93
+.Lsystem_done:
     li.d $a0, 42
     invoke 94
 system_failure:

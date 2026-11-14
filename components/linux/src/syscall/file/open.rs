@@ -32,6 +32,7 @@ const PATH_MAX: usize = 4096;
 pub(in crate::syscall) struct Open<'a> {
     request: fs::client::PendingNode<'a>,
     flags: u32,
+    path: Rc<Vec<u8>>,
     _directory: Option<Rc<OpenFileDescription<'a>>>,
 }
 
@@ -102,6 +103,7 @@ pub(in crate::syscall) fn openat<'a>(
             _ => {}
         }
         let lookup = super::path::Lookup::from_name(process, directory, name)?;
+        let path = Rc::new(lookup.name.clone());
         let request = files
             .start_open_at(
                 lookup.directory(),
@@ -121,6 +123,7 @@ pub(in crate::syscall) fn openat<'a>(
         Ok(outcome(Ok(Pending::Open(Open {
             request,
             flags,
+            path,
             _directory: lookup.anchor,
         }))))
     })();
@@ -128,7 +131,7 @@ pub(in crate::syscall) fn openat<'a>(
 }
 
 fn open_snapshot(process: &mut Process<'_>, name: &[u8], flags: u32) -> Result<usize, Errno> {
-    let Some(file) = virtual_file::resolve(name) else {
+    let Some(file) = virtual_file::resolve(process, name) else {
         return Err(ENOENT);
     };
     if flags & O_DIRECTORY != 0 {
@@ -137,7 +140,7 @@ fn open_snapshot(process: &mut Process<'_>, name: &[u8], flags: u32) -> Result<u
     if flags & (3 | O_CREAT | O_TRUNC) != 0 {
         return Err(EROFS);
     }
-    let data = file.content(process);
+    let data = file.content(process)?;
     process
         .files
         .insert(
@@ -217,7 +220,7 @@ impl<'a> Open<'a> {
                 if file.len() > i64::MAX as usize {
                     return Some(Err(EOVERFLOW));
                 }
-                Descriptor::regular(file, flags, close_on_exec)
+                Descriptor::regular(file, flags, close_on_exec, Some(Rc::clone(&self.path)))
             }
             Ok(fs::client::OpenedNode::Directory(session)) => {
                 if self.flags & (3 | O_CREAT | O_TRUNC) != 0 {

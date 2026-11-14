@@ -36,6 +36,8 @@ methods!(task {
     SET_TRAP = 35 => SET_TRAP;
     ADDRESS_RANGE = 36 => MAP_MEMORY;
     QUERY_NEXT = 37 => MAP_MEMORY;
+    MEMORY_STATS = 38 => NONE;
+    LOAD_AVERAGE = 39 => NONE;
 });
 methods!(memory {
     SIZE = 16 => NONE;

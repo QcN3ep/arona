@@ -142,6 +142,99 @@ system_basics:
     invoke 278
     expect -22
     jal ra, timer_selftest
+    # sysinfo reports real memory, process, and uptime data.
+    mv a0, sp
+    invoke 179
+    expect 0
+    ld t0, 32(sp)
+    beqz t0, system_failure
+    ld t0, 40(sp)
+    beqz t0, system_failure
+    ld t1, 32(sp)
+    bltu t1, t0, system_failure
+    lwu t0, 104(sp)
+    li t1, 1
+    bne t0, t1, system_failure
+    lhu t0, 80(sp)
+    beqz t0, system_failure
+    li a0, 0
+    invoke 179
+    expect -14
+
+    # times reports clock ticks for the process and its children.
+    addi a0, sp, 128
+    invoke 153
+    bltz a0, system_failure
+    ld t0, 128(sp)
+    bltz t0, system_failure
+    li a0, 0
+    invoke 153
+    expect -14
+
+    # getrusage rejects unknown targets and faults on a null buffer.
+    li a0, 2
+    addi a1, sp, 192
+    invoke 165
+    expect -22
+    li a0, 0
+    li a1, 0
+    invoke 165
+    expect -14
+
+    # A terminated child contributes to children CPU time and usage.
+    li a0, 17
+    li a1, 0
+    li a2, 0
+    li a3, 0
+    li a4, 0
+    invoke 220
+    beqz a0, .Lchild_burn
+    bltz a0, system_failure
+    mv s2, a0
+    mv a0, s2
+    addi a1, sp, 160
+    li a2, 0
+    li a3, 0
+    invoke 260
+    bne a0, s2, system_failure
+    lw t0, 160(sp)
+    bnez t0, system_failure
+    addi a0, sp, 128
+    invoke 153
+    bltz a0, system_failure
+    ld t0, 144(sp)
+    beqz t0, system_failure
+    li a0, -1
+    addi a1, sp, 192
+    invoke 165
+    expect 0
+    ld t0, 192(sp)
+    ld t1, 200(sp)
+    or t0, t0, t1
+    beqz t0, system_failure
+    li a0, 0
+    addi a1, sp, 192
+    invoke 165
+    expect 0
+    ld t0, 224(sp)
+    beqz t0, system_failure
+    ld t0, 256(sp)
+    bnez t0, system_failure
+    ld t0, 264(sp)
+    bnez t0, system_failure
+    ld t0, 320(sp)
+    bnez t0, system_failure
+    ld t0, 328(sp)
+    bnez t0, system_failure
+    j .Lsystem_done
+.Lchild_burn:
+    li t0, 200000000
+1:
+    addi t0, t0, -1
+    bnez t0, 1b
+    li a0, 0
+    invoke 93
+.Lsystem_done:
     li a0, 42
     invoke 94
 system_failure:

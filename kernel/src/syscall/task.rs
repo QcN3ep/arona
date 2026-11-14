@@ -71,9 +71,36 @@ pub(super) fn invoke(
         task::CHANNEL | task::EVENT | task::TIMER => {
             super::ipc::create(caller, target, method, args)
         }
+        // System-wide statistics are readable through any Task handle; they expose only totals.
+        task::MEMORY_STATS => Ok(memory_stats()),
+        // Pack the 16.16 fixed-point 1-minute and 5-minute averages into one value.
+        task::LOAD_AVERAGE => {
+            let [one, five, fifteen] = crate::thread::scheduler::load_average();
+            Ok([(u64::from(one) << 32) | u64::from(five), u64::from(fifteen)])
+        }
         _ => super::memory::task(caller, target, method, args),
     }
 }
+
+/// Total and free page-frame bytes, including reserved and metadata frames in the total.
+fn memory_stats() -> [u64; 2] {
+    let stats = crate::memory::manager().stats();
+    let page = crate::hardware::mmu::PAGE_SIZE as u64;
+    let total = stats
+        .kernel
+        .total_frames
+        .saturating_add(stats.user.total_frames)
+        .saturating_add(stats.reserved_frames)
+        .saturating_add(stats.metadata_frames)
+        .saturating_mul(page);
+    let free = stats
+        .kernel
+        .free_frames
+        .saturating_add(stats.user.free_frames)
+        .saturating_mul(page);
+    [total, free]
+}
+
 fn create_thread(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {
     let rights = Rights::from_bits(args[1]).ok_or(Error::InvalidArgument)?;
     if !ObjectType::Thread.supported_rights().contains(rights) {

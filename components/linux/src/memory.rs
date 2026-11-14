@@ -18,6 +18,8 @@ pub(crate) struct AddressSpace {
     pub native: SupervisedTask,
     heap: Range<usize>,
     pages: RefCell<BTreeMap<usize, Page>>,
+    stack_origin: Rc<Origin>,
+    heap_origin: Rc<Origin>,
 }
 
 #[derive(Clone)]
@@ -25,6 +27,26 @@ pub(super) struct Page {
     pub frames: Rc<Handle<FrameAllocation>>,
     pub offset: u64,
     pub backing: PageBacking,
+    pub origin: Option<Rc<Origin>>,
+    /// File offset of this page for file-backed origins, otherwise zero.
+    pub file_offset: u64,
+}
+
+/// Source of a page range, rendered in `/proc/self/maps`.
+#[derive(Clone)]
+pub(super) enum Origin {
+    File(Rc<Vec<u8>>),
+    Stack,
+    Heap,
+}
+
+/// A contiguous mapped range with uniform permissions and origin.
+pub(super) struct Region {
+    pub start: usize,
+    pub end: usize,
+    pub permissions: Permissions,
+    pub origin: Option<Rc<Origin>>,
+    pub file_offset: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -58,28 +80,49 @@ impl AddressSpace {
         arguments: &Arguments,
         random: Option<&[u8; 16]>,
     ) -> Result<(Self, usize), Error> {
-        let mut segments: Vec<&crate::elf::Segment<'_>> = images.image.segments.iter().collect();
+        let main_path = Rc::new(arguments.path.clone());
+        let interpreter_path = images.image.interpreter.map(|path| Rc::new(path.to_vec()));
+        let mut segments: Vec<(&crate::elf::Segment<'_>, Rc<Vec<u8>>)> = images
+            .image
+            .segments
+            .iter()
+            .map(|segment| (segment, Rc::clone(&main_path)))
+            .collect();
         if let Some(interpreter) = &images.interpreter {
-            segments.extend(interpreter.segments.iter());
+            let path = interpreter_path.clone().ok_or(Error::InvalidExecutable)?;
+            segments.extend(
+                interpreter
+                    .segments
+                    .iter()
+                    .map(|segment| (segment, Rc::clone(&path))),
+            );
         }
-        segments.sort_unstable_by_key(|segment| segment.memory.start);
+        segments.sort_unstable_by_key(|(segment, _)| segment.memory.start);
         for pair in segments.windows(2) {
-            if pair[0].pages().end > pair[1].pages().start {
+            if pair[0].0.pages().end > pair[1].0.pages().start {
                 return Err(Error::InvalidExecutable);
             }
         }
-        let start = segments.last().ok_or(Error::InvalidExecutable)?.pages().end;
+        let start = segments
+            .last()
+            .ok_or(Error::InvalidExecutable)?
+            .0
+            .pages()
+            .end;
         let address_space = Self {
             native: SupervisedTask::new(parent, port)?,
             heap: start..start,
             pages: RefCell::new(BTreeMap::new()),
+            stack_origin: Rc::new(Origin::Stack),
+            heap_origin: Rc::new(Origin::Heap),
         };
-        for segment in segments {
+        for (segment, path) in segments {
             let range = segment.pages();
             let count = (range.len() / PAGE_SIZE) as u64;
             let mut frames =
                 parent.allocate(count, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
             frames.write(segment.memory.start - range.start, segment.data)?;
+            let offset = (segment.offset - (segment.memory.start - range.start)) as u64;
             address_space.map_frames(
                 Rc::new(frames),
                 0,
@@ -87,6 +130,8 @@ impl AddressSpace {
                 range.start,
                 segment.permissions,
                 PageBacking::File,
+                Some(Rc::new(Origin::File(path))),
+                offset,
             )?;
         }
         let stack = crate::stack::build(
@@ -107,6 +152,52 @@ impl AddressSpace {
         self.native.task().write_memory(address, input)
     }
 
+    /// Bytes covered by the current page records.
+    pub fn mapped_bytes(&self) -> usize {
+        self.pages.borrow().len() * PAGE_SIZE
+    }
+
+    /// Share the label used for the initial thread stack mapping.
+    pub(super) fn stack_origin(&self) -> Rc<Origin> {
+        Rc::clone(&self.stack_origin)
+    }
+
+    /// Contiguous mapped ranges with the permissions held by the native task.
+    pub fn regions(&self) -> Result<Vec<Region>, runtime::Error> {
+        let pages = self.pages.borrow();
+        let mut regions: Vec<Region> = Vec::new();
+        for (&address, page) in pages.iter() {
+            let Some(info) = self.native.task().query(address)? else {
+                continue;
+            };
+            let Some(permissions) = info.permissions else {
+                continue;
+            };
+            if let Some(last) = regions.last_mut()
+                && last.end == address
+                && last.permissions == permissions
+                && same_origin(last.origin.as_ref(), page.origin.as_ref())
+                && page.file_offset
+                    == if matches!(page.origin.as_deref(), Some(Origin::File(_))) {
+                        last.file_offset + (address - last.start) as u64
+                    } else {
+                        0
+                    }
+            {
+                last.end = address + PAGE_SIZE;
+                continue;
+            }
+            regions.push(Region {
+                start: address,
+                end: address + PAGE_SIZE,
+                permissions,
+                origin: page.origin.clone(),
+                file_offset: page.file_offset,
+            });
+        }
+        Ok(regions)
+    }
+
     pub fn map_anonymous(
         &self,
         address: Option<usize>,
@@ -120,7 +211,7 @@ impl AddressSpace {
             let address = address.ok_or(runtime::Error::Kernel(
                 runtime::KernelError::InvalidArgument,
             ))?;
-            let pages = self.zeroed_pages(length, shared)?;
+            let pages = self.zeroed_pages(length, shared, None)?;
             self.replace_pages(address, pages, permissions)?;
             return Ok(address);
         }
@@ -135,7 +226,7 @@ impl AddressSpace {
         };
         let range = reservation.range().ok_or(runtime::Error::Protocol)?;
         reservation.release()?;
-        self.map_zeroed(range.clone(), permissions, shared)?;
+        self.map_zeroed(range.clone(), permissions, shared, None)?;
         Ok(range.start)
     }
 
@@ -335,7 +426,12 @@ impl AddressSpace {
         Ok(range.start)
     }
 
-    fn zeroed_pages(&self, length: usize, shared: bool) -> Result<Vec<Page>, runtime::Error> {
+    fn zeroed_pages(
+        &self,
+        length: usize,
+        shared: bool,
+        origin: Option<Rc<Origin>>,
+    ) -> Result<Vec<Page>, runtime::Error> {
         let mut pages = Vec::with_capacity(length / PAGE_SIZE);
         for _ in (0..length).step_by(PAGE_SIZE) {
             let frames = self
@@ -350,6 +446,8 @@ impl AddressSpace {
                 } else {
                     PageBacking::Anonymous
                 },
+                origin: origin.clone(),
+                file_offset: 0,
             });
         }
         Ok(pages)
@@ -488,9 +586,16 @@ impl AddressSpace {
         }
         for (address, previous, frames, permissions) in prepared {
             self.native.unmap(address..address + PAGE_SIZE)?;
-            if let Err(error) =
-                self.map_frames(frames, 0, 1, address, permissions, PageBacking::Anonymous)
-            {
+            if let Err(error) = self.map_frames(
+                frames,
+                0,
+                1,
+                address,
+                permissions,
+                PageBacking::Anonymous,
+                None,
+                0,
+            ) {
                 self.map_frames(
                     previous.frames,
                     previous.offset,
@@ -498,6 +603,8 @@ impl AddressSpace {
                     address,
                     permissions,
                     previous.backing,
+                    previous.origin,
+                    previous.file_offset,
                 )?;
                 return Err(error);
             }
@@ -594,7 +701,12 @@ impl AddressSpace {
             return Ok(false);
         };
         reservation.release()?;
-        match self.map_zeroed(range, Permissions::ReadWrite, false) {
+        match self.map_zeroed(
+            range,
+            Permissions::ReadWrite,
+            false,
+            Some(Rc::clone(&self.heap_origin)),
+        ) {
             Ok(()) => Ok(true),
             Err(runtime::Error::Kernel(
                 runtime::KernelError::NoMemory
@@ -610,11 +722,13 @@ impl AddressSpace {
         range: Range<usize>,
         permissions: Permissions,
         shared: bool,
+        origin: Option<Rc<Origin>>,
     ) -> Result<(), runtime::Error> {
-        let prepared = self.zeroed_pages(range.len(), shared)?;
+        let prepared = self.zeroed_pages(range.len(), shared, origin)?;
         self.install(range.start, prepared, permissions)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn map_frames(
         &self,
         frames: Rc<Handle<FrameAllocation>>,
@@ -623,9 +737,12 @@ impl AddressSpace {
         address: usize,
         permissions: Permissions,
         backing: PageBacking,
+        origin: Option<Rc<Origin>>,
+        file_offset: u64,
     ) -> Result<(), runtime::Error> {
         self.native
             .map(&frames, offset, count, Some(address), permissions)?;
+        let file_backed = matches!(origin.as_deref(), Some(Origin::File(_)));
         let mut pages = self.pages.borrow_mut();
         for index in 0..count {
             pages.insert(
@@ -634,6 +751,12 @@ impl AddressSpace {
                     frames: Rc::clone(&frames),
                     offset: offset + index,
                     backing,
+                    origin: origin.clone(),
+                    file_offset: if file_backed {
+                        file_offset + index * PAGE_SIZE as u64
+                    } else {
+                        0
+                    },
                 },
             );
         }
@@ -676,6 +799,14 @@ impl AddressSpace {
                 _ => None,
             })
             .is_some_and(|permissions| access <= 2 && permissions as u64 & (1 << access) != 0)
+    }
+}
+
+fn same_origin(left: Option<&Rc<Origin>>, right: Option<&Rc<Origin>>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => Rc::ptr_eq(left, right),
+        _ => false,
     }
 }
 
@@ -737,6 +868,8 @@ impl AddressSpace {
             native: SupervisedTask::new(parent, port)?,
             heap: self.heap.clone(),
             pages: RefCell::new(BTreeMap::new()),
+            stack_origin: Rc::clone(&self.stack_origin),
+            heap_origin: Rc::clone(&self.heap_origin),
         };
         let bounds = self.native.task().address_range()?;
         let mut cursor = bounds.start;
@@ -769,7 +902,16 @@ impl AddressSpace {
                 frames.write(0, &bytes)?;
                 (Rc::new(frames), 0)
             };
-            child.map_frames(frames, offset, 1, address, permissions, page.backing)?;
+            child.map_frames(
+                frames,
+                offset,
+                1,
+                address,
+                permissions,
+                page.backing,
+                page.origin.clone(),
+                page.file_offset,
+            )?;
         }
         Ok(child)
     }
@@ -796,6 +938,8 @@ impl AddressSpace {
             address,
             Permissions::ReadExecute,
             PageBacking::File,
+            None,
+            0,
         )?;
         Ok(address)
     }

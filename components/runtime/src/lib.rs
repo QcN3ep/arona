@@ -18,6 +18,7 @@ mod handle;
 pub mod ipc;
 pub mod logger;
 pub mod memory;
+pub mod statistics;
 pub mod thread;
 pub mod trap;
 

@@ -6,7 +6,7 @@ use super::{map_error, mapping_error};
 use crate::{
     elf::PAGE_SIZE,
     file::OpenFileDescription,
-    memory::{Page, PageBacking},
+    memory::{Origin, Page, PageBacking},
     process::Process,
     syscall::{
         abi::{EOVERFLOW, Errno, SyscallResult},
@@ -24,6 +24,7 @@ pub(in crate::syscall) enum Pending<'a> {
 // TODO: Invalidate existing mappings after file truncation.
 pub(in crate::syscall) struct FileMapping<'a> {
     pub(super) description: Rc<OpenFileDescription<'a>>,
+    pub(super) origin: Option<Rc<Origin>>,
     pub(super) request: Stage,
     pub(super) address: Option<usize>,
     pub(super) length: usize,
@@ -79,7 +80,8 @@ impl FileMapping<'_> {
                     Ok(bytes) => bytes,
                     Err(error) => return Some(Err(filesystem_error(error))),
                 };
-                match page(process, &bytes, None) {
+                let file_offset = self.offset as u64 + self.pages.len() as u64 * PAGE_SIZE as u64;
+                match page(process, &bytes, None, self.origin.clone(), file_offset) {
                     Ok(page) => self.pages.push(page),
                     Err(error) => return Some(Err(error)),
                 }
@@ -101,7 +103,14 @@ impl FileMapping<'_> {
                     Err(error) => Some(Err(filesystem_error(error))),
                 };
             }
-            match page(process, &[], Some(self.permissions)) {
+            let file_offset = self.offset as u64 + self.pages.len() as u64 * PAGE_SIZE as u64;
+            match page(
+                process,
+                &[],
+                Some(self.permissions),
+                self.origin.clone(),
+                file_offset,
+            ) {
                 Ok(page) => self.pages.push(page),
                 Err(error) => return Some(Err(error)),
             }
@@ -127,7 +136,13 @@ impl FileMapping<'_> {
     }
 }
 
-fn page(process: &Process<'_>, bytes: &[u8], bus: Option<Permissions>) -> Result<Page, Errno> {
+fn page(
+    process: &Process<'_>,
+    bytes: &[u8],
+    bus: Option<Permissions>,
+    origin: Option<Rc<Origin>>,
+    file_offset: u64,
+) -> Result<Page, Errno> {
     let mut frames = process
         .address_space
         .native
@@ -139,5 +154,7 @@ fn page(process: &Process<'_>, bytes: &[u8], bus: Option<Permissions>) -> Result
         frames: Rc::new(frames),
         offset: 0,
         backing: bus.map_or(PageBacking::File, PageBacking::BeyondEof),
+        origin,
+        file_offset,
     })
 }

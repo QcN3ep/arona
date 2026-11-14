@@ -60,6 +60,8 @@ pub(crate) enum OpenFileDescription<'a> {
         flags: Cell<u32>,
         offset: Cell<usize>,
         busy: Cell<bool>,
+        /// Name used to open the file, kept as the backing path for mappings.
+        path: Option<Rc<Vec<u8>>>,
     },
     Signalfd {
         mask: Cell<u64>,
@@ -219,13 +221,19 @@ impl<'a> Descriptor<'a> {
             close_on_exec,
         }
     }
-    pub fn regular(file: fs::File<'a>, flags: u32, close_on_exec: bool) -> Self {
+    pub fn regular(
+        file: fs::File<'a>,
+        flags: u32,
+        close_on_exec: bool,
+        path: Option<Rc<Vec<u8>>>,
+    ) -> Self {
         Self {
             description: Rc::new(OpenFileDescription::Regular {
                 file,
                 flags: Cell::new(flags),
                 offset: Cell::new(0),
                 busy: Cell::new(false),
+                path,
             }),
             close_on_exec,
         }

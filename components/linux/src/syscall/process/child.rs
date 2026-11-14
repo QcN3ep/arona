@@ -84,9 +84,16 @@ fn spawn<'a>(
             ..Default::default()
         },
     ));
-    process
-        .namespace
-        .register(pid, process.pid, group, session, &signals);
+    process.namespace.register(
+        pid,
+        process.pid,
+        group,
+        session,
+        &signals,
+        &process.program,
+        &process.argv,
+        runtime::thread::now_ns().unwrap_or(0),
+    );
     process.namespace.register_thread(pid, pid, &thread_signals);
     let waiting = vfork.then(|| Vfork::new(pid));
     process.children.push(Process {
@@ -114,6 +121,7 @@ fn spawn<'a>(
         cwd: process.cwd.clone(),
         program: process.program.clone(),
         argv: process.argv.clone(),
+        max_rss: 0,
         machine: process.machine,
         vfork: waiting.clone(),
         umask: process.umask,

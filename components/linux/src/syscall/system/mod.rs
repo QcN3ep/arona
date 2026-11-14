@@ -5,6 +5,7 @@
 mod clock;
 mod random;
 mod timer;
+mod usage;
 
 use super::{
     Operation, Outcome,
@@ -41,6 +42,9 @@ pub(super) fn dispatch<'a>(
             Outcome::Complete(timer::dispatch(process, number, args))
         }
         abi::GETRANDOM => random::start(process, services, args),
+        abi::SYSINFO => Outcome::Complete(usage::sysinfo(process, args[0])),
+        abi::TIMES => Outcome::Complete(usage::times(process, args[0])),
+        abi::GETRUSAGE => Outcome::Complete(usage::getrusage(process, args[0], args[1])),
         _ => return None,
     })
 }

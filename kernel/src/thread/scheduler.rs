@@ -23,6 +23,13 @@ static STATE: Mutex<Scheduler> = Mutex::new(Scheduler {
     ready: ReadyQueue {
         first: None,
         last: None,
+        count: 0,
+    },
+    load: LoadAverage {
+        one: 0,
+        five: 0,
+        fifteen: 0,
+        updated_ns: 0,
     },
     live: None,
     reap: None,
@@ -48,11 +55,21 @@ pub(super) struct Scheduler {
     quantum_deadline: Option<u64>,
     timer_target: Option<u64>,
     pub deadlines: DeadlineQueue,
+    load: LoadAverage,
 }
 
 pub(super) struct ReadyQueue {
     first: Option<Thread>,
     last: Option<Thread>,
+    count: usize,
+}
+
+/// Fixed-point (16 fractional bits) runnable-thread averages updated by timer interrupts.
+struct LoadAverage {
+    one: u32,
+    five: u32,
+    fifteen: u32,
+    updated_ns: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -213,6 +230,11 @@ pub(crate) fn timer_interrupt() -> Result<(), ThreadError> {
         let generation = thread.0.data.lock().wait.as_ref().unwrap().generation;
         scheduler.finish_wait(&thread, generation, WaitOutcome::TimedOut);
     }
+    let active = scheduler
+        .ready
+        .count
+        .saturating_add(usize::from(scheduler.current.is_some()));
+    scheduler.load.sample(now, active);
     if scheduler
         .preemption_deadline
         .is_some_and(|deadline| deadline <= now)
@@ -232,6 +254,17 @@ pub(crate) fn timer_interrupt() -> Result<(), ThreadError> {
 
 pub(crate) fn refresh_timer() -> Result<(), ThreadError> {
     with_scheduler(|scheduler| scheduler.arm_timer())
+}
+
+/// Current 1, 5, and 15 minute runnable-thread averages in 16.16 fixed point.
+pub fn load_average() -> [u32; 3] {
+    let _interrupts = InterruptGuard::new();
+    let scheduler = STATE.lock();
+    [
+        scheduler.load.one,
+        scheduler.load.five,
+        scheduler.load.fifteen,
+    ]
 }
 
 pub fn run() -> ! {
@@ -535,6 +568,32 @@ impl Scheduler {
     }
 }
 
+impl LoadAverage {
+    fn sample(&mut self, now: u64, active: usize) {
+        let elapsed = u128::from(now.saturating_sub(self.updated_ns));
+        self.updated_ns = now;
+        if elapsed == 0 {
+            return;
+        }
+        let target = u128::from((active as u64).saturating_mul(1 << 16));
+        for (value, period) in [
+            (&mut self.one, 60_000_000_000u128),
+            (&mut self.five, 300_000_000_000),
+            (&mut self.fifteen, 900_000_000_000),
+        ] {
+            let current = u128::from(*value);
+            // First-order low-pass: move by elapsed / (period + elapsed) toward the sample.
+            let change = current.abs_diff(target) * elapsed / (period + elapsed);
+            let next = if target >= current {
+                current + change
+            } else {
+                current - change
+            };
+            *value = next.min(u128::from(u32::MAX)) as u32;
+        }
+    }
+}
+
 impl ReadyQueue {
     fn remove(&mut self, target: &Thread) {
         let mut previous: Option<Thread> = None;
@@ -550,6 +609,7 @@ impl ReadyQueue {
                 if next.is_none() {
                     self.last = previous;
                 }
+                self.count = self.count.saturating_sub(1);
                 thread.0.data.lock().ready_next = None;
                 return;
             }
@@ -560,6 +620,7 @@ impl ReadyQueue {
     }
 
     pub fn push(&mut self, thread: Thread) {
+        self.count = self.count.saturating_add(1);
         if let Some(last) = &self.last {
             last.0.data.lock().ready_next = Some(thread.clone());
         } else {
@@ -569,6 +630,7 @@ impl ReadyQueue {
     }
 
     fn push_front(&mut self, thread: Thread) {
+        self.count = self.count.saturating_add(1);
         thread.0.data.lock().ready_next = self.first.take();
         if self.last.is_none() {
             self.last = Some(thread.clone());
@@ -578,6 +640,7 @@ impl ReadyQueue {
 
     fn pop(&mut self) -> Option<Thread> {
         let thread = self.first.take()?;
+        self.count = self.count.saturating_sub(1);
         self.first = thread.0.data.lock().ready_next.take();
         if self.first.is_none() {
             self.last = None;

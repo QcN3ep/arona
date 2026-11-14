@@ -8,6 +8,7 @@ pub(crate) mod abi;
 mod file;
 mod memory;
 mod process;
+mod rusage;
 mod signal;
 mod socket;
 mod system;
