@@ -401,8 +401,12 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
             system_mode = true;
         } else if (!strcmp(argv[index], "profile=on") && !profiling) {
             profiling = true;
+        } else if (g_str_has_prefix(argv[index], "kernel=") && !kernel_image) {
+            if (!load_image(argv[index] + strlen("kernel="), true)) {
+                fputs("Arona perf: invalid kernel executable image\n", stderr); return -1;
+            }
         } else if (g_str_has_prefix(argv[index], "image=")) {
-            if (!load_image(argv[index] + strlen("image="))) {
+            if (!load_image(argv[index] + strlen("image="), false)) {
                 fputs("Arona perf: invalid native executable image\n", stderr); return -1;
             }
         } else if (g_str_has_prefix(argv[index], "context=") && !context_address &&
@@ -419,6 +423,10 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     }
     if (!path || !*path || !window_count) {
         fputs("Arona perf requires an output file and distinct measurement windows\n", stderr);
+        return -1;
+    }
+    if (system_mode != (kernel_image != NULL)) {
+        fputs("Arona perf requires a kernel image only for system collection\n", stderr);
         return -1;
     }
     if ((profiling && !system_mode && !context_address) ||
@@ -450,6 +458,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         mapping_observations = g_ptr_array_new();
         code_pages = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, (GDestroyNotify)g_byte_array_unref);
         system_register_bytes = g_byte_array_new();
+        kernel_bytes = g_byte_array_new();
         if (images->len) {
             qemu_plugin_register_vcpu_init_cb(id, initialize_system, NULL);
             qemu_plugin_register_vcpu_discon_cb(id, QEMU_PLUGIN_DISCON_ALL, system_discontinuity, NULL);

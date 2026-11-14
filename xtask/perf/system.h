@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-// Native ET_EXEC images are identified by every byte of their executable load segments.
+// Identify kernel entries and native ET_EXEC images from saved executable load segments.
 #include <elf.h>
 
 struct executable_segment {
     uint64_t address;
+    uint64_t physical;
     uint64_t size;
     const unsigned char *bytes;
 };
@@ -15,6 +16,8 @@ struct executable_image {
 };
 
 static GPtrArray *images;
+static struct executable_image *kernel_image;
+static GByteArray *kernel_bytes;
 static GHashTable *code_pages;
 static GByteArray *system_register_bytes;
 static struct qemu_plugin_register *general_registers[32];
@@ -71,7 +74,7 @@ static void initialize_system(unsigned int cpu, void *userdata)
     g_array_free(registers, true);
 }
 
-static bool load_image(const char *path)
+static bool load_image(const char *path, bool kernel)
 {
     struct executable_image *image = g_new0(struct executable_image, 1);
     gsize size;
@@ -95,13 +98,16 @@ static bool load_image(const char *path)
         if (GUINT32_FROM_LE(segment.p_type) != PT_LOAD || !(GUINT32_FROM_LE(segment.p_flags) & PF_X)) { continue; }
         uint64_t start = GUINT64_FROM_LE(segment.p_offset), length = GUINT64_FROM_LE(segment.p_filesz);
         uint64_t address = GUINT64_FROM_LE(segment.p_vaddr);
+        uint64_t physical = GUINT64_FROM_LE(segment.p_paddr);
         if (GUINT32_FROM_LE(segment.p_flags) & PF_W || !length || start > size || length > size - start ||
-            address < UINT64_C(0x10000) || address >= UINT64_C(0x4000000000) || length > UINT64_C(0x4000000000) - address) { goto invalid; }
-        struct executable_segment value = {address, length, (unsigned char *)image->bytes + start};
+            length > UINT64_MAX - address || length > UINT64_MAX - physical ||
+            (!kernel && (address < UINT64_C(0x10000) || address >= UINT64_C(0x4000000000) || length > UINT64_C(0x4000000000) - address))) { goto invalid; }
+        struct executable_segment value = {address, physical, length, (unsigned char *)image->bytes + start};
         g_array_append_val(image->segments, value);
     }
     if (!image->segments->len) { goto invalid; }
-    g_ptr_array_add(images, image);
+    if (kernel) { kernel_image = image; }
+    else { g_ptr_array_add(images, image); }
     return true;
 invalid:
     g_array_free(image->segments, true); g_free(image->bytes); g_free(image);
@@ -152,6 +158,18 @@ static bool image_matches(const struct executable_image *image)
 static struct context *system_context(uint64_t pc, size_t size)
 {
     if (pc >= UINT64_C(0xffff000000000000)) { return &static_context; }
+    for (guint index = 0; index < kernel_image->segments->len; ++index) {
+        const struct executable_segment *segment = &g_array_index(kernel_image->segments, struct executable_segment, index);
+        if (pc < segment->address || pc - segment->address >= segment->size ||
+            size > segment->size - (pc - segment->address)) { continue; }
+        uint64_t physical, offset = pc - segment->address;
+        g_byte_array_set_size(kernel_bytes, 0);
+        if (qemu_plugin_translate_vaddr(pc, &physical) && physical == segment->physical + offset &&
+            qemu_plugin_read_memory_hwaddr(physical, kernel_bytes, size) == QEMU_PLUGIN_HWADDR_OPERATION_OK &&
+            kernel_bytes->len == size && !memcmp(kernel_bytes->data, segment->bytes + offset, size)) {
+            return &static_context;
+        }
+    }
     if (pc < UINT64_C(0x10000) || pc >= UINT64_C(0x4000000000)) { return &unknown_context; }
     if (riscv && root_dirty) {
         root_known = read_register_u64(root_register, &current_root) && (current_root >> 60) == 8;
@@ -259,6 +277,8 @@ static void write_system_contexts(void)
 
 static void destroy_system(void)
 {
+    g_array_free(kernel_image->segments, true); g_free(kernel_image->bytes); g_free(kernel_image);
+    g_byte_array_unref(kernel_bytes);
     for (guint index = 0; index < images->len; ++index) {
         struct executable_image *image = g_ptr_array_index(images, index);
         g_array_free(image->segments, true); g_free(image->bytes); g_free(image);

@@ -516,6 +516,8 @@ fn plugin_options(
     }
     if manifest["case"] != "calibration" {
         options.push_str(",case=system");
+        options.push_str(",kernel=");
+        options.push_str(&escape(&directory.join("artifacts/guest.elf"))?);
         for image in manifest["images"]
             .as_array()
             .ok_or("missing saved component images")?

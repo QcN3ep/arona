@@ -122,7 +122,7 @@ pub(super) fn context(counts: &Value, row: &Value, window: &str) -> Result<u64, 
     if counts["scope"] == "system" {
         let shared = pc(&row["pc"])? >= 0xffff_0000_0000_0000;
         if window != "workload"
-            || (shared != (id == 0))
+            || (shared && id != 0)
             || counts["contexts"]
                 .as_array()
                 .and_then(|contexts| contexts.get(id as usize))
