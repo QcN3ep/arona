@@ -145,7 +145,7 @@ fn run_environment(_suite: &str) {
     let devices = kernel::device::DeviceSet::initialize(hardware).unwrap();
     #[cfg(feature = "runtime-tests")]
     pci::verify(&devices, &firmware);
-    let (pci_devices, behind_bridges) = kernel_tests::run_devices(devices.clone(), hardware);
+    let (pci_devices, behind_bridges) = testkit::run_devices(devices.clone(), hardware);
     if pci_devices != 0 {
         uart()
             .write(format_args!(
@@ -162,127 +162,127 @@ fn run_environment(_suite: &str) {
         .unwrap();
 }
 
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn controller() {
     run_environment("interrupt");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn device() {
     run_environment("device");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn service() {
     run_environment("service");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn init() {
     run_environment("init");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn linux() {
     run_environment("linux");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn net_service() {
     run_environment("net-service");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn dma() {
     run_environment("dma");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest("DMA domain poisoned; DMA frames retained: Busy")]
+#[testkit::ktest("DMA domain poisoned; DMA frames retained: Busy")]
 fn dma_drop() {
     run_environment("dma-drop");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest("DMA domain poisoned; DMA frames retained: Busy")]
+#[testkit::ktest("DMA domain poisoned; DMA frames retained: Busy")]
 fn dma_revoke() {
     run_environment("dma-revoke");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn block() {
     run_environment("block");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn rng() {
     run_environment("rng");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn power() {
     run_environment("power");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn net() {
     run_environment("net");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn lwip() {
     run_environment("lwip");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn rtc() {
     run_environment("rtc");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn fs() {
     run_environment("fs");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn pci_firmware() {
     run_environment("pci-firmware");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn pci_exhausted() {
     run_environment("pci-exhausted");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn pci_rollback() {
     run_environment("pci-rollback");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn uart_driver() {
     run_environment("device");
 }
 
 #[cfg(feature = "runtime-tests")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn logger() {
     run_environment("device");
 }
@@ -311,7 +311,7 @@ fn run_program(
         kernel::logger::LOGGER.add_sink(&TestLog).unwrap();
     }
     if matches!(suite, "dma-drop" | "dma-revoke") {
-        kernel_tests::run_dma_failure(&devices, suite == "dma-revoke");
+        testkit::run_dma_failure(&devices, suite == "dma-revoke");
     }
     let data = kernel::BootData {
         physical: program.expect("device test image is missing"),
@@ -329,9 +329,9 @@ fn run_program(
         .data()
         .physical;
         let run = if suite == "init" {
-            kernel_tests::run_init_program
+            testkit::run_init_program
         } else {
-            kernel_tests::run_service_program
+            testkit::run_service_program
         };
         run(
             &bytes[init.start as usize..init.end as usize],
@@ -349,7 +349,7 @@ fn run_program(
             ))
             .unwrap();
     } else {
-        let counts = kernel_tests::run_device_program(bytes, devices, suite == "service");
+        let counts = testkit::run_device_program(bytes, devices, suite == "service");
         if counts != 0 {
             uart()
                 .write(format_args!(
@@ -568,7 +568,7 @@ fn wait_quiet(count: usize) {
 
 fn handle(trap: Trap) -> TrapOutcome {
     if DEVICE_TESTS.load(Ordering::Relaxed) {
-        return kernel_tests::handle_program(trap);
+        return testkit::handle_program(trap);
     }
     assert_eq!(trap.origin, TrapOrigin::Kernel);
     assert_eq!(

@@ -130,22 +130,22 @@ fn run_case(name: &'static str) {
     }
 }
 
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn interrupt() {
     run_case("interrupt");
 }
 
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn user() {
     run_case("user");
 }
 
-#[kernel_tests::ktest("FATAL TRAP: Kernel", "IllegalInstruction", "entry=KernelException")]
+#[testkit::ktest("FATAL TRAP: Kernel", "IllegalInstruction", "entry=KernelException")]
 fn fault() {
     run_case("fault");
 }
 
-#[kernel_tests::ktest(
+#[testkit::ktest(
     "FATAL TRAP: Kernel",
     "SoftwareInterrupt",
     "sp=0x0",
@@ -155,31 +155,31 @@ fn bad_stack() {
     run_case("bad-stack");
 }
 
-#[kernel_tests::ktest("FATAL TRAP: Kernel", "IllegalInstruction", "entry=Reentrant")]
+#[testkit::ktest("FATAL TRAP: Kernel", "IllegalInstruction", "entry=Reentrant")]
 fn reentry() {
     run_case("reentry");
 }
 
 #[cfg(target_arch = "loongarch64")]
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn refill() {
     run_case("refill");
 }
 
 #[cfg(target_arch = "loongarch64")]
-#[kernel_tests::ktest("FATAL TRAP: Kernel", "PageFault", "sp=0x0", "entry=KernelException")]
+#[testkit::ktest("FATAL TRAP: Kernel", "PageFault", "sp=0x0", "entry=KernelException")]
 fn refill_kernel() {
     run_case("refill-kernel");
 }
 
 #[cfg(target_arch = "loongarch64")]
-#[kernel_tests::ktest("FATAL TRAP: Kernel", "class: BoundsCheck", "entry=KernelException")]
+#[testkit::ktest("FATAL TRAP: Kernel", "class: BoundsCheck", "entry=KernelException")]
 fn bounds() {
     run_case("bounds");
 }
 
 #[cfg(target_arch = "loongarch64")]
-#[kernel_tests::ktest("FATAL TRAP: Kernel", "class: Arithmetic", "entry=KernelException")]
+#[testkit::ktest("FATAL TRAP: Kernel", "class: Arithmetic", "entry=KernelException")]
 fn arithmetic() {
     run_case("arithmetic");
 }

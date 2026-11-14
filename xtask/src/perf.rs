@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Collects and validates instruction counts from calibration and system images.
+//! Collect and analyze instruction counts from named performance cases and system images.
 
 mod artifacts;
+mod cases;
 mod diff;
 mod report;
 mod system;
@@ -47,6 +48,10 @@ struct Options {
     artifacts: Option<PathBuf>,
     profile: bool,
     timeout: Duration,
+    filter: String,
+    list: bool,
+    iterations: Option<u64>,
+    selection: Option<cases::Selection>,
 }
 
 impl Options {
@@ -57,13 +62,17 @@ impl Options {
         });
         let target = Target::parse(&arguments.next().transpose()?.ok_or_else(super::usage)?)?;
         let mut options = Self {
-            case: "calibration",
+            case: "kperf",
             input: system::Input::default(),
             target,
             release: None,
             artifacts: None,
             profile: false,
             timeout: Duration::from_secs(30),
+            filter: String::new(),
+            list: false,
+            iterations: None,
+            selection: None,
         };
         while let Some(argument) = arguments.next().transpose()? {
             match argument.as_str() {
@@ -79,9 +88,10 @@ impl Options {
                 }
                 "--case" => {
                     options.case = match arguments.next().transpose()?.as_deref() {
+                        Some("kperf") => "kperf",
                         Some("calibration") => "calibration",
                         Some("system") => "system",
-                        _ => return Err("--case supports calibration or system".to_owned()),
+                        _ => return Err("--case supports kperf, calibration, or system".to_owned()),
                     };
                 }
                 "--kernel" | "--initramfs" | "--start" | "--end" | "--success" | "--workload"
@@ -97,6 +107,22 @@ impl Options {
                     Some("profile") => options.profile = true,
                     _ => return Err("--mode supports count or profile".to_owned()),
                 },
+                "--list" => options.list = true,
+                "--filter" => {
+                    options.filter = arguments.next().transpose()?.ok_or("missing case filter")?;
+                }
+                "--iterations" => {
+                    options.iterations = Some(
+                        arguments
+                            .next()
+                            .transpose()?
+                            .ok_or("missing iterations")?
+                            .parse::<u64>()
+                            .ok()
+                            .filter(|count| *count > 0)
+                            .ok_or("iterations must be a positive integer")?,
+                    );
+                }
                 "--timeout" => {
                     let seconds = arguments
                         .next()
@@ -116,6 +142,11 @@ impl Options {
             return Err(
                 "system input options require --case system without --artifacts".to_owned(),
             );
+        }
+        if (options.case != "kperf" || options.artifacts.is_some())
+            && (options.list || !options.filter.is_empty() || options.iterations.is_some())
+        {
+            return Err("--list, --filter, and --iterations require fresh kperf cases".to_owned());
         }
         Ok(options)
     }
@@ -139,12 +170,19 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), S
     }
     let options = Options::parse(arguments)?;
     let root = workspace_root()?;
+    if options.case == "kperf" && options.artifacts.is_none() {
+        return cases::run(options, &root);
+    }
+    execute_run(&options, &root)
+}
+
+fn execute_run(options: &Options, root: &Path) -> Result<(), String> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_nanos();
     let name = format!("{}-{stamp}-{}", options.target.triple(), std::process::id());
-    let directory = target_directory(&root).join("perf").join(&name);
+    let directory = target_directory(root).join("perf").join(&name);
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let mut metadata = json!({
         "status": "preparing", "target": options.target.triple(),
@@ -153,7 +191,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), S
     });
     save_metadata(&directory, &metadata)?;
     println!("Performance results: {}", directory.display());
-    let outcome = collect(&options, &root, &directory, stamp, &mut metadata);
+    let outcome = collect(options, root, &directory, stamp, &mut metadata);
     metadata["status"] = json!(if outcome.is_ok() {
         "complete"
     } else {
@@ -181,10 +219,12 @@ fn collect(
     if matches!(options.target, Target::Riscv64) {
         command.arg("-bios").arg(saved.join("firmware.bin"));
     }
+    if options.case != "calibration" {
+        metadata["measurement"] = manifest["measurement"].clone();
+    }
     if options.case == "system" {
         command.arg("-initrd").arg(saved.join("initramfs.cpio"));
         command.args(["-device", "virtio-rng-pci,disable-legacy=on"]);
-        metadata["measurement"] = manifest["measurement"].clone();
     }
     command
         .arg("-kernel")
@@ -223,14 +263,26 @@ fn collect(
     );
     metadata["status"] = json!("running");
     save_metadata(directory, metadata)?;
-    let success = if options.case == "system" {
+    let success = if options.case != "calibration" {
         manifest["measurement"]["success"]
             .as_str()
             .ok_or("missing completion marker")?
     } else {
         PASSED
     };
-    measure(command, control, directory, options.timeout, success)?;
+    let selection = if options.case == "kperf" {
+        Some(cases::selection(&manifest)?)
+    } else {
+        None
+    };
+    measure(
+        command,
+        control,
+        directory,
+        options.timeout,
+        success,
+        selection,
+    )?;
     validate_counts(directory, &windows)?;
     let counts = report::read_json(&directory.join("counts.json"))?;
     for window in counts["windows"]
@@ -242,6 +294,18 @@ fn collect(
             window["name"].as_str().ok_or("missing window name")?,
             window["instructions"]
         );
+        if options.case != "calibration" {
+            let units = manifest["measurement"]["units"]
+                .as_u64()
+                .ok_or("missing work units")?;
+            let count = window["instructions"]
+                .as_u64()
+                .ok_or("missing instruction count")?;
+            println!(
+                "{units} work units, {} instructions per unit",
+                count as f64 / units as f64
+            );
+        }
     }
     metadata["counts_sha256"] = json!(artifacts::digest(&directory.join("counts.json"))?);
     if options.profile {
@@ -349,7 +413,7 @@ fn read_windows(executable: &Path, manifest: &Value) -> Result<(Vec<Window>, u64
             );
         }
     }
-    if manifest["case"] == "system" {
+    if manifest["case"] != "calibration" {
         let directory = executable
             .parent()
             .ok_or("missing saved artifact directory")?;
@@ -450,7 +514,7 @@ fn plugin_options(
         )
         .map_err(|error| error.to_string())?;
     }
-    if manifest["case"] == "system" {
+    if manifest["case"] != "calibration" {
         options.push_str(",case=system");
         for image in manifest["images"]
             .as_array()
@@ -555,10 +619,11 @@ fn measure(
     directory: &Path,
     timeout: Duration,
     success: &str,
+    selection: Option<(&str, u64)>,
 ) -> Result<(), String> {
     let serial = directory.join("serial.log");
     command
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(File::create(&serial).map_err(|error| error.to_string())?)
         .stderr(File::create(directory.join("qemu.log")).map_err(|error| error.to_string())?);
     fs::create_dir(&control).map_err(|error| error.to_string())?;
@@ -567,12 +632,44 @@ fn measure(
         error.to_string()
     })?;
     let mut emulator = Emulator { child, control };
+    let mut selected = selection.is_none();
     let deadline = Instant::now() + timeout;
     loop {
         let bytes = fs::read(&serial).map_err(|error| error.to_string())?;
         let log = String::from_utf8_lossy(&bytes);
-        let failed = log.contains(FAILED) || log.contains("PANIC:") || log.contains("panicked at");
-        let passed = log.lines().any(|line| line.contains(success));
+        if !selected && log.lines().any(|line| line == "KTEST READY") {
+            let (name, iterations) = selection.unwrap();
+            cases::select(
+                &bytes,
+                name,
+                iterations,
+                emulator.child.stdin.as_mut().unwrap(),
+            )?;
+            selected = true;
+        }
+        let failures = [
+            FAILED,
+            "PANIC:",
+            "panicked at",
+            "KPERF failed:",
+            "FATAL TRAP",
+        ];
+        let failed = log
+            .lines()
+            .filter(|line| !line.starts_with("KTEST CASE "))
+            .any(|line| failures.iter().any(|marker| line.contains(marker)));
+        let passed = selected
+            && log.lines().any(|line| {
+                if selection.is_some() {
+                    line == success
+                } else {
+                    line.contains(success)
+                }
+            })
+            && selection.is_none_or(|(_, iterations)| {
+                log.lines()
+                    .any(|line| line == format!("KPERF UNITS {iterations}"))
+            });
         if let Some(status) = emulator
             .child
             .try_wait()

@@ -39,7 +39,7 @@ Apply CONTRIBUTING's comment and SPDX requirements.
 ## Testing Guidelines
 
 Put host integration tests in the corresponding crate's `tests/` directory, matching its source structure.
-Use `kernel-tests/` for generic kernel scenarios and architecture images or component programs for hardware-dependent scenarios.
+Use `testkit/` for generic kernel scenarios and architecture images or component programs for hardware-dependent scenarios.
 Cover observable behavior, necessary boundaries, and representative errors; check resource state after failures.
 Do not add regression tests or fake hardware backends.
 Choose validation using [Testing and Debugging](book/src/tools/testing.md), and report the checks actually run and any limits.

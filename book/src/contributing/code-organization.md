@@ -10,8 +10,8 @@ Reading from the bottom up, `abi` defines handover types, `kernel` provides reso
 | `abi/` | `arona-abi` | Object types, permissions, methods, and cross-boundary exchange formats |
 | `kernel/` | `arona-kernel` | Privileged kernel mechanisms and hardware interface definitions |
 | `arch/` | `arona-arch` | Hardware interface implementations and the kernel executable |
-| `kernel-tests/` | `arona-kernel-tests` | Kernel integration tests executed through real hardware capabilities |
-| `kernel-tests/macros/` | `arona-ktest` | Attribute macro for collecting bare-metal test cases |
+| `testkit/` | `arona-testkit` | Shared functional and performance case interfaces and kernel scenarios |
+| `testkit/macros/` | `arona-testkit-macros` | `ktest` and `kperf` case registration |
 | `components/runtime/` | `arona-runtime` | Native Rust runtime environment and kernel call wrappers |
 | `components/init/` | `arona-init` | Starting base services and supervising configured applications |
 | `components/devmgr/` | `arona-devmgr` | Device management, drivers, and device sessions |
@@ -62,7 +62,7 @@ The implementation follows these rules:
 
 | Scope | `unsafe` | Conditional Compilation |
 |---|---|---|
-| kernel implementation, kernel-tests, abi | Forbidden | Forbidden |
+| kernel implementation, testkit, abi | Forbidden | Forbidden |
 | `kernel/tests/` | Allowed | Forbidden |
 | `components/runtime/` | Allowed | Allowed |
 | `components/net/lwip/` | Allowed for the C adapter | Allowed for native platform selection |
@@ -80,7 +80,7 @@ This keeps C pointers and layouts inside the child crate.
 The adapter uses the runtime's generic facilities without making the runtime depend on lwIP.
 
 Integration tests that can run on the host go in the `tests/` directory of the corresponding crate.
-Tests that require real page tables, exception entry points, thread switching, or devices are carried by architecture test images and component programs; general kernel scenarios go in `kernel-tests`.
+Tests that require real page tables, exception entry points, thread switching, or devices are carried by architecture test images and component programs; general kernel scenarios go in `testkit`.
 See [Testing and Debugging](../tools/testing.md) for the test layout.
 
 ## Build Files and Documentation

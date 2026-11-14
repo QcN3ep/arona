@@ -6,6 +6,8 @@ mod frame;
 mod frame_allocator;
 mod heap_allocator;
 
+pub use frame_allocator::perf_allocate_free_frame;
+
 use kernel::{
     hardware::{self, mmu::PAGE_SIZE},
     memory::{

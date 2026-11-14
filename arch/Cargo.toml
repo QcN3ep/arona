@@ -60,6 +60,11 @@ path = "tests/interrupt.rs"
 required-features = ["baremetal"]
 
 [[test]]
+name = "kperf"
+path = "tests/kperf.rs"
+required-features = ["baremetal"]
+
+[[test]]
 name = "perf"
 path = "tests/perf.rs"
 harness = false
@@ -75,4 +80,4 @@ spin = { version = "0.9.9", default-features = false, features = ["mutex", "spin
 uefi-raw = "0.14.0"
 
 [dev-dependencies]
-kernel-tests = { package = "arona-kernel-tests", path = "../kernel-tests" }
+testkit = { package = "arona-testkit", path = "../testkit" }

@@ -78,7 +78,7 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     halt()
 }
 
-#[kernel_tests::ktest]
+#[testkit::ktest]
 fn allocations() {
     // SAFETY: The test exclusively owns the mapped and initialized boot console.
     let uart = unsafe { Uart::new(UART) };
@@ -111,7 +111,7 @@ fn initialize() -> &'static MemoryManager {
         },
         state,
     });
-    kernel_tests::validate_memory_regions(&regions);
+    testkit::validate_memory_regions(&regions);
     memory::initialize(&regions).unwrap();
     let manager = memory::manager();
     manager.initialize_kernel_address_space().unwrap();
@@ -134,7 +134,7 @@ fn initialize() -> &'static MemoryManager {
     mmu.write_entry(space.root(), slot, layout.levels - 1, entry)
         .unwrap();
     manager.initialize_direct_map().unwrap();
-    kernel_tests::run_memory(&regions);
+    testkit::run_memory(&regions);
     manager
 }
 

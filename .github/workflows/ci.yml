@@ -66,7 +66,7 @@ jobs:
       - name: Clippy architecture tests
         run: >-
           cargo clippy --locked -p arona-arch --features baremetal
-          --test paging --test allocator --test trap --test execution --test timer --test interrupt --test perf
+          --test paging --test allocator --test trap --test execution --test timer --test interrupt --test kperf --test perf
           --target ${{ matrix.triple }}
           -Zbuild-std=core,alloc,compiler_builtins
           -Zbuild-std-features=compiler-builtins-mem

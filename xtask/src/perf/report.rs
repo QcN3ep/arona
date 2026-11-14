@@ -49,7 +49,10 @@ pub(super) fn generate(directory: &Path, metadata: &Value) -> Result<(), String>
 
 pub(super) fn build(directory: &Path, metadata: &Value) -> Result<(Value, Vec<String>), String> {
     if metadata["mode"] != "profile"
-        || !matches!(metadata["case"].as_str(), Some("calibration" | "system"))
+        || !matches!(
+            metadata["case"].as_str(),
+            Some("calibration" | "system" | "kperf")
+        )
     {
         return Err("report requires a saved instruction profile".to_owned());
     }
@@ -69,7 +72,7 @@ pub(super) fn build(directory: &Path, metadata: &Value) -> Result<(Value, Vec<St
         return Err("unsupported performance artifacts".to_owned());
     }
     let counts = read_json(&directory.join("counts.json"))?;
-    let system = metadata["case"] == "system";
+    let system = metadata["case"] != "calibration";
     if system != (counts["scope"] == "system") {
         return Err("instruction scope differs from the saved case".to_owned());
     }
@@ -331,6 +334,9 @@ fn markdown(report: &Value) -> Result<String, String> {
     let mut text = String::from(
         "# Guest instruction hotspots\n\nCounts are guest instruction dispatches.\n\nFunction and line groups count each instruction once at its innermost frame. Enclosing inline frames are context only.\n",
     );
+    if let Some(workload) = report["measurement"]["workload"].as_str() {
+        writeln!(text, "\nWorkload: {}.\n", cell(workload)).map_err(|error| error.to_string())?;
+    }
     for warning in report["warnings"]
         .as_array()
         .ok_or("missing report warnings")?

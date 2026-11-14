@@ -21,7 +21,7 @@ impl Drop for Process {
     }
 }
 
-pub(super) fn list(
+pub(crate) fn list(
     target: Target,
     root: &Path,
     kernel: &Path,
@@ -256,7 +256,7 @@ fn observe(
     }
 }
 
-fn parse_cases(output: &[u8]) -> Result<Vec<Case>, String> {
+pub(crate) fn parse_cases(output: &[u8]) -> Result<Vec<Case>, String> {
     let mut cases = Vec::new();
     for line in String::from_utf8_lossy(output).lines() {
         let Some(record) = line.strip_prefix("KTEST CASE ") else {
@@ -267,9 +267,19 @@ fn parse_cases(output: &[u8]) -> Result<Vec<Case>, String> {
         if name.is_empty() || cases.iter().any(|case: &Case| case.name == name) {
             return Err("empty or duplicate test name".to_owned());
         }
+        let performance = match fields.next() {
+            Some("test") => false,
+            Some("perf") => true,
+            _ => return Err("unknown test case kind".to_owned()),
+        };
+        let expected: Vec<_> = fields.map(str::to_owned).collect();
+        if performance && !expected.is_empty() {
+            return Err("performance cases cannot expect fatal diagnostics".to_owned());
+        }
         cases.push(Case {
             name: name.to_owned(),
-            expected: fields.map(str::to_owned).collect(),
+            expected,
+            performance,
         });
     }
     if cases.is_empty() {

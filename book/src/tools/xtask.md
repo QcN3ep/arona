@@ -7,7 +7,7 @@ It combines Cargo builds, service archive packaging, QEMU startup, and handbook 
 ```text
 cargo xtask <build|run|package-init|package-linux-test> <riscv64|loongarch64> [OPTIONS]
 cargo xtask test <host|riscv64|loongarch64> [OPTIONS]
-cargo xtask perf run <riscv64|loongarch64> --case calibration --mode count [OPTIONS]
+cargo xtask perf run <riscv64|loongarch64> [OPTIONS]
 cargo xtask book [build|serve] [OPTIONS]
 cargo xtask help
 ```
@@ -115,6 +115,31 @@ Use `loongarch64` for the other architecture and omit `--release` for debug buil
 `cargo xtask test riscv64 --release --filter interrupt::net_service` builds the archive and runs it with a modern VirtIO RNG.
 These loopback scenarios do not require `--net` or an Ethernet device.
 
+## Performance Cases
+
+```sh
+cargo xtask perf run riscv64 --release --list
+cargo xtask perf run riscv64 --release --filter calibration::straight --iterations 100
+cargo xtask perf run loongarch64 --release --filter calibration::straight --iterations 100 --mode profile
+```
+
+The default case type is `kperf` and the default mode is `count`.
+The runner discovers `#[testkit::kperf]` functions from the `kperf` architecture target and its modules.
+`--filter NAME` selects names containing `NAME`, and `--list` lists matching cases without collecting instructions.
+Each selected case runs in a fresh QEMU instance.
+
+A performance case takes `&mut testkit::perf::Perf` and calls `perf.iter(|| operation())` exactly once.
+Setup and result checks go before or after this call.
+`--iterations N` sets the number of operation calls inside one measurement interval and defaults to 1.
+The interval includes loop overhead, calls, returned-value destruction, and any interrupt or scheduling work during execution.
+The framework passes each returned value through `core::hint::black_box`.
+Cases must also keep their inputs and side effects observable where the compiler could otherwise eliminate the work.
+
+Results record the case name, iterations, total instructions, and instructions per iteration.
+`--mode profile` adds the hotspot report described below.
+Use `--artifacts RUN_DIRECTORY` to rerun a saved case with its original iterations and executable.
+The initial cases in `arch/tests/kperf.rs` calibrate the runner with an empty body and four added instructions per iteration.
+
 ## Instruction Count Calibration
 
 ```sh
@@ -144,7 +169,7 @@ A missing or repeated boundary, a count mismatch, a guest failure, or a timeout 
 To rerun a saved experiment, pass its result directory:
 
 ```sh
-cargo xtask perf run riscv64 --artifacts target/perf/RUN_DIRECTORY
+cargo xtask perf run riscv64 --case calibration --artifacts target/perf/RUN_DIRECTORY
 ```
 
 The saved build profile and guest files are reused without rebuilding the guest, and results go to a new directory.
@@ -226,7 +251,7 @@ cargo xtask perf diff target/perf/BEFORE target/perf/AFTER
 
 This command writes `diff.md` and `diff.json` in the second directory without building or running the guest.
 It checks saved file checksums and requires matching ISA, case, collection mode, QEMU configuration, firmware, and collector.
-System runs must also use the same workload name, work units, boundary expressions, and completion message.
+Performance cases and system runs must also use the same workload name, work units, boundary expressions, and completion message.
 Guest builds may differ. The caller must keep workload inputs and completion semantics comparable.
 
 The comparison shows exact instruction counts and their difference, followed by counts per work unit.

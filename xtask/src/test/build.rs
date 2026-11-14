@@ -9,10 +9,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(super) struct Build {
+pub(crate) struct Build {
     pub root: PathBuf,
     pub target: Target,
     pub release: bool,
+    pub symbols: bool,
     programs: BTreeMap<String, PathBuf>,
 }
 
@@ -22,11 +23,17 @@ impl Build {
             root,
             target,
             release,
+            symbols: false,
             programs: BTreeMap::new(),
         }
     }
 
     pub fn image(&mut self, name: &str) -> Result<PathBuf, String> {
+        let command = self.image_command(name)?;
+        linux_test::build_runner(command, name)
+    }
+
+    pub fn image_command(&mut self, name: &str) -> Result<std::process::Command, String> {
         let mut command = cargo_command(self.root.clone());
         build_std(&mut command);
         command.args([
@@ -53,8 +60,13 @@ impl Build {
         if self.release {
             command.arg("--release");
         }
+        if self.symbols {
+            let profile = if self.release { "RELEASE" } else { "DEV" };
+            command.env(format!("CARGO_PROFILE_{profile}_DEBUG"), "2");
+            command.env(format!("CARGO_PROFILE_{profile}_STRIP"), "none");
+        }
         command.args(["--", "-Cpanic=abort", "-Zpanic-abort-tests"]);
-        linux_test::build_runner(command, name)
+        Ok(command)
     }
 
     pub fn program(&mut self, package: &str, name: &str) -> Result<PathBuf, String> {
