@@ -51,6 +51,8 @@ pub(super) const EXIT_GROUP: usize = 94;
 pub(super) const WAITID: usize = 95;
 pub(super) const SET_TID_ADDRESS: usize = 96;
 pub(super) const FUTEX: usize = 98;
+pub(super) const SET_ROBUST_LIST: usize = 99;
+pub(super) const GET_ROBUST_LIST: usize = 100;
 pub(super) const NANOSLEEP: usize = 101;
 pub(super) const GETITIMER: usize = 102;
 pub(super) const SETITIMER: usize = 103;
@@ -189,6 +191,7 @@ pub(super) const ETIMEDOUT: Errno = Errno(110);
 pub(super) const ECONNREFUSED: Errno = Errno(111);
 pub(super) const EALREADY: Errno = Errno(114);
 pub(super) const EINPROGRESS: Errno = Errno(115);
+pub(super) const EOWNERDEAD: Errno = Errno(130);
 
 impl Machine {
     pub(crate) fn initial(self, entry: usize, stack: usize) -> UserState {

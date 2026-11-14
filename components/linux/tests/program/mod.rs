@@ -328,6 +328,7 @@ fn writable(
         b"System",
         b"Notifications",
         b"HardwareThreads",
+        b"DeadOwner",
         b"Join",
         b"Kin",
         b"Vfork",

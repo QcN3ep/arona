@@ -2,8 +2,6 @@
 
 //! Linux thread creation and thread identifiers.
 
-// TODO: Integrate robust futex registration and thread exit cleanup.
-
 use crate::{
     process::{Process, Thread},
     syscall::{
@@ -93,6 +91,7 @@ pub(super) fn clone(
                 } else {
                     0
                 },
+                robust_list: 0,
                 pending: None,
                 signals,
                 held: None,
