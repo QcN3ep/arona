@@ -5,6 +5,7 @@ pub(crate) mod image;
 pub(crate) mod namespace;
 pub(crate) mod signal;
 pub(crate) mod terminal;
+pub(crate) mod timer;
 
 use alloc::{rc::Rc, vec::Vec};
 use core::cell::{Cell, RefCell};
@@ -73,6 +74,7 @@ pub(crate) struct Process<'a> {
     pub signal_return: Option<usize>,
     pub children: Vec<Process<'a>>,
     pub cpu_ns: u64,
+    pub timers: timer::Timers,
     pub port: Rc<Handle<TrapPort>>,
     pub supervisor: &'a Handle<Task>,
     pub address_space: AddressSpace,
@@ -147,6 +149,7 @@ impl<'a> Process<'a> {
             signal_return: None,
             children: Vec::new(),
             cpu_ns: 0,
+            timers: timer::Timers::default(),
             port: Rc::clone(port),
             supervisor: parent,
             address_space,
@@ -217,7 +220,8 @@ impl<'a> Process<'a> {
         files: &fs::Client<'a>,
         services: &crate::Services<'a>,
     ) -> Result<bool, Error> {
-        let mut progress = self.terminal.poll();
+        let mut progress = timer::poll(self)?;
+        progress |= self.terminal.poll();
         if self.terminal.failed() {
             progress |= self.namespace.hangup_terminal(&self.terminal);
         }
@@ -273,6 +277,7 @@ impl<'a> Process<'a> {
     }
 
     pub fn waits<'b>(&'b self, items: &mut Vec<WaitItem<'b>>) {
+        self.timers.waits(items);
         for thread in &self.threads {
             items.push(WaitItem::new(&thread.native, EXITED));
             if !self.signals.borrow().stopped
@@ -281,6 +286,22 @@ impl<'a> Process<'a> {
                 pending.waits(items);
             }
         }
+    }
+
+    /// Total CPU time consumed by the process, including the current dispatch interval.
+    pub fn cpu_time_ns(&self) -> u64 {
+        self.threads.iter().fold(self.cpu_ns, |total, thread| {
+            total.saturating_add(thread.native.cpu_time_ns().unwrap_or(0))
+        })
+    }
+
+    fn runnable(&self) -> bool {
+        self.threads.iter().any(|thread| {
+            matches!(
+                thread.native.state(),
+                Ok((ThreadState::Ready | ThreadState::Running, _))
+            )
+        })
     }
 
     pub fn status(&self) -> ExitStatus {

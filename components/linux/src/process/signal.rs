@@ -9,8 +9,11 @@ use crate::syscall::abi::{ENOMEM, Errno};
 use alloc::{collections::VecDeque, vec::Vec};
 
 pub const KILL: u8 = 9;
-pub const STOP: u8 = 19;
+pub const ALRM: u8 = 14;
 pub const CONT: u8 = 18;
+pub const STOP: u8 = 19;
+pub const VTALRM: u8 = 26;
+pub const PROF: u8 = 27;
 pub const RESTART: usize = 0x10000000;
 pub const NODEFER: usize = 0x40000000;
 pub const RESETHAND: usize = 0x80000000;

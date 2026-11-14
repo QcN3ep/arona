@@ -119,6 +119,7 @@ fn spawn<'a>(
         umask: process.umask,
         credentials: process.credentials,
         cpu_ns: 0,
+        timers: crate::process::timer::Timers::default(),
         status: crate::ExitStatus { code: 0, signal: 0 },
     });
     Ok((pid, waiting))

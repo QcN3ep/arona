@@ -140,7 +140,19 @@ impl Thread {
 
     pub fn cpu_time_ns(&self) -> Result<u64, ThreadError> {
         let _interrupts = InterruptGuard::new();
-        Ok(self.0.data.lock().cpu_ns)
+        let (cpu_ns, dispatched_ns) = {
+            let data = self.0.data.lock();
+            (data.cpu_ns, data.dispatched_ns)
+        };
+        let current = dispatched_ns
+            .and_then(|start| {
+                hardware::timer()
+                    .now_ns()
+                    .ok()
+                    .map(|now| now.saturating_sub(start))
+            })
+            .unwrap_or(0);
+        Ok(cpu_ns.saturating_add(current))
     }
 
     pub fn new(entry: ThreadEntry, argument: usize) -> Result<Self, ThreadError> {

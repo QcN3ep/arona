@@ -141,10 +141,23 @@ system_basics:
     li a2, 8
     invoke 278
     expect -22
+    jal ra, timer_selftest
     li a0, 42
     invoke 94
 system_failure:
     addi a0, s8, 100
     invoke 94
     j system_failure
+.globl timer_syscall
+timer_syscall:
+    mv a7, a0
+    mv t0, a1
+    ld a0, 0(t0)
+    ld a1, 8(t0)
+    ld a2, 16(t0)
+    ld a3, 24(t0)
+    ld a4, 32(t0)
+    ld a5, 40(t0)
+    ecall
+    ret
 .section .note.GNU-stack,"",@progbits

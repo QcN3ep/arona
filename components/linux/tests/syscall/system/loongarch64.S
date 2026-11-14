@@ -141,10 +141,23 @@ system_basics:
     li.d $a2, 8
     invoke 278
     expect -22
+    bl timer_selftest
     li.d $a0, 42
     invoke 94
 system_failure:
     addi.d $a0, $s8, 100
     invoke 94
     b system_failure
+.globl timer_syscall
+timer_syscall:
+    move $a7, $a0
+    move $t0, $a1
+    ld.d $a0, $t0, 0
+    ld.d $a1, $t0, 8
+    ld.d $a2, $t0, 16
+    ld.d $a3, $t0, 24
+    ld.d $a4, $t0, 32
+    ld.d $a5, $t0, 40
+    syscall 0
+    jr $ra
 .section .note.GNU-stack,"",@progbits

@@ -232,6 +232,8 @@ fn replace(
         interrupt_requested: false,
     });
     process.files.close_on_exec();
+    // Interval timers survive exec, but previous threads' CPU time is not carried over.
+    process.timers.rebase_cpu(process.cpu_time_ns());
     process.program.clone_from(&arguments.path);
     process.argv.clone_from(&arguments.argv);
     process.namespace.exec(process.pid);

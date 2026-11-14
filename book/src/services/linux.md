@@ -45,7 +45,7 @@ When there is no progress, the relevant Calls, events, thread exits, and ports a
 | `syscall/process/` | clone, exec, exit, wait, identity, thread, and futex |
 | `syscall/memory/` | mmap, munmap, mprotect, and related memory operations |
 | `syscall/signal.rs` | signal system calls |
-| `syscall/system/` | uname, clock, sleep, and random numbers |
+| `syscall/system/` | uname, clock, sleep, interval timers, and random numbers |
 
 The dispatcher returns `ENOSYS` for unmatched calls.
 Arguments, flags, and error conversions of recognized calls are checked by their handling modules.
@@ -270,3 +270,27 @@ The monotonic clock and sleep use native time capabilities, and realtime queries
 `clock_gettime`, `clock_getres`, `gettimeofday`, `nanosleep`, and `clock_nanosleep` handle time requests within their respective parameter ranges.
 `getrandom` obtains numbers through the random number device session.
 `uname` returns Linux compatibility identifiers, the Arona version, and the machine type.
+
+## Interval Timers
+
+`setitimer` and `getitimer` provide three process interval timers: `ITIMER_REAL` counts wall time and raises `SIGALRM`, `ITIMER_VIRTUAL` counts CPU time and raises `SIGVTALRM`, and `ITIMER_PROF` counts CPU time and raises `SIGPROF`.
+Each process owns at most one timer of each kind.
+An `it_value` of zero disarms the timer and clears `it_interval`.
+A nonzero `it_interval` reloads the timer after each expiry, and `getitimer` reports the remaining time until the next expiry.
+The timer output preserves the interval and truncates the remaining time to microseconds.
+`setitimer` also returns the previous value when requested, which includes the remaining time that has already elapsed.
+The replacement takes effect before the old value is written, matching Linux when the output pointer faults.
+An unknown `which`, a negative time value, or a microsecond field outside `0..1_000_000` returns `EINVAL`; a null `getitimer` output or an unreadable timer structure returns `EFAULT`.
+A null `setitimer` input is treated as an all-zero value.
+
+A real timer uses a one-shot native timer armed for the remaining wall time.
+When it expires, the service queues the signal through the normal process signal queue and rearms the native timer for the interval.
+A CPU timer accounts the process CPU time reported by the kernel and arms a native wake-up for the remaining CPU time while at least one thread is runnable.
+Blocked processes keep their remaining CPU time and do not consume it, and their wake-up timer is removed, so a CPU timer does not generate periodic wake-ups or poll.
+Wall-time and CPU-time expiry both use the same pending queue and signal delivery path as `kill`, including masking, handlers, and the default actions.
+The interval timers are process state rather than thread state: an exiting thread does not change them.
+A child created by `fork` starts without interval timers, while the timers of the calling process survive `execve`.
+
+Both CPU timers use the same accounting basis: the kernel records one execution-time counter per thread, and the process total sums its finished threads with the current time of its live threads, including the interval that is currently being dispatched.
+`ITIMER_VIRTUAL` therefore includes kernel time consumed by the process instead of counting user mode alone, and `ITIMER_PROF` uses the same value.
+The service records a CPU baseline when a timer is installed, reloaded, or replaced, so only time after installation counts.

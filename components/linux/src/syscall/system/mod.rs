@@ -4,6 +4,7 @@
 
 mod clock;
 mod random;
+mod timer;
 
 use super::{
     Operation, Outcome,
@@ -24,7 +25,7 @@ pub(super) enum Pending {
 }
 
 pub(super) fn dispatch<'a>(
-    process: &Process<'a>,
+    process: &mut Process<'a>,
     services: &Services<'_>,
     number: usize,
     args: [usize; 6],
@@ -36,6 +37,9 @@ pub(super) fn dispatch<'a>(
         | abi::GETTIMEOFDAY
         | abi::NANOSLEEP
         | abi::CLOCK_NANOSLEEP => clock::dispatch(process, services, number, args),
+        abi::GETITIMER | abi::SETITIMER => {
+            Outcome::Complete(timer::dispatch(process, number, args))
+        }
         abi::GETRANDOM => random::start(process, services, args),
         _ => return None,
     })

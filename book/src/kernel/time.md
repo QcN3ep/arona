@@ -60,3 +60,11 @@ IPC's `WaitMode::Until` also uses the same absolute time domain.
 Wall clock time is provided by the RTC interface of the device management service.
 The RTC gives Unix time for calendar time queries; wait deadlines use monotonic time counted from kernel timer initialization.
 The kernel log records monotonic timestamps after timer initialization; earlier records remain untimestamped.
+
+## CPU Time Accounting
+
+The scheduler timestamps each dispatch and adds the elapsed interval to the thread's `cpu_ns` when the thread suspends.
+A `CPU_TIME` query also adds the interval that is currently being dispatched, so a running thread reports live execution time instead of only time from its previous suspension.
+The counter covers both user mode and kernel time spent on behalf of the thread; the kernel does not maintain separate user and system counters.
+Process-wide totals therefore sum the finished threads' counters with each live thread's current counter.
+`wait4` reports the accumulated value in the user-time fields of `rusage`, and the Linux service uses the same total for `ITIMER_VIRTUAL` and `ITIMER_PROF`.
