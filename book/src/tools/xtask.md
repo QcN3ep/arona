@@ -233,6 +233,7 @@ A panic, missing boundary, missing completion message, or timeout makes the run 
 Use `--case system --artifacts RUN_DIRECTORY` to reuse the saved kernel, archive, and measurement settings.
 Use `--mode profile` to generate instruction hotspots from the same inputs.
 The report resolves the shared kernel mapping and supplied fixed-address ET_EXEC programs.
+Low-address kernel entries, such as LoongArch TLB refill, require matching ELF physical addresses and instruction bytes in guest memory.
 Supply component symbols explicitly with `--image bin/fs=PATH/TO/fs`, repeated for other archive entries as needed.
 Each supplied ELF must contain debug information and match the load segments of that archive entry.
 The collector compares all file-backed executable bytes with the active mappings.
