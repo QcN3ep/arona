@@ -395,5 +395,5 @@ fn execute(mut command: Command) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|package-init|package-linux-test|package-net-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH] [--net]\n       cargo xtask perf run <riscv64|loongarch64> --case calibration --mode count [--release] [--artifacts DIRECTORY] [--timeout SECONDS]\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
+    "usage: cargo xtask <build|run|package-init|package-linux-test|package-net-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH] [--net]\n       cargo xtask perf run <riscv64|loongarch64> --case calibration --mode count|profile [--release] [--artifacts DIRECTORY] [--timeout SECONDS]\n       cargo xtask perf report DIRECTORY\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
 }

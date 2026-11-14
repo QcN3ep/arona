@@ -39,11 +39,26 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     assert_eq!(isa::call(), 1);
     assert_eq!(isa::retry(), 75);
     assert_eq!(isa::interrupt(), 1);
-    assert_eq!(isa::retranslation(), 2);
+    assert_eq!(isa::retranslation(), 3);
+    assert_eq!(isa::source(), 12);
     uart()
         .write(format_args!("Perf calibration passed\n"))
         .unwrap();
     kernel::hardware::cpu().halt()
+}
+
+#[inline(never)]
+extern "C" fn source_body() -> usize {
+    let mut value = 0;
+    for _ in 0..core::hint::black_box(4) {
+        value = inline_step(value);
+    }
+    value
+}
+
+#[inline(always)]
+fn inline_step(value: usize) -> usize {
+    core::hint::black_box(value.wrapping_add(3))
 }
 
 fn uart() -> Uart {

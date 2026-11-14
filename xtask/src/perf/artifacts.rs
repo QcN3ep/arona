@@ -221,7 +221,7 @@ fn preserve_firmware(target: Target, root: &Path, directory: &Path) -> Result<()
     Ok(())
 }
 
-fn inspect(path: &Path) -> Result<Value, String> {
+pub(super) fn inspect(path: &Path) -> Result<Value, String> {
     let output = command_output(
         Command::new("llvm-readobj")
             .args([

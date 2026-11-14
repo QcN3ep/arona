@@ -3,6 +3,7 @@
 //! Collects and validates instruction counts from the architecture calibration image.
 
 mod artifacts;
+mod report;
 
 use super::{
     Target, build_std, cargo_command, execute, linux_test, qemu_command, target_directory,
@@ -22,7 +23,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const WINDOWS: [&str; 7] = [
+const WINDOWS: [&str; 8] = [
     "empty",
     "straight",
     "loop",
@@ -30,6 +31,7 @@ const WINDOWS: [&str; 7] = [
     "retry",
     "interrupt",
     "retranslation",
+    "source",
 ];
 const PASSED: &str = "Perf calibration passed";
 const FAILED: &str = "Perf calibration failed:";
@@ -38,6 +40,7 @@ struct Options {
     target: Target,
     release: Option<bool>,
     artifacts: Option<PathBuf>,
+    profile: bool,
     timeout: Duration,
 }
 
@@ -47,14 +50,12 @@ impl Options {
             arg.into_string()
                 .map_err(|_| "perf arguments must be valid UTF-8".to_owned())
         });
-        if arguments.next().transpose()?.as_deref() != Some("run") {
-            return Err(super::usage());
-        }
         let target = Target::parse(&arguments.next().transpose()?.ok_or_else(super::usage)?)?;
         let mut options = Self {
             target,
             release: None,
             artifacts: None,
+            profile: false,
             timeout: Duration::from_secs(30),
         };
         while let Some(argument) = arguments.next().transpose()? {
@@ -68,16 +69,16 @@ impl Options {
                             .ok_or("missing artifacts directory")?,
                     ));
                 }
-                "--case" | "--mode" => {
-                    let expected = if argument == "--case" {
-                        "calibration"
-                    } else {
-                        "count"
-                    };
-                    if arguments.next().transpose()?.as_deref() != Some(expected) {
-                        return Err(format!("{argument} currently supports only {expected}"));
+                "--case" => {
+                    if arguments.next().transpose()?.as_deref() != Some("calibration") {
+                        return Err("--case currently supports only calibration".to_owned());
                     }
                 }
+                "--mode" => match arguments.next().transpose()?.as_deref() {
+                    Some("count") => options.profile = false,
+                    Some("profile") => options.profile = true,
+                    _ => return Err("--mode supports count or profile".to_owned()),
+                },
                 "--timeout" => {
                     let seconds = arguments
                         .next()
@@ -101,10 +102,15 @@ struct Window {
     name: &'static str,
     start: u64,
     end: u64,
-    expected: u64,
+    expected: Option<u64>,
 }
 
-pub(super) fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
+pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), String> {
+    match arguments.next().as_deref().and_then(|value| value.to_str()) {
+        Some("report") => return report::run(arguments),
+        Some("run") => (),
+        _ => return Err(super::usage()),
+    }
     let options = Options::parse(arguments)?;
     let root = workspace_root()?;
     let stamp = SystemTime::now()
@@ -116,7 +122,7 @@ pub(super) fn run(arguments: impl Iterator<Item = OsString>) -> Result<(), Strin
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let mut metadata = json!({
         "schema": 2, "status": "preparing", "target": options.target.triple(),
-        "case": "calibration", "mode": "count", "plugin_api": 7,
+        "case": "calibration", "mode": if options.profile { "profile" } else { "count" }, "plugin_api": 7,
         "timeout_seconds": options.timeout.as_secs(),
     });
     save_metadata(&directory, &metadata)?;
@@ -153,7 +159,12 @@ fn collect(
         .arg("-kernel")
         .arg(saved.join("guest.elf"))
         .arg("-plugin")
-        .arg(plugin_options(&plugin, directory, &windows)?)
+        .arg(plugin_options(
+            &plugin,
+            directory,
+            &windows,
+            options.profile,
+        )?)
         .arg("-qmp")
         .arg(format!("unix:{}/qmp,server=on,wait=off", control.display()));
     metadata["release"] = manifest["release"].clone();
@@ -178,7 +189,12 @@ fn collect(
     metadata["status"] = json!("running");
     save_metadata(directory, metadata)?;
     measure(command, control, directory, options.timeout)?;
-    validate_counts(directory, &windows)
+    validate_counts(directory, &windows, options.profile)?;
+    metadata["counts_sha256"] = json!(artifacts::digest(&directory.join("counts.json"))?);
+    if options.profile {
+        report::generate(directory, metadata)?;
+    }
+    Ok(())
 }
 
 fn calibration_command(options: &Options, root: &Path) -> Command {
@@ -281,18 +297,28 @@ fn read_windows(executable: &Path) -> Result<Vec<Window>, String> {
     };
     WINDOWS
         .into_iter()
+        .filter(|name| *name != "source" || symbols.contains_key("__arona_perf_source_start"))
         .map(|name| {
             Ok(Window {
                 name,
                 start: symbol(name, "start")?,
                 end: symbol(name, "end")?,
-                expected: symbol(name, "expected")?,
+                expected: if name == "source" {
+                    None
+                } else {
+                    Some(symbol(name, "expected")?)
+                },
             })
         })
         .collect()
 }
 
-fn plugin_options(plugin: &Path, directory: &Path, windows: &[Window]) -> Result<String, String> {
+fn plugin_options(
+    plugin: &Path,
+    directory: &Path,
+    windows: &[Window],
+    profile: bool,
+) -> Result<String, String> {
     let escape = |path: &Path| {
         path.to_str()
             .map(|text| text.replace(',', ",,"))
@@ -311,6 +337,9 @@ fn plugin_options(plugin: &Path, directory: &Path, windows: &[Window]) -> Result
             window.name, window.start, window.end
         )
         .map_err(|error| error.to_string())?;
+    }
+    if profile {
+        options.push_str(",profile=static-calibration");
     }
     Ok(options)
 }
@@ -444,11 +473,12 @@ fn measure(
     }
 }
 
-fn validate_counts(directory: &Path, expected: &[Window]) -> Result<(), String> {
+fn validate_counts(directory: &Path, expected: &[Window], profile: bool) -> Result<(), String> {
     let bytes = fs::read(directory.join("counts.json"))
         .map_err(|error| format!("cannot read instruction counts: {error}; see qemu.log"))?;
     let counts: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    if counts["schema"] != 1
+    let schema = if profile { 2 } else { 1 };
+    if counts["schema"] != schema
         || counts["plugin_api"] != 7
         || counts["valid"] != true
         || counts["metric"] != "guest_instruction_dispatches"
@@ -462,17 +492,29 @@ fn validate_counts(directory: &Path, expected: &[Window]) -> Result<(), String> 
         return Err("unexpected measurement windows".to_owned());
     }
     for (window, expected) in windows.iter().zip(expected) {
+        let count = window["instructions"]
+            .as_u64()
+            .ok_or("invalid instruction count")?;
+        let matches = match expected.expected {
+            Some(expected) => count == expected,
+            None => count > 0,
+        };
         if window["name"] != expected.name
             || window["starts"] != 1
             || window["ends"] != 1
-            || window["instructions"].as_u64() != Some(expected.expected)
+            || !matches
         {
             return Err(format!(
                 "{}: expected {} instructions, got {}",
-                expected.name, expected.expected, window["instructions"]
+                expected.name,
+                expected.expected.map_or_else(
+                    || "a positive number of".to_owned(),
+                    |count| count.to_string()
+                ),
+                window["instructions"]
             ));
         }
-        println!("{}: {} instructions", expected.name, expected.expected);
+        println!("{}: {} instructions", expected.name, window["instructions"]);
     }
     Ok(())
 }
