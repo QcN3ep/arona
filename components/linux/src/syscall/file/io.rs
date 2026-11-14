@@ -96,6 +96,9 @@ pub(in crate::syscall) fn read<'a>(
             };
             return Outcome::Complete(result);
         }
+        OpenFileDescription::Block { .. } => {
+            return block_read(process, fd_raw, buffer, offset);
+        }
         OpenFileDescription::Regular { .. } => {}
         _ if offset.is_some() => return Outcome::Complete(Err(ESPIPE)),
         OpenFileDescription::Terminal { .. } => {
@@ -129,6 +132,85 @@ pub(in crate::syscall) fn read<'a>(
         }))
     })();
     outcome(operation)
+}
+
+fn block_read<'a>(
+    process: &Process<'a>,
+    raw: usize,
+    buffer: Buffer,
+    offset: Option<usize>,
+) -> Outcome<'a> {
+    let operation = (|| {
+        let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
+        if descriptor.description.flags() & 3 == 1 {
+            return Err(EBADF);
+        }
+        let OpenFileDescription::Block {
+            device,
+            offset: position,
+            ..
+        } = descriptor.description.as_ref()
+        else {
+            unreachable!()
+        };
+        let buffers = buffer.import(process)?;
+        let start = match offset {
+            Some(offset) => u64::try_from(offset).map_err(|_| EINVAL)?,
+            None => position.get() as u64,
+        };
+        let mut data = alloc::vec![0; buffers.length()];
+        let count = device.read(start, &mut data)?;
+        let count = buffers.scatter(process, &mut data[..count])?;
+        if offset.is_none() {
+            position.set(
+                usize::try_from(start)
+                    .map_err(|_| EOVERFLOW)?
+                    .checked_add(count)
+                    .ok_or(EOVERFLOW)?,
+            );
+        }
+        Ok(count)
+    })();
+    Outcome::Complete(operation)
+}
+
+fn block_write<'a>(
+    process: &Process<'a>,
+    raw: usize,
+    buffer: Buffer,
+    offset: Option<usize>,
+) -> Outcome<'a> {
+    let operation = (|| {
+        let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
+        if descriptor.description.flags() & 3 == 0 {
+            return Err(EBADF);
+        }
+        let OpenFileDescription::Block {
+            device,
+            offset: position,
+            ..
+        } = descriptor.description.as_ref()
+        else {
+            unreachable!()
+        };
+        let buffers = buffer.import(process)?;
+        let input = buffers.gather(process, buffers.length())?;
+        let start = match offset {
+            Some(offset) => u64::try_from(offset).map_err(|_| EINVAL)?,
+            None => position.get() as u64,
+        };
+        let count = device.write(start, &input)?;
+        if offset.is_none() {
+            position.set(
+                usize::try_from(start)
+                    .map_err(|_| EOVERFLOW)?
+                    .checked_add(count)
+                    .ok_or(EOVERFLOW)?,
+            );
+        }
+        Ok(count)
+    })();
+    Outcome::Complete(operation)
 }
 
 fn virtual_read<'a>(
@@ -207,6 +289,7 @@ pub(in crate::syscall) fn write<'a>(
         OpenFileDescription::Rtc { .. } => {
             return Outcome::Complete(super::rtc::write(process, fd_raw));
         }
+        OpenFileDescription::Block { .. } => return block_write(process, fd_raw, buffer, offset),
         OpenFileDescription::Eventfd { .. } => {
             return if offset.is_some() {
                 Outcome::Complete(Err(ESPIPE))
@@ -288,6 +371,11 @@ pub(in crate::syscall) fn truncate<'a>(
 }
 
 pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome<'a> {
+    if let Some(descriptor) = process.files.get(raw as i32 as usize)
+        && let OpenFileDescription::Block { device, .. } = descriptor.description.as_ref()
+    {
+        return Outcome::Complete(device.flush().map(|()| 0));
+    }
     let operation = (|| {
         let descriptor = process.files.get(fd(raw)?).ok_or(EBADF)?;
         if descriptor.description.path_only() {
@@ -305,6 +393,7 @@ pub(in crate::syscall) fn sync<'a>(process: &Process<'a>, raw: usize) -> Outcome
             | OpenFileDescription::Signalfd { .. }
             | OpenFileDescription::Virtual { .. }
             | OpenFileDescription::VirtualFile { .. }
+            | OpenFileDescription::Block { .. }
             | OpenFileDescription::Rtc { .. }
             | OpenFileDescription::VirtualDirectory { .. }
             | OpenFileDescription::MessageQueue { .. }
@@ -411,6 +500,19 @@ pub(in crate::syscall) fn seek<'a>(
         OpenFileDescription::MessageQueue { .. } => return Outcome::Complete(Err(ESPIPE)),
         _ => {}
     }
+    if let Some(descriptor) = process.files.get(fd_raw as i32 as usize)
+        && let OpenFileDescription::Block {
+            device,
+            offset: position,
+            ..
+        } = descriptor.description.as_ref()
+    {
+        let next = device
+            .seek(position.get() as u64, offset as i64, whence)
+            .and_then(|value| usize::try_from(value).map_err(|_| EINVAL))
+            .inspect(|&value| position.set(value));
+        return Outcome::Complete(next);
+    }
     let operation = (|| {
         let descriptor = process.files.get(fd(fd_raw)?).ok_or(EBADF)?;
         if descriptor.description.path_only() {
@@ -437,6 +539,7 @@ pub(in crate::syscall) fn seek<'a>(
             OpenFileDescription::Directory { .. } if whence as u32 == 2 => return Err(EINVAL),
             OpenFileDescription::Directory { .. } => {}
             OpenFileDescription::Regular { .. } => {}
+            OpenFileDescription::Block { .. } => unreachable!(),
         }
         if whence as u32 > 2 {
             return Err(EINVAL);

@@ -37,13 +37,14 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
     let mut startup = control.receive(WaitMode::Forever)?;
     let reply = startup.take_reply().ok_or(Error::InvalidRequest)?;
     let files = bootstrap(task, startup);
-    let (files, machine, services) = match files {
+    let (files, machine, mut services) = match files {
         Ok(files) => files,
         Err(error) => {
             reply_error(reply, error)?;
             return Err(error);
         }
     };
+    services.initialize(task)?;
     let shared = crate::process::Shared {
         namespace: Rc::new(crate::process::namespace::PidNamespace::new()),
         shm: Rc::new(RefCell::new(crate::shm::Table::new())),
@@ -107,8 +108,10 @@ fn bootstrap(
     task: &Handle<Task>,
     mut startup: ReceivedMessage,
 ) -> Result<(fs::Client<'_>, Machine, Services<'_>), Error> {
-    let flags = match startup.words() {
-        [flags] if flags & !31 == 0 => *flags,
+    let (flags, reserved) = match startup.words() {
+        [flags, reserved] if flags & !63 == 0 && *reserved <= u64::from(u32::MAX) + 1 => {
+            (*flags, *reserved)
+        }
         _ => return Err(Error::InvalidRequest),
     };
     if startup.tag != protocol::START || startup.handles().len() != 1 + flags.count_ones() as usize
@@ -182,6 +185,18 @@ fn bootstrap(
                 .downcast()
                 .map_err(|_| Error::InvalidRequest)?,
         )?);
+    }
+    if reserved != 0 {
+        services.reserved = Some((reserved - 1) as u32);
+    }
+    if flags & 32 != 0 {
+        services.devices = Some(
+            startup
+                .take_handle(0)
+                .unwrap()
+                .downcast()
+                .map_err(|_| Error::InvalidRequest)?,
+        );
     }
     Ok((files, machine, services))
 }

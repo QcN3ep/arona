@@ -208,6 +208,7 @@ impl<F: FileData> Inode<F> {
         let size = self.content.size();
         crate::Metadata {
             device,
+            rdev: 0,
             mount,
             inode: self.number,
             size,

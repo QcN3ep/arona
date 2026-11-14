@@ -91,6 +91,13 @@ The loopback-only stack does not track interface byte counters yet, so the `/pro
 No Unix-domain sockets are implemented, so `/proc/net/unix` contains only its header.
 Opening `/proc/net` itself returns `ENOTDIR`, and an unknown name below the virtual mounts returns `ENOENT`.
 
+Block devices not already mounted by init appear as `/dev/vda`, `/dev/vdb`, and so on.
+Each disk also exposes its MBR primary partitions as `/dev/vda1` through `/dev/vda4` when the corresponding entry is present.
+The compatibility service opens a real devmgr block session for every descriptor, and reads, writes, and seeks are relative to the selected disk or partition range.
+Byte I/O is block-aligned inside the service and rejects offsets outside the session range with `EINVAL`.
+`fstat` reports `S_IFBLK`, and `ioctl` implements `BLKGETSIZE64`, `BLKGETSIZE`, `BLKSSZGET`, and `BLKROGET`.
+Missing disks and partitions return `ENOENT` or `ENXIO`.
+
 | Operation group | Implemented calls |
 |---|---|
 | Open and descriptors | `openat`, `close`, `dup`, `dup3`, `fcntl` |

@@ -83,6 +83,7 @@ fn main() -> Result<usize, InitError> {
     mounts.mount_tmpfs(b"/tmp", 0, service::deadline()?)?;
     mounts.mount_hugepages(b"/dev/hugepages", service::deadline()?)?;
     let (devmgr, device_control) = service::start_devmgr(&loader, &files, &devices)?;
+    let mut reserved_disk = None;
     let persistent_log = if let Some(id) = devmgr::device::next(
         &device_control,
         devmgr::device::DriverKind::Block,
@@ -92,6 +93,7 @@ fn main() -> Result<usize, InitError> {
         let session = devmgr::block::Session::open(process::task(), &device_control, id)?;
         let size = session.info()?.capacity;
         mounts.mount(b"/var", session, 0, size, service::deadline()?)?;
+        reserved_disk = Some(id);
         Some(service::persistent_log_file(&files)?)
     } else {
         None
@@ -114,6 +116,7 @@ fn main() -> Result<usize, InitError> {
         &device_control,
         &net_control,
         &kernel_log,
+        reserved_disk,
     )?;
     if mounted {
         logger::log::info!(target: "init", "Mounted block device at /var");

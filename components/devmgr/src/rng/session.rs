@@ -48,7 +48,7 @@ impl<'a> Session<'a> {
             CHANNEL_RIGHTS | Rights::TRANSFER,
             CHANNEL_RIGHTS | Rights::TRANSFER,
         )?;
-        let mut request = Message::new(OPEN, &[device.into()])?;
+        let mut request = Message::new(OPEN, &[device.into(), 0])?;
         request
             .push(Transfer {
                 handle: server.into(),

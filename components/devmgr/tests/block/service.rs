@@ -37,10 +37,9 @@ pub fn run(devices: &Handle<DeviceSet>, id: u32, group: u32, configuration: Conf
         .unwrap()
         .wait(WaitMode::Until(deadline().unwrap()))
         .unwrap();
-    assert!(matches!(
-        Session::open(process::task(), &control, id),
-        Err(Error::Busy)
-    ));
+    let concurrent = Session::open(process::task(), &control, id).unwrap();
+    assert_eq!(concurrent.info().unwrap(), session.info().unwrap());
+    drop(concurrent);
     let info = exercise(&session);
     let output = super::frames();
     drop(session);

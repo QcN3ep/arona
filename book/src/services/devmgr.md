@@ -30,8 +30,10 @@ The manager finds the instance and forwards the request to the corresponding wor
 The driver checks the session permission and device state, replies with the open result, and then handles requests on the session channel.
 
 The client first obtains a device identity by enumerating by type, then requests to open the corresponding instance.
+A block open also carries a partition number: zero selects the whole disk, and one through four select an MBR primary partition.
 An asynchronous open stores the result in a Call; for example, init keeps observing service exits while waiting for a console session.
 Each session cleans up pending requests and device access state when it closes.
+Several clients can hold sessions on the same block device at the same time, including the whole disk and individual partitions.
 
 ## UART Registers and Configuration
 
@@ -83,6 +85,8 @@ Queue page frames and data buffers obtain bus addresses through the runtime's DM
 The driver holds the running queues and buffers and releases the DMA resources after the device has stopped and been reset.
 Block and RNG currently use queue 0.
 
+The block driver reads the first sector once and parses the MBR primary partition table.
+A session reports its accessible capacity, byte range, and block size, so a partition session sees offsets relative to the partition while the driver checks them against the whole disk.
 The block device transfers at most 4096 bytes at a time and maintains at most 16 requests.
 The client submits reads and writes with a request identity, queries or waits for completion, and then ACKs to release the corresponding result.
 The cancel interface returns a result depending on whether the request has already been handed to the device.

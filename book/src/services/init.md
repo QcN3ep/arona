@@ -30,6 +30,7 @@ The archive page frame is then handed to the file service, and init reads the re
 
 fs starts first because it establishes file access capability directly from the archive; init then mounts a tmpfs at `/tmp` so temporary files do not depend on persistent storage. devmgr next provides device sessions, letting persistent storage and serial output join the system.
 After the `/var` mount succeeds, init creates the log directory, opens or creates `/var/log/system.log`, and hands the file session to logger.
+The mounted disk identity is also handed to linux, which skips it and exposes the remaining block devices under `/dev`.
 Only after each service replies with its initialization result does init continue to use the interfaces it provides.
 
 ## Loading Native Services

@@ -94,5 +94,6 @@ If the device management service provides block devices, init currently selects 
 The file service detects ext4 or FAT32 at the start of the device.
 
 After a successful mount, init creates or opens `/var/log/system.log` and hands it to the log service.
+The mounted disk remains reserved; the Linux compatibility service exposes the other block devices as `/dev/vda`, `/dev/vdb`, and their MBR primary partitions.
 The default `xtask run` uses the archive root file system and UART log output.
 Mounting a writable ext4 or FAT32 disk makes `/var` persistent and enables file logging.

@@ -13,6 +13,12 @@ pub(super) fn append(
     target_directory: &Path,
     bytes: &mut Vec<u8>,
 ) -> Result<(), String> {
+    append_entry(
+        bytes,
+        "bin/linux-block",
+        0o100755,
+        &block_guest(options, root, target_directory)?,
+    )?;
     let (executable, compact) = build_guest(options, root, target_directory)?;
     let image = fs::read(executable).map_err(|error| error.to_string())?;
     append_entry(bytes, "bin/linux-test", 0o100755, &image)?;
@@ -543,4 +549,20 @@ fn program_header(
     output[32..40].copy_from_slice(&(file_size as u64).to_le_bytes());
     output[40..48].copy_from_slice(&(file_size as u64).to_le_bytes());
     output[48..56].copy_from_slice(&(alignment as u64).to_le_bytes());
+}
+
+fn block_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<u8>, String> {
+    let isa = match options.target {
+        Target::Riscv64 => "riscv64",
+        Target::LoongArch64 => "loongarch64",
+    };
+    compile_guest(
+        options,
+        root,
+        target,
+        "syscall/file/block",
+        "linux-block",
+        &["test.c"],
+        isa,
+    )
 }

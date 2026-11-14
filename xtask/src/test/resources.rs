@@ -87,6 +87,9 @@ impl Resources {
                 resources.drive("disk", &directory.join("volume.ext4"), "");
                 resources.device("virtio-rng-pci,disable-legacy=on");
                 resources.inputs = if suite == "linux" {
+                    let partitioned = directory.join("partitions.raw");
+                    fs::write(&partitioned, partition_disk()).map_err(|error| error.to_string())?;
+                    resources.drive("partitions", &partitioned, "");
                     linux_inputs()
                 } else {
                     vec![(
@@ -375,4 +378,19 @@ fn linux_inputs() -> Vec<(Vec<u8>, Vec<u8>)> {
         .chain(inputs)
         .map(|(marker, input)| (marker.to_vec(), input.to_vec()))
         .collect()
+}
+
+fn partition_disk() -> Vec<u8> {
+    let mut image = vec![0; 4 * 1024 * 1024];
+    image[..9].copy_from_slice(b"ARONA-MBR");
+    for (index, (start, count)) in [(2048u32, 2048u32), (4096, 4096)].into_iter().enumerate() {
+        let offset = 446 + index * 16;
+        image[offset + 4] = 0x83;
+        image[offset + 8..offset + 12].copy_from_slice(&start.to_le_bytes());
+        image[offset + 12..offset + 16].copy_from_slice(&count.to_le_bytes());
+    }
+    image[510..512].copy_from_slice(&[0x55, 0xaa]);
+    image[0x100000..0x100008].copy_from_slice(b"ARONA-P1");
+    image[0x200000..0x200008].copy_from_slice(b"ARONA-P2");
+    image
 }

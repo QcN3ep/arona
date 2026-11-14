@@ -115,6 +115,9 @@ fn descriptor<'a>(
         OpenFileDescription::Eventfd { .. }
         | OpenFileDescription::Timerfd { .. }
         | OpenFileDescription::Signalfd { .. } => Source::Ready(synthetic(0o100600, 0x10)),
+        OpenFileDescription::Block { device, .. } => {
+            Source::Ready(synthetic(0o060600, device.inode()))
+        }
         OpenFileDescription::Rtc { .. } => Source::Ready(synthetic(0o020600, 0x11)),
         OpenFileDescription::VirtualDirectory { inode, .. } => {
             Source::Ready(synthetic(0o041777, *inode))

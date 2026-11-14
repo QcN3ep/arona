@@ -118,6 +118,15 @@ The runner starts the peer and assigns a separate port and QMP socket to each dr
 The driver scenario checks queue cycling, TX pressure, short-frame padding, session I/O, cancellation, session closure, and device reset before DMA revocation.
 The network service scenario checks loopback sockets without an Ethernet device.
 
+## Linux Block Device Tests
+
+The Linux test archive includes `/bin/linux-block`, which verifies the block device interface from a Linux guest.
+It expects a second disk with an MBR table and two primary partitions; the first disk remains mounted at `/var`.
+
+`cargo xtask test riscv64 --release --filter interrupt::linux` runs this scenario with a fresh ext4 root disk and an MBR disk.
+The same case also supplies the terminal input used by the Linux tests.
+The block checks cover partition capacities, metadata, byte I/O, sector preservation, and partition boundaries.
+
 ## Boot Logs
 
 In a normal boot log, the architecture entry point first prints CPU and DTB information, and the kernel then prints the state of memory, Trap, the interrupt controller, timers, and the scheduler in initialization order.

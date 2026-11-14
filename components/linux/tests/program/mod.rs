@@ -41,7 +41,7 @@ fn main() {
     let net = service::read(&archive, "/bin/net");
     let (_devices, device_service) = service::devices(&devmgr, machine, &devices);
     let (_filesystem, mounts, files) = service::filesystem(archive, &fs, machine);
-    service::mount(&mounts, &device_service);
+    let reserved = service::mount(&mounts, &device_service);
     mounts
         .mount_tmpfs(b"/tmp", 64 * 1024, service::deadline())
         .unwrap();
@@ -50,7 +50,7 @@ fn main() {
         .unwrap();
     mount_target_bounds(&mounts, &files);
     let (_linux, channel) = service::launch(&native, machine, linux::service::REQUIRED_RIGHTS);
-    let mut services = service::resources(&device_service, &kernel_log);
+    let mut services = service::resources(&device_service, &kernel_log, Some(reserved));
     let (_net, net_channel) = service::launch(
         &net,
         machine,
@@ -66,7 +66,7 @@ fn main() {
         service::deadline(),
     )
     .unwrap();
-    services.entropy = service::resources(&device_service, &kernel_log).entropy;
+    services.entropy = service::resources(&device_service, &kernel_log, Some(reserved)).entropy;
     services.net = Some(net.connect().unwrap());
     services.mounts = Some(mounts.mount_control(service::deadline()).unwrap());
     let linux = Control::start_with_services(
@@ -98,6 +98,7 @@ fn main() {
     tmpfs(&files, &mounts);
     fs_misc(&linux, &files, &output);
     shared_memory(&linux, &output);
+    block(&linux, &device_service, &output);
     terminal(&linux, &output, &device_service, console);
     mounts.unmount(b"/var", service::deadline()).unwrap();
     let output = output();
@@ -1081,4 +1082,62 @@ fn terminal(
             signal: 0
         }
     );
+}
+
+fn block(
+    linux: &Control<'_>,
+    devices: &Handle<runtime::Channel>,
+    output: &impl Fn() -> devmgr::uart::Session,
+) {
+    let mut count = 0;
+    let mut after = 0;
+    while let Some(id) = devmgr::device::next(
+        devices,
+        devmgr::device::DriverKind::Block,
+        after,
+        service::deadline(),
+    )
+    .unwrap()
+    {
+        count += 1;
+        after = id;
+    }
+    if count < 2 {
+        output()
+            .write_all(b"Skipping Linux block tests: need a partitioned test disk\n")
+            .unwrap();
+        return;
+    }
+    let status = linux
+        .start_run(
+            Program {
+                path: b"/bin/linux-block",
+                arguments: &[b"/bin/linux-block"],
+                environment: &[],
+                mount: false,
+            },
+            output(),
+        )
+        .unwrap()
+        .wait(WaitMode::Forever)
+        .unwrap();
+    if status
+        != (ExitStatus {
+            code: 42,
+            signal: 0,
+        })
+    {
+        output()
+            .write_all(alloc::format!("Linux scenario Block: {status:?}\n").as_bytes())
+            .unwrap();
+        output().flush().unwrap();
+    }
+    assert_eq!(
+        status,
+        ExitStatus {
+            code: 42,
+            signal: 0
+        }
+    );
+    output().write_all(b"Linux block tests passed\n").unwrap();
 }

@@ -487,6 +487,7 @@ impl Volume {
         };
         Ok(Metadata {
             device: self.device,
+            rdev: 0,
             mount: self.mount,
             inode,
             size,

@@ -105,6 +105,7 @@ impl Inode {
         crate::Metadata {
             device,
             mount,
+            rdev: 0,
             inode: u64::from(self.number),
             size: self.size,
             blocks: self.sectors,

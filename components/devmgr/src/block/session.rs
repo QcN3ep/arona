@@ -11,7 +11,8 @@ use super::{CancelResult, Completion, Info, Status};
 use crate::{
     Error,
     device::{
-        BUSY, CHANNEL_RIGHTS, INVALID_REQUEST, OPEN, Pending, SUCCESS, UNAVAILABLE, UNSUPPORTED,
+        BUSY, CHANNEL_RIGHTS, INVALID_REQUEST, NOT_FOUND, OPEN, Pending, SUCCESS, UNAVAILABLE,
+        UNSUPPORTED,
     },
 };
 
@@ -22,7 +23,6 @@ pub(super) const FLUSH: u64 = 5;
 pub(super) const CANCEL: u64 = 6;
 pub(super) const ACK: u64 = 7;
 const READ_ONLY: u64 = 7;
-const NOT_FOUND: u64 = 8;
 const DEVICE_FAULT: u64 = 9;
 
 pub struct Session {
@@ -49,9 +49,19 @@ impl Session {
         service: &Handle<Channel>,
         device: u32,
     ) -> Result<Self, Error> {
+        Self::open_partition(task, service, device, 0)
+    }
+
+    /// Opens the whole disk (`partition == 0`) or one MBR primary partition.
+    pub fn open_partition(
+        task: &Handle<Task>,
+        service: &Handle<Channel>,
+        device: u32,
+        partition: u32,
+    ) -> Result<Self, Error> {
         let rights = CHANNEL_RIGHTS.union(Rights::TRANSFER);
         let (channel, server) = task.channel(rights, rights)?;
-        let mut request = Message::new(OPEN, &[device.into()])?;
+        let mut request = Message::new(OPEN, &[device.into(), partition.into()])?;
         request
             .push(Transfer {
                 handle: server.into(),
@@ -67,7 +77,16 @@ impl Session {
         service: &Handle<Channel>,
         device: u32,
     ) -> Result<Pending<Self, Handle<Channel>>, Error> {
-        let (call, channel) = crate::device::open_call(task, service, device)?;
+        Self::start_open_partition(task, service, device, 0)
+    }
+
+    pub fn start_open_partition(
+        task: &Handle<Task>,
+        service: &Handle<Channel>,
+        device: u32,
+        partition: u32,
+    ) -> Result<Pending<Self, Handle<Channel>>, Error> {
+        let (call, channel) = crate::device::open_call_partition(task, service, device, partition)?;
         Ok(Pending::new(call, channel, |channel, response| {
             Ok(Self {
                 channel: crate::device::complete_open(channel, response)?,
@@ -280,7 +299,15 @@ fn empty(response: ReceivedMessage) -> Result<(), Error> {
 }
 
 fn info(response: ReceivedMessage) -> Result<Info, Error> {
-    let [capacity, block_size, flags, max_transfer, max_requests] = *response.words() else {
+    let [
+        capacity,
+        origin,
+        block_size,
+        flags,
+        max_transfer,
+        max_requests,
+    ] = *response.words()
+    else {
         return Err(runtime::Error::Protocol.into());
     };
     if flags & !3 != 0
@@ -288,6 +315,8 @@ fn info(response: ReceivedMessage) -> Result<Info, Error> {
         || !(512..=4096).contains(&block_size)
         || capacity == 0
         || !capacity.is_multiple_of(block_size)
+        || !origin.is_multiple_of(block_size)
+        || origin.checked_add(capacity).is_none()
         || max_transfer < block_size
         || max_transfer > super::MAX_TRANSFER as u64
         || max_requests == 0
@@ -297,6 +326,7 @@ fn info(response: ReceivedMessage) -> Result<Info, Error> {
     }
     Ok(Info {
         capacity,
+        origin,
         block_size: block_size as u32,
         read_only: flags & 1 != 0,
         flush: flags & 2 != 0,

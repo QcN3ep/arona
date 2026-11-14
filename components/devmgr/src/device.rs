@@ -19,9 +19,18 @@ pub(crate) fn open_call(
     service: &Handle<Channel>,
     device: u32,
 ) -> Result<(Handle<Call>, Handle<Channel>), Error> {
+    open_call_partition(task, service, device, 0)
+}
+
+pub(crate) fn open_call_partition(
+    task: &Handle<Task>,
+    service: &Handle<Channel>,
+    device: u32,
+    partition: u32,
+) -> Result<(Handle<Call>, Handle<Channel>), Error> {
     let rights = CHANNEL_RIGHTS | Rights::TRANSFER;
     let (channel, server) = task.channel(rights, rights)?;
-    let mut request = Message::new(OPEN, &[device.into()])?;
+    let mut request = Message::new(OPEN, &[device.into(), partition.into()])?;
     request
         .push(Transfer {
             handle: server.into(),
@@ -43,6 +52,7 @@ pub(crate) fn complete_open(
         INVALID_REQUEST => Err(Error::InvalidRequest),
         BUSY => Err(Error::Busy),
         UNSUPPORTED => Err(Error::Unsupported),
+        NOT_FOUND => Err(Error::NotFound),
         INVALID_CONFIGURATION => Err(Error::InvalidConfiguration),
         CLOCK_UNAVAILABLE => Err(Error::ClockUnavailable),
         UNAVAILABLE => Err(Error::Unavailable),
@@ -154,9 +164,11 @@ pub(crate) const INVALID_CONFIGURATION: u64 = 4;
 pub(crate) const CLOCK_UNAVAILABLE: u64 = 5;
 pub(crate) const UNAVAILABLE: u64 = 6;
 pub(crate) const DENIED: u64 = 7;
+pub(crate) const NOT_FOUND: u64 = 8;
 
 pub struct OpenRequest {
     pub device: u32,
+    pub partition: u32,
     pub(crate) channel: Handle<Channel>,
     pub(crate) reply: Handle<Reply>,
 }
@@ -176,9 +188,13 @@ impl OpenRequest {
         if !reply.info()?.rights.contains(Rights::WRITE) {
             return Ok(None);
         }
-        let device = match (request.tag, request.words()) {
-            (OPEN, [id]) if *id <= u64::from(u32::MAX) && request.handles().len() == 1 => {
-                *id as u32
+        let (device, partition) = match (request.tag, request.words()) {
+            (OPEN, [id, partition])
+                if *id <= u64::from(u32::MAX)
+                    && *partition <= u64::from(u32::MAX)
+                    && request.handles().len() == 1 =>
+            {
+                (*id as u32, *partition as u32)
             }
             _ => {
                 reject(&reply, INVALID_REQUEST)?;
@@ -195,6 +211,7 @@ impl OpenRequest {
         }
         Ok(Some(Self {
             device,
+            partition,
             channel,
             reply,
         }))
@@ -206,8 +223,10 @@ impl OpenRequest {
             match error {
                 Error::Busy | Error::Runtime(runtime::Error::Kernel(KernelError::Busy)) => BUSY,
                 Error::Unsupported => UNSUPPORTED,
+                Error::InvalidRequest => INVALID_REQUEST,
                 Error::InvalidConfiguration => INVALID_CONFIGURATION,
                 Error::ClockUnavailable => CLOCK_UNAVAILABLE,
+                Error::NotFound => NOT_FOUND,
                 _ => UNAVAILABLE,
             },
         )
@@ -217,7 +236,7 @@ impl OpenRequest {
         if !self.channel.info()?.rights.contains(Rights::TRANSFER) {
             return reject(&self.reply, INVALID_REQUEST);
         }
-        let mut message = Message::new(OPEN, &[u64::from(self.device)])?;
+        let mut message = Message::new(OPEN, &[u64::from(self.device), u64::from(self.partition)])?;
         for (handle, rights) in [
             (self.reply.into(), Rights::WRITE),
             (self.channel.into(), CHANNEL_RIGHTS),

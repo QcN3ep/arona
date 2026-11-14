@@ -47,6 +47,10 @@ impl Disk {
         })
     }
 
+    pub fn block_size(&self) -> u64 {
+        self.block_size
+    }
+
     pub fn capacity(&self) -> u64 {
         self.capacity
     }

@@ -98,7 +98,7 @@ impl Session {
             CHANNEL_RIGHTS.union(Rights::TRANSFER),
             CHANNEL_RIGHTS.union(Rights::TRANSFER),
         )?;
-        let mut request = Message::new(OPEN, &[u64::from(device)])?;
+        let mut request = Message::new(OPEN, &[u64::from(device), 0])?;
         request
             .push(Transfer {
                 handle: server.into(),

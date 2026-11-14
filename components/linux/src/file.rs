@@ -2,6 +2,7 @@
 
 //! File descriptors and shared open state.
 
+pub(crate) mod block;
 pub(crate) mod pipe;
 pub(crate) mod socket;
 pub(crate) mod socketpair;
@@ -65,6 +66,11 @@ pub(crate) enum OpenFileDescription<'a> {
         busy: Cell<bool>,
         /// Name used to open the file, kept as the backing path for mappings.
         path: Option<Rc<Vec<u8>>>,
+    },
+    Block {
+        device: Rc<block::BlockDevice>,
+        flags: Cell<u32>,
+        offset: Cell<usize>,
     },
     Signalfd {
         mask: Cell<u64>,
@@ -252,6 +258,17 @@ impl<'a> Descriptor<'a> {
             close_on_exec,
         }
     }
+    pub fn block(device: Rc<block::BlockDevice>, flags: u32, close_on_exec: bool) -> Self {
+        Self {
+            description: Rc::new(OpenFileDescription::Block {
+                device,
+                flags: Cell::new(flags),
+                offset: Cell::new(0),
+            }),
+            close_on_exec,
+        }
+    }
+
     pub fn regular(
         file: fs::File<'a>,
         flags: u32,
@@ -332,6 +349,7 @@ impl<'a> OpenFileDescription<'a> {
             | Self::Terminal { flags, .. }
             | Self::Directory { flags, .. }
             | Self::Regular { flags, .. }
+            | Self::Block { flags, .. }
             | Self::Eventfd { flags, .. }
             | Self::Timerfd { flags, .. }
             | Self::Signalfd { flags, .. }
@@ -351,6 +369,7 @@ impl<'a> OpenFileDescription<'a> {
         | Self::Terminal { flags, .. }
         | Self::Directory { flags, .. }
         | Self::Regular { flags, .. }
+        | Self::Block { flags, .. }
         | Self::Eventfd { flags, .. }
         | Self::Timerfd { flags, .. }
         | Self::Signalfd { flags, .. }

@@ -461,6 +461,9 @@ pub(super) fn ioctl(
             .map_err(|_| EFAULT)?;
         return Ok(0);
     }
+    if let OpenFileDescription::Block { device, .. } = descriptor.description.as_ref() {
+        return crate::file::block::ioctl(device, command, address, process);
+    }
     let OpenFileDescription::Terminal { terminal, .. } = descriptor.description.as_ref() else {
         return Err(ENOTTY);
     };

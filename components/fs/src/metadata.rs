@@ -35,6 +35,7 @@ pub struct Timestamp {
 pub struct Metadata {
     pub device: u64,
     pub mount: u64,
+    pub rdev: u64,
     pub inode: u64,
     pub size: u64,
     pub blocks: u64,
@@ -49,7 +50,7 @@ pub struct Metadata {
 }
 
 impl Metadata {
-    pub const SIZE: usize = 104;
+    pub const SIZE: usize = 112;
 
     pub fn encode(self) -> [u8; Self::SIZE] {
         let mut bytes = [0; Self::SIZE];
@@ -80,7 +81,8 @@ impl Metadata {
             chunk[8..].copy_from_slice(&time.nanoseconds.to_le_bytes());
         }
         bytes[88..96].copy_from_slice(&self.device.to_le_bytes());
-        bytes[96..].copy_from_slice(&self.mount.to_le_bytes());
+        bytes[96..104].copy_from_slice(&self.mount.to_le_bytes());
+        bytes[104..].copy_from_slice(&self.rdev.to_le_bytes());
         bytes
     }
 
@@ -96,6 +98,7 @@ impl Metadata {
         let info = Self {
             device: word(88),
             mount: word(96),
+            rdev: word(104),
             inode: word(0),
             size: word(8),
             blocks: word(16),

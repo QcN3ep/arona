@@ -173,9 +173,9 @@ fn readiness(description: &OpenFileDescription<'_>, process: &Process<'_>, index
             let ready = end.readiness();
             ready | if ready & 1 != 0 { 0x40 } else { 0 } | if ready & 4 != 0 { 0x100 } else { 0 }
         }
-        OpenFileDescription::Regular { .. } | OpenFileDescription::Directory { .. } => {
-            INPUT | OUTPUT
-        }
+        OpenFileDescription::Block { .. }
+        | OpenFileDescription::Regular { .. }
+        | OpenFileDescription::Directory { .. } => INPUT | OUTPUT,
         OpenFileDescription::VirtualFile { .. }
         | OpenFileDescription::VirtualDirectory { .. }
         | OpenFileDescription::MqueueFile { .. } => INPUT,

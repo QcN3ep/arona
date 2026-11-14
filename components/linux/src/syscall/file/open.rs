@@ -129,6 +129,13 @@ pub(in crate::syscall) fn openat<'a>(
             }
             _ => {}
         }
+        if let Some(result) = crate::file::block::open(process, services, &name, flags) {
+            return process
+                .files
+                .insert(result?, 0)
+                .ok_or(EMFILE)
+                .map(|fd| Outcome::Complete(Ok(fd)));
+        }
         let lookup = super::path::Lookup::from_name(process, directory, name)?;
         let path = Rc::new(lookup.name.clone());
         let request = files

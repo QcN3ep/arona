@@ -16,7 +16,11 @@ use crate::{
 
 struct Connection {
     channel: Handle<Channel>,
-    acknowledgements: Vec<(u64, Handle<Reply>)>,
+    slot: u32,
+    origin: u64,
+    length: u64,
+    acknowledgements: Vec<(u32, Handle<Reply>)>,
+    active: Vec<u32>,
 }
 
 enum Response {
@@ -42,78 +46,110 @@ fn serve(
     control: &Handle<Channel>,
     device: u32,
 ) -> Result<(), Error> {
-    let mut connection: Option<Connection> = None;
+    let mut connections: Vec<Connection> = Vec::new();
+    let mut retired: Vec<u64> = Vec::new();
+    let mut next_slot = 0u32;
     loop {
         block.poll()?;
-        if let Some(client) = &mut connection {
+        for client in &mut connections {
             complete(block, client)?;
-        } else {
-            block.discard();
         }
+        cleanup(block, &mut retired);
         let mut again = false;
-        match control.receive(WaitMode::Poll) {
-            Ok(request) => {
-                again = true;
-                if let Some(request) = OpenRequest::decode(request)? {
-                    if connection.as_ref().is_some_and(|client| {
-                        ipc::wait_many(
-                            &[WaitItem::new(&client.channel, ipc::PEER_CLOSED)],
-                            WaitMode::Poll,
-                        )
-                        .is_ok()
-                    }) {
-                        connection = None;
-                        block.discard();
+        loop {
+            let request = match control.receive(WaitMode::Poll) {
+                Ok(request) => request,
+                Err(runtime::Error::Kernel(KernelError::WouldBlock)) => break,
+                Err(runtime::Error::Kernel(KernelError::EndOfStream | KernelError::PeerClosed)) => {
+                    return Ok(());
+                }
+                Err(error) => return Err(error.into()),
+            };
+            again = true;
+            let Some(request) = OpenRequest::decode(request)? else {
+                continue;
+            };
+            if request.device != device {
+                request.reject(Error::Unsupported)?;
+                continue;
+            }
+            let (origin, length) = if request.partition == 0 {
+                (0, block.info().capacity)
+            } else {
+                match block
+                    .partitions()
+                    .get(request.partition as usize - 1)
+                    .copied()
+                    .flatten()
+                {
+                    Some(partition) if request.partition <= 4 => {
+                        (partition.start, partition.length)
                     }
-                    if request.device != device {
-                        request.reject(Error::Unsupported)?;
-                    } else if connection.is_some() || !block.idle() {
-                        request.reject(Error::Busy)?;
-                    } else if deliver(&request.reply, &mut Message::new(SUCCESS, &[])?)? {
-                        connection = Some(Connection {
-                            channel: request.channel,
-                            acknowledgements: Vec::new(),
-                        });
+                    _ => {
+                        let error = if request.partition <= 4 {
+                            Error::NotFound
+                        } else {
+                            Error::InvalidRequest
+                        };
+                        request.reject(error)?;
+                        continue;
                     }
                 }
+            };
+            if next_slot == u32::MAX {
+                request.reject(Error::Busy)?;
+                continue;
             }
-            Err(runtime::Error::Kernel(KernelError::WouldBlock)) => {}
-            Err(runtime::Error::Kernel(KernelError::EndOfStream)) => return Ok(()),
-            Err(error) => return Err(error.into()),
+            if deliver(&request.reply, &mut Message::new(SUCCESS, &[])?)? {
+                connections.push(Connection {
+                    channel: request.channel,
+                    slot: next_slot,
+                    origin,
+                    length,
+                    acknowledgements: Vec::new(),
+                    active: Vec::new(),
+                });
+                next_slot += 1;
+            }
         }
-        if let Some(client) = &mut connection {
+        let mut index = 0;
+        while index < connections.len() {
+            let mut closed = false;
             for _ in 0..block.info().max_requests {
-                match client.channel.receive(WaitMode::Poll) {
+                match connections[index].channel.receive(WaitMode::Poll) {
                     Ok(request) => {
-                        handle(block, client, request)?;
+                        handle(block, &mut connections[index], request)?;
                         again = true;
                     }
                     Err(runtime::Error::Kernel(KernelError::WouldBlock)) => break,
-                    Err(runtime::Error::Kernel(KernelError::EndOfStream)) => {
-                        connection = None;
-                        block.discard();
+                    Err(runtime::Error::Kernel(
+                        KernelError::EndOfStream | KernelError::PeerClosed,
+                    )) => {
+                        closed = true;
                         break;
                     }
                     Err(error) => return Err(error.into()),
                 }
             }
+            if closed {
+                retire(block, connections.swap_remove(index), &mut retired);
+                continue;
+            }
+            index += 1;
         }
         block.submit()?;
         if again {
             continue;
         }
-        let mut items = [
-            WaitItem::new(event, 1),
-            WaitItem::new(control, ipc::READABLE | ipc::PEER_CLOSED),
-            WaitItem::new(event, 1),
-        ];
-        let count = if let Some(client) = &connection {
-            items[2] = WaitItem::new(&client.channel, ipc::READABLE | ipc::PEER_CLOSED);
-            3
-        } else {
-            2
-        };
-        let ready = ipc::wait_many(&items[..count], WaitMode::Forever)?;
+        let mut items = Vec::with_capacity(connections.len() + 2);
+        items.push(WaitItem::new(event, 1));
+        items.push(WaitItem::new(control, ipc::READABLE | ipc::PEER_CLOSED));
+        items.extend(
+            connections
+                .iter()
+                .map(|client| WaitItem::new(&client.channel, ipc::READABLE | ipc::PEER_CLOSED)),
+        );
+        let ready = ipc::wait_many(&items, WaitMode::Forever)?;
         if ready.index == 0 {
             block.acknowledge_interrupt()?;
         }
@@ -128,19 +164,39 @@ fn handle(
     let Some(reply) = request.take_reply() else {
         return Ok(());
     };
+    let tag = request.tag;
+    let id = match request.words() {
+        [id, ..] if *id <= u64::from(u32::MAX) => Some(*id as u32),
+        [] => None,
+        _ => {
+            reject(&reply, Error::InvalidRequest)?;
+            return Ok(());
+        }
+    };
     let result = dispatch(block, connection, &mut request, &reply);
     match result {
         Ok(Response::Reply(words)) => {
+            if matches!(tag, session::READ | session::WRITE | session::FLUSH)
+                && let Some(id) = id
+            {
+                connection.active.push(id);
+            }
             deliver(&reply, &mut Message::new(SUCCESS, &words)?)?;
         }
         Ok(Response::Pending(id)) => {
             if connection.acknowledgements.len() >= block.info().max_requests {
                 reject(&reply, Error::Busy)?;
             } else {
-                connection.acknowledgements.push((id, reply));
+                connection.acknowledgements.push((id as u32, reply));
             }
         }
-        Ok(Response::Delivered) => {}
+        Ok(Response::Delivered) => {
+            if tag == session::ACK
+                && let Some(id) = id
+            {
+                connection.active.retain(|active| *active != id);
+            }
+        }
         Err(error) => reject(&reply, error)?,
     }
     Ok(())
@@ -156,16 +212,27 @@ fn dispatch(
         let [id, offset, buffer_offset, length] = *request.words() else {
             return Err(Error::InvalidRequest);
         };
-        if request.handles().len() != 1 {
+        if request.handles().len() != 1 || id > u64::from(u32::MAX) {
             return Err(Error::InvalidRequest);
         }
+        let length = usize::try_from(length).map_err(|_| Error::InvalidRequest)?;
+        let end = offset
+            .checked_add(length as u64)
+            .ok_or(Error::InvalidRequest)?;
+        if end > connection.length {
+            return Err(Error::InvalidRequest);
+        }
+        let offset = connection
+            .origin
+            .checked_add(offset)
+            .ok_or(Error::InvalidRequest)?;
         let frames = request
             .take_handle(0)
             .unwrap()
             .downcast::<FrameAllocation>()
             .map_err(|_| Error::InvalidRequest)?;
         let buffer_offset = usize::try_from(buffer_offset).map_err(|_| Error::InvalidRequest)?;
-        let length = usize::try_from(length).map_err(|_| Error::InvalidRequest)?;
+        let id = internal(connection.slot, id as u32)?;
         if request.tag == session::READ {
             block.read(id, offset, frames, buffer_offset, length)?;
         } else {
@@ -180,7 +247,8 @@ fn dispatch(
         (session::INFO, []) => {
             let info = block.info();
             Ok(Response::Reply(alloc::vec![
-                info.capacity,
+                connection.length,
+                connection.origin,
                 info.block_size.into(),
                 u64::from(info.read_only) | u64::from(info.flush) << 1,
                 info.max_transfer as u64,
@@ -188,33 +256,37 @@ fn dispatch(
             ]))
         }
         (session::FLUSH, [id]) => {
-            block.flush(*id)?;
+            block.flush(internal(connection.slot, *id as u32)?)?;
             Ok(Response::Reply(Vec::new()))
         }
-        (session::CANCEL, [id]) => Ok(Response::Reply(alloc::vec![match block.cancel(*id)? {
+        (session::CANCEL, [id]) => Ok(Response::Reply(alloc::vec![match block
+            .cancel(internal(connection.slot, *id as u32)?,)?
+        {
             CancelResult::Cancelled => 0,
             CancelResult::Submitted => 1,
             CancelResult::Completed => 2,
         }])),
         (session::ACK, [id, wait @ 0..=1]) => {
+            let id = *id as u32;
             if connection
                 .acknowledgements
                 .iter()
-                .any(|(previous, _)| previous == id)
+                .any(|(previous, _)| *previous == id)
             {
                 return Err(Error::Busy);
             }
-            if let Some(completion) = block.completion(*id)? {
+            let internal = internal(connection.slot, id)?;
+            if let Some(completion) = block.completion(internal)? {
                 let mut response = Message::new(
                     SUCCESS,
                     &[completion.status as u64, completion.bytes as u64],
                 )?;
                 if deliver(reply, &mut response)? {
-                    block.acknowledge(*id)?;
+                    block.acknowledge(internal)?;
                 }
                 Ok(Response::Delivered)
             } else if *wait == 1 {
-                Ok(Response::Pending(*id))
+                Ok(Response::Pending(u64::from(id)))
             } else {
                 Err(Error::Busy)
             }
@@ -227,7 +299,8 @@ fn complete(block: &mut Block<'_>, connection: &mut Connection) -> Result<(), Er
     let mut index = 0;
     while index < connection.acknowledgements.len() {
         let (id, reply) = &connection.acknowledgements[index];
-        if let Some(completion) = block.completion(*id)? {
+        let internal = internal(connection.slot, *id)?;
+        if let Some(completion) = block.completion(internal)? {
             if deliver(
                 reply,
                 &mut Message::new(
@@ -235,14 +308,49 @@ fn complete(block: &mut Block<'_>, connection: &mut Connection) -> Result<(), Er
                     &[completion.status as u64, completion.bytes as u64],
                 )?,
             )? {
-                block.acknowledge(*id)?;
+                block.acknowledge(internal)?;
+                connection.active.retain(|active| active != id);
+                connection.acknowledgements.swap_remove(index);
+            } else {
+                index += 1;
             }
-            connection.acknowledgements.swap_remove(index);
         } else {
             index += 1;
         }
     }
     Ok(())
+}
+
+fn retire(block: &mut Block<'_>, connection: Connection, retired: &mut Vec<u64>) {
+    for id in connection.active {
+        if let Ok(id) = internal(connection.slot, id) {
+            let _ = block.cancel(id);
+            retired.push(id);
+        }
+    }
+    drop(connection.acknowledgements);
+}
+
+fn cleanup(block: &mut Block<'_>, retired: &mut Vec<u64>) {
+    retired.retain_mut(|id| match block.completion(*id) {
+        Ok(Some(_)) => {
+            let _ = block.acknowledge(*id);
+            false
+        }
+        Ok(None) => {
+            let _ = block.cancel(*id);
+            true
+        }
+        Err(Error::NotFound) => false,
+        Err(_) => true,
+    });
+}
+
+fn internal(slot: u32, id: u32) -> Result<u64, Error> {
+    let prefix = u64::from(slot)
+        .checked_add(1)
+        .ok_or(Error::InvalidRequest)?;
+    Ok(prefix << 32 | u64::from(id))
 }
 
 fn reject(reply: &Handle<Reply>, error: Error) -> Result<(), Error> {

@@ -9,7 +9,7 @@ pub use session::Session;
 
 use alloc::vec::Vec;
 use runtime::{
-    Device, DmaDomain, Event, FrameAllocation, Handle, Task,
+    Device, DmaDomain, Event, FrameAllocation, Handle, Rights, Task,
     device::InterruptBinding,
     dma::{DmaBuffer, DmaDirection},
     thread,
@@ -18,6 +18,7 @@ use runtime::{
 use crate::{
     Error,
     device::DeviceDescription,
+    mbr::{self, Partition},
     virtio::{
         self, Transport,
         queue::{Descriptor, Queue},
@@ -43,7 +44,10 @@ pub struct Configuration {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Info {
+    /// Bytes accessible through the session, starting at `origin`.
     pub capacity: u64,
+    /// Byte offset of the session range in the containing disk.
+    pub origin: u64,
     pub block_size: u32,
     pub read_only: bool,
     pub flush: bool,
@@ -82,6 +86,7 @@ pub struct Block<'a> {
     requests: Vec<Option<Pending>>,
     domain: &'a Handle<DmaDomain>,
     info: Info,
+    partitions: [Option<Partition>; 4],
     state: DriverState,
     next_order: u64,
 }
@@ -158,12 +163,14 @@ impl<'a> Block<'a> {
             requests: (0..count).map(|_| None).collect(),
             domain,
             info,
+            partitions: [None; 4],
             state: DriverState::Stopped,
             next_order: 0,
         };
         domain.resume()?;
         block.state = DriverState::Running;
         block.transport.start()?;
+        block.probe_partitions(task)?;
         Ok(block)
     }
 
@@ -171,8 +178,58 @@ impl<'a> Block<'a> {
         self.info
     }
 
-    pub(crate) fn idle(&self) -> bool {
-        self.requests.iter().all(Option::is_none)
+    pub fn partitions(&self) -> [Option<Partition>; 4] {
+        self.partitions
+    }
+
+    /// Reads the first sector once so sessions can expose MBR primary partitions.
+    fn probe_partitions(&mut self, task: &Handle<Task>) -> Result<(), Error> {
+        let length = self.info.block_size as usize;
+        let rights = Rights::READ_WRITE
+            .union(Rights::DUPLICATE)
+            .union(Rights::TRANSFER);
+        let frames = task.allocate(1, rights)?;
+        if self
+            .read(0, 0, frames.try_clone(rights)?, 0, length)
+            .is_err()
+            || self.submit().is_err()
+        {
+            return Ok(());
+        }
+        let deadline = thread::now_ns()?.saturating_add(1_000_000_000);
+        loop {
+            if self.poll().is_err() {
+                return Ok(());
+            }
+            if let Ok(Some(completion)) = self.completion(0) {
+                if completion.status == Status::Success && completion.bytes >= 512 {
+                    let mut sector = [0; 512];
+                    if frames.read(0, &mut sector).is_ok() {
+                        for (index, partition) in mbr::parse(&sector, self.info.capacity)
+                            .into_iter()
+                            .enumerate()
+                        {
+                            let Some(partition) = partition else {
+                                continue;
+                            };
+                            if partition.start.is_multiple_of(self.info.block_size.into())
+                                && partition.length.is_multiple_of(self.info.block_size.into())
+                            {
+                                self.partitions[index] = Some(partition);
+                            }
+                        }
+                    }
+                }
+                let _ = self.acknowledge(0);
+                return Ok(());
+            }
+            if thread::now_ns()? >= deadline {
+                let _ = self.cancel(0);
+                let _ = self.acknowledge(0);
+                return Ok(());
+            }
+            thread::sleep_until(thread::now_ns()?.saturating_add(100_000))?;
+        }
     }
 
     pub fn read(
@@ -581,6 +638,7 @@ fn configuration_info(
             }
             return Ok(Info {
                 capacity,
+                origin: 0,
                 block_size,
                 read_only: features & READ_ONLY != 0,
                 flush: features & FLUSH != 0,

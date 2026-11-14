@@ -50,6 +50,19 @@ fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) ->
             ));
         }
         OpenFileDescription::Regular { file, .. } => file.start_metadata(),
+        OpenFileDescription::Block { device, .. } => {
+            return Outcome::Complete(buffer.write(
+                process,
+                fs::Metadata {
+                    device: 0x0103,
+                    rdev: device.rdev(),
+                    inode: device.inode(),
+                    links: 1,
+                    mode: 0o060660,
+                    ..fs::Metadata::default()
+                },
+            ));
+        }
         OpenFileDescription::Directory { session, .. } => session.start_metadata(),
         OpenFileDescription::VirtualFile { data, inode, .. } => {
             return Outcome::Complete(buffer.write(
@@ -329,6 +342,7 @@ fn write_stat(process: &Process<'_>, address: usize, info: fs::Metadata) -> Resu
     for (offset, value) in [
         (0, info.device),
         (8, info.inode),
+        (32, info.rdev),
         (48, info.size),
         (64, info.blocks),
         (72, info.accessed.seconds as u64),
@@ -356,14 +370,21 @@ fn write_stat(process: &Process<'_>, address: usize, info: fs::Metadata) -> Resu
     Ok(0)
 }
 
+fn device_parts(device: u64) -> (u32, u32) {
+    (
+        ((device >> 8) & 0xfff | (device >> 32) & 0xffff_f000) as u32,
+        (device & 0xff | (device >> 12) & 0xffff_ff00) as u32,
+    )
+}
+
 // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/linux/stat.h?h=v6.12
 fn write_statx(process: &Process<'_>, address: usize, info: fs::Metadata) -> SyscallResult {
     let known = info.birth != fs::Timestamp::default();
     let mounted = info.mount != 0;
     let mask = 0x7ff | u32::from(known) << 11 | u32::from(mounted) << 12;
     let mut bytes = [0; 256];
-    let major = ((info.device >> 8) & 0xfff | (info.device >> 32) & 0xffff_f000) as u32;
-    let minor = (info.device & 0xff | (info.device >> 12) & 0xffff_ff00) as u32;
+    let (major, minor) = device_parts(info.device);
+    let (rdev_major, rdev_minor) = device_parts(info.rdev);
     for (offset, value) in [(32, info.inode), (40, info.size), (48, info.blocks)] {
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
     }
@@ -373,6 +394,8 @@ fn write_statx(process: &Process<'_>, address: usize, info: fs::Metadata) -> Sys
         (16, info.links),
         (20, info.uid),
         (24, info.gid),
+        (128, rdev_major),
+        (132, rdev_minor),
         (136, major),
         (140, minor),
     ] {

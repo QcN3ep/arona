@@ -11,6 +11,7 @@ extern crate alloc;
 
 pub mod block;
 pub mod device;
+pub mod mbr;
 pub mod net;
 pub mod power;
 pub mod rng;

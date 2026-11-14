@@ -97,13 +97,23 @@ pub fn devices(
     (service, channel)
 }
 
-pub fn mount(control: &fs::Control<'_>, service: &Handle<Channel>) {
+pub fn mount(control: &fs::Control<'_>, service: &Handle<Channel>) -> u32 {
     let until = deadline();
-    let id = loop {
-        if let Some(id) =
-            devmgr::device::next(service, devmgr::device::DriverKind::Block, 0, until).unwrap()
+    let (id, session) = loop {
+        let mut after = 0;
+        let mut found = None;
+        while let Some(id) =
+            devmgr::device::next(service, devmgr::device::DriverKind::Block, after, until).unwrap()
         {
-            break id;
+            after = id;
+            let session = devmgr::block::Session::open(process::task(), service, id).unwrap();
+            if session.info().unwrap().capacity == 16 * 1024 * 1024 {
+                found = Some((id, session));
+                break;
+            }
+        }
+        if let Some(found) = found {
+            break found;
         }
         assert!(
             runtime::thread::now_ns().unwrap() < until,
@@ -111,10 +121,10 @@ pub fn mount(control: &fs::Control<'_>, service: &Handle<Channel>) {
         );
         runtime::thread::yield_now().unwrap();
     };
-    let session = devmgr::block::Session::open(process::task(), service, id).unwrap();
     control
         .mount(b"/var", session, 0, 16 * 1024 * 1024, deadline())
         .unwrap();
+    id
 }
 
 pub fn deadline() -> u64 {
@@ -124,6 +134,7 @@ pub fn deadline() -> u64 {
 pub fn resources(
     service: &Handle<Channel>,
     kernel_log: &Handle<runtime::KernelLog>,
+    reserved: Option<u32>,
 ) -> linux::Services<'static> {
     let until = deadline();
     let device = |kind| {
@@ -138,6 +149,15 @@ pub fn resources(
     linux::Services {
         net: None,
         mounts: None,
+        devices: Some(
+            service
+                .try_clone(
+                    runtime::Rights::READ_WRITE | runtime::Rights::WAIT | runtime::Rights::TRANSFER,
+                )
+                .unwrap(),
+        ),
+        reserved,
+        blocks: None,
         clock: Some(
             devmgr::rtc::Session::open(
                 process::task(),
