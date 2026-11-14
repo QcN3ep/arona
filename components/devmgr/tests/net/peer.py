@@ -90,7 +90,7 @@ def main():
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(('127.0.0.1', arguments.port))
         listener.listen(1)
-        print('Ethernet peer ready', flush=True)
+        print(f'Ethernet peer ready {listener.getsockname()[1]}', flush=True)
         network, _ = listener.accept()
         with network, socket.socket(socket.AF_UNIX) as monitor:
             monitor.connect(arguments.qmp)

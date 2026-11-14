@@ -7,6 +7,7 @@ mod linux_test;
 mod net_test;
 mod perf;
 mod rootfs;
+mod test;
 
 use std::{
     env,
@@ -70,6 +71,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<(), String> {
         "run" => build(arguments, true),
         "book" => book(arguments),
         "perf" => perf::run(arguments),
+        "test" => test::run(arguments),
         "package-init" => package_init(&BuildOptions::parse(arguments)?, None).map(|_| ()),
         "package-net-test" => {
             package_init(&BuildOptions::parse(arguments)?, Some("net")).map(|_| ())
@@ -395,5 +397,5 @@ fn execute(mut command: Command) -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: cargo xtask <build|run|package-init|package-linux-test|package-net-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH] [--net]\n       cargo xtask perf run <riscv64|loongarch64> --case calibration|system --mode count|profile [--kernel ELF --initramfs CPIO --start SYMBOL --end SYMBOL --success TEXT --workload NAME --units N] [--image ARCHIVE_PATH=ELF] [--release] [--artifacts DIRECTORY] [--timeout SECONDS]\n       cargo xtask perf report DIRECTORY\n       cargo xtask perf diff BEFORE AFTER\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
+    "usage: cargo xtask <build|run|package-init|package-linux-test|package-net-test> <riscv64|loongarch64> [--release] [--initramfs embedded|external] [--rootfs PATH] [--net]\n       cargo xtask test <host|riscv64|loongarch64> [--release] [--filter NAME] [--list] [--timeout SECONDS]\n       cargo xtask perf run <riscv64|loongarch64> --case calibration|system --mode count|profile [--kernel ELF --initramfs CPIO --start SYMBOL --end SYMBOL --success TEXT --workload NAME --units N] [--image ARCHIVE_PATH=ELF] [--release] [--artifacts DIRECTORY] [--timeout SECONDS]\n       cargo xtask perf report DIRECTORY\n       cargo xtask perf diff BEFORE AFTER\n       cargo xtask book [build|serve] [OPTIONS]".to_owned()
 }

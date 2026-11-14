@@ -2,6 +2,11 @@
 
 #![no_std]
 #![no_main]
+#![feature(custom_test_frameworks)]
+#![test_runner(support::run)]
+#![reexport_test_harness_main = "test_main"]
+
+mod support;
 
 #[path = "device/uart.rs"]
 mod uart_tests;
@@ -112,6 +117,14 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     // SAFETY: The address must be the boot UART mapping of the current ISA and must be used only by the test.
     let uart = unsafe { Uart::new(UART) };
     uart.init().unwrap();
+    test_main();
+    halt()
+}
+
+#[kernel_tests::ktest]
+fn mappings() {
+    // SAFETY: The test exclusively owns the mapped and initialized boot console.
+    let uart = unsafe { Uart::new(UART) };
     uart.write(format_args!("MMU tests started\n")).unwrap();
     uart_tests::run(&uart);
     arch::hardware::bind();
@@ -168,7 +181,6 @@ unsafe extern "C" fn __wrap__start_native() -> ! {
     assert_eq!(first.get(mmu, TEST_ADDRESS).unwrap(), PageTableEntry::Empty);
     publish_code(mmu, &first);
     uart.write(format_args!("MMU tests passed\n")).unwrap();
-    halt()
 }
 
 fn run_entries(mmu: &dyn Mmu, tables: &Tables, data: u64) {

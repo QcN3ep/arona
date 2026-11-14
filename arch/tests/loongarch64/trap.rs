@@ -276,6 +276,7 @@ pub fn handle_refill(trap: Trap) -> TrapOutcome {
             super::uart()
                 .write(format_args!("Trap tests passed: refill\n"))
                 .unwrap();
+            super::support::pass();
             hardware::cpu().halt()
         }
         TrapEvent::PageFault { address, access } => {

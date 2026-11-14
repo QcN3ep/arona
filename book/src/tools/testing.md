@@ -12,6 +12,8 @@ cargo clippy --locked --workspace --all-targets -- -D warnings --force-warn clip
 cargo test --locked --workspace --tests --features arona-fs/host-tests
 ```
 
+`cargo xtask test host` runs the same host integration tests.
+
 `cargo fmt` checks formatting, Clippy checks Rust code, and `cargo test` runs integration tests that satisfy the current target and feature conditions.
 Host tests include boot information parsing, hardware binding, and the log interface.
 Bare-metal test images are built with the corresponding `baremetal` or `program` feature.
@@ -32,7 +34,28 @@ The test images cover debug and release builds for RISC-V and LoongArch.
 These scenarios actually install exception entry points, manipulate page tables, switch execution contexts, and access emulated devices.
 For example, the file system scenario attaches a disk fixture, and the UART scenario feeds characters into QEMU and then observes what the user-space session reads.
 
-To boot a built image, use `cargo xtask run <target> [--release]`.
+Run the QEMU tests through xtask:
+
+```sh
+cargo xtask test riscv64 --release
+cargo xtask test loongarch64 --release --filter execution::kernel::ipc
+cargo xtask test riscv64 --list
+```
+
+`#[kernel_tests::ktest]` marks a safe `fn()` in an architecture test target.
+Rust's custom test harness collects the functions from that target and its modules.
+The architecture entry point initializes the boot console and calls the generated harness.
+Each selected case runs in a fresh QEMU instance, so initialization and global state do not depend on earlier cases.
+User-space scenarios retain their component programs and are launched by named cases in the interrupt image.
+
+The runner builds the required programs, prepares disk fixtures, and supplies console input and the Ethernet peer.
+It saves `serial.log`, `qemu.log`, the command, and a result summary under `target/tests/`.
+`--timeout SECONDS` sets the time limit for each QEMU run.
+An unexpected panic, an early QEMU exit, or a timeout fails the case.
+Cases that deliberately trigger fatal exceptions declare the expected diagnostics in `#[kernel_tests::ktest("diagnostic", ...)]`.
+Those diagnostics must appear after the selected case starts.
+
+`cargo xtask run` boots the normal system.
 
 ## Ext4 Disk Images
 
@@ -68,52 +91,16 @@ The `components/devmgr/tests/net/` program exchanges Ethernet frames with a host
 The peer uses QEMU's socket network backend and QMP to echo frames, send invalid Ethernet lengths, and lower and restore the link.
 It needs no host TAP interface or IP configuration.
 
-Build the component and a release interrupt harness for the chosen Rust target:
+Run the network cases with:
 
 ```sh
-cargo rustc --locked -p arona-devmgr --features baremetal --test net \
-  --target riscv64gc-unknown-none-elf \
-  -Zbuild-std=core,alloc,compiler_builtins \
-  -Zbuild-std-features=compiler-builtins-mem \
-  -- -Cstrip=symbols -Clink-arg=-zmax-page-size=4096
-cargo build --locked -p arona-arch --features baremetal,runtime-tests \
-  --test interrupt --release --target riscv64gc-unknown-none-elf \
-  -Zbuild-std=core,alloc,compiler_builtins \
-  -Zbuild-std-features=compiler-builtins-mem
+cargo xtask test riscv64 --release --filter interrupt::net
+cargo xtask test loongarch64 --release --filter interrupt::net
 ```
 
-Use the `net-*` executable from the target's `debug/deps/` directory as `COMPONENT` and the `interrupt-*` executable from `release/deps/` as `HARNESS`.
-Cargo's JSON compiler-artifact messages also identify these paths.
-The release harness can run either profile of the component program.
-
-Start the peer in another terminal before QEMU:
-
-```sh
-python3 components/devmgr/tests/net/peer.py \
-  --port 12345 --qmp /tmp/arona-net.qmp
-```
-
-Then start QEMU and enter `net` at the `Test suite:` prompt:
-
-```sh
-NET_DEVICE=virtio-net-pci,id=nic,disable-legacy=on
-NET_DEVICE="$NET_DEVICE,netdev=net0,mac=52:54:00:12:34:56"
-qemu-system-riscv64 -M virt -m 256M -smp 1 \
-  -nographic -monitor none -nic none -bios default \
-  -kernel "$HARNESS" -initrd "$COMPONENT" \
-  -netdev socket,id=net0,connect=127.0.0.1:12345 \
-  -device "$NET_DEVICE" \
-  -qmp unix:/tmp/arona-net.qmp,server=on,wait=off
-```
-
-For LoongArch, build with `loongarch64-unknown-none`, use `qemu-system-loongarch64`, and omit `-bios default`.
-The scenario checks repeated queue cycling, TX pressure, short-frame padding, copied session I/O, cancellation, session closure, and device reset before DMA revocation.
-It reports `Net driver tests passed` when the component and kernel resource checks finish.
-
-The same scenario supports `host_mtu=576,rx_queue_size=1024,tx_queue_size=256` to exercise a smaller MTU and a different device queue limit.
-To exercise fallback configuration, use `status=off,mac=52:54:00:12:34:57` instead of the normal MAC.
-That MAC tells the scenario to omit link-change assertions because this device configuration provides no link status feature.
-Run a fresh peer for each QEMU instance and give concurrent runs separate ports and QMP paths.
+The runner starts the peer and assigns a separate port and QMP socket to each driver run.
+The driver scenario checks queue cycling, TX pressure, short-frame padding, session I/O, cancellation, session closure, and device reset before DMA revocation.
+The network service scenario checks loopback sockets without an Ethernet device.
 
 ## Boot Logs
 

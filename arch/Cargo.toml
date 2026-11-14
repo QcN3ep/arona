@@ -32,37 +32,31 @@ path = "tests/boot/mod.rs"
 [[test]]
 name = "paging"
 path = "tests/paging.rs"
-harness = false
 required-features = ["baremetal"]
 
 [[test]]
 name = "allocator"
 path = "tests/allocator.rs"
-harness = false
 required-features = ["baremetal"]
 
 [[test]]
 name = "trap"
 path = "tests/trap.rs"
-harness = false
 required-features = ["baremetal"]
 
 [[test]]
 name = "execution"
 path = "tests/execution.rs"
-harness = false
 required-features = ["baremetal"]
 
 [[test]]
 name = "timer"
 path = "tests/timer.rs"
-harness = false
 required-features = ["baremetal"]
 
 [[test]]
 name = "interrupt"
 path = "tests/interrupt.rs"
-harness = false
 required-features = ["baremetal"]
 
 [[test]]

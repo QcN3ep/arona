@@ -6,6 +6,7 @@ It combines Cargo builds, service archive packaging, QEMU startup, and handbook 
 
 ```text
 cargo xtask <build|run|package-init|package-linux-test> <riscv64|loongarch64> [OPTIONS]
+cargo xtask test <host|riscv64|loongarch64> [OPTIONS]
 cargo xtask perf run <riscv64|loongarch64> --case calibration --mode count [OPTIONS]
 cargo xtask book [build|serve] [OPTIONS]
 cargo xtask help
@@ -43,6 +44,23 @@ QEMU also receives a modern VirtIO RNG for network service startup.
 
 `package-linux-test` uses a test entry point in place of the normal init, adds the compatibility test programs and data, and outputs `initramfs-linux-test.cpio`.
 Normal boot and tests each keep their own archive file.
+
+## Test Commands
+
+```sh
+cargo xtask test host
+cargo xtask test riscv64 --release
+cargo xtask test loongarch64 --release --filter execution::kernel::ipc
+cargo xtask test riscv64 --list
+```
+
+The host command runs Cargo integration tests with the tmpfs host feature enabled.
+Architecture commands discover named cases from the test images and run each selected case in QEMU.
+`--filter NAME` selects names containing the given text, and `--list` lists cases without executing them.
+Omit `--release` for debug builds.
+`--timeout SECONDS` overrides the QEMU time limit, which is 900 seconds for filesystem and Linux cases, 300 seconds for init, and 120 seconds for other cases.
+Results and logs are saved under `target/tests/TARGET/PROFILE/`, respecting `CARGO_TARGET_DIR`.
+See [Testing and Debugging](testing.md) for the test organization and prerequisites.
 
 ## Handbook Commands
 
@@ -94,7 +112,7 @@ When any external build or run command fails, xtask returns a non-zero status.
 `cargo xtask package-net-test riscv64 --release` packages the network service with separate native client Tasks.
 The resulting archive is `target/riscv64gc-unknown-none-elf/release/initramfs-net-test.cpio`.
 Use `loongarch64` for the other architecture and omit `--release` for debug builds.
-Run the archive with the interrupt test image, a modern VirtIO RNG, and the `net-service` suite.
+`cargo xtask test riscv64 --release --filter interrupt::net_service` builds the archive and runs it with a modern VirtIO RNG.
 These loopback scenarios do not require `--net` or an Ethernet device.
 
 ## Instruction Count Calibration

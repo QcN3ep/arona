@@ -2,6 +2,11 @@
 
 #![no_std]
 #![no_main]
+#![feature(custom_test_frameworks)]
+#![test_runner(support::run)]
+#![reexport_test_harness_main = "test_main"]
+
+mod support;
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -25,6 +30,7 @@ const UART: usize = 0xffff_ffc0_0020_0000;
 const UART: usize = 0xffff_8000_0060_01e0;
 
 const MILLISECOND: u64 = 1_000_000;
+static FIRMWARE: AtomicUsize = AtomicUsize::new(0);
 static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
 static DEADLINE: AtomicU64 = AtomicU64::new(0);
 
@@ -45,6 +51,15 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
     // SAFETY: The range must be exclusive writable BSS not yet used by the boot entry point.
     unsafe { start.write_bytes(0, length) };
     uart().init().unwrap();
+    FIRMWARE.store(firmware, Ordering::Relaxed);
+    test_main();
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[kernel_tests::ktest]
+fn deadlines() {
     uart().write(format_args!("Timer tests started\n")).unwrap();
     arch::hardware::bind();
     hardware::trap()
@@ -57,11 +72,12 @@ unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
         )
         .unwrap();
     let timer = hardware::timer();
-    timer.initialize(isa::frequency(firmware)).unwrap();
+    timer
+        .initialize(isa::frequency(FIRMWARE.load(Ordering::Relaxed)))
+        .unwrap();
     assert!(timer.frequency_hz().unwrap() > 0);
     lifecycle();
     uart().write(format_args!("Timer tests passed\n")).unwrap();
-    hardware::cpu().halt()
 }
 
 fn lifecycle() {
