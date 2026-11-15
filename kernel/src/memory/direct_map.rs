@@ -81,6 +81,7 @@ impl DirectMap {
         self.active.load(Ordering::Acquire)
     }
 
+    /// Returns the direct-map address of an allocated frame or a reserved metadata page.
     pub fn active_address(&self, frame: Frame) -> Option<usize> {
         if !self.is_active() {
             return None;
@@ -90,13 +91,10 @@ impl DirectMap {
 
     fn address(&self, frame: Frame) -> Option<usize> {
         let layout = self.layout.get()?;
-        let regions = self.regions.lock();
-        let index = regions.partition_point(|region| region.range.end <= frame.address());
-        let region = regions.get(index)?;
-        if frame.address() < region.range.start || region.state == MemoryRegionState::NoMap {
-            return None;
-        }
-        Some(layout.range.start + (frame.address() - layout.physical_start) as usize)
+        // Callers provide validated allocations or metadata pages, so no RAM-directory lookup is needed.
+        let offset = usize::try_from(frame.address().checked_sub(layout.physical_start)?).ok()?;
+        let address = layout.range.start.checked_add(offset)?;
+        (address < layout.range.end).then_some(address)
     }
 
     pub fn physical_range(&self) -> Result<PhysRange, MemoryError> {
@@ -221,6 +219,7 @@ impl DirectMap {
         }
     }
 
+    /// Updates direct-map permissions for a frame validated by the allocator.
     pub fn set_writable(&self, frame: Frame, writable: bool) -> Result<bool, MemoryError> {
         let Some(layout) = self.layout.get() else {
             return Ok(false);

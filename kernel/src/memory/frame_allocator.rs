@@ -510,15 +510,13 @@ impl FrameAllocator {
 
     fn list_head(&self, region: ManagedRegion, pool: FramePool, order: usize) -> u64 {
         let mut words = [0];
-        hardware::mmu()
-            .read_frame(region.lists, pool as usize * ORDERS + order, &mut words)
+        read_metadata(region.lists, pool as usize * ORDERS + order, &mut words)
             .expect("failed to read free list");
         words[0]
     }
 
     fn set_list_head(&self, region: ManagedRegion, pool: FramePool, order: usize, head: u64) {
-        hardware::mmu()
-            .write_frame(region.lists, pool as usize * ORDERS + order, &[head])
+        write_metadata(region.lists, pool as usize * ORDERS + order, &[head])
             .expect("failed to write free list");
     }
 
@@ -888,7 +886,7 @@ impl FrameMetadata {
             let mut region = self.region(index);
             region.lists = lists;
             self.write_region(index, region)?;
-            hardware::mmu().write_frame(lists, 0, &[END; LIST_WORDS])?;
+            write_metadata(lists, 0, &[END; LIST_WORDS])?;
         }
         Ok(())
     }
@@ -919,7 +917,7 @@ impl FrameMetadata {
     }
 
     fn write_region(&self, index: usize, region: ManagedRegion) -> Result<(), MemoryError> {
-        hardware::mmu().write_frame(
+        write_metadata(
             self.directory[index / REGIONS_PER_FRAME],
             (index % REGIONS_PER_FRAME) * REGION_WORDS,
             &[
@@ -936,13 +934,12 @@ impl FrameMetadata {
 
     fn region(&self, index: usize) -> ManagedRegion {
         let mut words = [0; REGION_WORDS];
-        hardware::mmu()
-            .read_frame(
-                self.directory[index / REGIONS_PER_FRAME],
-                (index % REGIONS_PER_FRAME) * REGION_WORDS,
-                &mut words,
-            )
-            .expect("failed to read memory region");
+        read_metadata(
+            self.directory[index / REGIONS_PER_FRAME],
+            (index % REGIONS_PER_FRAME) * REGION_WORDS,
+            &mut words,
+        )
+        .expect("failed to read memory region");
         ManagedRegion {
             range: PhysRange {
                 start: words[0],
@@ -1023,18 +1020,43 @@ impl FrameMetadata {
     fn read(&self, index: u64) -> FrameRecord {
         let (address, offset) = self.location(index);
         let mut words = [0; WORDS];
-        hardware::mmu()
-            .read_frame(address, offset, &mut words)
-            .expect("failed to read frame metadata");
+        read_metadata(address, offset, &mut words).expect("failed to read frame metadata");
         FrameRecord::from_words(words)
     }
 
     fn write(&self, index: u64, record: FrameRecord) {
         let (address, offset) = self.location(index);
-        hardware::mmu()
-            .write_frame(address, offset, &record.words())
-            .expect("failed to write frame metadata");
+        write_metadata(address, offset, &record.words()).expect("failed to write frame metadata");
     }
+}
+
+fn read_metadata(address: u64, offset: usize, words: &mut [u64]) -> Result<(), MemoryError> {
+    let direct_map = &super::MEMORY_MANAGER.direct_map;
+    let frame = Frame::new(address).ok_or(MemoryError::InvalidFrame)?;
+    if let Some(address) = direct_map.active_address(frame) {
+        // SAFETY: Metadata pages are permanently reserved in mapped RAM and remain writable. The frame allocator lock serializes access.
+        hardware::mmu().read_mapped_frame(address, offset, words)?;
+    } else if direct_map.is_active() {
+        return Err(MemoryError::NotMapped);
+    } else {
+        // Direct-map construction reads metadata before the new page table is active.
+        hardware::mmu().read_frame(address, offset, words)?;
+    }
+    Ok(())
+}
+
+fn write_metadata(address: u64, offset: usize, words: &[u64]) -> Result<(), MemoryError> {
+    let direct_map = &super::MEMORY_MANAGER.direct_map;
+    let frame = Frame::new(address).ok_or(MemoryError::InvalidFrame)?;
+    if let Some(address) = direct_map.active_address(frame) {
+        // SAFETY: Metadata pages are permanently reserved in mapped RAM and remain writable. The frame allocator lock serializes access.
+        hardware::mmu().write_mapped_frame(address, offset, words)?;
+    } else if direct_map.is_active() {
+        return Err(MemoryError::NotMapped);
+    } else {
+        hardware::mmu().write_frame(address, offset, words)?;
+    }
+    Ok(())
 }
 
 impl ManagedRegion {
