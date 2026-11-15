@@ -68,9 +68,13 @@ Virtual character descriptions implement `/dev/null` and `/dev/zero`, while `/de
 
 `init` transfers a read-only `KernelLog` handle to the Linux service, and the `syslog` call reads the same 64 KiB kernel ring that logger consumes.
 Each record is formatted as `<level>[seconds.microseconds] target: message` before it is copied to the guest.
-`SYSLOG_ACTION_SIZE_BUFFER` reports the ring capacity, while `SIZE_UNREAD`, `READ`, `READ_ALL`, `READ_CLEAR`, and `CLEAR` operate on one service-wide cursor.
-`READ` consumes bytes from the cursor, `READ_ALL` returns the newest bytes that fit without moving it, and `READ_CLEAR` combines both.
-`CLEAR` advances the earliest visible record for syslog readers and leaves the ring intact for logger and other kernel readers.
+`SYSLOG_ACTION_SIZE_BUFFER` reports the ring capacity.
+`READ` consumes bytes through a service-wide cursor, and `SIZE_UNREAD` reports the remaining bytes.
+The cursor records the kernel sequence and the byte position within a partially read record, so eviction advances it to the oldest retained record.
+`READ_ALL` returns the newest visible bytes that fit without moving this cursor.
+`READ_CLEAR` returns those bytes and clears their visibility for later snapshots.
+`CLEAR` has the same clearing effect without returning text.
+These two operations leave the consuming cursor and the kernel ring intact.
 This compatibility layer has no capability sets, so effective uid zero stands in for `CAP_SYSLOG`.
 Only `OPEN` and `CLOSE` are available to unprivileged processes; control and read actions return `EPERM` otherwise.
 Console level actions report `EINVAL` because the service does not own the physical console.

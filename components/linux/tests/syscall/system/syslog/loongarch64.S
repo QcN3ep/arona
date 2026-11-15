@@ -81,6 +81,16 @@ scan_found:
     invoke 116
     bne $a0, $s0, syslog_failure
 
+    # A failed destination copy leaves the consuming cursor unchanged.
+    li.d $a0, 2
+    li.d $a1, 1
+    li.d $a2, 32
+    invoke 116
+    expect -14
+    li.d $a0, 9
+    invoke 116
+    bne $a0, $s0, syslog_failure
+
     # SYSLOG_ACTION_READ consumes unread bytes from the cursor.
     li.d $a0, 2
     move $a1, $sp
@@ -95,7 +105,7 @@ scan_found:
     addi.d $t0, $s0, -32
     bne $a0, $t0, syslog_failure
 
-    # READ_CLEAR returns the backlog and makes it invisible.
+    # READ_CLEAR hides the snapshot while preserving the consuming reader.
     li.d $a0, 4
     move $a1, $sp
     li.d $a2, 8192
@@ -103,12 +113,13 @@ scan_found:
     bne $a0, $s1, syslog_failure
     li.d $a0, 9
     invoke 116
-    expect 0
+    addi.d $t0, $s0, -32
+    bne $a0, $t0, syslog_failure
     li.d $a0, 2
     move $a1, $sp
     li.d $a2, 32
     invoke 116
-    expect 0
+    expect 32
 
     # CLEAR discards records for syslog readers.
     li.d $a0, 5

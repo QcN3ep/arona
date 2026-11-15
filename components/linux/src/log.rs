@@ -11,36 +11,28 @@ use runtime::{
 
 use crate::syscall::abi::{EIO, ENODEV, EOVERFLOW, Errno};
 
-/// Largest text snapshot retained for a single read. The kernel ring holds
-/// 64 KiB of encoded records, so formatted output stays well below this limit.
+// The kernel ring holds 64 KiB of encoded records.
 const MAX_TEXT: usize = 1024 * 1024;
 
-/// The reader position and the oldest record still visible to `syslog`.
-///
-/// `SYSLOG_ACTION_CLEAR` advances `floor` and `consumed`; it does not mutate the
-/// kernel ring that other readers may still inspect.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Cursor {
+    sequence: u64,
+    offset: usize,
+}
+
+/// The consuming reader and the independent floor for READ_ALL and READ_CLEAR.
+#[derive(Default)]
 pub struct Log {
     kernel: Option<Handle<KernelLog>>,
     floor: Cell<u64>,
-    consumed: Cell<usize>,
-}
-
-impl Default for Log {
-    fn default() -> Self {
-        Self {
-            kernel: None,
-            floor: Cell::new(0),
-            consumed: Cell::new(0),
-        }
-    }
+    consumed: Cell<Cursor>,
 }
 
 impl Log {
     pub fn new(kernel: Option<Handle<KernelLog>>) -> Self {
         Self {
             kernel,
-            floor: Cell::new(0),
-            consumed: Cell::new(0),
+            ..Self::default()
         }
     }
 
@@ -52,78 +44,88 @@ impl Log {
         self.kernel.take()
     }
 
-    /// Read unread bytes without committing the cursor. The returned index is
-    /// the new cursor to commit after the destination accepted the bytes.
-    pub(crate) fn read(&self, length: usize) -> Result<(Vec<u8>, usize), Errno> {
-        let (text, _) = self.scan()?;
-        let start = self.consumed.get().min(text.len());
-        let end = start.saturating_add(length).min(text.len());
-        Ok((text[start..end].to_vec(), end))
+    /// Read unread bytes, returning a cursor to commit after the user copy succeeds.
+    pub(crate) fn read(&self, length: usize) -> Result<(Vec<u8>, Cursor), Errno> {
+        self.scan(self.consumed.get(), length)
     }
 
-    pub(crate) fn commit_read(&self, end: usize) {
+    pub(crate) fn commit_read(&self, end: Cursor) {
         self.consumed.set(end);
     }
 
-    /// Read the last `length` bytes of the visible log without moving the reader.
+    /// Read the last `length` visible bytes without moving the consuming reader.
     pub(crate) fn read_all(&self, length: usize) -> Result<Vec<u8>, Errno> {
-        let (text, _) = self.scan()?;
-        let start = text.len().saturating_sub(length);
-        Ok(text[start..].to_vec())
+        self.read_clear(length).map(|(bytes, _)| bytes)
     }
 
     pub(crate) fn size_unread(&self) -> Result<usize, Errno> {
-        let (text, _) = self.scan()?;
-        Ok(text.len().saturating_sub(self.consumed.get()))
+        self.scan(self.consumed.get(), MAX_TEXT)
+            .map(|(bytes, _)| bytes.len())
     }
 
-    /// Read the last `length` bytes without clearing. The returned cursor
-    /// hides every record seen by this scan once committed.
+    /// Return the visible tail and a clear floor to commit after the user copy succeeds.
     pub(crate) fn read_clear(&self, length: usize) -> Result<(Vec<u8>, u64), Errno> {
-        let (text, next) = self.scan()?;
+        let start = Cursor {
+            sequence: self.floor.get(),
+            offset: 0,
+        };
+        let (text, next) = self.scan(start, MAX_TEXT)?;
         let start = text.len().saturating_sub(length);
-        Ok((text[start..].to_vec(), next))
+        Ok((text[start..].to_vec(), next.sequence))
     }
 
     pub(crate) fn commit_clear(&self, next: u64) {
         self.floor.set(next);
-        self.consumed.set(0);
     }
 
     pub(crate) fn clear(&self) -> Result<(), Errno> {
-        let (_, next) = self.scan()?;
-        self.floor.set(next);
-        self.consumed.set(0);
+        let (_, next) = self.read_clear(0)?;
+        self.commit_clear(next);
         Ok(())
     }
 
-    /// Format every visible record and report the cursor following the newest one.
-    fn scan(&self) -> Result<(Vec<u8>, u64), Errno> {
+    fn scan(&self, mut cursor: Cursor, length: usize) -> Result<(Vec<u8>, Cursor), Errno> {
         let kernel = self.kernel.as_ref().ok_or(ENODEV)?;
-        let mut cursor = self.floor.get();
+        let length = length.min(MAX_TEXT);
         let mut text = Vec::new();
         let mut bytes = [0; MAX_RECORD_SIZE];
-        while text.len() < MAX_TEXT {
-            let record = kernel.read(cursor, &mut bytes).map_err(|_| EIO)?;
-            let Some(record) = record else {
+        while text.len() < length {
+            let Some(record) = kernel.read(cursor.sequence, &mut bytes).map_err(|_| EIO)? else {
                 break;
             };
-            cursor = record.sequence.checked_add(1).ok_or(EOVERFLOW)?;
-            append(&mut text, record);
+            if record.sequence != cursor.sequence {
+                // An evicted record's byte offset cannot apply to its successor.
+                cursor.offset = 0;
+            }
+            let next = record.sequence.checked_add(1).ok_or(EOVERFLOW)?;
+            let line = format_record(record);
+            let start = cursor.offset.min(line.len());
+            let end = start + (line.len() - start).min(length - text.len());
+            text.extend_from_slice(&line[start..end]);
+            cursor = if end == line.len() {
+                Cursor {
+                    sequence: next,
+                    offset: 0,
+                }
+            } else {
+                Cursor {
+                    sequence: record.sequence,
+                    offset: end,
+                }
+            };
         }
         Ok((text, cursor))
     }
 }
 
-fn append(text: &mut Vec<u8>, record: Record<'_>) {
+fn format_record(record: Record<'_>) -> alloc::string::String {
     let timestamp = record.timestamp_ns.unwrap_or(0);
-    let line = format!(
+    format!(
         "<{}>[{:5}.{:06}] {}: {}\n",
         record.level as u32,
         timestamp / 1_000_000_000,
         timestamp % 1_000_000_000 / 1_000,
         record.target,
         record.message,
-    );
-    text.extend_from_slice(line.as_bytes());
+    )
 }
