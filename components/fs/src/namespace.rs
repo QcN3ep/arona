@@ -485,13 +485,17 @@ impl Namespace {
     }
 
     pub fn set_attributes(&self, path: &[u8], attributes: crate::Attributes) -> Result<(), Error> {
-        self.mounted(path, |fs, path| fs.set_attributes(path, attributes))
+        self.mounted(path, |fs, path| {
+            fs.open_path(path)?.set_attributes(attributes)
+        })
     }
 
     /// Flushes every mounted filesystem; the read-only archive needs no flush.
     pub fn sync(&self) -> Result<(), Error> {
         for filesystem in self.mounts.borrow().values() {
-            filesystem.sync()?;
+            if let Mounted::Ext4(filesystem) = filesystem {
+                filesystem.sync()?;
+            }
         }
         Ok(())
     }
