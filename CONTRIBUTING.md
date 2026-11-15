@@ -26,6 +26,14 @@ When further explanation is needed, add a blank line and a description after the
 
 The description should not duplicate the diff; use a description only when there is information the code cannot convey.
 
+Optimization commits must include before-and-after measurements for all relevant performance test cases in the body, with one line per case:
+
+```text
+perf <testcase> <before> to <after> <U/D>
+```
+
+Use `U` for a performance improvement and `D` for a performance decline. Use the same metric and unit for both measurements.
+
 ## Branches
 
 Development work must be done on a non-main branch and merged into `main` as a linear history.
