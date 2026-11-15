@@ -321,7 +321,7 @@ fn mqueue_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
         compile.args(["-mno-lsx", "-mno-lasx"]);
     }
     compile
-        .arg(root.join("components/linux/tests/mqueue/mqueue.c"))
+        .arg(root.join("components/linux/tests/syscall/mqueue/mqueue.c"))
         .arg("-o")
         .arg(&source);
     execute(compile)?;
@@ -335,7 +335,7 @@ fn mqueue_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
         assemble.arg("-mno-relax");
     }
     assemble
-        .arg(root.join(format!("components/linux/tests/mqueue/{isa}.S")))
+        .arg(root.join(format!("components/linux/tests/syscall/mqueue/{isa}.S")))
         .arg("-o")
         .arg(&entry);
     execute(assemble)?;
