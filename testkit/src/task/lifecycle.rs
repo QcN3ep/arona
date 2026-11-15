@@ -10,13 +10,14 @@ use kernel::{
         Handle, HandleError, Object, ObjectReference, ObjectType, Rights, Task, TaskError,
         TaskState, TransferRequest,
     },
-    thread::{self, Thread, ThreadState, scheduler},
+    thread::{self, Thread, ThreadState, Waker, scheduler},
 };
 
 static TASK: Mutex<Option<Task>> = Mutex::new(None);
 static CHILD: Mutex<Option<Task>> = Mutex::new(None);
 static PUBLISHED: Mutex<Option<Handle>> = Mutex::new(None);
 static CHANNEL: Mutex<Option<(ChannelReference, Channel)>> = Mutex::new(None);
+static RELEASE_OWNER: Mutex<Option<Waker>> = Mutex::new(None);
 
 pub fn run() {
     let manager = memory::manager();
@@ -167,6 +168,9 @@ fn waiting_lifecycle() {
                 Ok(None)
             );
             assert_eq!(task.state(), TaskState::Created);
+            let wait = thread::prepare_wait().unwrap();
+            *RELEASE_OWNER.lock() = Some(wait.waker());
+            wait.wait().unwrap();
             task.terminate(42);
             task.terminate(99);
             assert_eq!(task.wait_until(0), Ok(Some(42)));
@@ -189,12 +193,15 @@ fn waiting_lifecycle() {
     owner.start().unwrap();
     waiter.start().unwrap();
     scheduler::run_ready().unwrap();
-    assert_eq!(owner.state(), ThreadState::Blocked);
-    assert_eq!(waiter.state(), ThreadState::Blocked);
-    while owner.state() != ThreadState::Dead(0) {
+    while RELEASE_OWNER.lock().is_none() {
         hardware::cpu().idle_until_interrupt();
         scheduler::run_ready().unwrap();
     }
+    assert_eq!(owner.state(), ThreadState::Blocked);
+    assert_eq!(waiter.state(), ThreadState::Blocked);
+    assert!(RELEASE_OWNER.lock().take().unwrap().wake());
+    scheduler::run_ready().unwrap();
+    assert_eq!(owner.state(), ThreadState::Dead(0));
     assert_eq!(waiter.state(), ThreadState::Dead(19));
     *TASK.lock() = None;
 }
