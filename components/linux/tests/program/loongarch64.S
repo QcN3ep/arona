@@ -84,7 +84,7 @@ auxv_done:
     beq $s3, $t1, exceptions
     li.d $t1, 103
     beq $s3, $t1, group
-    li.d $t1, 104
+    li.d $t1, 116
     beq $s3, $t1, timer_exec_check
     li.d $t1, 119
     beq $s3, $t1, files_write

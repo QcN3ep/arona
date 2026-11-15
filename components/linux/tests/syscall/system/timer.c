@@ -220,7 +220,7 @@ void timer_selftest(void) {
     if (child == 0) {
         set_timer(0, 0, 0, 2, 0);
         static char path[] = "/bin/linux-test";
-        static char mode[] = "h";
+        static char mode[] = "timer-exec";
         static char environment[] = "ARONA_TEST=yes";
         static char *arguments[] = {path, mode, 0};
         static char *variables[] = {environment, 0};
