@@ -379,7 +379,13 @@ impl SlabAllocator {
     fn allocate_record(&mut self) -> Result<u64, MemoryError> {
         if self.free_records == NIL {
             let backing = manager().allocate(FrameOwner::Kernel, FramePurpose::Data, 1)?;
-            let frame = backing.frames().next().unwrap().address();
+            let frame = backing.frames().next().unwrap();
+            {
+                let _allocator = manager().allocator().lock();
+                // Reclaimed boot pages and former executable pages may still be read-only in the direct map.
+                manager().direct_map.set_writable(frame, true)?;
+            }
+            let frame = frame.address();
             SlabMetadata {
                 backing: backing.head,
                 previous: NIL,
@@ -500,10 +506,16 @@ impl SlabMetadata {
 }
 
 fn read<const N: usize>(address: u64) -> [u64; N] {
+    let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
+    let mapped = manager()
+        .direct_map
+        .active_address(frame)
+        .expect("slab metadata is not directly mapped");
     let mut words = [0; N];
+    // SAFETY: The slab allocator owns its metadata pages exclusively and keeps them writable. The heap state lock serializes access.
     hardware::mmu()
-        .read_frame(
-            address & !(PAGE_SIZE as u64 - 1),
+        .read_mapped_frame(
+            mapped,
             address as usize % PAGE_SIZE / size_of::<u64>(),
             &mut words,
         )
@@ -512,9 +524,15 @@ fn read<const N: usize>(address: u64) -> [u64; N] {
 }
 
 fn write(address: u64, words: &[u64]) {
+    let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
+    let mapped = manager()
+        .direct_map
+        .active_address(frame)
+        .expect("slab metadata is not directly mapped");
+    // SAFETY: The slab allocator owns its metadata pages exclusively and keeps them writable. The heap state lock serializes access.
     hardware::mmu()
-        .write_frame(
-            address & !(PAGE_SIZE as u64 - 1),
+        .write_mapped_frame(
+            mapped,
             address as usize % PAGE_SIZE / size_of::<u64>(),
             words,
         )
