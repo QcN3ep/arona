@@ -1,15 +1,139 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use core::alloc::Layout;
+//! Check heap allocation and measure cached, growing, mapped, and mixed workloads.
+
+use alloc::boxed::Box;
+use core::{alloc::Layout, hint::black_box};
 
 use kernel::memory::{FrameOwner, FramePurpose, HeapAllocation};
 
 use super::*;
+use crate::perf::Perf;
 
 pub(super) fn run() {
     layouts();
     live_allocations();
     pressure();
+}
+
+/// Allocate and release one object per iteration after warming its slab cache.
+pub fn perf_cached(perf: &mut Perf, size: usize) {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let heap = manager.heap_stats();
+    let layout = Layout::from_size_align(size, 8).unwrap();
+    let sample = manager.allocate_heap(layout).unwrap();
+    write(&sample, 73);
+    assert_eq!(read(&sample), 73);
+    drop(sample);
+    let warmed = manager.stats();
+    let cached = manager.heap_stats();
+    perf.iter(|| manager.allocate_heap(layout).unwrap());
+    assert_eq!(manager.stats(), warmed);
+    assert_eq!(manager.heap_stats(), cached);
+    manager.reclaim_heap();
+    assert_eq!(manager.stats(), initial);
+    assert_eq!(manager.heap_stats(), heap);
+}
+
+/// Allocate 128 simultaneous 64-byte objects, release them, and reclaim caches per iteration.
+pub fn perf_grow_reclaim(perf: &mut Perf) {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let heap = manager.heap_stats();
+    let layout = Layout::from_size_align(64, 8).unwrap();
+    let mut allocations: [Option<HeapAllocation>; 128] = core::array::from_fn(|_| None);
+    perf.iter(|| {
+        for slot in &mut allocations {
+            *slot = Some(manager.allocate_heap(layout).unwrap());
+        }
+        black_box(&allocations);
+        for slot in &mut allocations {
+            drop(slot.take());
+        }
+        manager.reclaim_heap();
+    });
+    assert!(allocations.iter().all(Option::is_none));
+    assert_eq!(manager.heap_stats(), heap);
+    assert_eq!(manager.stats(), initial);
+}
+
+/// Allocate, map, unmap, and release one large heap object per iteration.
+pub fn perf_large(perf: &mut Perf, size: usize) {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let heap = manager.heap_stats();
+    let layout = Layout::from_size_align(size, PAGE_SIZE).unwrap();
+    let sample = manager.allocate_heap(layout).unwrap();
+    assert_eq!(sample.capacity(), size);
+    write(&sample, 91);
+    assert_eq!(read(&sample), 91);
+    drop(sample);
+    perf.iter(|| manager.allocate_heap(layout).unwrap());
+    assert_eq!(manager.heap_stats(), heap);
+    assert_eq!(manager.stats(), initial);
+}
+
+/// Allocate 48 objects cycling through 16, 64, 256, 2048, 4096, and 16384 bytes.
+/// Replace every third object, then release everything and reclaim caches per iteration.
+pub fn perf_mixed(perf: &mut Perf) {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let heap = manager.heap_stats();
+    let layouts =
+        [16, 64, 256, 2048, 4096, 16384].map(|size| Layout::from_size_align(size, 8).unwrap());
+    let mut allocations: [Option<HeapAllocation>; 48] = core::array::from_fn(|_| None);
+    perf.iter(|| {
+        for (index, slot) in allocations.iter_mut().enumerate() {
+            *slot = Some(
+                manager
+                    .allocate_heap(layouts[index % layouts.len()])
+                    .unwrap(),
+            );
+        }
+        black_box(&allocations);
+        for index in (0..allocations.len()).step_by(3) {
+            drop(allocations[index].take());
+        }
+        for index in (0..allocations.len()).step_by(3) {
+            allocations[index] = Some(
+                manager
+                    .allocate_heap(layouts[(index + 1) % layouts.len()])
+                    .unwrap(),
+            );
+        }
+        black_box(&allocations);
+        for slot in &mut allocations {
+            drop(slot.take());
+        }
+        manager.reclaim_heap();
+    });
+    assert!(allocations.iter().all(Option::is_none));
+    assert_eq!(manager.heap_stats(), heap);
+    assert_eq!(manager.stats(), initial);
+}
+
+/// Allocate, initialize, and release one global Box per iteration after warming its allocator path.
+pub fn perf_box<const SIZE: usize>(perf: &mut Perf) {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let heap = manager.heap_stats();
+    let sample = black_box(Box::new([black_box(0xa5u8); SIZE]));
+    assert!(sample.iter().all(|&value| value == 0xa5));
+    drop(sample);
+    let warmed = manager.stats();
+    let cached = manager.heap_stats();
+    perf.iter(|| Box::new([black_box(0xa5u8); SIZE]));
+    assert_eq!(manager.stats(), warmed);
+    assert_eq!(manager.heap_stats(), cached);
+    manager.reclaim_heap();
+    assert_eq!(manager.stats(), initial);
+    assert_eq!(manager.heap_stats(), heap);
 }
 
 fn layouts() {

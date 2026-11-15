@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+//! Check page references and measure reference and access acquisition with release.
+
 use alloc::collections::BTreeSet;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
@@ -10,6 +12,7 @@ use kernel::{
 };
 
 use super::*;
+use crate::perf::Perf;
 
 static LIVE: Mutex<BTreeSet<Frame>> = Mutex::new(BTreeSet::new());
 static SHARED: Mutex<Option<HeapArc<FrameAllocation>>> = Mutex::new(None);
@@ -20,6 +23,53 @@ pub(super) fn run() {
     zeroed();
     references();
     access();
+}
+
+/// Acquire and release one temporary allocation reference per iteration.
+pub fn perf_reference(perf: &mut Perf) {
+    let manager = memory::manager();
+    let initial = manager.stats();
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
+        .unwrap();
+    let info = allocation.info();
+    perf.iter(|| allocation.reference(ReferenceKind::Temporary).unwrap());
+    assert_eq!(allocation.info(), info);
+    drop(allocation);
+    assert_eq!(manager.stats(), initial);
+}
+
+/// Acquire and release one page access reference per iteration, without reading or writing data.
+/// Warm the direct-map permissions before measuring repeated acquisitions.
+pub fn perf_access(perf: &mut Perf, access: FrameAccess) {
+    let manager = memory::manager();
+    let initial = manager.stats();
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
+        .unwrap();
+    let frame = first_frame(&allocation);
+    let kind = if access == FrameAccess::Execute {
+        ReferenceKind::Mapping
+    } else {
+        ReferenceKind::Temporary
+    };
+    allocation
+        .access(frame, ReferenceKind::Temporary, FrameAccess::Write)
+        .unwrap()
+        .write(0, &[73])
+        .unwrap();
+    drop(allocation.access(frame, kind, access).unwrap());
+    let info = allocation.info();
+    perf.iter(|| allocation.access(frame, kind, access).unwrap());
+    assert_eq!(allocation.info(), info);
+    let writer = allocation
+        .access(frame, ReferenceKind::Temporary, FrameAccess::Write)
+        .unwrap();
+    let mut value = [0];
+    writer.read(0, &mut value).unwrap();
+    assert_eq!(value, [73]);
+    drop((writer, allocation));
+    assert_eq!(manager.stats(), initial);
 }
 
 fn zeroed() {

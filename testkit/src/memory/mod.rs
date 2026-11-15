@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-mod address_space;
-mod direct_map;
-mod frame;
-mod frame_allocator;
-mod heap_allocator;
+//! Exercise memory ownership, allocation, mappings, and their performance on real hardware interfaces.
 
-pub use frame_allocator::perf_allocate_free_frame;
+pub mod address_space;
+mod direct_map;
+pub mod frame;
+pub mod frame_allocator;
+pub mod heap_allocator;
+pub mod stack;
 
 use kernel::{
     hardware::{self, mmu::PAGE_SIZE},

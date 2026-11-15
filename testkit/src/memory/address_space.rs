@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use kernel::memory::{FrameAccess, FrameOwner, FramePurpose, ReferenceKind, USER_ADDRESS_RANGE};
+//! Check address spaces and measure mapping, protection, lookup, and reservation operations.
+
+use core::hint::black_box;
+
+use kernel::memory::{
+    FrameAccess, FrameOwner, FramePurpose, ReferenceKind, USER_ADDRESS_RANGE,
+    allocated_address_spaces,
+};
 
 use super::*;
+use crate::perf::Perf;
 
 pub(super) fn run() {
     mappings();
@@ -11,6 +19,164 @@ pub(super) fn run() {
     permissions();
     invalid_requests();
     exhaustion();
+}
+
+/// Create and destroy one inactive user address space per iteration.
+pub fn perf_create_drop(perf: &mut Perf) {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let spaces = allocated_address_spaces();
+    perf.iter(|| AddressSpace::new().unwrap());
+    assert_eq!(allocated_address_spaces(), spaces);
+    manager.reclaim_heap();
+    assert_eq!(manager.stats(), initial);
+}
+
+/// Map and unmap prepared physical pages at a fixed user address per iteration.
+pub fn perf_map_unmap(perf: &mut Perf, pages: u64) {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let space = AddressSpace::new().unwrap();
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, pages)
+        .unwrap();
+    let options = MappingOptions::new(PagePermissions::ReadWrite);
+    let mapped = space
+        .map_at(ADDRESS, &allocation, 0..pages, options)
+        .unwrap();
+    space.unmap(mapped).unwrap();
+    let warmed = manager.stats();
+    let heap = manager.heap_stats();
+    let info = allocation.info();
+    perf.iter(|| {
+        let mapped = space
+            .map_at(ADDRESS, &allocation, 0..pages, options)
+            .unwrap();
+        space.unmap(mapped).unwrap();
+    });
+    assert_eq!(space.query(ADDRESS).unwrap(), None);
+    assert_eq!(space.query(mapped.end - 1).unwrap(), None);
+    assert_eq!(allocation.info(), info);
+    assert_eq!(manager.stats(), warmed);
+    assert_eq!(manager.heap_stats(), heap);
+    drop((space, allocation));
+    manager.reclaim_heap();
+    assert_eq!(manager.stats(), initial);
+}
+
+/// Change one mapped page from RW to `permissions` and back to RW per iteration.
+pub fn perf_protect(perf: &mut Perf, permissions: PagePermissions) {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let space = AddressSpace::new().unwrap();
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
+        .unwrap();
+    let mapped = space
+        .map_at(ADDRESS, &allocation, 0..1, mutable_code())
+        .unwrap();
+    let info = allocation.info();
+    let before = manager.stats();
+    perf.iter(|| {
+        space.protect(mapped, permissions).unwrap();
+        space.protect(mapped, PagePermissions::ReadWrite).unwrap();
+    });
+    let mapping = space.query(ADDRESS).unwrap().unwrap().mapping.unwrap();
+    assert_eq!(mapping.attributes.permissions, PagePermissions::ReadWrite);
+    assert_eq!(allocation.info(), info);
+    assert_eq!(manager.stats(), before);
+    let writer = allocation
+        .access(
+            first_frame(&allocation),
+            ReferenceKind::Temporary,
+            FrameAccess::Write,
+        )
+        .unwrap();
+    writer.write(0, &[73]).unwrap();
+    let mut value = [0];
+    writer.read(0, &mut value).unwrap();
+    assert_eq!(value, [73]);
+    drop(writer);
+    space.unmap(mapped).unwrap();
+    drop((space, allocation));
+    manager.reclaim_heap();
+    assert_eq!(manager.stats(), initial);
+}
+
+/// Query fixed hits or holes among `entries` mappings, with four lookups per iteration.
+pub fn perf_query(perf: &mut Perf, entries: usize, hit: bool) {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let space = AddressSpace::new().unwrap();
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, entries as u64)
+        .unwrap();
+    for index in 0..entries {
+        space
+            .map_at(
+                ADDRESS + 2 * index * PAGE_SIZE,
+                &allocation,
+                index as u64..index as u64 + 1,
+                MappingOptions::new(PagePermissions::ReadOnly),
+            )
+            .unwrap();
+    }
+    let addresses = [0, entries / 3, entries / 2, entries - 1]
+        .map(|index| ADDRESS + (2 * index + usize::from(!hit)) * PAGE_SIZE);
+    let expected = addresses.map(|address| space.query(address).unwrap());
+    assert!(expected.iter().all(|mapping| mapping.is_some() == hit));
+    let before = manager.stats();
+    perf.iter(|| {
+        for address in black_box(addresses) {
+            black_box(space.query(address).unwrap());
+        }
+    });
+    assert_eq!(
+        addresses.map(|address| space.query(address).unwrap()),
+        expected
+    );
+    assert_eq!(manager.stats(), before);
+    drop((space, allocation));
+    manager.reclaim_heap();
+    assert_eq!(manager.stats(), initial);
+}
+
+/// Reserve and release four pages among 16 fixed background ranges per iteration.
+pub fn perf_reserve_release(perf: &mut Perf) {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let space = AddressSpace::new().unwrap();
+    let occupied = core::array::from_fn::<_, 16, _>(|index| {
+        range(USER_ADDRESS_RANGE.start + index * 8 * PAGE_SIZE, 4)
+    });
+    for reserved in occupied {
+        space.reserve_at(reserved).unwrap();
+    }
+    let sample = space.reserve(4 * PAGE_SIZE, PAGE_SIZE).unwrap();
+    assert!(occupied.iter().all(|&occupied| !occupied.overlaps(sample)));
+    space.unreserve(sample).unwrap();
+    let warmed = manager.stats();
+    let heap = manager.heap_stats();
+    perf.iter(|| {
+        let reserved = space.reserve(4 * PAGE_SIZE, PAGE_SIZE).unwrap();
+        space.unreserve(reserved).unwrap();
+    });
+    assert_eq!(space.query(sample.start).unwrap(), None);
+    for reserved in occupied {
+        let entry = space.query(reserved.start).unwrap().unwrap();
+        assert!(entry.mapping.is_none());
+        assert_eq!(entry.range, reserved);
+    }
+    assert_eq!(manager.stats(), warmed);
+    assert_eq!(manager.heap_stats(), heap);
+    drop(space);
+    manager.reclaim_heap();
+    assert_eq!(manager.stats(), initial);
 }
 
 fn mappings() {

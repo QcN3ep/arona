@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use kernel::memory::{FrameOwner, FramePool, FramePurpose};
+//! Check page allocation and measure allocation with free and fragmented pools.
+
+use kernel::memory::{FrameAllocation, FrameOwner, FramePool, FramePurpose};
+
+use crate::perf::Perf;
 
 use super::*;
 
@@ -12,15 +16,77 @@ pub(super) fn run(regions: &[MemoryRegion]) {
     contiguous();
 }
 
-/// Measure allocating, zeroing, and releasing one kernel data page per iteration.
-pub fn perf_allocate_free_frame(perf: &mut crate::perf::Perf) {
+/// Allocate, zero, and release `pages` data pages per iteration.
+pub fn perf_allocate_free(perf: &mut Perf, owner: FrameOwner, pages: u64) {
     let manager = memory::manager();
     let initial = manager.stats();
+    perf.iter(|| manager.allocate(owner, FramePurpose::Data, pages).unwrap());
+    assert_eq!(manager.stats(), initial);
+}
+
+/// Allocate, zero, and release a contiguous block aligned to its size per iteration.
+/// Prepare a coalesced free pool before measuring steady-state allocation.
+pub fn perf_contiguous(perf: &mut Perf, owner: FrameOwner, pages: u64) {
+    let manager = memory::manager();
+    let initial = manager.stats();
+    let available = match owner.pool() {
+        FramePool::Kernel => initial.kernel.free_frames,
+        FramePool::User => initial.user.free_frames,
+    };
+    // Initial pool partitioning can leave adjacent free blocks unmerged.
+    drop(
+        manager
+            .allocate(owner, FramePurpose::Data, available)
+            .unwrap(),
+    );
+    let alignment = pages * PAGE;
+    let sample = manager
+        .allocate_contiguous(owner, FramePurpose::Data, pages, alignment)
+        .unwrap();
+    assert!(first_frame(&sample).address().is_multiple_of(alignment));
+    let start = first_frame(&sample).address();
+    assert!(
+        sample
+            .frames()
+            .enumerate()
+            .all(|(index, frame)| { frame.address() == start + index as u64 * PAGE })
+    );
+    drop(sample);
     perf.iter(|| {
         manager
-            .allocate(FrameOwner::Kernel, FramePurpose::Data, 1)
+            .allocate_contiguous(owner, FramePurpose::Data, pages, alignment)
             .unwrap()
     });
+    assert_eq!(manager.stats(), initial);
+}
+
+/// Allocate and release 16 pages with only 32 isolated single-page holes available.
+pub fn perf_fragmented(perf: &mut Perf, owner: FrameOwner) {
+    let manager = memory::manager();
+    let initial = manager.stats();
+    let available = match owner.pool() {
+        FramePool::Kernel => initial.kernel.free_frames,
+        FramePool::User => initial.user.free_frames,
+    };
+    let held = manager
+        .allocate(owner, FramePurpose::Data, available - 64)
+        .unwrap();
+    let mut background: [Option<FrameAllocation>; 64] =
+        core::array::from_fn(|_| Some(manager.allocate(owner, FramePurpose::Data, 1).unwrap()));
+    background.sort_unstable_by_key(|allocation| first_frame(allocation.as_ref().unwrap()));
+    for index in (0..background.len()).step_by(2) {
+        background[index] = None;
+    }
+    let sample = manager.allocate(owner, FramePurpose::Data, 16).unwrap();
+    let mut frames = sample.frames();
+    let mut addresses: [_; 16] = core::array::from_fn(|_| frames.next().unwrap().address());
+    addresses.sort_unstable();
+    assert!(addresses.windows(2).all(|pair| pair[1] - pair[0] > PAGE));
+    drop(sample);
+    let fragmented = manager.stats();
+    perf.iter(|| manager.allocate(owner, FramePurpose::Data, 16).unwrap());
+    assert_eq!(manager.stats(), fragmented);
+    drop((background, held));
     assert_eq!(manager.stats(), initial);
 }
 

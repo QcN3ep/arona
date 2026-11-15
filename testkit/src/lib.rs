@@ -28,7 +28,7 @@ pub enum CaseKind {
 
 mod device;
 mod ipc;
-mod memory;
+pub mod memory;
 mod syscall;
 mod task;
 mod thread;
@@ -37,7 +37,6 @@ mod trap;
 pub use device::{run as run_devices, run_dma_failure};
 pub use ipc::run as run_ipc;
 pub use memory::concurrent as run_concurrent_memory;
-pub use memory::perf_allocate_free_frame;
 pub use memory::{run as run_memory, validate_regions as validate_memory_regions};
 pub use syscall::run as run_syscalls;
 pub use syscall::{handle_program, run_device_program, run_init_program, run_service_program};
