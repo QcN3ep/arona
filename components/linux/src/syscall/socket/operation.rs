@@ -237,7 +237,7 @@ impl<'a> Operation<'a> {
                 return Ok(Some(count));
             }
             if self.lease.is_none() {
-                if self.deadline.expired()? {
+                if self.waiting && self.deadline.expired()? {
                     return Err(if matches!(self.action, Action::Connect { .. }) {
                         EINPROGRESS
                     } else {
@@ -258,6 +258,13 @@ impl<'a> Operation<'a> {
                 }
                 self.lease = Socket::acquire(&self.description).map_err(error)?;
                 if self.lease.is_none() {
+                    if self.deadline.expired()? {
+                        return Err(if matches!(self.action, Action::Connect { .. }) {
+                            EINPROGRESS
+                        } else {
+                            EAGAIN
+                        });
+                    }
                     return Ok(None);
                 }
             }

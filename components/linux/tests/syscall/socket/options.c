@@ -54,6 +54,7 @@ static void receive_timeout(void) {
     CHECK(copy >= 0);
     length = 16;
     CHECK(SC(209, copy, 1, 20, P(&value), P(&length)) == 0 && value.nanoseconds == 30000);
+    timeout(fd, 20, 0);
     set(fd, 1, 8, 2048);
     CHECK(get(copy, 1, 8) == 4096);
     set(copy, 1, 8, 0);
@@ -135,7 +136,7 @@ static void stream_options(void) {
         for (;;) {}
     }
     CHECK(SC(57, peer) == 0);
-    timeout(client, 21, 2000000);
+    timeout(client, 21, 0);
     struct iovec input[] = {{payload, 32768}, {payload + 32768, 32768}};
     long count = SC(66, client, P(input), 2);
     CHECK(count > 0 && count <= 65536);
