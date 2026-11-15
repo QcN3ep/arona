@@ -101,7 +101,7 @@ impl Log {
             let line = format_record(record);
             let start = cursor.offset.min(line.len());
             let end = start + (line.len() - start).min(length - text.len());
-            text.extend_from_slice(&line[start..end]);
+            text.extend_from_slice(&line.as_bytes()[start..end]);
             cursor = if end == line.len() {
                 Cursor {
                     sequence: next,
