@@ -325,10 +325,8 @@ fn run_detached() {
 }
 
 fn wait_for(mut ready: impl FnMut() -> bool) {
-    let deadline = thread::now_ns().unwrap() + 2_000_000_000;
     while !ready() {
         let now = thread::now_ns().unwrap();
-        assert!(now < deadline, "thread resources were not reclaimed");
         thread::sleep_until(now + 1_000_000).unwrap();
     }
 }

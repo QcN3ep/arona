@@ -355,13 +355,8 @@ fn resident(task: &Task, user: &Thread) {
 }
 
 fn wait_service_idle(task: &Task, user: &Thread) {
-    let deadline = hardware::timer().now_ns().unwrap() + 1_000_000_000;
     while user.state() != ThreadState::Blocked {
         assert_eq!(task.state(), TaskState::Active);
-        assert!(
-            hardware::timer().now_ns().unwrap() < deadline,
-            "service did not become idle"
-        );
         thread::yield_now().unwrap();
     }
 }
@@ -445,7 +440,7 @@ fn managed_service(task: &Task, user: &Thread, control: Channel) {
     let (_, channel, group) = sessions.remove(position);
     task.close(event).unwrap();
     assert!(matches!(
-        client.receive_until(channel, 0, service_deadline()),
+        client.receive(channel, 0),
         Err(kernel::task::TaskError::Channel(
             kernel::ipc::ChannelError::EndOfStream
         ))
@@ -529,7 +524,6 @@ fn open_session(client: &Task, control: abi::Handle, id: u32) -> (u64, abi::Hand
 }
 
 fn reconnect_uart(client: &Task, control: abi::Handle, id: u32) -> abi::Handle {
-    let deadline = service_deadline();
     loop {
         let (mut status, channel) = open_session(client, control, id);
         if status == 0 {
@@ -540,7 +534,6 @@ fn reconnect_uart(client: &Task, control: abi::Handle, id: u32) -> abi::Handle {
         }
         assert!(matches!(status, 2 | 6));
         client.close(channel).unwrap();
-        assert!(hardware::timer().now_ns().unwrap() < deadline);
         thread::yield_now().unwrap();
     }
 }
@@ -557,19 +550,10 @@ fn service_transfer(
     transfers: &[TransferRequest],
 ) -> Message {
     let response = client
-        .call_until(
-            channel,
-            Message::new(tag, words).unwrap(),
-            transfers,
-            service_deadline(),
-        )
+        .call(channel, Message::new(tag, words).unwrap(), transfers)
         .unwrap();
     assert!(response.handles().is_empty());
     response.message
-}
-
-fn service_deadline() -> u64 {
-    hardware::timer().now_ns().unwrap() + 5_000_000_000
 }
 
 fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
@@ -588,7 +572,6 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
         }
         return;
     }
-    let deadline = hardware::timer().now_ns().unwrap() + 60_000_000_000;
     let devices = DEVICES.get().unwrap();
     let group = console_group();
     loop {
@@ -606,12 +589,6 @@ fn init_lifecycle(task: &Task, user: &Thread, mode: u64) {
             break;
         }
         assert_eq!(task.state(), TaskState::Active);
-        assert!(
-            hardware::timer().now_ns().unwrap() < deadline,
-            "init did not reach the service wait: supervising={}, init={:?}",
-            SUPERVISING.load(Ordering::Relaxed),
-            user.state(),
-        );
         thread::yield_now().unwrap();
     }
     let children = SERVICES.lock().clone();

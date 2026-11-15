@@ -58,7 +58,7 @@ The host command runs Cargo integration tests with the tmpfs host feature enable
 Architecture commands discover named cases from the test images and run each selected case in QEMU.
 `--filter NAME` selects names containing the given text, and `--list` lists cases without executing them.
 Omit `--release` for debug builds.
-`--timeout SECONDS` overrides the QEMU time limit, which is 900 seconds for filesystem and Linux cases, 300 seconds for init, and 120 seconds for other cases.
+`--timeout SECONDS` overrides the QEMU time limit, which is 900 seconds for release builds and 5400 seconds for debug builds.
 Results and logs are saved under `target/tests/TARGET/PROFILE/`, respecting `CARGO_TARGET_DIR`.
 See [Testing and Debugging](testing.md) for the test organization and prerequisites.
 

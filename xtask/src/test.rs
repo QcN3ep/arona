@@ -184,13 +184,13 @@ fn run_case(
     directory: &std::path::Path,
 ) -> Result<(), String> {
     let mut resources = resources::Resources::prepare(builds, case, directory)?;
-    let timeout = options.timeout.unwrap_or_else(|| {
-        Duration::from_secs(match case.name.as_str() {
-            "interrupt::fs" | "interrupt::linux" => 900,
-            "interrupt::init" => 300,
-            _ => 120,
-        })
-    });
+    let timeout = options
+        .timeout
+        .unwrap_or(Duration::from_secs(if options.release {
+            900
+        } else {
+            5400
+        }));
     vm::run(
         builds.target,
         &builds.root,

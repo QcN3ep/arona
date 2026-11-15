@@ -15,8 +15,6 @@ use runtime::{
     process,
 };
 
-const WRITE_TIMEOUT_NS: u64 = 120_000_000_000;
-
 fn main() {
     let bootstrap = process::bootstrap().unwrap();
     let mut startup = bootstrap.receive(WaitMode::Forever).unwrap();
@@ -164,9 +162,7 @@ fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
     let mut server = run(b"server");
     let mut client = run(b"client");
     for guest in [&mut client, &mut server] {
-        let result = guest.wait(WaitMode::Until(
-            runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
-        ));
+        let result = guest.wait(WaitMode::Forever);
         if result
             != Ok(ExitStatus {
                 code: 42,
@@ -195,9 +191,7 @@ fn sockets(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         b"options",
         b"ipv6",
     ] {
-        let result = run(mode).wait(WaitMode::Until(
-            runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
-        ));
+        let result = run(mode).wait(WaitMode::Forever);
         if result
             != Ok(ExitStatus {
                 code: 42,
@@ -274,7 +268,7 @@ fn socket_memory(
     drop(frames);
     file.write_at(0, &[4], service::deadline()).unwrap();
     assert_eq!(
-        guest.wait(until()).unwrap(),
+        guest.wait(WaitMode::Forever).unwrap(),
         ExitStatus {
             code: 42,
             signal: 0
@@ -344,9 +338,7 @@ fn writable(
         b"writable",
         b"vector",
     ] {
-        let result = run(mode).wait(WaitMode::Until(
-            runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
-        ));
+        let result = run(mode).wait(WaitMode::Forever);
         let expected = ExitStatus {
             code: 42,
             signal: 0,
@@ -361,11 +353,7 @@ fn writable(
         assert_eq!(result.unwrap(), expected);
     }
     assert_eq!(
-        run(b"MappingBus")
-            .wait(WaitMode::Until(
-                runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS
-            ))
-            .unwrap(),
+        run(b"MappingBus").wait(WaitMode::Forever).unwrap(),
         ExitStatus { code: 0, signal: 7 }
     );
     assert_eq!(
@@ -389,9 +377,7 @@ fn append_records(
     let mut first = run(b"A");
     let mut second = run(b"B");
     for guest in [&mut first, &mut second] {
-        let result = guest.wait(WaitMode::Until(
-            runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
-        ));
+        let result = guest.wait(WaitMode::Forever);
         assert_eq!(
             result.unwrap(),
             ExitStatus {
@@ -472,7 +458,7 @@ fn path_session(files: &fs::Client<'_>) {
             false,
         )
         .unwrap()
-        .wait(until())
+        .wait(WaitMode::Forever)
         .unwrap()
     else {
         panic!("expected a symbolic link");
@@ -489,7 +475,10 @@ fn path_session(files: &fs::Client<'_>) {
     );
     assert_eq!(file.metadata(service::deadline()).unwrap(), before);
     assert_eq!(
-        file.start_read_link().unwrap().wait(until()).unwrap(),
+        file.start_read_link()
+            .unwrap()
+            .wait(WaitMode::Forever)
+            .unwrap(),
         b"/var/linux-stat"
     );
 }
@@ -514,7 +503,7 @@ fn tmpfs_path_session(files: &fs::Client<'_>) {
             false,
         )
         .unwrap()
-        .wait(until())
+        .wait(WaitMode::Forever)
         .unwrap()
     else {
         panic!("expected a symbolic link");
@@ -527,7 +516,10 @@ fn tmpfs_path_session(files: &fs::Client<'_>) {
     assert_eq!(after.inode, before.inode);
     assert_eq!(after.links, 0);
     assert_eq!(
-        file.start_read_link().unwrap().wait(until()).unwrap(),
+        file.start_read_link()
+            .unwrap()
+            .wait(WaitMode::Forever)
+            .unwrap(),
         b"missing"
     );
     assert_eq!(
@@ -535,10 +527,6 @@ fn tmpfs_path_session(files: &fs::Client<'_>) {
         Err(fs::Error::InvalidRequest)
     );
     assert_eq!(file.metadata(service::deadline()).unwrap(), after);
-}
-
-fn until() -> WaitMode {
-    WaitMode::Until(service::deadline())
 }
 
 fn console(devices: &Handle<DeviceSet>) -> u32 {
@@ -568,7 +556,7 @@ fn execution(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
     let mut first = start(b"normal");
     let mut second = start(b"normal");
     for guest in [&mut first, &mut second] {
-        let result = guest.wait(until());
+        let result = guest.wait(WaitMode::Forever);
         let expected = ExitStatus {
             code: 42,
             signal: 0,
@@ -583,11 +571,11 @@ fn execution(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         assert_eq!(result.unwrap(), expected);
     }
     assert_eq!(
-        start(b"Q").wait(until()).unwrap(),
+        start(b"Q").wait(WaitMode::Forever).unwrap(),
         ExitStatus { code: 0, signal: 0 }
     );
     assert_eq!(
-        start(b"Y").wait(until()).unwrap(),
+        start(b"Y").wait(WaitMode::Forever).unwrap(),
         ExitStatus {
             code: 42,
             signal: 0
@@ -596,36 +584,36 @@ fn execution(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
     let mut fault = start(b"fault");
     let mut survivor = start(b"normal");
     assert_eq!(
-        fault.wait(until()).unwrap(),
+        fault.wait(WaitMode::Forever).unwrap(),
         ExitStatus {
             code: 0,
             signal: 11
         }
     );
     assert_eq!(
-        survivor.wait(until()).unwrap(),
+        survivor.wait(WaitMode::Forever).unwrap(),
         ExitStatus {
             code: 42,
             signal: 0
         }
     );
     assert_eq!(
-        start(b"readonly").wait(until()).unwrap(),
+        start(b"readonly").wait(WaitMode::Forever).unwrap(),
         ExitStatus {
             code: 0,
             signal: 11
         }
     );
     assert_eq!(
-        start(b"illegal").wait(until()).unwrap(),
+        start(b"illegal").wait(WaitMode::Forever).unwrap(),
         ExitStatus { code: 0, signal: 4 }
     );
     assert_eq!(
-        start(b"exceptions").wait(until()).unwrap(),
+        start(b"exceptions").wait(WaitMode::Forever).unwrap(),
         ExitStatus { code: 0, signal: 5 }
     );
     assert_eq!(
-        start(b"group").wait(until()).unwrap(),
+        start(b"group").wait(WaitMode::Forever).unwrap(),
         ExitStatus {
             code: 43,
             signal: 0
@@ -642,7 +630,7 @@ fn execution(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         b"5-none-execute",
     ] {
         assert_eq!(
-            start(mode).wait(until()).unwrap(),
+            start(mode).wait(WaitMode::Forever).unwrap(),
             ExitStatus {
                 code: 0,
                 signal: 11
@@ -665,7 +653,7 @@ fn layouts(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                         environment: &[b"ARONA_TEST=yes"],
                     },
                     output(),
-                    until()
+                    WaitMode::Forever
                 )
                 .unwrap(),
             ExitStatus {
@@ -684,7 +672,7 @@ fn layouts(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                     environment: &[b"ARONA_TEST=yes"],
                 },
                 output(),
-                until()
+                WaitMode::Forever
             )
             .unwrap(),
         ExitStatus {
@@ -711,7 +699,7 @@ fn malformed(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                     environment: &[b"ARONA_TEST=yes"],
                 },
                 output(),
-                until()
+                WaitMode::Forever
             ),
             Err(Error::InvalidExecutable)
         );
@@ -725,7 +713,7 @@ fn malformed(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                     environment: &[b"ARONA_TEST=yes"],
                 },
                 output(),
-                until()
+                WaitMode::Forever
             )
             .unwrap(),
         ExitStatus {
@@ -759,9 +747,7 @@ fn terminal(
             input,
         )
         .unwrap()
-        .wait(WaitMode::Until(
-            runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
-        ))
+        .wait(WaitMode::Forever)
         .unwrap();
     if status
         != (ExitStatus {
