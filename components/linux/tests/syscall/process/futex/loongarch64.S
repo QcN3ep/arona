@@ -112,9 +112,10 @@ futex_restart:
     bltz $a0, futex_restart_failure
     move $s1, $a0
     st.w $zero, $sp, 16
-    st.d $zero, $sp, 32
-    li.d $t0, 800000000
-    st.d $t0, $sp, 40
+    # Leave room for debug syscall overhead while distinguishing a restarted timeout.
+    li.d $t0, 8
+    st.d $t0, $sp, 32
+    st.d $zero, $sp, 40
     li.d $a0, 1
     addi.d $a1, $sp, 64
     invoke 113
@@ -141,7 +142,7 @@ futex_restart:
     li.d $t4, 1000000000
     mul.d $t2, $t2, $t4
     add.d $t2, $t2, $t3
-    li.d $t4, 920000000
+    li.d $t4, 9200000000
     bgeu $t2, $t4, futex_restart_failure
     la.pcrel $t0, futex_restart_hits
     ld.d $t0, $t0, 0
@@ -155,9 +156,9 @@ futex_restart:
     li.d $a0, 0
     invoke 94
 futex_restart_child:
-    st.d $zero, $sp, 96
-    li.d $t0, 200000000
-    st.d $t0, $sp, 104
+    li.d $t0, 2
+    st.d $t0, $sp, 96
+    st.d $zero, $sp, 104
     addi.d $a0, $sp, 96
     li.d $a1, 0
     invoke 101
@@ -175,7 +176,7 @@ futex_restart_handler:
     addi.d $sp, $sp, -32
     st.w $zero, $sp, 0
     st.d $zero, $sp, 8
-    li.d $t0, 50000000
+    li.d $t0, 500000000
     st.d $t0, $sp, 16
     move $a0, $sp
     li.d $a1, 0

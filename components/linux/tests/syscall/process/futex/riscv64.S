@@ -112,9 +112,10 @@ futex_restart:
     bltz a0, futex_restart_failure
     mv s1, a0
     sw zero, 16(sp)
-    sd zero, 32(sp)
-    li t0, 800000000
-    sd t0, 40(sp)
+    # Leave room for debug syscall overhead while distinguishing a restarted timeout.
+    li t0, 8
+    sd t0, 32(sp)
+    sd zero, 40(sp)
     li a0, 1
     addi a1, sp, 64
     invoke 113
@@ -141,7 +142,7 @@ futex_restart:
     li t4, 1000000000
     mul t2, t2, t4
     add t2, t2, t3
-    li t4, 920000000
+    li t4, 9200000000
     bgeu t2, t4, futex_restart_failure
     la t0, futex_restart_hits
     ld t0, 0(t0)
@@ -155,9 +156,9 @@ futex_restart:
     li a0, 0
     invoke 94
 futex_restart_child:
-    sd zero, 96(sp)
-    li t0, 200000000
-    sd t0, 104(sp)
+    li t0, 2
+    sd t0, 96(sp)
+    sd zero, 104(sp)
     addi a0, sp, 96
     li a1, 0
     invoke 101
@@ -175,7 +176,7 @@ futex_restart_handler:
     addi sp, sp, -32
     sw zero, 0(sp)
     sd zero, 8(sp)
-    li t0, 50000000
+    li t0, 500000000
     sd t0, 16(sp)
     mv a0, sp
     li a1, 0
