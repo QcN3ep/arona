@@ -315,6 +315,7 @@ The PID namespace records PIDs, TIDs, parent-child relationships, process groups
 A process clone with `CLONE_VM | CLONE_VFORK` shares the parent's page frames and suspends the calling parent thread until the child executes a new image or exits.
 `wait4` and `waitid` observe child process changes, and thread exits and process group exits are handled along their respective paths.
 When requested, wait calls return the child's recorded thread execution time in the user-time fields of `rusage`.
+The peak resident set size is reported in KiB.
 The remaining resource counters are zero.
 
 A thread stores the clear-tid address and futex wait state.
@@ -335,7 +336,9 @@ Supplementary group lists are currently empty, and `setgroups` accepts an empty 
 
 `prlimit64` queries and updates the soft and hard limits of the calling process.
 The `RLIMIT_NOFILE` soft limit bounds descriptor allocation, `RLIMIT_FSIZE` truncates writes at the limit and reports `EFBIG` afterwards, `RLIMIT_AS` rejects mappings and heap growth beyond the limit, and `RLIMIT_STACK` bounds the initial stack of an executed image.
-Limits on other processes and the remaining resource kinds are recorded but not yet enforced.
+`RLIMIT_CPU` sends `SIGXCPU` at the soft limit and `SIGKILL` at the hard limit.
+Requests for another process return `ESRCH`.
+Other resource kinds are recorded without enforcement.
 
 ## Terminals and Shell
 
