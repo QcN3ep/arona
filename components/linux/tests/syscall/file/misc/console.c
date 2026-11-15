@@ -8,7 +8,7 @@ static unsigned char byte;
 
 int console_main(void) {
     static struct statx info;
-    /* The device node reports a character device without a filesystem entry. */
+    // The device node reports a character device without a filesystem entry.
     CHECK(misc_statx(path, 0, &info) == 0);
     CHECK((info.mode & 0170000) == 0020000);
     CHECK((info.mode & 0777) == 0600);
@@ -19,22 +19,22 @@ int console_main(void) {
     CHECK(SC(SYS_STATX, descriptor, P(""), AT_EMPTY_PATH, 0x7ff, P(&info)) == 0);
     CHECK((info.mode & 0170000) == 0020000);
 
-    /* The console is a terminal, so terminal ioctls answer on it. */
+    // The console is a terminal, so terminal ioctls answer on it.
     static struct termios settings;
     CHECK(misc_ioctl(descriptor, TCGETS, &settings) == 0);
     static struct winsize window;
     CHECK(misc_ioctl(descriptor, TIOCGWINSZ, &window) == 0);
 
-    /* Writes reach the console device and report their length. */
+    // Writes reach the console device and report their length.
     CHECK(misc_write(descriptor, message, sizeof(message) - 1) == (long)sizeof(message) - 1);
     CHECK(SC(SYS_READ, descriptor, P(&byte), 0) == 0);
 
-    /* A non-blocking console read reports EAGAIN while no input is queued. */
+    // A non-blocking console read reports EAGAIN while no input is queued.
     long nonblocking = misc_open(path, O_RDWR | O_NONBLOCK, 0);
     CHECK(nonblocking >= 0);
     CHECK_ERR(misc_read(nonblocking, &byte, 1), EAGAIN);
 
-    /* Read-only descriptors reject writes and the path rejects O_DIRECTORY. */
+    // Read-only descriptors reject writes and the path rejects O_DIRECTORY.
     long reader = misc_open(path, O_RDONLY, 0);
     CHECK(reader >= 0);
     CHECK_ERR(misc_write(reader, &byte, 1), EBADF);

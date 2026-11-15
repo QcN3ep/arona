@@ -14,7 +14,7 @@ static void fill(void) {
 
 int sync_main(void) {
     fill();
-    /* A clean tree still succeeds. */
+    // A clean tree still succeeds.
     CHECK(SC(SYS_SYNC) == 0);
 
     long descriptor = misc_open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
@@ -23,7 +23,7 @@ int sync_main(void) {
     CHECK(SC(SYS_SYNC) == 0);
     CHECK(misc_close(descriptor) == 0);
 
-    /* The flushed contents are readable through a new descriptor. */
+    // The flushed contents are readable through a new descriptor.
     descriptor = misc_open(path, O_RDONLY, 0);
     CHECK(descriptor >= 0);
     CHECK(misc_read_all(descriptor, buffer, sizeof(buffer)) == (long)sizeof(buffer));
@@ -33,7 +33,7 @@ int sync_main(void) {
     CHECK(misc_read(descriptor, buffer, 1) == 0);
     CHECK(misc_close(descriptor) == 0);
 
-    /* Truncation and unlinking are flushed by the same call. */
+    // Truncation and unlinking are flushed by the same call.
     descriptor = misc_open(path, O_RDWR, 0);
     CHECK(descriptor >= 0);
     CHECK(SC(SYS_FTRUNCATE, descriptor, 512) == 0);
@@ -45,7 +45,7 @@ int sync_main(void) {
     CHECK(SC(SYS_UNLINKAT, AT_FDCWD, P(path), 0) == 0);
     CHECK(SC(SYS_SYNC) == 0);
 
-    /* Repeated calls stay successful. */
+    // Repeated calls stay successful.
     CHECK(SC(SYS_SYNC) == 0);
     CHECK(SC(SYS_SYNC) == 0);
     return 42;

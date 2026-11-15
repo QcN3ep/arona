@@ -31,7 +31,7 @@ struct statx {
 struct termios { unsigned char bytes[36]; };
 struct winsize { unsigned short rows, columns, x, y; };
 
-/* REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/unistd.h?h=v6.12 */
+// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/unistd.h?h=v6.12
 #define SYS_IOCTL 29
 #define SYS_MKDIRAT 34
 #define SYS_UNLINKAT 35
@@ -72,7 +72,7 @@ struct winsize { unsigned short rows, columns, x, y; };
 
 #define SYS_FCNTL 25
 
-/* REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/fcntl.h?h=v6.12 */
+// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/fcntl.h?h=v6.12
 #define O_RDONLY 0
 #define O_WRONLY 1
 #define O_RDWR 2
@@ -113,7 +113,7 @@ struct winsize { unsigned short rows, columns, x, y; };
 #define WNOHANG 1
 #define SIGCHLD 17
 
-/* REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/errno-base.h?h=v6.12 */
+// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/errno-base.h?h=v6.12
 #define EPERM 1
 #define ENOENT 2
 #define ESRCH 3

@@ -61,7 +61,7 @@ int utimens_main(void) {
     CHECK(descriptor >= 0);
     CHECK(misc_write(descriptor, "time", 4) == 4);
 
-    /* Explicit timestamps are stored with their nanoseconds. */
+    // Explicit timestamps are stored with their nanoseconds.
     times[0].seconds = 1000;
     times[0].nanoseconds = 0;
     times[1].seconds = 2000;
@@ -73,7 +73,7 @@ int utimens_main(void) {
     CHECK(info.changed.seconds > 0);
     CHECK(info.size == 4);
 
-    /* UTIME_NOW and UTIME_OMIT apply per field. */
+    // UTIME_NOW and UTIME_OMIT apply per field.
     struct timespec before;
     CHECK(SC(SYS_CLOCK_GETTIME, 0, P(&before)) == 0);
     times[0].seconds = 0x7fffffff;
@@ -88,13 +88,13 @@ int utimens_main(void) {
     CHECK(SC(SYS_CLOCK_GETTIME, 0, P(&after)) == 0);
     CHECK(info.accessed.seconds <= after.seconds);
 
-    /* A null timestamp array sets both fields to the current time. */
+    // A null timestamp array sets both fields to the current time.
     CHECK(SC(SYS_UTIMENSAT, AT_FDCWD, P(path), 0, 0) == 0);
     CHECK(misc_statx(path, 0, &info) == 0);
     CHECK(info.accessed.seconds >= before.seconds);
     CHECK(info.modified.seconds >= before.seconds);
 
-    /* Directory-relative updates use the directory descriptor as the anchor. */
+    // Directory-relative updates use the directory descriptor as the anchor.
     long directory = misc_open("/var", O_RDONLY | O_DIRECTORY, 0);
     CHECK(directory >= 0);
     times[0].seconds = 3000;
@@ -107,7 +107,7 @@ int utimens_main(void) {
     CHECK(info.modified.seconds == 4000 && info.modified.nanoseconds == 2);
     CHECK_ERR(SC(SYS_UTIMENSAT, descriptor, P("misc-utimens"), P(times), 0), ENOTDIR);
 
-    /* AT_SYMLINK_NOFOLLOW updates the link rather than its target. */
+    // AT_SYMLINK_NOFOLLOW updates the link rather than its target.
     CHECK(SC(SYS_SYMLINKAT, P(path), AT_FDCWD, P(link_path)) == 0);
     times[0].seconds = 5000;
     times[0].nanoseconds = 0;
@@ -119,7 +119,7 @@ int utimens_main(void) {
     CHECK(misc_statx(link_path, AT_SYMLINK_NOFOLLOW, &info) == 0);
     CHECK(info.accessed.seconds == 5000 && info.modified.seconds == 6000);
 
-    /* AT_EMPTY_PATH updates the descriptor target. */
+    // AT_EMPTY_PATH updates the descriptor target.
     times[0].seconds = 7000;
     times[0].nanoseconds = 0;
     times[1].seconds = 8000;
@@ -128,7 +128,7 @@ int utimens_main(void) {
     CHECK(misc_statx(path, 0, &info) == 0);
     CHECK(info.accessed.seconds == 7000 && info.modified.seconds == 8000);
 
-    /* Omitting both fields leaves every timestamp untouched. */
+    // Omitting both fields leaves every timestamp untouched.
     struct statx previous = info;
     times[0].nanoseconds = UTIME_OMIT;
     times[1].nanoseconds = UTIME_OMIT;
@@ -139,7 +139,7 @@ int utimens_main(void) {
     CHECK(info.changed.seconds == previous.changed.seconds);
     CHECK(info.changed.nanoseconds == previous.changed.nanoseconds);
 
-    /* Invalid timestamp values, flags, and paths. */
+    // Invalid timestamp values, flags, and paths.
     struct timespec invalid[2] = {{0, 1000000000}, {0, 0}};
     CHECK_ERR(SC(SYS_UTIMENSAT, AT_FDCWD, P(path), P(invalid), 0), EINVAL);
     invalid[0].seconds = -1;
@@ -153,14 +153,14 @@ int utimens_main(void) {
     CHECK_ERR(SC(SYS_UTIMENSAT, AT_FDCWD, P(""), P(times), 0), ENOENT);
     CHECK_ERR(SC(SYS_UTIMENSAT, AT_FDCWD, P(path), 8, 0), EFAULT);
 
-    /* The read-only archive rejects timestamp updates. */
+    // The read-only archive rejects timestamp updates.
     times[0].seconds = 1;
     times[0].nanoseconds = 0;
     times[1].seconds = 1;
     times[1].nanoseconds = 0;
     CHECK_ERR(SC(SYS_UTIMENSAT, AT_FDCWD, P("/etc/linux-data"), P(times), 0), EROFS);
 
-    /* Directories accept timestamp updates as well. */
+    // Directories accept timestamp updates as well.
     CHECK(SC(SYS_MKDIRAT, AT_FDCWD, P(directory_path), 0755) == 0);
     times[0].seconds = 11;
     times[0].nanoseconds = 0;

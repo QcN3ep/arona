@@ -10,14 +10,14 @@ static void nofile(void) {
     CHECK(SC(SYS_PRLIMIT64, 0, RLIMIT_NOFILE, 0, P(&limit)) == 0);
     CHECK(limit.current == 1024 && limit.maximum == 4096);
 
-    /* Lowering the soft limit is reported and takes effect immediately. */
+    // Lowering the soft limit is reported and takes effect immediately.
     struct rlimit update = {64, 4096};
     CHECK(SC(SYS_PRLIMIT64, 0, RLIMIT_NOFILE, P(&update), P(&limit)) == 0);
     CHECK(limit.current == 1024 && limit.maximum == 4096);
     CHECK(SC(SYS_PRLIMIT64, 0, RLIMIT_NOFILE, 0, P(&limit)) == 0);
     CHECK(limit.current == 64 && limit.maximum == 4096);
 
-    /* Count the descriptors that the program already holds below the limit. */
+    // Count the descriptors that the program already holds below the limit.
     long base = 0;
     for (long fd = 0; fd < 64; ++fd) {
         if (SC(SYS_FCNTL, fd, 1, 0) >= 0) {
@@ -45,7 +45,7 @@ static void nofile(void) {
         CHECK(misc_close(descriptors[index]) == 0);
     }
 
-    /* A zero soft limit blocks every new allocation. */
+    // A zero soft limit blocks every new allocation.
     update.current = 0;
     CHECK(SC(SYS_PRLIMIT64, 0, RLIMIT_NOFILE, P(&update), 0) == 0);
     CHECK_ERR(misc_open(path, O_RDONLY, 0), EMFILE);
@@ -55,7 +55,7 @@ static void nofile(void) {
     CHECK(descriptor >= 0);
     CHECK(misc_close(descriptor) == 0);
 
-    /* Validation and identity checks. */
+    // Validation and identity checks.
     struct rlimit inverted = {2, 1};
     CHECK_ERR(SC(SYS_PRLIMIT64, 0, RLIMIT_NOFILE, P(&inverted), 0), EINVAL);
     CHECK_ERR(SC(SYS_PRLIMIT64, 0, 10, 0, P(&limit)), EINVAL);
@@ -77,7 +77,7 @@ static void file_size(void) {
     struct rlimit update = {4096, INFINITY_};
     CHECK(SC(SYS_PRLIMIT64, 0, RLIMIT_FSIZE, P(&update), 0) == 0);
 
-    /* Writes stop at the limit, and later writes report EFBIG. */
+    // Writes stop at the limit, and later writes report EFBIG.
     long descriptor = misc_open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
     CHECK(descriptor >= 0);
     for (unsigned index = 0; index < sizeof(block); ++index) {
@@ -104,14 +104,14 @@ static void address_space(void) {
     struct rlimit update = {16 * 1024 * 1024, INFINITY_};
     CHECK(SC(SYS_PRLIMIT64, 0, RLIMIT_AS, P(&update), 0) == 0);
 
-    /* A mapping larger than the limit fails, a small one still succeeds. */
+    // A mapping larger than the limit fails, a small one still succeeds.
     CHECK_ERR(SC(SYS_MMAP, 0, 64 * 1024 * 1024, PROT_READ_WRITE,
                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0), ENOMEM);
     long mapping = SC(SYS_MMAP, 0, 65536, PROT_READ_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(mapping > 0);
     CHECK(SC(SYS_MUNMAP, mapping, 65536) == 0);
 
-    /* Growing the heap past the limit reports the previous break. */
+    // Growing the heap past the limit reports the previous break.
     update.current = 4096;
     CHECK(SC(SYS_PRLIMIT64, 0, RLIMIT_AS, P(&update), 0) == 0);
     long current = SC(SYS_BRK, 0);

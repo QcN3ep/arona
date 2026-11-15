@@ -33,7 +33,7 @@ static void transfer_to_file(void) {
     long target = misc_open(target_path, O_RDWR | O_CREAT | O_TRUNC, 0600);
     CHECK(target >= 0);
 
-    /* The explicit offset transfers the requested range and advances. */
+    // The explicit offset transfers the requested range and advances.
     long offset = 5;
     CHECK(SC(SYS_SENDFILE, target, source, P(&offset), 10) == 10);
     CHECK(offset == 15);
@@ -43,17 +43,17 @@ static void transfer_to_file(void) {
         CHECK(buffer[index] == (unsigned char)('f' + index));
     }
 
-    /* Reading past the end transfers nothing. */
+    // Reading past the end transfers nothing.
     offset = 1000;
     CHECK(SC(SYS_SENDFILE, target, source, P(&offset), 10) == 0);
     CHECK(offset == 1000);
 
-    /* A zero count is a successful no-op and leaves the offset alone. */
+    // A zero count is a successful no-op and leaves the offset alone.
     offset = 7;
     CHECK(SC(SYS_SENDFILE, target, source, P(&offset), 0) == 0);
     CHECK(offset == 7);
 
-    /* Without an offset pointer the source file position advances instead. */
+    // Without an offset pointer the source file position advances instead.
     CHECK(SC(SYS_LSEEK, source, 0, 0) == 0);
     CHECK(SC(SYS_FTRUNCATE, target, 0) == 0);
     CHECK(SC(SYS_LSEEK, target, 0, 0) == 0);
@@ -65,7 +65,7 @@ static void transfer_to_file(void) {
         CHECK(buffer[index] == letters[index]);
     }
 
-    /* Boundary values and unsupported descriptor kinds. */
+    // Boundary values and unsupported descriptor kinds.
     offset = -1;
     CHECK_ERR(SC(SYS_SENDFILE, target, source, P(&offset), 10), EINVAL);
     CHECK_ERR(SC(SYS_SENDFILE, target, source, 0, -1), EINVAL);
@@ -103,7 +103,7 @@ static void transfer_to_pipe(void) {
     CHECK(SC(SYS_FCNTL, pipe_fds[1], F_SETPIPE_SZ, 4096) == 4096);
     CHECK(SC(SYS_FCNTL, pipe_fds[1], F_SETFL, O_NONBLOCK) == 0);
 
-    /* A full chunk is transferred, and a larger request reports a short count. */
+    // A full chunk is transferred, and a larger request reports a short count.
     CHECK(SC(SYS_LSEEK, source, 0, 0) == 0);
     long offset = 0;
     CHECK(SC(SYS_SENDFILE, pipe_fds[1], source, P(&offset), (long)sizeof(big)) == 4096);
@@ -113,12 +113,12 @@ static void transfer_to_pipe(void) {
     CHECK(offset == 8192);
     check_pipe_bytes(4096, 4096);
 
-    /* A full non-blocking pipe reports EAGAIN when nothing was written. */
+    // A full non-blocking pipe reports EAGAIN when nothing was written.
     CHECK(SC(SYS_SENDFILE, pipe_fds[1], source, 0, 4096) == 4096);
     CHECK_ERR(SC(SYS_SENDFILE, pipe_fds[1], source, 0, 4096), EAGAIN);
     check_pipe_bytes(4096, 0);
 
-    /* The read end of a pipe is not a destination. */
+    // The read end of a pipe is not a destination.
     CHECK_ERR(SC(SYS_SENDFILE, pipe_fds[0], source, 0, 16), EBADF);
 
     CHECK(misc_close(pipe_fds[0]) == 0);
