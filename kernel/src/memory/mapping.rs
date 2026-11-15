@@ -10,7 +10,9 @@ use crate::hardware::{
 
 const NIL: u64 = u64::MAX;
 const HEADER_WORDS: usize = 3;
-const NODE_WORDS: usize = 18;
+const TREE_WORDS: usize = 9;
+const RECORD_WORDS: usize = 9;
+const NODE_WORDS: usize = TREE_WORDS + RECORD_WORDS;
 const SLOTS: usize = (PAGE_SIZE / 8 - HEADER_WORDS) / NODE_WORDS;
 const FULL: u64 = (1 << SLOTS) - 1;
 
@@ -136,7 +138,7 @@ pub(super) struct MappingIndex {
 
 #[derive(Clone, Copy)]
 struct MappingNode {
-    record: MappingRecord,
+    range: VirtRange,
     parent: u64,
     left: u64,
     right: u64,
@@ -172,14 +174,16 @@ impl MappingIndex {
                 return false;
             }
             let node = MappingNode::read(address);
-            predicate(&node.record) || visit(node.left, predicate) || visit(node.right, predicate)
+            predicate(&MappingRecord::read(address, node.range))
+                || visit(node.left, predicate)
+                || visit(node.right, predicate)
         }
         visit(self.root, &predicate)
     }
 
     pub fn get(&self, address: usize) -> Option<MappingRecord> {
         self.find(address)
-            .map(|node| MappingNode::read(node).record)
+            .map(|(address, node)| MappingRecord::read(address, node.range))
     }
 
     pub fn next(&self, address: usize) -> Option<MappingRecord> {
@@ -187,51 +191,49 @@ impl MappingIndex {
         let mut candidate = None;
         while current != NIL {
             let node = MappingNode::read(current);
-            if address < node.record.range.start {
-                candidate = Some(node.record);
+            if address < node.range.start {
+                candidate = Some((current, node.range));
                 current = node.left;
-            } else if address >= node.record.range.end {
+            } else if address >= node.range.end {
                 current = node.right;
             } else {
-                return Some(node.record);
+                return Some(MappingRecord::read(current, node.range));
             }
         }
-        candidate
+        candidate.map(|(address, range)| MappingRecord::read(address, range))
     }
 
-    fn find(&self, address: usize) -> Option<u64> {
+    fn find(&self, address: usize) -> Option<(u64, MappingNode)> {
         let mut current = self.root;
         while current != NIL {
             let node = MappingNode::read(current);
-            if address < node.record.range.start {
+            if address < node.range.start {
                 current = node.left;
-            } else if address >= node.record.range.end {
+            } else if address >= node.range.end {
                 current = node.right;
             } else {
-                return Some(current);
+                return Some((current, node));
             }
         }
         None
     }
 
     pub fn set(&mut self, record: MappingRecord) {
-        let address = self
+        let (address, node) = self
             .find(record.range.start)
             .expect("missing mapping record");
-        let mut node = MappingNode::read(address);
-        assert_eq!(node.record.range, record.range, "mapping extent changed");
-        node.record = record;
-        node.write(address);
+        assert_eq!(node.range, record.range, "mapping extent changed");
+        record.write(address);
     }
 
     pub fn overlaps(&self, range: VirtRange) -> bool {
         let mut current = self.root;
         while current != NIL {
             let node = MappingNode::read(current);
-            if node.record.range.overlaps(range) {
+            if node.range.overlaps(range) {
                 return true;
             }
-            current = if range.end <= node.record.range.start {
+            current = if range.end <= node.range.start {
                 node.left
             } else {
                 node.right
@@ -246,10 +248,10 @@ impl MappingIndex {
         while current != NIL {
             parent = current;
             let node = MappingNode::read(current);
-            if node.record.range.overlaps(record.range) {
+            if node.range.overlaps(record.range) {
                 return Err(MemoryError::AlreadyMapped);
             }
-            current = if record.range.start < node.record.range.start {
+            current = if record.range.start < node.range.start {
                 node.left
             } else {
                 node.right
@@ -257,7 +259,7 @@ impl MappingIndex {
         }
         let address = self.allocate_node()?;
         MappingNode {
-            record,
+            range: record.range,
             parent,
             left: NIL,
             right: NIL,
@@ -267,11 +269,12 @@ impl MappingIndex {
             gap: 0,
         }
         .write(address);
+        record.write(address);
         if parent == NIL {
             self.root = address;
         } else {
             let mut node = MappingNode::read(parent);
-            if record.range.start < node.record.range.start {
+            if record.range.start < node.range.start {
                 node.left = address;
             } else {
                 node.right = address;
@@ -283,21 +286,19 @@ impl MappingIndex {
     }
 
     pub fn remove(&mut self, start: usize) -> MappingRecord {
-        let mut address = self.find(start).expect("missing mapping record");
-        let mut node = MappingNode::read(address);
-        assert_eq!(
-            node.record.range.start, start,
-            "partial reservation removal"
-        );
-        let record = node.record;
+        let (mut address, mut node) = self.find(start).expect("missing mapping record");
+        assert_eq!(node.range.start, start, "partial reservation removal");
+        let record = MappingRecord::read(address, node.range);
         if node.left != NIL && node.right != NIL {
             let mut successor = node.right;
-            while MappingNode::read(successor).left != NIL {
-                successor = MappingNode::read(successor).left;
+            let mut replacement = MappingNode::read(successor);
+            while replacement.left != NIL {
+                successor = replacement.left;
+                replacement = MappingNode::read(successor);
             }
-            let replacement = MappingNode::read(successor);
-            node.record = replacement.record;
+            node.range = replacement.range;
             node.write(address);
+            MappingRecord::read(successor, replacement.range).write(address);
             address = successor;
             node = replacement;
         }
@@ -357,10 +358,10 @@ impl MappingIndex {
         if Self::search_gap(node.left, candidate, length, alignment)? {
             return Some(true);
         }
-        if candidate.checked_add(length)? <= node.record.range.start {
+        if candidate.checked_add(length)? <= node.range.start {
             return Some(true);
         }
-        *candidate = align((*candidate).max(node.record.range.end), alignment)?;
+        *candidate = align((*candidate).max(node.range.end), alignment)?;
         Self::search_gap(node.right, candidate, length, alignment)
     }
 
@@ -382,23 +383,20 @@ impl MappingIndex {
     fn refresh(address: u64) {
         let mut node = MappingNode::read(address);
         let mut height = 0;
-        node.first = node.record.range.start;
-        node.last = node.record.range.end;
+        node.first = node.range.start;
+        node.last = node.range.end;
         node.gap = 0;
         if node.left != NIL {
             let left = MappingNode::read(node.left);
             height = left.height;
             node.first = left.first;
-            node.gap = left.gap.max(node.record.range.start - left.last);
+            node.gap = left.gap.max(node.range.start - left.last);
         }
         if node.right != NIL {
             let right = MappingNode::read(node.right);
             height = height.max(right.height);
             node.last = right.last;
-            node.gap = node
-                .gap
-                .max(right.gap)
-                .max(right.first - node.record.range.end);
+            node.gap = node.gap.max(right.gap).max(right.first - node.range.end);
         }
         node.height = height + 1;
         node.write(address);
@@ -548,72 +546,97 @@ impl MappingIndex {
 
 impl MappingNode {
     fn read(address: u64) -> Self {
-        let mut words = [0; NODE_WORDS];
+        let mut words = [0; TREE_WORDS];
         read(address, &mut words);
-        let mapping = (words[10] & 64 != 0).then(|| PageMapping {
-            physical_address: words[8],
+        Self {
+            range: VirtRange {
+                start: words[0] as usize,
+                end: words[1] as usize,
+            },
+            parent: words[2],
+            left: words[3],
+            right: words[4],
+            height: words[5],
+            first: words[6] as usize,
+            last: words[7] as usize,
+            gap: words[8] as usize,
+        }
+    }
+
+    fn write(self, address: u64) {
+        write(
+            address,
+            &[
+                self.range.start as u64,
+                self.range.end as u64,
+                self.parent,
+                self.left,
+                self.right,
+                self.height,
+                self.first as u64,
+                self.last as u64,
+                self.gap as u64,
+            ],
+        );
+    }
+}
+
+impl MappingRecord {
+    fn read(address: u64, range: VirtRange) -> Self {
+        let mut words = [0; RECORD_WORDS];
+        read(address + (TREE_WORDS * size_of::<u64>()) as u64, &mut words);
+        let mapping = (words[8] & 64 != 0).then(|| PageMapping {
+            physical_address: words[6],
             attributes: PageAttributes {
-                permissions: match words[9] & 19 {
+                permissions: match words[7] & 19 {
                     0 => PagePermissions::ReadOnly,
                     1 => PagePermissions::ReadWrite,
                     2 => PagePermissions::ReadExecute,
                     16 => PagePermissions::NoAccess,
                     _ => PagePermissions::ExecuteOnly,
                 },
-                memory_type: if words[9] & 4 != 0 {
+                memory_type: if words[7] & 4 != 0 {
                     MemoryType::Device
                 } else {
                     MemoryType::Normal
                 },
-                user_accessible: words[9] & 8 != 0,
+                user_accessible: words[7] & 8 != 0,
             },
         });
         Self {
-            record: MappingRecord {
-                range: VirtRange {
-                    start: words[0] as usize,
-                    end: words[1] as usize,
+            range,
+            generation: words[0],
+            maximum: MappingRights(words[1] as u8),
+            kind: match words[1] >> 8 {
+                0 => MappingKind::Reserved,
+                1 => MappingKind::Preparing,
+                2 => MappingKind::Mapped,
+                3 => MappingKind::Permanent {
+                    physical_start: words[6],
                 },
-                generation: words[2],
-                maximum: MappingRights(words[3] as u8),
-                kind: match words[3] >> 8 {
-                    0 => MappingKind::Reserved,
-                    1 => MappingKind::Preparing,
-                    2 => MappingKind::Mapped,
-                    3 => MappingKind::Permanent {
-                        physical_start: words[8],
-                    },
-                    4 => MappingKind::DirectMap,
-                    5 => MappingKind::Owned,
-                    6 => MappingKind::Device {
-                        physical_start: words[8],
-                    },
-                    7 => MappingKind::Guard,
-                    _ => panic!("invalid mapping kind"),
+                4 => MappingKind::DirectMap,
+                5 => MappingKind::Owned,
+                6 => MappingKind::Device {
+                    physical_start: words[6],
                 },
-                journal: MappingJournal {
-                    tables: core::array::from_fn(|i| {
-                        (words[4 + i] != NIL).then(|| Frame::new(words[4 + i]).unwrap())
-                    }),
-                    mapping,
-                    detached: words[10] & 15,
-                    written: words[10] & 16 != 0,
-                    referenced: words[10] & 32 != 0,
-                    direct_was_writable: words[10] & 128 != 0,
-                },
+                7 => MappingKind::Guard,
+                _ => panic!("invalid mapping kind"),
             },
-            parent: words[11],
-            left: words[12],
-            right: words[13],
-            height: words[14],
-            first: words[15] as usize,
-            last: words[16] as usize,
-            gap: words[17] as usize,
+            journal: MappingJournal {
+                tables: core::array::from_fn(|i| {
+                    (words[2 + i] != NIL).then(|| Frame::new(words[2 + i]).unwrap())
+                }),
+                mapping,
+                detached: words[8] & 15,
+                written: words[8] & 16 != 0,
+                referenced: words[8] & 32 != 0,
+                direct_was_writable: words[8] & 128 != 0,
+            },
         }
     }
 
     fn write(self, address: u64) {
-        let record = self.record;
+        let record = self;
         let journal = record.journal;
         let (mut physical, attributes) = journal.mapping.map_or((0, 0), |mapping| {
             let attributes = mapping.attributes;
@@ -646,10 +669,8 @@ impl MappingNode {
             MappingKind::Guard => 7,
         };
         write(
-            address,
+            address + (TREE_WORDS * size_of::<u64>()) as u64,
             &[
-                record.range.start as u64,
-                record.range.end as u64,
                 record.generation,
                 record.maximum.0 as u64 | kind << 8,
                 journal.tables[0].map_or(NIL, Frame::address),
@@ -663,13 +684,6 @@ impl MappingNode {
                     | u64::from(journal.referenced) << 5
                     | u64::from(journal.mapping.is_some()) << 6
                     | u64::from(journal.direct_was_writable) << 7,
-                self.parent,
-                self.left,
-                self.right,
-                self.height,
-                self.first as u64,
-                self.last as u64,
-                self.gap as u64,
             ],
         );
     }
