@@ -362,13 +362,6 @@ fn mqueue_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
     fs::read(executable).map_err(|error| error.to_string())
 }
 
-const FIXTURE_ENTRY: usize = 0x100;
-const FIXTURE_PATH: usize = 0x200;
-const FIXTURE_INTERPRETER: &[u8] = b"/bin/linux-interp";
-/// Illegal instruction bytes; a PT_INTERP image must never enter its main entry.
-const UNUSED_CODE: [u8; 4] = [0; 4];
-
-/// Build the PT_INTERP handoff fixtures used by the exec scenarios.
 /// Builds the guest program that exercises access, timestamp, flush, transfer,
 /// limit, and console syscalls.
 fn misc_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<u8>, String> {

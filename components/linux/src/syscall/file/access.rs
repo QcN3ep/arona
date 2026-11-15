@@ -107,12 +107,37 @@ fn descriptor<'a>(
         OpenFileDescription::Directory { session, .. } => {
             Source::Pending(session.start_metadata().map_err(filesystem_error)?)
         }
-        OpenFileDescription::Socket { .. } => Source::Ready(synthetic(0o140777, 1)),
+        OpenFileDescription::Socket { .. } | OpenFileDescription::SocketPair { .. } => {
+            Source::Ready(synthetic(0o140777, 1))
+        }
         OpenFileDescription::Pipe { end, .. } => Source::Ready(synthetic(0o010600, end.inode())),
         OpenFileDescription::Terminal { .. } => Source::Ready(synthetic(0o020600, 0)),
         OpenFileDescription::Eventfd { .. }
         | OpenFileDescription::Timerfd { .. }
         | OpenFileDescription::Signalfd { .. } => Source::Ready(synthetic(0o100600, 0x10)),
+        OpenFileDescription::Rtc { .. } => Source::Ready(synthetic(0o020600, 0x11)),
+        OpenFileDescription::VirtualDirectory { inode, .. } => {
+            Source::Ready(synthetic(0o041777, *inode))
+        }
+        OpenFileDescription::MessageQueue { queue, .. }
+        | OpenFileDescription::MqueueFile { queue, .. } => {
+            let mode = if matches!(
+                description.as_ref(),
+                OpenFileDescription::MessageQueue { .. }
+            ) {
+                queue.mode()
+            } else {
+                0o444
+            };
+            Source::Ready(fs::Metadata {
+                mode: 0o100000 | mode,
+                inode: queue.inode(),
+                links: 1,
+                uid: queue.uid(),
+                gid: queue.gid(),
+                ..fs::Metadata::default()
+            })
+        }
         OpenFileDescription::Virtual { .. } => Source::Ready(synthetic(0o020666, 0)),
         OpenFileDescription::VirtualFile { inode, .. } => {
             Source::Ready(synthetic(0o100444, *inode))
