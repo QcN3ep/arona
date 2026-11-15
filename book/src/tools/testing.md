@@ -56,12 +56,13 @@ Cases that deliberately trigger fatal exceptions declare the expected diagnostic
 Those diagnostics must appear after the selected case starts.
 
 CI runs all functional QEMU tests for both architectures in debug and release builds.
-The Rust checks, builds, and QEMU jobs use `ghcr.io/qcn3ep/arona-ci:latest`, which contains the pinned Rust toolchain, LLVM, QEMU 11.1.3, OpenSBI, Python, and ext4 tools.
+CI builds its container image before running the Rust checks, builds, and QEMU jobs, which all use the resulting image digest.
+The image contains the pinned Rust toolchain, LLVM, QEMU 11.1.3, OpenSBI, Python, and ext4 tools.
 Each QEMU job uploads the test logs, commands, and result summaries even when a test fails.
 QEMU jobs allow up to 900 seconds per case in release builds and 5400 seconds in debug builds.
 
-The `CI image` workflow publishes the image when its definition or `rust-toolchain.toml` changes on `main`.
-It can also be started manually.
+The `CI image` workflow can also be started manually.
+Pull requests from forks use the published `ghcr.io/qcn3ep/arona-ci:latest` image.
 Publish the image once and make the GHCR package public before running CI, so pull requests can use it without credentials.
 
 Performance cases use `#[testkit::kperf]` on `fn(&mut testkit::perf::Perf)` and share the same registration and selection mechanism.

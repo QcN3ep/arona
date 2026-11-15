@@ -1,29 +1,36 @@
 name: CI image
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/images/ci/**"
-      - ".github/workflows/ci-image.yml"
-      - "rust-toolchain.toml"
   workflow_dispatch:
+  workflow_call:
+    outputs:
+      image:
+        description: CI image reference
+        value: ${{ jobs.publish.outputs.image || jobs.published.outputs.image }}
 
 permissions:
   contents: read
 
-concurrency:
-  group: ci-image
-  cancel-in-progress: false
-
 jobs:
+  published:
+    name: Use published image
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ghcr.io/qcn3ep/arona-ci:latest
+    steps:
+      - run: echo 'Use the published CI image for a fork pull request'
+
   publish:
     name: Publish
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
       packages: write
+    outputs:
+      image: ghcr.io/qcn3ep/arona-ci@${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -33,10 +40,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
           file: .github/images/ci/Dockerfile
           push: true
-          tags: ghcr.io/qcn3ep/arona-ci:latest
+          tags: |
+            ghcr.io/qcn3ep/arona-ci:ci-${{ github.sha }}
+            ${{ github.ref == 'refs/heads/main' && 'ghcr.io/qcn3ep/arona-ci:latest' || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

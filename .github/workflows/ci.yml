@@ -18,11 +18,19 @@ defaults:
     shell: bash
 
 jobs:
+  image:
+    name: Image
+    uses: ./.github/workflows/ci-image.yml
+    permissions:
+      contents: read
+      packages: write
+
   check:
     name: Check
+    needs: image
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/qcn3ep/arona-ci:latest
+      image: ${{ needs.image.outputs.image }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -35,9 +43,10 @@ jobs:
 
   build:
     name: Build (${{ matrix.target }})
+    needs: image
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/qcn3ep/arona-ci:latest
+      image: ${{ needs.image.outputs.image }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -100,9 +109,10 @@ jobs:
 
   qemu:
     name: QEMU (${{ matrix.target }}, ${{ matrix.profile }})
+    needs: image
     runs-on: ubuntu-24.04
     container:
-      image: ghcr.io/qcn3ep/arona-ci:latest
+      image: ${{ needs.image.outputs.image }}
     timeout-minutes: 240
     strategy:
       fail-fast: false
