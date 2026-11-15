@@ -336,7 +336,8 @@ impl AddressSpace {
                 runtime::KernelError::InvalidArgument,
             ));
         };
-        let prepared = match self.zeroed_pages(length - placed_length, shared) {
+        let origin = pages.first().and_then(|mapped| mapped.page.origin.clone());
+        let prepared = match self.zeroed_pages(length - placed_length, shared, origin) {
             Ok(prepared) => prepared,
             Err(error) => {
                 let _ = self.unmap(start..start + placed_length);
@@ -371,7 +372,12 @@ impl AddressSpace {
             return Err(runtime::Error::Protocol);
         };
         reservation.release()?;
-        match self.map_zeroed(range, permissions, shared) {
+        let origin = self
+            .pages
+            .borrow()
+            .get(&(end - PAGE_SIZE))
+            .and_then(|page| page.origin.clone());
+        match self.map_zeroed(range, permissions, shared, origin) {
             Ok(()) => Ok(true),
             Err(runtime::Error::Kernel(
                 runtime::KernelError::Busy
