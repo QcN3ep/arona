@@ -137,9 +137,11 @@ fn build<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
 
 fn descriptor<'a>(process: &Process<'a>, raw: usize) -> Result<Rc<OpenFileDescription<'a>>, Errno> {
     let index = usize::try_from(raw as i32).map_err(|_| EBADF)?;
-    Ok(Rc::clone(
-        &process.files.get(index).ok_or(EBADF)?.description,
-    ))
+    let description = &process.files.get(index).ok_or(EBADF)?.description;
+    if description.path_only() {
+        return Err(EBADF);
+    }
+    Ok(Rc::clone(description))
 }
 
 impl<'a> Sendfile<'a> {
@@ -166,7 +168,7 @@ impl<'a> Sendfile<'a> {
             if self.written < self.buffer.len() {
                 let step = match self.write_chunk(process) {
                     Ok(step) => step,
-                    Err(error) => return Some(Err(error)),
+                    Err(error) => return Some(self.fail(process, error)),
                 };
                 match step {
                     Step::Blocked => return Some(self.finish(process)),
@@ -191,12 +193,12 @@ impl<'a> Sendfile<'a> {
                 };
                 match file.start_read_at(self.offset, length) {
                     Ok(request) => self.read = Some(request),
-                    Err(error) => return Some(Err(filesystem_error(error))),
+                    Err(error) => return Some(self.fail(process, filesystem_error(error))),
                 }
             }
             let bytes = match completion(self.read.as_mut().unwrap().try_complete())? {
                 Ok(bytes) => bytes,
-                Err(error) => return Some(Err(filesystem_error(error))),
+                Err(error) => return Some(self.fail(process, filesystem_error(error))),
             };
             self.read = None;
             if bytes.is_empty() {
@@ -303,6 +305,14 @@ impl<'a> Sendfile<'a> {
                 Ok(Step::Progress(count))
             }
             _ => Err(EINVAL),
+        }
+    }
+
+    fn fail(&mut self, process: &Process<'a>, error: Errno) -> SyscallResult {
+        if self.transferred == 0 {
+            Err(error)
+        } else {
+            self.finish(process)
         }
     }
 

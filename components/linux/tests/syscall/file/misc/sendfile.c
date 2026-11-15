@@ -91,6 +91,8 @@ static void check_pipe_bytes(unsigned long length, unsigned long source_offset) 
     }
 }
 
+static void reader_closes(long source, int explicit_offset);
+
 static void transfer_to_pipe(void) {
     long source = misc_open(big_path, O_RDWR | O_CREAT | O_TRUNC, 0600);
     CHECK(source >= 0);
@@ -121,7 +123,37 @@ static void transfer_to_pipe(void) {
 
     CHECK(misc_close(pipe_fds[0]) == 0);
     CHECK(misc_close(pipe_fds[1]) == 0);
+    reader_closes(source, 0);
+    reader_closes(source, 1);
     CHECK(misc_close(source) == 0);
+}
+
+static void reader_closes(long source, int explicit_offset) {
+    CHECK(SC(SYS_PIPE2, P(pipe_fds), 0) == 0);
+    CHECK(SC(SYS_FCNTL, pipe_fds[1], F_SETPIPE_SZ, 4096) == 4096);
+    CHECK(SC(SYS_LSEEK, source, explicit_offset ? 123 : 0, 0) >= 0);
+    long child = SC(SYS_CLONE, SIGCHLD, 0);
+    CHECK(child >= 0);
+    if (child == 0) {
+        CHECK(misc_close(pipe_fds[1]) == 0);
+        CHECK(misc_read(pipe_fds[0], buffer, 1) == 1 && buffer[0] == big[0]);
+        CHECK(misc_close(pipe_fds[0]) == 0);
+        SC(SYS_EXIT_GROUP, 0);
+        for (;;) {}
+    }
+    CHECK(misc_close(pipe_fds[0]) == 0);
+    long offset = 0;
+    long pointer = explicit_offset ? P(&offset) : 0;
+    long count = SC(SYS_SENDFILE, pipe_fds[1], source, pointer, sizeof(big));
+    CHECK(count >= 4096 && count <= 4097);
+    CHECK(SC(SYS_LSEEK, source, 0, 1) == (explicit_offset ? 123 : count));
+    CHECK(!explicit_offset || offset == count);
+    CHECK_ERR(SC(SYS_SENDFILE, pipe_fds[1], source, pointer, 1), EPIPE);
+    CHECK(SC(SYS_LSEEK, source, 0, 1) == (explicit_offset ? 123 : count));
+    CHECK(!explicit_offset || offset == count);
+    int status = -1;
+    CHECK(SC(SYS_WAIT4, child, P(&status), 0, 0) == child && status == 0);
+    CHECK(misc_close(pipe_fds[1]) == 0);
 }
 
 static long prepare_listener(struct in_address *address) {
