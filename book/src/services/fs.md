@@ -67,7 +67,9 @@ Mounting and unmounting a volume register and release its disk range respectivel
 
 Mounting starts from the superblock and checks the capacity, block size, feature bits, group layout, and inode size.
 It accepts 1024-, 2048-, and 4096-byte blocks and 128- or 256-byte inodes, using extents and typed directory entries.
-Recognized features include the internal journal, recovery flag, sparse superblock, and large file.
+The driver supports 64-byte group descriptors, flex block groups, lazy bitmap initialization, and metadata checksums.
+Indexed directories are read by scanning their leaf blocks and rewritten as linear directories when modified.
+Block addresses and the filesystem block count must fit in 32 bits.
 
 A volume stores block groups, block and inode bitmaps, the inode table, the block cache, and the identities of open nodes.
 When looking up a file, a directory entry gives the inode, and the extent in the inode converts the file's logical blocks into disk blocks.

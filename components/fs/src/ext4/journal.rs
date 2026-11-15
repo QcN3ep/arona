@@ -76,7 +76,7 @@ impl Journal {
             || be(&bytes, 28) != 0 && !(first..length).contains(&be(&bytes, 28))
             || be(&bytes, 32) != 0
             || be(&bytes, 36) != 0
-            || features & !(1 | CSUM_V3) != 0
+            || features & !(3 | CSUM_V3) != 0
             || be(&bytes, 44) != 0
             || bytes[48..64] != *uuid
             || be(&bytes, 64) != 1
@@ -294,16 +294,24 @@ impl Replay<'_> {
                     let end = be(&bytes, 12) as usize;
                     let limit =
                         self.journal.block_size - if self.journal.checksummed { 4 } else { 0 };
+                    let size = if be(&self.journal.superblock, 40) & 2 != 0 {
+                        8
+                    } else {
+                        4
+                    };
                     if end < 16
                         || end > limit
-                        || !end.is_multiple_of(4)
+                        || !(end - 16).is_multiple_of(size)
                         || self.journal.checksummed
                             && !verify(&bytes, self.journal.block_size - 4, self.journal.seed)
                     {
                         return Err(Error::InvalidData);
                     }
-                    for offset in (16..end).step_by(4) {
-                        let number = be(&bytes, offset);
+                    for offset in (16..end).step_by(size) {
+                        if size == 8 && be(&bytes, offset) != 0 {
+                            return Err(Error::Unsupported);
+                        }
+                        let number = be(&bytes, offset + size - 4);
                         self.validate_target(number)?;
                         transaction.revoked.insert(number);
                     }
@@ -314,7 +322,14 @@ impl Replay<'_> {
     }
 
     fn descriptor(&mut self, bytes: &[u8], transaction: &mut Transaction) -> Result<(), Error> {
-        let size = if self.journal.checksummed { 16 } else { 8 };
+        let wide = be(&self.journal.superblock, 40) & 2 != 0;
+        let size = if self.journal.checksummed {
+            16
+        } else if wide {
+            12
+        } else {
+            8
+        };
         let limit = self.journal.block_size - if self.journal.checksummed { 4 } else { 0 };
         if self.journal.checksummed
             && !verify(bytes, self.journal.block_size - 4, self.journal.seed)
@@ -334,7 +349,7 @@ impl Replay<'_> {
             };
             if flags & !15 != 0
                 || flags & 4 != 0
-                || self.journal.checksummed && be(bytes, offset + 8) != 0
+                || (self.journal.checksummed || wide) && be(bytes, offset + 8) != 0
             {
                 return Err(Error::InvalidData);
             }
@@ -421,7 +436,7 @@ fn put(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
 }
 
-fn crc32c(mut crc: u32, bytes: &[u8]) -> u32 {
+pub(super) fn crc32c(mut crc: u32, bytes: &[u8]) -> u32 {
     for byte in bytes {
         crc = (crc >> 8) ^ CRC32C[((crc ^ u32::from(*byte)) & 0xff) as usize];
     }

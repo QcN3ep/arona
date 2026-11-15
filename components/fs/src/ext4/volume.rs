@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use super::FileIdentity;
-use super::{half, inode::Inode, journal::Journal, word};
+use super::{
+    checksum::Checksum,
+    half,
+    inode::Inode,
+    journal::{Journal, crc32c},
+    word,
+};
 use crate::{
     Error,
     block::{Disk, MAX_BLOCK_SIZE},
 };
 use alloc::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     rc::{Rc, Weak},
     vec::Vec,
 };
@@ -24,6 +30,11 @@ pub(super) struct Volume {
     pub first_data_block: u32,
     pub descriptors_per_block: u32,
     pub descriptor_blocks: u32,
+    pub descriptor_size: usize,
+    pub checksum: Checksum,
+    pub reserved: Vec<core::ops::Range<u32>>,
+    pub verified_bitmaps: BTreeMap<u32, Weak<[u8; MAX_BLOCK_SIZE]>>,
+    pub(super) reserved_gdt: u16,
     pub(super) dirty: bool,
     pub(super) closed: bool,
     pub(super) journal: Option<Journal>,
@@ -37,6 +48,7 @@ pub(super) struct Volume {
     pub groups: Vec<Group>,
     sparse: bool,
     pub(super) cache: BTreeMap<u32, Rc<[u8; MAX_BLOCK_SIZE]>>,
+    recent: VecDeque<u32>,
     pub(super) pending: BTreeMap<u32, Rc<[u8; MAX_BLOCK_SIZE]>>,
     pub(super) failure: Option<Error>,
     pub(super) open: BTreeMap<u32, Weak<FileIdentity>>,
@@ -49,6 +61,8 @@ pub(super) struct Group {
 }
 
 struct Superblock {
+    descriptor_size: usize,
+    checksum: Checksum,
     block_size: usize,
     first_data_block: u32,
     blocks: u32,
@@ -67,13 +81,25 @@ impl Superblock {
             || word(sb, 20) != u32::from(log_block_size == 0)
             || word(sb, 28) != log_block_size
             || word(sb, 76) != 1
-            || word(sb, 92) & !4 != 0
-            || word(sb, 96) & !0x46 != 0
+            || word(sb, 92) & !0x3c != 0
+            || word(sb, 96) & !0x2c6 != 0
             || word(sb, 96) & 0x42 != 0x42
-            || word(sb, 100) & !3 != 0
+            || word(sb, 100) & !0x46b != 0
             || half(sb, 58) & !1 != 0
             || word(sb, 336) != 0
             || !matches!(half(sb, 88), 128 | 256)
+        {
+            return Err(Error::Unsupported);
+        }
+        let checksum = Checksum {
+            enabled: word(sb, 100) & 0x400 != 0,
+            seed: crc32c(!0, &sb[104..120]),
+        };
+        if checksum.enabled && (sb[373] != 1 || crc32c(!0, &sb[..1020]) != word(sb, 1020)) {
+            return Err(Error::InvalidData);
+        }
+        let descriptor_size = if word(sb, 96) & 0x80 != 0 { 64 } else { 32 };
+        if descriptor_size == 64 && half(sb, 254) != 64 || word(sb, 340) != 0 || word(sb, 344) != 0
         {
             return Err(Error::Unsupported);
         }
@@ -89,11 +115,15 @@ impl Superblock {
             || blocks_per_group == 0
             || u64::from(blocks_per_group) > block_size as u64 * 8
             || inodes_per_group == 0
+            || !blocks_per_group.is_multiple_of(8)
+            || !inodes_per_group.is_multiple_of(8)
             || u64::from(inodes_per_group) > block_size as u64 * 8
         {
             return Err(Error::InvalidData);
         }
         Ok(Self {
+            descriptor_size,
+            checksum,
             block_size,
             first_data_block,
             blocks,
@@ -130,9 +160,9 @@ impl Volume {
         if superblock.inodes.div_ceil(superblock.inodes_per_group) != count {
             return Err(Error::InvalidData);
         }
-        let descriptors_per_block = (superblock.block_size / 32) as u32;
-        let descriptor_blocks =
-            (u64::from(count) * 32).div_ceil(superblock.block_size as u64) as u32;
+        let descriptors_per_block = (superblock.block_size / superblock.descriptor_size) as u32;
+        let descriptor_blocks = (u64::from(count) * superblock.descriptor_size as u64)
+            .div_ceil(superblock.block_size as u64) as u32;
         let device = crate::metadata::device_identity()?;
         let mount = crate::metadata::mount_identity()?;
         disk.claim(start, length)?;
@@ -145,6 +175,15 @@ impl Volume {
             first_data_block: superblock.first_data_block,
             descriptors_per_block,
             descriptor_blocks,
+            descriptor_size: superblock.descriptor_size,
+            checksum: superblock.checksum,
+            reserved: Vec::new(),
+            verified_bitmaps: BTreeMap::new(),
+            reserved_gdt: if word(sb, 92) & 0x10 != 0 {
+                half(sb, 206)
+            } else {
+                0
+            },
             dirty: false,
             closed: false,
             journal: None,
@@ -158,6 +197,7 @@ impl Volume {
             groups: Vec::new(),
             sparse: superblock.sparse,
             cache: BTreeMap::new(),
+            recent: VecDeque::new(),
             pending: BTreeMap::new(),
             failure: None,
             open: BTreeMap::new(),
@@ -191,8 +231,12 @@ impl Volume {
         operation: impl FnOnce(&mut [u8]) -> Result<(), Error>,
     ) -> Result<(), Error> {
         let base = self.superblock_offset();
+        let checksum = self.checksum;
         self.edit(self.first_data_block, |bytes| {
-            operation(&mut bytes[base..base + SUPERBLOCK_SIZE])
+            let sb = &mut bytes[base..base + SUPERBLOCK_SIZE];
+            operation(sb)?;
+            checksum.superblock(sb);
+            Ok(())
         })
     }
 
@@ -211,64 +255,18 @@ impl Volume {
             .ok_or(Error::InvalidData)
     }
 
-    fn load_groups(&mut self) -> Result<(), Error> {
-        let count = self
-            .blocks
-            .saturating_sub(self.first_data_block)
-            .div_ceil(self.blocks_per_group);
-        let tables = (u64::from(self.inodes_per_group) * self.inode_size as u64)
-            .div_ceil(self.block_size as u64) as u32;
-        for index in 0..count {
-            let descriptor =
-                self.block(self.first_data_block + 1 + index / self.descriptors_per_block)?;
-            let offset = (index % self.descriptors_per_block) as usize * 32;
-            let group = Group {
-                block_bitmap: word(&descriptor[..], offset),
-                inode_bitmap: word(&descriptor[..], offset + 4),
-                inode_table: word(&descriptor[..], offset + 8),
-            };
-            let first = self.group_start(index);
-            let last = first.saturating_add(self.blocks_per_group).min(self.blocks);
-            let reserved_end = first
-                + if self.has_super(index) {
-                    1 + self.descriptor_blocks
-                } else {
-                    0
-                };
-            if last <= first
-                || half(&descriptor[..], offset + 18) & !4 != 0
-                || group.block_bitmap < reserved_end
-                || group.block_bitmap >= last
-                || group.inode_bitmap < reserved_end
-                || group.inode_bitmap >= last
-                || group.inode_table < reserved_end
-                || group
-                    .inode_table
-                    .checked_add(tables)
-                    .is_none_or(|end| end > last)
-                || group.block_bitmap == group.inode_bitmap
-                || (group.inode_table..group.inode_table + tables).contains(&group.block_bitmap)
-                || (group.inode_table..group.inode_table + tables).contains(&group.inode_bitmap)
-            {
-                return Err(Error::InvalidData);
-            }
-            self.groups.push(group);
-        }
-        Ok(())
-    }
-
     pub fn statistics(&mut self) -> Result<crate::Statistics, Error> {
         let mut free_blocks = 0;
         let mut free_files = 0;
         for index in 0..self.groups.len() {
-            let bitmap = self.block(self.groups[index].block_bitmap)?;
+            let bitmap = self.group_bitmap(index, false)?;
             free_blocks += count_free(
                 &bitmap[..],
                 index,
                 self.blocks_per_group,
                 self.blocks - self.first_data_block,
             );
-            let bitmap = self.block(self.groups[index].inode_bitmap)?;
+            let bitmap = self.group_bitmap(index, true)?;
             free_files += count_free(&bitmap[..], index, self.inodes_per_group, self.inodes);
         }
         Ok(crate::Statistics {
@@ -298,20 +296,42 @@ impl Volume {
         if let Some(bytes) = self.pending.get(&number) {
             return Ok(Rc::clone(bytes));
         }
-        if let Some(bytes) = self.cache.get(&number) {
-            return Ok(Rc::clone(bytes));
+        if let Some(bytes) = self.cache.get(&number).cloned() {
+            self.touch_block(number);
+            return Ok(bytes);
         }
         let mut bytes = [0; MAX_BLOCK_SIZE];
         self.disk.read(
             self.start + u64::from(number) * self.block_size as u64,
             &mut bytes[..self.block_size],
         )?;
-        if self.cache.len() == 64 {
-            self.cache.pop_first();
-        }
         let bytes = Rc::new(bytes);
-        self.cache.insert(number, Rc::clone(&bytes));
+        self.cache_block(number, Rc::clone(&bytes));
         Ok(bytes)
+    }
+
+    pub(super) fn cache_block(&mut self, number: u32, bytes: Rc<[u8; MAX_BLOCK_SIZE]>) {
+        if !self.cache.contains_key(&number)
+            && self.cache.len() == 64
+            && let Some(oldest) = self.recent.pop_front()
+        {
+            self.cache.remove(&oldest);
+        }
+        self.cache.insert(number, bytes);
+        self.touch_block(number);
+    }
+
+    fn touch_block(&mut self, number: u32) {
+        if let Some(position) = self.recent.iter().position(|cached| *cached == number) {
+            self.recent.remove(position);
+        }
+        self.recent.push_back(number);
+    }
+
+    pub(super) fn clear_cache(&mut self) {
+        self.cache.clear();
+        self.recent.clear();
+        self.verified_bitmaps.clear();
     }
 
     pub fn data_block(&self, number: u32) -> bool {
@@ -324,26 +344,10 @@ impl Volume {
         {
             return false;
         }
-        let index = (number - self.first_data_block) / self.blocks_per_group;
-        let Some(group) = self.groups.get(index as usize) else {
-            return false;
-        };
-        let first = self.group_start(index);
-        let tables = (u64::from(self.inodes_per_group) * self.inode_size as u64)
-            .div_ceil(self.block_size as u64) as u32;
-        let reserved_end = first
-            + if self.has_super(index) {
-                1 + self.descriptor_blocks
-            } else {
-                0
-            };
-        number >= reserved_end
-            && number != group.block_bitmap
-            && number != group.inode_bitmap
-            && !(group.inode_table..group.inode_table + tables).contains(&number)
+        !self.reserved.iter().any(|range| range.contains(&number))
     }
 
-    fn has_super(&self, group: u32) -> bool {
+    pub(super) fn has_super(&self, group: u32) -> bool {
         if !self.sparse || group <= 1 {
             return true;
         }
@@ -366,7 +370,7 @@ impl Volume {
         let group = self.group_index(number)?;
         let first = self.group_start(group);
         let bit = number - first;
-        let bitmap = self.block(self.groups[group as usize].block_bitmap)?;
+        let bitmap = self.group_bitmap(group as usize, false)?;
         Ok(bitmap[bit as usize / 8] & (1 << (bit % 8)) != 0)
     }
 
@@ -376,17 +380,20 @@ impl Volume {
         }
         let group = (number - 1) / self.inodes_per_group;
         let bit = (number - 1) % self.inodes_per_group;
-        let bitmap = self.block(self.groups[group as usize].inode_bitmap)?;
+        let bitmap = self.group_bitmap(group as usize, true)?;
         if bitmap[bit as usize / 8] & (1 << (bit % 8)) == 0 {
             return Err(Error::InvalidData);
         }
         let offset = bit as usize * self.inode_size;
         let bytes = self
             .block(self.groups[group as usize].inode_table + (offset / self.block_size) as u32)?;
-        Inode::parse(
-            number,
-            &bytes[offset % self.block_size..offset % self.block_size + self.inode_size],
-        )
+        let bytes = &bytes[offset % self.block_size..offset % self.block_size + self.inode_size];
+        self.checksum.verify_inode(number, bytes)?;
+        let mut inode = Inode::parse(number, bytes)?;
+        if inode.flags & 0x40000 != 0 {
+            inode.sectors *= self.block_size as u64 / 512;
+        }
+        Ok(inode)
     }
 }
 

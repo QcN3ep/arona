@@ -22,7 +22,7 @@ impl Volume {
         if input.is_empty() {
             return Ok(0);
         }
-        let extents = self.extents(&inode.root)?;
+        let extents = self.extents(&inode)?;
         self.check_space(&extents, offset, end)?;
         let mut length = input.len();
         loop {
@@ -131,7 +131,7 @@ impl Volume {
             return Ok(());
         }
         let logical = (start / self.block_size) as u32;
-        if let Some(extent) = self.extents(&inode.root)?.into_iter().find(|extent| {
+        if let Some(extent) = self.extents(inode)?.into_iter().find(|extent| {
             !extent.unwritten && (extent.logical..extent.logical + extent.length).contains(&logical)
         }) {
             let block_size = self.block_size;
@@ -159,7 +159,7 @@ impl Volume {
     }
 
     pub fn resize(&mut self, inode: &mut Inode, size: usize) -> Result<(), Error> {
-        let mut extents = self.extents(&inode.root)?;
+        let mut extents = self.extents(inode)?;
         let block_size = self.block_size;
         let keep = size.div_ceil(block_size) as u32;
         if (size as u64) < inode.size {
@@ -196,7 +196,7 @@ impl Volume {
         inode: &mut Inode,
         mut extents: Vec<Extent>,
     ) -> Result<(), Error> {
-        let old_nodes = self.extent_blocks(&inode.root)?;
+        let old_nodes = self.extent_blocks(inode)?;
         for number in old_nodes {
             self.free_block(number)?;
         }
@@ -215,7 +215,8 @@ impl Volume {
             }
         }
         let data_blocks: u64 = merged.iter().map(|extent| u64::from(extent.length)).sum();
-        let entries = (self.block_size - 12) / 12;
+        let entries = (self.block_size - 12 - if self.checksum.enabled { 4 } else { 0 }) / 12;
+        let seed = self.checksum.inode_seed(inode.number, inode.generation);
         let mut leaves = Vec::new();
         let mut depth = 0;
         let mut tree_blocks = 0;
@@ -227,6 +228,8 @@ impl Volume {
                 for (index, extent) in chunk.iter().enumerate() {
                     extent_entry(&mut Rc::make_mut(&mut bytes)[..], 12 + index * 12, extent);
                 }
+                self.checksum
+                    .seal_extent(seed, &mut Rc::make_mut(&mut bytes)[..self.block_size]);
                 self.stage(number, bytes);
                 leaves.push((chunk[0].logical, number));
                 tree_blocks += 1;
@@ -251,6 +254,8 @@ impl Volume {
                             child,
                         );
                     }
+                    self.checksum
+                        .seal_extent(seed, &mut Rc::make_mut(&mut bytes)[..self.block_size]);
                     self.stage(number, bytes);
                     parents.push((chunk[0].0, number));
                     tree_blocks += 1;
@@ -271,11 +276,17 @@ impl Volume {
                 extent_index(&mut inode.root, 12 + index * 12, logical, child);
             }
         }
+        inode.flags &= !0x40000;
         inode.sectors = (data_blocks + tree_blocks) * (self.block_size as u64 / 512);
         Ok(())
     }
 
     pub fn store_inode(&mut self, inode: &Inode) -> Result<(), Error> {
+        let sectors = if inode.flags & 0x40000 != 0 {
+            inode.sectors / (self.block_size as u64 / 512)
+        } else {
+            inode.sectors
+        };
         self.edit_inode(inode.number, |bytes| {
             bytes[0..2].copy_from_slice(&inode.mode.to_le_bytes());
             bytes[2..4].copy_from_slice(&(inode.uid as u16).to_le_bytes());
@@ -288,7 +299,8 @@ impl Volume {
             store_timestamp(bytes, 144, 148, inode.birth)?;
             bytes[4..8].copy_from_slice(&(inode.size as u32).to_le_bytes());
             bytes[26..28].copy_from_slice(&inode.links.to_le_bytes());
-            bytes[28..32].copy_from_slice(&(inode.sectors as u32).to_le_bytes());
+            bytes[28..32].copy_from_slice(&(sectors as u32).to_le_bytes());
+            bytes[116..118].copy_from_slice(&((sectors >> 32) as u16).to_le_bytes());
             bytes[32..36].copy_from_slice(&inode.flags.to_le_bytes());
             bytes[40..100].copy_from_slice(&inode.root);
             bytes[108..112].copy_from_slice(&((inode.size >> 32) as u32).to_le_bytes());

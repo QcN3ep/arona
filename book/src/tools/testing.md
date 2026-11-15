@@ -74,7 +74,8 @@ Run performance cases through [the perf command](xtask.md#performance-cases).
 ## Ext4 Disk Images
 
 The file system scenarios mount an ext4 image from an attached block device.
-The Linux suite harness mounts the first block device at `/var` with a 16 MiB extent, and the ext4 driver accepts only a narrow feature set, so an image created with default `mkfs.ext4` options is rejected during mount.
+The Linux suite harness mounts a 16 MiB extent of the first block device at `/var`.
+The filesystem scenarios also exercise a larger image with flex block groups, indexed directories, lazy bitmaps, and metadata checksums.
 Create a compatible image with:
 
 ```sh
@@ -87,7 +88,7 @@ mkfs.ext4 -q -F -b 4096 -I 256 \
 
 The command retains the journal because the driver requires it for writes.
 The driver accepts block sizes of 1024, 2048, and 4096 bytes and inode sizes of 128 or 256 bytes.
-The `64bit` and metadata checksum features are unsupported and must remain disabled.
+The driver supports `64bit` descriptors and metadata checksums, but block addresses and the filesystem block count must fit in 32 bits.
 The mounted block count times the block size must stay within the mount extent, so keep the image within the 16 MiB the Linux suite passes, and mount the image with a clean filesystem state.
 
 Attach the image to QEMU with a VirtIO block device:

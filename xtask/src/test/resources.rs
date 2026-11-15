@@ -123,6 +123,7 @@ impl Resources {
                 ..Self::default()
             };
             resources.drive("fs", &directory.join("disk.raw"), "");
+            resources.drive("modern", &directory.join("modern.raw"), "");
             vm::run(
                 build.target,
                 &build.root,
@@ -232,6 +233,7 @@ impl Resources {
             self.device("virtio-blk-pci,disable-legacy=on,drive=replay");
         } else {
             self.drive("fs", &directory.join("disk.raw"), "");
+            self.drive("modern", &directory.join("modern.raw"), "");
             self.drive("ro", &directory.join("ro.raw"), ",readonly=on");
             for name in ["write", "flush", "prepare"] {
                 self.faulty_drive(name, directory);

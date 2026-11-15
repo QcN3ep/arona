@@ -98,6 +98,7 @@ impl Volume {
             })?;
             let mut inode = Inode {
                 number,
+                generation: 0,
                 mode: (if directory { 0x4000 } else { 0x8000 }) | permissions,
                 size: 0,
                 sectors: 0,
@@ -130,7 +131,7 @@ impl Volume {
                         },
                     ],
                 )?;
-                parent.links = parent.links.checked_add(1).ok_or(Error::NoSpace)?;
+                parent.change_subdirectories(1)?;
             } else {
                 volume.store_inode(&inode)?;
             }
@@ -158,7 +159,7 @@ impl Volume {
         self.transaction(|volume| {
             entries.remove(index);
             if inode.directory() {
-                parent.links = parent.links.checked_sub(1).ok_or(Error::InvalidData)?;
+                parent.change_subdirectories(-1)?;
             }
             volume.set_entries(&mut parent, &entries)?;
             volume.remove_link(&mut inode)
@@ -217,7 +218,7 @@ impl Volume {
             if let Some(mut other) = replacement {
                 new_entries.retain(|entry| entry.name != new_name);
                 if other.directory() {
-                    new_parent.links = new_parent.links.checked_sub(1).ok_or(Error::InvalidData)?;
+                    new_parent.change_subdirectories(-1)?;
                 }
                 volume.remove_link(&mut other)?;
             }
@@ -234,8 +235,8 @@ impl Volume {
                     .ok_or(Error::InvalidData)?
                     .inode = new_parent.number;
                 volume.set_entries(&mut inode, &children)?;
-                old_parent.links = old_parent.links.checked_sub(1).ok_or(Error::InvalidData)?;
-                new_parent.links = new_parent.links.checked_add(1).ok_or(Error::NoSpace)?;
+                old_parent.change_subdirectories(-1)?;
+                new_parent.change_subdirectories(1)?;
             }
             if !same {
                 volume.set_entries(&mut old_parent, &old_entries)?;
@@ -294,13 +295,14 @@ impl Volume {
     }
 
     pub fn set_entries(&mut self, inode: &mut Inode, entries: &[Entry]) -> Result<(), Error> {
-        let old_extents = self.extents(&inode.root)?;
+        let old_extents = self.extents(inode)?;
+        let limit = self.block_size - if self.checksum.enabled { 12 } else { 0 };
         let mut blocks: Vec<Rc<[u8; MAX_BLOCK_SIZE]>> = Vec::new();
-        let mut inside = self.block_size;
+        let mut inside = limit;
         let mut previous = 0;
         for entry in entries {
             let size = (8 + entry.name.len()).next_multiple_of(4);
-            if inside + size > self.block_size {
+            if inside + size > limit {
                 blocks.push(Rc::new([0; MAX_BLOCK_SIZE]));
                 inside = 0;
             } else if inside != 0 {
@@ -310,8 +312,7 @@ impl Volume {
             }
             let bytes = Rc::make_mut(blocks.last_mut().unwrap());
             bytes[inside..inside + 4].copy_from_slice(&entry.inode.to_le_bytes());
-            bytes[inside + 4..inside + 6]
-                .copy_from_slice(&((self.block_size - inside) as u16).to_le_bytes());
+            bytes[inside + 4..inside + 6].copy_from_slice(&((limit - inside) as u16).to_le_bytes());
             bytes[inside + 6] = entry.name.len() as u8;
             bytes[inside + 7] = entry.file_type;
             bytes[inside + 8..inside + 8 + entry.name.len()].copy_from_slice(&entry.name);
@@ -322,7 +323,12 @@ impl Volume {
             .iter()
             .flat_map(|extent| extent.physical..extent.physical + extent.length);
         let mut extents = Vec::new();
-        for (logical, bytes) in blocks.into_iter().enumerate() {
+        for (logical, mut bytes) in blocks.into_iter().enumerate() {
+            self.checksum.seal_directory(
+                inode.number,
+                inode.generation,
+                &mut Rc::make_mut(&mut bytes)[..self.block_size],
+            );
             let physical = match old_blocks.next() {
                 Some(number) => number,
                 None => self.allocate_block()?,
@@ -335,6 +341,7 @@ impl Volume {
                 unwritten: false,
             });
         }
+        inode.flags &= !0x1000;
         inode.size = extents.len() as u64 * self.block_size as u64;
         self.replace_extents(inode, extents)?;
         self.store_inode(inode)?;

@@ -23,7 +23,7 @@ impl Volume {
             return Err(Error::InvalidData);
         }
         let mut locations = Vec::new();
-        for extent in self.extents(&inode.root)? {
+        for extent in self.extents(&inode)? {
             if extent.unwritten || extent.logical as usize != locations.len() {
                 return Err(Error::InvalidData);
             }
@@ -32,7 +32,7 @@ impl Volume {
         if locations.len() as u64 * self.block_size as u64 != inode.size {
             return Err(Error::InvalidData);
         }
-        let nodes = self.extent_blocks(&inode.root)?;
+        let nodes = self.extent_blocks(&inode)?;
         let mut journal = Journal::open(
             &self.disk,
             self.start,
@@ -49,7 +49,8 @@ impl Volume {
                 return Err(Error::ReadOnly);
             }
             journal.recover(&self.disk, self.start, self.blocks)?;
-            self.cache.clear();
+            self.clear_cache();
+            self.load_groups()?;
         }
         self.journal = Some(journal);
         if recover {

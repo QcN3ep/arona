@@ -2,7 +2,7 @@
 
 //! ext4 update staging and write failure state.
 
-use super::{inode::Inode, volume::Volume};
+use super::{checksum::Checksum, inode::Inode, volume::Volume};
 use crate::{Error, block::MAX_BLOCK_SIZE};
 use alloc::rc::Rc;
 
@@ -53,14 +53,11 @@ impl Volume {
             .commit(&self.disk, self.start, &pending)
         {
             self.failure = Some(error);
-            self.cache.clear();
+            self.clear_cache();
             return Err(error);
         }
         for (number, bytes) in pending {
-            if self.cache.len() >= 64 {
-                self.cache.pop_first();
-            }
-            self.cache.insert(number, bytes);
+            self.cache_block(number, bytes);
         }
         Ok(value)
     }
@@ -77,7 +74,7 @@ impl Volume {
                 self.pending.insert(superblock, bytes);
             }
             let mut bytes = original?;
-            update_superblock_state(&mut bytes, self.superblock_offset(), false);
+            update_superblock_state(&mut bytes, self.superblock_offset(), false, self.checksum);
             let result = self
                 .disk
                 .write(
@@ -89,13 +86,13 @@ impl Volume {
                 self.failure = Some(error);
                 return Err(error);
             }
-            self.cache.insert(superblock, bytes);
+            self.cache_block(superblock, bytes);
             self.dirty = true;
         }
         let superblock = self.first_data_block;
         let offset = self.superblock_offset();
         if let Some(bytes) = self.pending.get_mut(&superblock) {
-            update_superblock_state(bytes, offset, false);
+            update_superblock_state(bytes, offset, false, self.checksum);
         }
         Ok(())
     }
@@ -128,7 +125,7 @@ impl Volume {
         if self.dirty {
             let superblock = self.first_data_block;
             let mut bytes = self.block(superblock)?;
-            update_superblock_state(&mut bytes, self.superblock_offset(), true);
+            update_superblock_state(&mut bytes, self.superblock_offset(), true, self.checksum);
             if let Err(error) = self
                 .disk
                 .write(
@@ -141,7 +138,7 @@ impl Volume {
                 return Err(error);
             }
             self.dirty = false;
-            self.cache.insert(superblock, bytes);
+            self.cache_block(superblock, bytes);
         }
         Ok(())
     }
@@ -171,8 +168,12 @@ impl Volume {
         let table = self.groups[group as usize].inode_table;
         let size = self.inode_size;
         let block_size = self.block_size;
+        let checksum = self.checksum;
         self.edit(table + (offset / block_size) as u32, |bytes| {
-            operation(&mut bytes[offset % block_size..offset % block_size + size])
+            let inode = &mut bytes[offset % block_size..offset % block_size + size];
+            operation(inode)?;
+            checksum.seal_inode(number, inode);
+            Ok(())
         })
     }
 
@@ -204,10 +205,16 @@ impl Volume {
     }
 }
 
-fn update_superblock_state(bytes: &mut Rc<[u8; MAX_BLOCK_SIZE]>, offset: usize, clean: bool) {
+fn update_superblock_state(
+    bytes: &mut Rc<[u8; MAX_BLOCK_SIZE]>,
+    offset: usize,
+    clean: bool,
+    checksum: Checksum,
+) {
     let state = if clean { 1u16 } else { 0u16 };
     Rc::make_mut(bytes)[offset + 58..offset + 60].copy_from_slice(&state.to_le_bytes());
     let incompat = super::word(&bytes[..], offset + 96);
     let incompat = if clean { incompat & !4 } else { incompat | 4 };
     Rc::make_mut(bytes)[offset + 96..offset + 100].copy_from_slice(&incompat.to_le_bytes());
+    checksum.superblock(&mut Rc::make_mut(bytes)[offset..offset + 1024]);
 }

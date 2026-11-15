@@ -14,13 +14,12 @@ impl Volume {
             let group = (hint_group + offset) % self.groups.len();
             let first = self.group_start(group as u32);
             let end = first.saturating_add(self.blocks_per_group).min(self.blocks);
-            let bitmap_number = self.groups[group].block_bitmap;
-            let bitmap = self.block(bitmap_number)?;
+            let bitmap = self.group_bitmap(group, false)?;
             let hint = self.allocation_hint.clamp(first, end);
             for number in (hint..end).chain(first..hint) {
                 let bit = (number - first) as usize;
                 if bitmap[bit / 8] & (1 << (bit % 8)) == 0 && self.data_block(number) {
-                    self.bitmap(bitmap_number, bit, true)?;
+                    self.update_bitmap(group, false, bit, true)?;
                     self.count(group, 12, 12, -1)?;
                     self.allocation_hint = (number + 1) % self.blocks;
                     let bytes = self.empty_block();
@@ -38,26 +37,21 @@ impl Volume {
         }
         let group = self.group_index(number)? as usize;
         let first = self.group_start(group as u32);
-        self.bitmap(
-            self.groups[group].block_bitmap,
-            (number - first) as usize,
-            false,
-        )?;
+        self.update_bitmap(group, false, (number - first) as usize, false)?;
         self.count(group, 12, 12, 1)
     }
 
     pub fn allocate_inode(&mut self, directory: bool) -> Result<u32, Error> {
         let first_inode = self.superblock_word(84)?.max(11);
         for group in 0..self.groups.len() {
-            let bitmap_number = self.groups[group].inode_bitmap;
-            let bitmap = self.block(bitmap_number)?;
+            let bitmap = self.group_bitmap(group, true)?;
             for bit in 0..self.inodes_per_group {
                 let number = group as u32 * self.inodes_per_group + bit + 1;
                 if number > self.inodes {
                     break;
                 }
                 if number >= first_inode && bitmap[bit as usize / 8] & (1 << (bit % 8)) == 0 {
-                    self.bitmap(bitmap_number, bit as usize, true)?;
+                    self.update_bitmap(group, true, bit as usize, true)?;
                     self.count(group, 14, 16, -1)?;
                     if directory {
                         self.directory_count(group, 1)?;
@@ -71,8 +65,9 @@ impl Volume {
 
     pub fn free_inode(&mut self, number: u32, directory: bool) -> Result<(), Error> {
         let group = ((number - 1) / self.inodes_per_group) as usize;
-        self.bitmap(
-            self.groups[group].inode_bitmap,
+        self.update_bitmap(
+            group,
+            true,
             ((number - 1) % self.inodes_per_group) as usize,
             false,
         )?;
@@ -86,21 +81,6 @@ impl Volume {
         })
     }
 
-    fn bitmap(&mut self, number: u32, bit: usize, allocated: bool) -> Result<(), Error> {
-        self.edit(number, |bytes| {
-            let mask = 1 << (bit % 8);
-            if (bytes[bit / 8] & mask != 0) == allocated {
-                return Err(Error::InvalidData);
-            }
-            if allocated {
-                bytes[bit / 8] |= mask;
-            } else {
-                bytes[bit / 8] &= !mask;
-            }
-            Ok(())
-        })
-    }
-
     fn count(
         &mut self,
         group: usize,
@@ -108,10 +88,8 @@ impl Volume {
         sb_field: usize,
         change: i32,
     ) -> Result<(), Error> {
-        let descriptor = self.first_data_block + 1 + (group as u32 / self.descriptors_per_block);
-        let slot = (group as u32 % self.descriptors_per_block) as usize * 32;
-        self.edit(descriptor, |bytes| {
-            let offset = slot + field;
+        self.edit_group(group, |bytes| {
+            let offset = field;
             let value = i32::from(half(bytes, offset))
                 .checked_add(change)
                 .and_then(|v| u16::try_from(v).ok())
@@ -130,10 +108,8 @@ impl Volume {
     }
 
     fn directory_count(&mut self, group: usize, change: i32) -> Result<(), Error> {
-        let descriptor = self.first_data_block + 1 + (group as u32 / self.descriptors_per_block);
-        let slot = (group as u32 % self.descriptors_per_block) as usize * 32;
-        self.edit(descriptor, |bytes| {
-            let offset = slot + 16;
+        self.edit_group(group, |bytes| {
+            let offset = 16;
             let count = i32::from(half(bytes, offset))
                 .checked_add(change)
                 .and_then(|n| u16::try_from(n).ok())

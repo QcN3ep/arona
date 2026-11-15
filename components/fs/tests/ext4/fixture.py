@@ -35,6 +35,28 @@ def create_volume(directory):
     return volume
 
 
+
+def create_modern_volume(directory):
+    indexed = directory / "modern-root/indexed"
+    indexed.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(directory / "root/data", directory / "modern-root/data", dirs_exist_ok=True)
+    for index in range(600):
+        (indexed / f"entry-{index:04}").write_bytes(f"item {index}".encode())
+    volume = directory / "modern.raw"
+    with volume.open("wb") as output:
+        output.truncate(256 * 1024 * 1024)
+    subprocess.run(["mke2fs", "-q", "-F", "-t", "ext4", "-b", "4096", "-I", "256", "-g", "1024", "-N", "8192",
+                    "-O", "none,has_journal,ext_attr,resize_inode,dir_index,filetype,extent,64bit,flex_bg,sparse_super,large_file,huge_file,dir_nlink,extra_isize,metadata_csum",
+                    "-E", "lazy_itable_init=1,resize=262144", "-d", str(directory / "modern-root"), str(volume)], check=True)
+    for index in range(0, 12, 2):
+        subprocess.run(["debugfs", "-w", "-R", f"fallocate /data/tree {index} {index}", str(volume)], check=True, capture_output=True)
+    subprocess.run(["debugfs", "-w", "-R", "set_inode_field /data/tree size 49152", str(volume)], check=True, capture_output=True)
+    for field, value in (("blocks", "3"), ("flags", "0xc0000")):
+        subprocess.run(["debugfs", "-w", "-R", f"set_inode_field /data/message {field} {value}", str(volume)], check=True, capture_output=True)
+    result = subprocess.run(["e2fsck", "-fyD", str(volume)], capture_output=True)
+    assert result.returncode in (0, 1, 2), result.stdout + result.stderr
+    return volume
+
 def create_image(directory):
     good = create_volume(directory).read_bytes()
     variants = []
@@ -63,6 +85,7 @@ def create_image(directory):
 
 def create_persistence_images(directory):
     disk = create_image(directory)
+    create_modern_volume(directory)
     with disk.open("rb") as source:
         good = source.read(SLICE)
     with disk.open("ab") as output:
@@ -151,6 +174,7 @@ def check_pending_journal(directory):
 
 
 def check_persistence_images(directory, disk):
+    subprocess.run(["e2fsck", "-fn", str(directory / "modern.raw")], check=True)
     with disk.open("rb") as source:
         volume = source.read(SLICE)
         source.seek(7 * SLICE + 1082)

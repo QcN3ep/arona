@@ -3,8 +3,10 @@
 //! ext4 volume validation, directory lookup, and extent file access.
 
 mod allocator;
+mod checksum;
 mod directory;
 mod extent;
+mod group;
 mod inode;
 mod journal;
 mod metadata;

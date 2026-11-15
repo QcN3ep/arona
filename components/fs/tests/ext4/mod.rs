@@ -19,6 +19,7 @@ use runtime::{
 };
 
 const SLICE: u64 = 16 * 1024 * 1024;
+const MODERN: u64 = 256 * 1024 * 1024;
 
 fn main() {
     let bootstrap = process::bootstrap().unwrap();
@@ -68,7 +69,8 @@ fn main() {
         let session = Session::open(process::task(), &control, id).unwrap();
         let disk = Rc::new(Disk::new(process::task(), session).unwrap());
         exercise(&disk);
-        let writable = !disk.read_only() && disk.capacity() >= 8 * SLICE;
+        let writable =
+            !disk.read_only() && disk.capacity() >= 8 * SLICE && disk.capacity() != MODERN;
         drop(disk);
         if writable {
             mount_service(&control, id);
@@ -84,7 +86,9 @@ fn main() {
 }
 
 fn exercise(disk: &Rc<Disk>) {
-    if disk.read_only() {
+    if disk.capacity() == MODERN {
+        modern_volume(disk);
+    } else if disk.read_only() {
         read_only(disk);
     } else if disk.capacity() == SLICE {
         if !persisted(disk) {
@@ -98,7 +102,7 @@ fn exercise(disk: &Rc<Disk>) {
         failure(disk);
     } else if disk.capacity() == 4 * SLICE {
         assert!(matches!(
-            Ext4::mount(Rc::clone(disk), 0, SLICE),
+            Ext4::mount(Rc::clone(disk), 0, volume_length(disk)),
             Err(Error::InvalidData)
         ));
         let mut bytes = [0; 4096];
@@ -106,7 +110,7 @@ fn exercise(disk: &Rc<Disk>) {
         assert_eq!(&bytes[1082..1084], &[0, 0]);
     } else if disk.capacity() == 6 * SLICE {
         assert!(matches!(
-            Ext4::mount(Rc::clone(disk), 0, SLICE),
+            Ext4::mount(Rc::clone(disk), 0, volume_length(disk)),
             Err(Error::Io)
         ));
         failure(disk);
@@ -130,10 +134,78 @@ fn exercise(disk: &Rc<Disk>) {
     }
 }
 
+fn volume_length(disk: &Disk) -> u64 {
+    if disk.capacity() == MODERN {
+        MODERN
+    } else {
+        SLICE
+    }
+}
+
+fn modern_volume(disk: &Rc<Disk>) {
+    if persisted(disk) {
+        return;
+    }
+    read_volume(disk);
+    metadata_volume(disk);
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, MODERN).unwrap();
+    assert_eq!(filesystem.read_dir(b"/indexed").unwrap().len(), 600);
+    let file = filesystem.open("/indexed/entry-0042").unwrap();
+    let mut text = [0; 7];
+    file.read_exact_at(0, &mut text).unwrap();
+    assert_eq!(&text, b"item 42");
+    drop(file);
+    filesystem
+        .rename(b"/indexed/entry-0042", b"/indexed/changed")
+        .unwrap();
+    let file = filesystem.open("/data/tree").unwrap();
+    file.write_at(4096 * 4 + 3, b"tree").unwrap();
+    drop(file);
+    filesystem.mkdir(b"/allocation").unwrap();
+    let before = filesystem.statistics().unwrap();
+    for index in 0..80 {
+        let path = alloc::format!("/allocation/file-{index}");
+        drop(filesystem.create(path.as_bytes()).unwrap());
+    }
+    assert_eq!(
+        filesystem.statistics().unwrap().free_files + 80,
+        before.free_files
+    );
+    let file = filesystem.open("/allocation/file-79").unwrap();
+    let bytes = alloc::vec![0x5a; 64 * 1024];
+    for offset in (0..8 * 1024 * 1024).step_by(bytes.len()) {
+        assert_eq!(file.write_at(offset, &bytes).unwrap(), bytes.len());
+    }
+    for offset in [0, 4 * 1024 * 1024, 8 * 1024 * 1024 - bytes.len()] {
+        let mut output = alloc::vec![0; bytes.len()];
+        file.read_exact_at(offset, &mut output).unwrap();
+        assert_eq!(output, bytes);
+    }
+    file.truncate(4096).unwrap();
+    drop(file);
+    for index in 0..80 {
+        let path = alloc::format!("/allocation/file-{index}");
+        filesystem.unlink(path.as_bytes()).unwrap();
+    }
+    assert_eq!(
+        filesystem.statistics().unwrap().free_files,
+        before.free_files
+    );
+    filesystem.unlink(b"/allocation").unwrap();
+    filesystem.unmount().unwrap();
+    persistence(disk);
+}
+
 fn read_volume(disk: &Rc<Disk>) {
-    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, volume_length(disk)).unwrap();
     let file = filesystem.open("/data/message").unwrap();
     assert_eq!(file.len(), 12000);
+    assert_eq!(file.metadata().unwrap().blocks, 24);
+    if disk.capacity() == MODERN {
+        file.set_attributes(file.metadata().unwrap().attributes())
+            .unwrap();
+        assert_eq!(file.metadata().unwrap().blocks, 24);
+    }
     let mut bytes = alloc::vec![0; file.len()];
     assert_eq!(file.read_at(0, &mut bytes).unwrap(), bytes.len());
     for (index, byte) in bytes.iter().enumerate() {
@@ -402,7 +474,7 @@ fn deadline() -> u64 {
 }
 
 fn write_volume(disk: &Rc<Disk>) {
-    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, volume_length(disk)).unwrap();
     directory_operations(&filesystem);
     filesystem.mkdir(b"/work").unwrap();
     filesystem.mkdir(b"/work/child").unwrap();
@@ -477,7 +549,7 @@ fn write_volume(disk: &Rc<Disk>) {
 }
 
 fn metadata_volume(disk: &Rc<Disk>) {
-    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, volume_length(disk)).unwrap();
     let existing = filesystem.open("/data/message").unwrap();
     let birth = existing.metadata().unwrap().birth;
     let attributes = existing.metadata().unwrap().attributes();
@@ -544,7 +616,7 @@ fn metadata_volume(disk: &Rc<Disk>) {
     drop(file);
     drop(alias);
     filesystem.unmount().unwrap();
-    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, volume_length(disk)).unwrap();
     assert_eq!(
         filesystem.metadata(b"/links/alias").unwrap().attributes(),
         attributes
@@ -575,9 +647,9 @@ fn directory_session(filesystem: &Ext4) {
 }
 
 fn persistence(disk: &Rc<Disk>) {
-    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, volume_length(disk)).unwrap();
     assert!(matches!(
-        Ext4::mount(Rc::clone(disk), 0, SLICE),
+        Ext4::mount(Rc::clone(disk), 0, volume_length(disk)),
         Err(Error::Busy)
     ));
     let file = filesystem.create(b"/persistent").unwrap();
@@ -591,7 +663,7 @@ fn persistence(disk: &Rc<Disk>) {
 }
 
 fn persisted(disk: &Rc<Disk>) -> bool {
-    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, volume_length(disk)).unwrap();
     let file = match filesystem.open("/persistent") {
         Ok(file) => file,
         Err(Error::NotFound) => return false,
@@ -623,7 +695,7 @@ fn dirty_volume(disk: &Rc<Disk>) {
 }
 
 fn read_only(disk: &Rc<Disk>) {
-    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, volume_length(disk)).unwrap();
     assert_eq!(filesystem.statistics().unwrap().flags & 1, 1);
     let file = filesystem.open("/data/message").unwrap();
     assert_ne!(file.metadata().unwrap().mount, 0);
@@ -638,7 +710,7 @@ fn failure(disk: &Rc<Disk>) {
     let mut superblock = [0; 4096];
     disk.read(0, &mut superblock).unwrap();
     let recovering = superblock[1082..1084] == [0, 0];
-    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, volume_length(disk)).unwrap();
     let file = filesystem.open("/data/message").unwrap();
     if recovering {
         let mut bytes = [0; 7];
@@ -697,7 +769,7 @@ fn no_journal(disk: &Rc<Disk>) {
 }
 
 fn large_write(disk: &Rc<Disk>) {
-    let filesystem = Ext4::mount(Rc::clone(disk), 0, SLICE).unwrap();
+    let filesystem = Ext4::mount(Rc::clone(disk), 0, volume_length(disk)).unwrap();
     let file = filesystem.create(b"/large").unwrap();
     let size = 4 * 1024 * 1024 + 4096;
     let bytes: alloc::vec::Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();

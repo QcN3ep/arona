@@ -7,6 +7,7 @@ use alloc::{collections::BTreeSet, vec::Vec};
 #[derive(Clone)]
 pub(super) struct Inode {
     pub number: u32,
+    pub generation: u32,
     pub size: u64,
     pub mode: u16,
     pub links: u16,
@@ -37,9 +38,12 @@ impl Inode {
             return Err(Error::Unsupported);
         }
         let fast_link = mode & 0xf000 == 0xa000 && word(bytes, 28) == 0 && size < 60;
-        if word(bytes, 32) != if fast_link { 0 } else { 0x80000 }
+        if word(bytes, 32) & !0x41000 != if fast_link { 0 } else { 0x80000 }
+            || word(bytes, 32) & 0x1000 != 0 && mode & 0xf000 != 0x4000
+            || word(bytes, 32) & 0x40000 != 0 && fast_link
             || word(bytes, 20) != 0 && half(bytes, 26) != 0
             || word(bytes, 104) != 0
+            || half(bytes, 118) != 0
             || size > 2 * 1024 * 1024 * 1024
             || bytes.len() == 256 && half(bytes, 128) > 128
         {
@@ -47,10 +51,11 @@ impl Inode {
         }
         let inode = Self {
             number,
+            generation: word(bytes, 100),
             size,
             mode,
             links: half(bytes, 26),
-            sectors: u64::from(word(bytes, 28)),
+            sectors: u64::from(word(bytes, 28)) | u64::from(half(bytes, 116)) << 32,
             orphan_next: word(bytes, 20),
             root: bytes[40..100].try_into().unwrap(),
             uid: u32::from(half(bytes, 2)) | (u32::from(half(bytes, 120)) << 16),
@@ -66,6 +71,16 @@ impl Inode {
             .validate()
             .map_err(|_| Error::InvalidData)?;
         Ok(inode)
+    }
+
+    pub fn change_subdirectories(&mut self, change: i32) -> Result<(), Error> {
+        if self.links != 1 {
+            self.links = i32::from(self.links)
+                .checked_add(change)
+                .and_then(|links| u16::try_from(links).ok())
+                .ok_or(Error::NoSpace)?;
+        }
+        Ok(())
     }
 
     pub fn directory(&self) -> bool {
@@ -138,7 +153,7 @@ impl Volume {
             output[..count].copy_from_slice(&inode.root[start..start + count]);
             return Ok(count);
         }
-        let extents = self.extents(&inode.root)?;
+        let extents = self.extents(inode)?;
         let mut done = 0;
         while done < count {
             let position = offset + done;
@@ -171,9 +186,26 @@ impl Volume {
             if self.read(inode, offset, &mut bytes[..self.block_size])? != self.block_size {
                 return Err(Error::InvalidData);
             }
+            let index = if inode.flags & 0x1000 != 0 {
+                if offset == 0 {
+                    Some(32)
+                } else if word(&bytes, 0) == 0 && usize::from(half(&bytes, 4)) == self.block_size {
+                    Some(8)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let limit = self.checksum.directory(
+                inode.number,
+                inode.generation,
+                &bytes[..self.block_size],
+                index,
+            )?;
             let mut inside = 0;
-            while inside < self.block_size {
-                if self.block_size - inside < 8 {
+            while inside < limit {
+                if limit - inside < 8 {
                     return Err(Error::InvalidData);
                 }
                 let number = word(&bytes, inside);
@@ -181,7 +213,7 @@ impl Volume {
                 let name_length = usize::from(bytes[inside + 6]);
                 if length < 8
                     || !length.is_multiple_of(4)
-                    || inside + length > self.block_size
+                    || inside + length > limit
                     || name_length > length - 8
                     || number > self.inodes
                     || bytes[inside + 7] > 7
