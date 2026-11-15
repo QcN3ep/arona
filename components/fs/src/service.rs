@@ -275,7 +275,7 @@ fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Er
     if matches!(node, Node::Path(_))
         && !matches!(
             request.tag,
-            protocol::METADATA | protocol::STATFS | protocol::READ_LINK
+            protocol::METADATA | protocol::STATFS | protocol::READ_LINK | protocol::SET_ATTRIBUTES
         )
     {
         return Err(Error::InvalidRequest);
