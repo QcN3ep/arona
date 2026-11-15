@@ -78,7 +78,9 @@ fn collect(
             "virtio-mmio.force-legacy=false",
         ]);
     }
-    command.args(["-rtc", "base=2000-02-29T23:59:59,clock=vm", "-no-reboot"]);
+    // LS7A writes calculate their time offset against the host clock.
+    // REFERENCE: https://github.com/qemu/qemu/blob/v11.1.2/system/rtc.c
+    command.args(["-rtc", "base=2000-02-29T23:59:59,clock=host", "-no-reboot"]);
     command.args(&resources.arguments);
     if let Some(path) = &resources.initrd {
         command.arg("-initrd").arg(path);

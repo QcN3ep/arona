@@ -111,10 +111,7 @@ fn exercise_set(rtc: &mut Rtc<'_>, baseline: Timestamp) {
             expected
         );
     }
-    let target = Timestamp {
-        seconds: baseline.seconds + 120,
-        nanoseconds: 0,
-    };
+    let target = Timestamp::from_calendar(2025, 3, 9, 12, 34, 56).unwrap();
     rtc.set(target).unwrap();
     let changed = rtc.now().unwrap();
     assert!(
