@@ -173,6 +173,10 @@ impl Mmu for Sv39 {
         paging::write_entry(self, table, index, level, entry)
     }
 
+    fn table_is_empty(&self, table: Frame, level: usize) -> Result<bool, MmuError> {
+        paging::table_is_empty(self, table, level)
+    }
+
     fn switch_root(&self, root: Frame) -> Result<(), MmuError> {
         let _access = paging::lock_memory();
         let root = root.address();

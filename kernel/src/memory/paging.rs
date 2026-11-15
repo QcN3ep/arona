@@ -277,10 +277,8 @@ impl PageTableState {
             if mmu.read_entry(parent, slot, level + 1)? != PageTableEntry::Table(table) {
                 continue;
             }
-            for slot in 0..1 << layout.index_bits {
-                if mmu.read_entry(table, slot, level)? != PageTableEntry::Empty {
-                    return Ok(());
-                }
+            if !mmu.table_is_empty(table, level)? {
+                return Ok(());
             }
             mmu.write_entry(parent, slot, level + 1, PageTableEntry::Empty)?;
             detached(level);

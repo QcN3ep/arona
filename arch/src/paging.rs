@@ -249,7 +249,14 @@ pub(crate) fn read_entry<F: Format>(
     validate_entry::<F>(index, level)?;
     let mut words = [0];
     read_frame(format, table.address(), index, &mut words)?;
-    let entry = words[0];
+    decode_entry(format, words[0], level)
+}
+
+fn decode_entry<F: Format>(
+    format: &F,
+    entry: u64,
+    level: usize,
+) -> Result<PageTableEntry, MmuError> {
     if entry == 0 {
         Ok(PageTableEntry::Empty)
     } else if level == 0 {
@@ -261,6 +268,26 @@ pub(crate) fn read_entry<F: Format>(
             Frame::new(address).ok_or(MmuError::InvalidAlignment)?,
         ))
     }
+}
+
+pub(crate) fn table_is_empty<F: Format>(
+    format: &F,
+    table: Frame,
+    level: usize,
+) -> Result<bool, MmuError> {
+    validate_entry::<F>(0, level)?;
+    format.with_frame(table.address(), PagePermissions::ReadOnly, |address| {
+        // SAFETY: The window maps the complete table read-only, and page table access is serialized by the caller.
+        let page = unsafe { &*(address as *const PageTable) };
+        for index in 0..ENTRIES {
+            let entry = page.read(index);
+            if entry != 0 {
+                decode_entry(format, entry, level)?;
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })?
 }
 
 pub(crate) fn write_entry<F: Format>(

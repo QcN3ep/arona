@@ -134,6 +134,7 @@ fn mappings() {
     let second = Tables::new(mmu, base + (MAX_LEVELS * PAGE_SIZE) as u64);
     let data = physical(core::ptr::addr_of!(DATA) as usize);
     run_entries(mmu, &first, data);
+    run_empty_tables(mmu, &first, data);
     run_frame_access(mmu, data);
     first
         .set(mmu, TEST_ADDRESS, mapping(data, PagePermissions::ReadWrite))
@@ -246,6 +247,40 @@ fn run_entries(mmu: &dyn Mmu, tables: &Tables, data: u64) {
         mmu.synchronize_frame(Frame::new(!(PAGE_SIZE as u64 - 1)).unwrap()),
         Err(MmuError::InvalidAddress)
     );
+}
+
+fn run_empty_tables(mmu: &dyn Mmu, tables: &Tables, data: u64) {
+    assert!(mmu.table_is_empty(tables.leaf, 0).unwrap());
+    assert!(
+        !mmu.table_is_empty(tables.root, mmu.layout().levels - 1)
+            .unwrap()
+    );
+    let last = PAGE_SIZE / size_of::<u64>() - 1;
+    for slot in [0, last] {
+        let address = slot * PAGE_SIZE;
+        let entry = mapping(data, PagePermissions::NoAccess);
+        tables.set(mmu, address, entry).unwrap();
+        assert!(!mmu.table_is_empty(tables.leaf, 0).unwrap());
+        assert_eq!(tables.get(mmu, address).unwrap(), entry);
+        tables.set(mmu, address, PageTableEntry::Empty).unwrap();
+        assert!(mmu.table_is_empty(tables.leaf, 0).unwrap());
+    }
+    assert_eq!(
+        mmu.table_is_empty(tables.leaf, mmu.layout().levels),
+        Err(MmuError::InvalidRange)
+    );
+    mmu.write_frame(tables.leaf.address(), last, &[u64::MAX])
+        .unwrap();
+    assert_eq!(
+        mmu.table_is_empty(tables.leaf, 0),
+        Err(MmuError::InvalidTable)
+    );
+    let mut words = [0];
+    mmu.read_frame(tables.leaf.address(), last, &mut words)
+        .unwrap();
+    assert_eq!(words, [u64::MAX]);
+    mmu.write_frame(tables.leaf.address(), last, &[0]).unwrap();
+    assert!(mmu.table_is_empty(tables.leaf, 0).unwrap());
 }
 
 fn run_device_entries(mmu: &dyn Mmu, tables: &Tables, data: u64) {

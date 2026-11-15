@@ -100,6 +100,9 @@ pub trait Mmu: Sync {
         level: usize,
     ) -> Result<PageTableEntry, MmuError>;
 
+    /// Checks whether every entry is empty, validating the first nonempty entry at the given level.
+    fn table_is_empty(&self, table: Frame, level: usize) -> Result<bool, MmuError>;
+
     /// Commits the change as a complete entry without flushing the TLB; the original entry is kept on failure.
     fn write_entry(
         &self,
