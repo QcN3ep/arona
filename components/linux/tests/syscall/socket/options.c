@@ -80,6 +80,9 @@ static void stream_options(void) {
     CHECK(SC(200, listener, P(&address), sizeof(address)) == 0);
     CHECK(SC(204, listener, P(&address), P(&length)) == 0);
     CHECK(SC(201, listener, 1) == 0);
+    CHECK(SC(25, listener, 4, 0x800) == 0);
+    CHECK(SC(202, listener, 0, 0) == -11);
+    CHECK(SC(25, listener, 4, 0) == 0);
     timeout(listener, 20, 30000);
     CHECK(SC(202, listener, 0, 0) == -11);
     long client = SC(198, 2, 1, 0);

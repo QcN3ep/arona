@@ -130,9 +130,6 @@ static void client(void) {
 static void server(void) {
     struct address address = loopback(23140);
     long fd = listener(&address);
-    CHECK(SC(25, fd, 4, 0x800) == 0);
-    CHECK(SC(202, fd, 0, 0) == -11);
-    CHECK(SC(25, fd, 4, 0) == 0);
     unsigned length = sizeof(address);
     long accepted = SC(242, fd, P(&address), P(&length), 0x800 | 0x80000);
     CHECK(accepted >= 0 && length == sizeof(address) && address.family == 2);
