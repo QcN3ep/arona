@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+use core::cell::Cell;
+
 use super::{
     Frame, FrameAccess, FrameAllocationInfo, FrameOwner, FramePool, FramePurpose,
     MAX_MEMORY_REGIONS, MemoryError, MemoryRegion, MemoryRegionState, PhysRange, ReferenceKind,
@@ -52,6 +54,8 @@ struct ManagedRegion {
 
 struct FrameMetadata {
     directory: [u64; DIRECTORY_FRAMES],
+    // Region descriptors only change during initialization; the allocator lock protects this cache.
+    cached_region: Cell<Option<(usize, ManagedRegion)>>,
     region_count: usize,
     directory_frames: u64,
     list_frames: u64,
@@ -796,6 +800,7 @@ impl FrameMetadata {
         }
         let mut metadata = Self {
             directory: [0; DIRECTORY_FRAMES],
+            cached_region: Cell::new(None),
             region_count,
             directory_frames,
             list_frames,
@@ -929,10 +934,16 @@ impl FrameMetadata {
                 region.lists,
             ],
         )?;
+        self.cached_region.set(Some((index, region)));
         Ok(())
     }
 
     fn region(&self, index: usize) -> ManagedRegion {
+        if let Some((cached_index, region)) = self.cached_region.get()
+            && cached_index == index
+        {
+            return region;
+        }
         let mut words = [0; REGION_WORDS];
         read_metadata(
             self.directory[index / REGIONS_PER_FRAME],
@@ -940,7 +951,7 @@ impl FrameMetadata {
             &mut words,
         )
         .expect("failed to read memory region");
-        ManagedRegion {
+        let region = ManagedRegion {
             range: PhysRange {
                 start: words[0],
                 end: words[1],
@@ -953,7 +964,9 @@ impl FrameMetadata {
             } else {
                 MemoryRegionState::BootReserved
             },
-        }
+        };
+        self.cached_region.set(Some((index, region)));
+        region
     }
 
     fn find_region(
