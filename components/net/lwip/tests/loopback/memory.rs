@@ -33,36 +33,20 @@ pub(super) fn run(stack: &Stack) {
     blocks.try_reserve_exact(16 * 1024).unwrap();
     let mut spare = Vec::<u8>::new();
     spare.try_reserve_exact(16 * 1024).unwrap();
-    for size in [1024 * 1024, 32 * 1024] {
-        loop {
-            let mut block = Vec::<u8>::new();
-            if block.try_reserve_exact(size).is_err() {
-                break;
-            }
-            blocks.push(block);
-            assert!(blocks.len() < blocks.capacity());
-        }
-    }
+    exhaust(&mut blocks, &[1024 * 1024, 32 * 1024]);
     // Leave space for small synchronization allocations while packet storage fails.
     drop(spare);
     assert_eq!(sender.send_to(&payload, address), Err(Error::NoMemory));
     assert_eq!(receiver.receive(&mut output), Err(Error::WouldBlock));
-    // Exhaust small allocations as well, then check failures before any protocol dispatch.
-    for size in [1024, 128, 32] {
-        loop {
-            let mut block = Vec::<u8>::new();
-            if block.try_reserve_exact(size).is_err() {
-                break;
-            }
-            blocks.push(block);
-            assert!(blocks.len() < blocks.capacity());
-        }
-    }
+    // Exhaust minimum allocation chunks too, and restore pressure after failed operations.
+    exhaust(&mut blocks, &[1024, 128, 1]);
     assert!(matches!(
         stack.socket(SocketKind::Udp),
         Err(Error::NoMemory)
     ));
+    exhaust(&mut blocks, &[1024, 128, 1]);
     assert!(matches!(listener.accept(), Err(Error::NoMemory)));
+    exhaust(&mut blocks, &[1024, 128, 1]);
     assert!(matches!(receiver.subscribe(), Err(Error::NoMemory)));
     drop(blocks);
     let (mut accepted, _) = super::retry(|| listener.accept());
@@ -80,5 +64,18 @@ pub(super) fn run(stack: &Stack) {
     assert_eq!(output, payload);
     for socket in [accepted, listener, client, receiver, sender] {
         socket.close().wait(WaitMode::Forever).unwrap();
+    }
+}
+
+fn exhaust(blocks: &mut Vec<Vec<u8>>, sizes: &[usize]) {
+    for &size in sizes {
+        loop {
+            let mut block = Vec::<u8>::new();
+            if block.try_reserve_exact(size).is_err() {
+                break;
+            }
+            assert!(blocks.len() < blocks.capacity());
+            blocks.push(block);
+        }
     }
 }

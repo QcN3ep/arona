@@ -91,7 +91,7 @@ extern "C" fn arona_lwip_check_core() {
 extern "C" fn sys_arch_protect() -> u32 {
     let previous = DEPTH.get();
     if previous == 0 {
-        PROTECTION.wait(WaitMode::Forever).unwrap();
+        wait(WaitMode::Forever, || PROTECTION.wait(WaitMode::Forever)).unwrap();
     }
     DEPTH.set(previous.checked_add(1).unwrap());
     previous
@@ -116,6 +116,24 @@ fn mode(timeout: u32) -> WaitMode {
                 .checked_add(u64::from(timeout) * 1_000_000)
                 .unwrap(),
         )
+    }
+}
+
+fn wait<T>(mode: WaitMode, mut operation: impl FnMut() -> Result<T, Error>) -> Result<T, Error> {
+    loop {
+        match operation() {
+            Err(Error::Kernel(KernelError::NoMemory)) if !matches!(mode, WaitMode::Poll) => {
+                // lwIP's blocking callbacks cannot report allocation failures.
+                // Yield until a waiter can be allocated, keeping the original deadline.
+                if let WaitMode::Until(deadline) = mode
+                    && thread::now_ns()? >= deadline
+                {
+                    return Err(Error::Kernel(KernelError::TimedOut));
+                }
+                thread::yield_now()?;
+            }
+            result => return result,
+        }
     }
 }
 
@@ -158,8 +176,9 @@ unsafe extern "C" fn sys_sem_signal(sem: *const *mut Semaphore) {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn sys_arch_sem_wait(sem: *const *mut Semaphore, timeout: u32) -> u32 {
     let start = thread::now_ns().unwrap();
+    let mode = mode(timeout);
     // SAFETY: The C owner retains the semaphore throughout the wait.
-    elapsed(start, unsafe { (**sem).wait(mode(timeout)) })
+    elapsed(start, wait(mode, || unsafe { (**sem).wait(mode) }))
 }
 
 /// # Safety
@@ -194,8 +213,11 @@ unsafe extern "C" fn sys_mbox_new(output: *mut *mut Mailbox<Message>, size: i32)
 /// storage must outlive its handling, with ownership following lwIP's API.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn sys_mbox_post(mbox: *const *mut Mailbox<Message>, message: *mut c_void) {
-    // SAFETY: The C owner retains the mailbox and transfers the message.
-    if unsafe { (**mbox).send(Message(message), WaitMode::Forever) }.is_err() {
+    let result = wait(WaitMode::Forever, || {
+        // SAFETY: The C owner retains the mailbox. A failed send returns ownership.
+        unsafe { (**mbox).send(Message(message), WaitMode::Forever) }.map_err(|(error, _)| error)
+    });
+    if result.is_err() {
         process::exit(1);
     }
 }
@@ -258,8 +280,8 @@ unsafe fn fetch(
     mode: WaitMode,
 ) -> u32 {
     let start = thread::now_ns().unwrap();
-    // SAFETY: The C owner retains the mailbox throughout receive.
-    let result = unsafe { (**mbox).receive(mode) };
+    // SAFETY: The C owner retains the mailbox throughout receive, including retries.
+    let result = wait(mode, || unsafe { (**mbox).receive(mode) });
     elapsed(
         start,
         result.map(|message| {
