@@ -51,11 +51,8 @@ pub fn start_devmgr(
             rights,
         })
         .map_err(|_| Error::Protocol)?;
-    let deadline = thread::now_ns()?
-        .checked_add(START_TIMEOUT_NS)
-        .ok_or(Error::Protocol)?;
     let ready = control
-        .call(&mut startup, Some(deadline))
+        .call(&mut startup, None)
         .map_err(|error| match error {
             CallError::NotSubmitted(error) | CallError::Submitted(error) => error,
         })?;
