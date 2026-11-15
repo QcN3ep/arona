@@ -7,6 +7,7 @@ use crate::{
 };
 use runtime::{Channel, FrameAllocation, Handle, Rights, Task, ipc::Message};
 
+/// Administrative control channel used by init for disk volumes and startup mounts.
 pub struct Control<'a> {
     task: &'a Handle<Task>,
     channel: Handle<Channel>,
@@ -58,6 +59,17 @@ impl<'a> Control<'a> {
         empty(call(&self.channel, &mut request, deadline)?)
     }
 
+    /// Mounts a huge page volume owned by the service, such as the startup
+    /// `/dev/hugepages` mount.
+    ///
+    /// The mount-control channel cannot remove this volume; the administrative control
+    /// channel and namespace shutdown still unmount it.
+    pub fn mount_hugepages(&self, path: &[u8], deadline: u64) -> Result<(), Error> {
+        let mut request = Message::new(protocol::MOUNT_HUGEPAGES, &[path.len() as u64])?;
+        transfer(&mut request, self.path(path)?, Rights::READ)?;
+        empty(call(&self.channel, &mut request, deadline)?)
+    }
+
     pub fn unmount(&self, path: &[u8], deadline: u64) -> Result<(), Error> {
         let mut request = Message::new(protocol::UNMOUNT, &[path.len() as u64])?;
         transfer(&mut request, self.path(path)?, Rights::READ)?;
@@ -66,9 +78,9 @@ impl<'a> Control<'a> {
 
     /// Opens a dedicated mount-control channel for in-memory volumes.
     ///
-    /// The service accepts only tmpfs mount creation and in-memory unmounting on
-    /// this channel. It cannot mount or unmount disk volumes or the service-owned
-    /// startup mounts.
+    /// The service accepts only tmpfs and huge page mount creation and in-memory
+    /// unmounting on this channel. It cannot mount or unmount disk volumes or the
+    /// service-owned startup mounts.
     pub fn mount_control(&self, deadline: u64) -> Result<MountControl<'a>, Error> {
         let (channel, server) = self.task.channel(
             CHANNEL_RIGHTS | Rights::DUPLICATE | Rights::TRANSFER,
@@ -118,8 +130,14 @@ impl<'a> MountControl<'a> {
         empty_call(&self.channel, request)
     }
 
-    pub fn start_unmount_tmpfs(&self, path: &[u8]) -> Result<Pending<()>, Error> {
-        let mut request = Message::new(protocol::UNMOUNT_TMPFS, &[path.len() as u64])?;
+    pub fn start_mount_hugepages(&self, path: &[u8]) -> Result<Pending<()>, Error> {
+        let mut request = Message::new(protocol::MOUNT_HUGEPAGES, &[path.len() as u64])?;
+        transfer(&mut request, path_frames(self.task, path)?, Rights::READ)?;
+        empty_call(&self.channel, request)
+    }
+
+    pub fn start_unmount_memory(&self, path: &[u8]) -> Result<Pending<()>, Error> {
+        let mut request = Message::new(protocol::UNMOUNT_MEMORY, &[path.len() as u64])?;
         transfer(&mut request, path_frames(self.task, path)?, Rights::READ)?;
         empty_call(&self.channel, request)
     }

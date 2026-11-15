@@ -16,6 +16,8 @@ The system services in the archive are located in `/bin`:
 | `/bin/fs` | File service |
 | `/bin/linux` | Linux compatibility service |
 
+The packager also creates the `dev` and `dev/hugepages` directories, so init can mount the startup huge page volume at `/dev/hugepages`.
+
 File names in the archive use relative paths such as `bin/init`, and the file service presents them as paths starting from `/`.
 The system services are built for the same architecture and the same debug or release profile, and the service ELFs in the archive are stripped of symbols.
 
@@ -65,7 +67,7 @@ For the corresponding configuration, see [Boot Configuration and Usage](configur
 The packager supports regular files, directories, and symbolic links, preserves Unix permission bits, and walks directories in file-name order.
 Symbolic links store their target text; packaging does not follow links to read the target.
 File paths and symbolic link targets use UTF-8.
-The paths of the five system services are reserved by the packager, and entries with the same name in external directories are reported as conflicts during packaging.
+The paths of the five system services and the `dev` and `dev/hugepages` directories are reserved by the packager, and entries with the same name in external directories are reported as conflicts during packaging.
 
 ## From Archive to First Program
 

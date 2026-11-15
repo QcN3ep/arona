@@ -615,6 +615,25 @@ impl Task {
         )?)
     }
 
+    /// Allocates `frames` contiguous frames aligned to `alignment` bytes.
+    pub fn allocate_frames_aligned(
+        &self,
+        frames: u64,
+        alignment: u64,
+    ) -> Result<FrameAllocation, TaskError> {
+        if alignment < crate::hardware::mmu::PAGE_SIZE as u64 || !alignment.is_power_of_two() {
+            return Err(MemoryError::InvalidRequest.into());
+        }
+        let _interrupts = InterruptGuard::new();
+        TASKS.lock().find(self)?;
+        Ok(memory::manager().allocate_contiguous(
+            memory::FrameOwner::User(self.0.id),
+            memory::FramePurpose::Data,
+            frames,
+            alignment,
+        )?)
+    }
+
     pub fn map(
         &self,
         allocation: &FrameAllocation,
@@ -661,6 +680,35 @@ impl Task {
             .find(self)?
             .space
             .map_at(address, allocation, frames, options)?)
+    }
+
+    pub fn map_huge(
+        &self,
+        allocation: &FrameAllocation,
+        frames: Range<u64>,
+        options: MappingOptions,
+    ) -> Result<VirtRange, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        let registry = TASKS.lock();
+        Ok(registry
+            .find(self)?
+            .space
+            .map_huge(allocation, frames, options)?)
+    }
+
+    pub fn map_huge_at(
+        &self,
+        address: usize,
+        allocation: &FrameAllocation,
+        frames: Range<u64>,
+        options: MappingOptions,
+    ) -> Result<VirtRange, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        Ok(TASKS
+            .lock()
+            .find(self)?
+            .space
+            .map_huge_at(address, allocation, frames, options)?)
     }
 
     pub fn protect(&self, range: VirtRange, permissions: PagePermissions) -> Result<(), TaskError> {

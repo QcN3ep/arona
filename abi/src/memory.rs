@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+/// Large leaf size supported by the kernel page tables and the huge page filesystem.
+pub const HUGE_PAGE_SIZE: usize = 2 * 1024 * 1024;
+
+/// Mapping records the kernel admits for user mappings in total.
+pub const MAX_USER_MAPPING_RECORDS: usize = 65536;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u64)]
 pub enum Permissions {

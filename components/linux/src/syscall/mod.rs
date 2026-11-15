@@ -88,6 +88,14 @@ impl<'a> Operation<'a> {
             }
         }
     }
+    /// Earliest deadline among the operations that wait for another service.
+    fn deadline(&self) -> Option<u64> {
+        match self {
+            Self::Memory(operation) => operation.deadline(),
+            _ => None,
+        }
+    }
+
     fn poll(
         &mut self,
         process: &mut Process<'a>,
@@ -283,6 +291,10 @@ pub(crate) fn poll<'a>(
 impl Pending<'_> {
     pub fn waits<'b>(&'b self, items: &mut alloc::vec::Vec<runtime::ipc::WaitItem<'b>>) {
         self.operation.waits(items);
+    }
+
+    pub fn deadline(&self) -> Option<u64> {
+        self.operation.deadline()
     }
 }
 

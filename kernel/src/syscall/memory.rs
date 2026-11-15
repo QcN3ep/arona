@@ -2,7 +2,10 @@
 
 use crate::{
     hardware::mmu::PagePermissions,
-    memory::{self as mm, FrameAllocation, MappingOptions, MappingRights, MemoryBuffer, VirtRange},
+    memory::{
+        self as mm, FrameAllocation, HeapArc, MappingOptions, MappingRights, MemoryBuffer,
+        VirtRange,
+    },
     task::{Object, ObjectReference, ObjectType, Task},
 };
 use abi::{
@@ -42,6 +45,7 @@ pub(super) fn task(
         task::READ_MEMORY | task::WRITE_MEMORY => copy_task_memory(caller, target, method, args),
         task::ATOMIC_COMPARE_EXCHANGE => atomic_compare_exchange(target, args),
         task::MAP => map(caller, target, args),
+        task::MAP_HUGE => map_huge(caller, target, args),
         task::UNMAP => {
             target.unmap(range(args[0], args[1])?)?;
             Ok([0; 2])
@@ -128,7 +132,11 @@ fn allocate(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Er
         return Err(Error::InvalidArgument);
     }
     let [handle] = super::object::create(caller, [rights], || {
-        let allocation = target.allocate_frames(args[0])?;
+        let allocation = if args[2] == 0 {
+            target.allocate_frames(args[0])?
+        } else {
+            target.allocate_frames_aligned(args[0], args[2])?
+        };
         Ok([Object::FrameAllocation(
             mm::manager().allocate_arc(allocation)?,
         )])
@@ -137,12 +145,47 @@ fn allocate(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Er
 }
 
 fn map(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {
-    let handle = Handle::from_raw(args[0]);
+    let permissions = permissions(args[4])?;
+    let (ObjectReference::FrameAllocation(allocation), options) =
+        mapping_reference(caller, args[0], permissions)?
+    else {
+        unreachable!()
+    };
+    let frames = args[1]..args[1].checked_add(args[2]).ok_or(Error::InvalidArgument)?;
+    let range = if args[3] == 0 {
+        target.map(&allocation, frames, options)?
+    } else {
+        target.map_at(args[3] as usize, &allocation, frames, options)?
+    };
+    Ok([range.start as u64, (range.end - range.start) as u64])
+}
+
+fn map_huge(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {
+    let permissions = permissions(args[4])?;
+    let (ObjectReference::FrameAllocation(allocation), options) =
+        mapping_reference(caller, args[0], permissions)?
+    else {
+        unreachable!()
+    };
+    let frames = args[1]..args[1].checked_add(args[2]).ok_or(Error::InvalidArgument)?;
+    let range = if args[3] == 0 {
+        target.map_huge(&allocation, frames, options)?
+    } else {
+        target.map_huge_at(args[3] as usize, &allocation, frames, options)?
+    };
+    Ok([range.start as u64, (range.end - range.start) as u64])
+}
+
+fn mapping_reference(
+    caller: &Task,
+    raw: u64,
+    permissions: PagePermissions,
+) -> Result<(ObjectReference, MappingOptions), Error> {
+    let handle = Handle::from_raw(raw);
     let (kind, rights) = caller.handle_info(handle)?;
     if kind != ObjectType::FrameAllocation {
         return Err(Error::WrongType);
     }
-    let permissions = permissions(args[4])?;
     let mut required = Rights::MAP;
     let mut maximum = MappingRights::from(permissions);
     for (right, mapping) in [
@@ -164,27 +207,26 @@ fn map(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> 
     let ObjectReference::FrameAllocation(allocation) = caller.get(handle, kind, required)? else {
         unreachable!()
     };
-    let frames = args[1]..args[1].checked_add(args[2]).ok_or(Error::InvalidArgument)?;
     let options = MappingOptions {
         maximum,
         ..MappingOptions::new(permissions)
     };
-    let range = if args[3] == 0 {
-        target.map(&allocation, frames, options)?
-    } else {
-        target.map_at(args[3] as usize, &allocation, frames, options)?
-    };
-    Ok([range.start as u64, (range.end - range.start) as u64])
+    Ok((ObjectReference::FrameAllocation(allocation), options))
 }
 
 pub(super) fn frames(
     caller: &Task,
-    allocation: &FrameAllocation,
+    allocation: &HeapArc<FrameAllocation>,
     method: u64,
     args: [u64; 5],
 ) -> Result<[u64; 2], Error> {
     if method == memory::SIZE {
         return Ok([allocation.info().frames, 0]);
+    }
+    if method == memory::STATE {
+        let info = allocation.info();
+        let handles = u64::try_from(HeapArc::strong_count(allocation)).unwrap_or(u64::MAX);
+        return Ok([info.mappings, handles]);
     }
     let write = method == memory::WRITE;
     let user = caller.pin_user_memory(args[1] as usize, args[2] as usize, !write)?;

@@ -21,6 +21,7 @@ pub(super) fn run() {
     permissions();
     invalid_requests();
     exhaustion();
+    huge_mappings();
 }
 
 /// Create and destroy one inactive user address space per iteration.
@@ -604,4 +605,62 @@ fn exhaustion() {
         .map_at(ADDRESS, &allocation, 0..3, mutable_code())
         .unwrap();
     space.unmap(mapped).unwrap();
+}
+
+fn huge_mappings() {
+    use kernel::memory::{HUGE_PAGE_FRAMES, HUGE_PAGE_SIZE};
+
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let space = AddressSpace::new().unwrap();
+    let allocation = manager
+        .allocate_contiguous(
+            FrameOwner::User(1),
+            FramePurpose::Data,
+            HUGE_PAGE_FRAMES,
+            HUGE_PAGE_SIZE as u64,
+        )
+        .unwrap();
+    let frames: alloc::vec::Vec<Frame> = allocation.frames().collect();
+    assert_eq!(frames.len(), HUGE_PAGE_FRAMES as usize);
+    let options = MappingOptions {
+        permissions: PagePermissions::ReadWrite,
+        maximum: MappingRights::READ | MappingRights::WRITE,
+        alignment: PAGE_SIZE,
+    };
+    let mapped = space
+        .map_huge(&allocation, 0..HUGE_PAGE_FRAMES, options)
+        .unwrap();
+    assert!(mapped.start.is_multiple_of(HUGE_PAGE_SIZE));
+    assert_eq!(mapped.end - mapped.start, HUGE_PAGE_SIZE);
+    assert_eq!(allocation.info().mappings, HUGE_PAGE_FRAMES);
+    for index in [0, 1, HUGE_PAGE_FRAMES as usize - 1] {
+        assert_eq!(
+            space
+                .translate(mapped.start + index * PAGE_SIZE + 7)
+                .unwrap(),
+            Some(frames[index].address() + 7)
+        );
+    }
+    let info = space.query(mapped.start + PAGE_SIZE).unwrap().unwrap();
+    assert_eq!(info.range, mapped);
+    assert_eq!(
+        info.mapping.unwrap().attributes.permissions,
+        PagePermissions::ReadWrite
+    );
+    assert_eq!(
+        space.protect(mapped, PagePermissions::ReadOnly),
+        Err(MemoryError::Unsupported)
+    );
+    assert_eq!(
+        space.unmap(range(mapped.start + PAGE_SIZE, 1)),
+        Err(MemoryError::InUse)
+    );
+    space.unmap(mapped).unwrap();
+    assert_eq!(allocation.info().mappings, 0);
+    assert_eq!(space.translate(mapped.start).unwrap(), None);
+    drop((allocation, space));
+    manager.reclaim_heap();
+    assert_eq!(manager.stats(), initial);
 }

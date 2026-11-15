@@ -81,6 +81,26 @@ For example, when unmapping only the pages in the middle of a range, the remaini
 The kernel reserves the records needed for splitting before modification and releases the reservation on failure.
 Page table edits are performed through the `PageTable` internal to the memory module; the public mapping entry points are maintained uniformly by `AddressSpace`.
 
+### Large Page Mappings
+
+`map_huge` and `map_huge_at` establish large leaf mappings in addition to the base-page entry points.
+The supported leaf size is 2 MiB: a level-1 entry with nine page table index bits and 4 KiB base pages.
+Both supported architectures use this form; Sv39 marks a level-1 leaf with read, write, or execute permission bits, while the LoongArch entry carries the huge-page bit at the same level.
+The source allocation must be physically contiguous and 2 MiB aligned, which `allocate_contiguous` can provide, and the frame offset and count must be multiples of 512 frames.
+Virtual addresses chosen by `map_huge` are 2 MiB aligned, and `map_huge_at` rejects an unaligned address.
+
+A large leaf may also be installed with no access, for example for the part of a file-backed mapping beyond the end of the file.
+The mapping record owns the frame reference and the encoder marks the leaf so that any access faults.
+Sv39 clears the valid bit while keeping the physical page number and sets the dirty bit as a software marker; because hardware ignores the remaining bits when valid is clear, the entry cannot be mistaken for a page table pointer, and the dirty bit identifies the no-access leaf when decoding.
+LoongArch64 keeps the entry present and the huge bit set, but requests both no-read and no-execute access.
+Unmapping a no-access leaf releases its frame reference through the same path as an accessible mapping.
+
+A large mapping is represented as one mapping record per 2 MiB chunk instead of one record per base page.
+Mapping and unmapping account for every backing page frame, but `unmap` accepts a large mapping only as complete chunks; a partial unmap returns `InUse`, and `protect` on a large mapping returns `Unsupported`.
+`query`, `translate`, and pinned user memory account for the offset inside a large leaf.
+Large leaves may be executable when the mapping options allow execute access and the architecture encoder supports it at that level.
+Large leaves are not created for kernel device or direct-map ranges.
+
 ## Permissions and Aliases
 
 The same physical page frame may appear in both a user mapping and the kernel direct map.

@@ -8,13 +8,16 @@
 extern crate alloc;
 
 pub mod archive;
+mod backend;
 pub mod block;
 pub mod client;
 mod control;
 pub mod ext4;
 pub mod fat32;
+mod hugepages;
+mod memory;
 mod metadata;
-pub mod namespace;
+mod namespace;
 mod open;
 mod path;
 mod protocol;

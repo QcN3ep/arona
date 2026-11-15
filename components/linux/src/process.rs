@@ -555,6 +555,18 @@ impl<'a> Process<'a> {
         })
     }
 
+    /// Earliest deadline among asynchronous memory operations.
+    pub fn deadline(&self) -> Option<u64> {
+        if self.signals.borrow().stopped {
+            return None;
+        }
+        self.threads
+            .iter()
+            .filter_map(|thread| thread.pending.as_ref())
+            .filter_map(Pending::deadline)
+            .min()
+    }
+
     pub fn status(&self) -> ExitStatus {
         self.status
     }

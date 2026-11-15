@@ -14,20 +14,47 @@ use super::{
 use crate::{
     elf::PAGE_SIZE,
     file::OpenFileDescription,
-    memory::{AddressSpace, MappedPage, Origin, PageBacking},
+    memory::{AddressSpace, HugeBlock, MappedPage, Origin, PageBacking, Reservation},
     process::Process,
 };
 use alloc::{rc::Rc, vec::Vec};
+use runtime::{FrameAllocation, Handle, Rights};
 
 pub(super) use mapping::Pending;
 use mapping::{FileMapping, Stage};
 mod mapping;
 
 // REFERENCE: https://man7.org/linux/man-pages/man2/mmap.2.html
+const O_RDONLY: u32 = 0;
+const O_WRONLY: u32 = 1;
+const MAP_SHARED: usize = 1;
 const MAP_PRIVATE: usize = 2;
 const MAP_FIXED: usize = 0x10;
 const MAP_ANONYMOUS: usize = 0x20;
 const MAP_FIXED_NOREPLACE: usize = 0x100000;
+// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/mman-common.h?h=v6.12
+const MAP_HUGETLB: usize = 0x40000;
+// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/hugetlb_encode.h?h=v6.12
+// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/linux/mman.h?h=v6.12
+const MAP_HUGE_SHIFT: u32 = 26;
+const MAP_HUGE_MASK: usize = 0x3f << MAP_HUGE_SHIFT;
+const MAP_HUGE_2MB: usize = 21 << MAP_HUGE_SHIFT;
+const HUGE_PAGE_SIZE: usize = runtime::memory::HUGE_PAGE_SIZE;
+const HUGE_FRAMES: u64 = (HUGE_PAGE_SIZE / PAGE_SIZE) as u64;
+// Every 2 MiB large leaf consumes one mapping record, not one per base page. The
+// kernel bounds the records a user address space may hold, so a single mapping
+// cannot exceed the whole budget; checking it here keeps an attacker-controlled
+// length from reaching the block vector before any frame is obtained. The address
+// range is validated separately before the first block is materialized.
+const MAX_USER_MAPPING_RECORDS: usize = runtime::memory::MAX_USER_MAPPING_RECORDS;
+// One 2 MiB block consumes one mapping record, and the kernel budget is global to
+// the address space, so a single mapping cannot exceed the whole budget.
+const MAX_HUGE_BLOCKS: usize = MAX_USER_MAPPING_RECORDS;
+const HUGE_RIGHTS: Rights = Rights::READ_WRITE
+    .union(Rights::MAP)
+    .union(Rights::EXECUTE)
+    .union(Rights::DUPLICATE)
+    .union(Rights::TRANSFER);
 
 // REFERENCE: https://man7.org/linux/man-pages/man2/msync.2.html
 const MS_ASYNC: usize = 1;
@@ -43,15 +70,47 @@ pub(super) fn mmap<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Outcome<
 
 fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>, Errno> {
     let [address, length, protection, flags, raw, offset] = arguments;
-    if length == 0 || !offset.is_multiple_of(PAGE_SIZE) || !matches!(flags & 3, 1 | 2) {
+    if length == 0 || !matches!(flags & 3, MAP_SHARED | MAP_PRIVATE) {
         return Err(EINVAL);
     }
     let permissions = permissions(protection)?;
-    if flags & !(3 | MAP_ANONYMOUS | MAP_FIXED | MAP_FIXED_NOREPLACE) != 0
+    if flags & !(3 | MAP_ANONYMOUS | MAP_FIXED | MAP_FIXED_NOREPLACE | MAP_HUGETLB | MAP_HUGE_MASK)
+        != 0
         || flags & MAP_FIXED != 0 && flags & MAP_FIXED_NOREPLACE != 0
     {
         return Err(EINVAL);
     }
+    let huge = flags & MAP_HUGETLB != 0;
+    let encoding = flags & MAP_HUGE_MASK;
+    if encoding != 0 && (!huge || encoding != MAP_HUGE_2MB) {
+        return Err(EINVAL);
+    }
+    let exact = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
+    let replace = flags & MAP_FIXED != 0;
+    let anonymous = flags & MAP_ANONYMOUS != 0;
+    if exact && address == 0 {
+        return Err(ENOMEM);
+    }
+    if huge && anonymous {
+        return Ok(Pending::Complete(Some(anonymous_huge_mapping(
+            process,
+            HugeRequest {
+                address,
+                length,
+                offset,
+                flags,
+                permissions,
+                exact,
+                replace,
+            },
+        ))));
+    }
+    if !offset.is_multiple_of(PAGE_SIZE) {
+        return Err(EINVAL);
+    }
+    // Keep the requested length for the huge page path: rounding it first would
+    // accept a huge file mapping that is not a whole 2 MiB multiple.
+    let requested_length = length;
     let length = length
         .checked_next_multiple_of(PAGE_SIZE)
         .filter(|length| *length <= isize::MAX as usize)
@@ -63,7 +122,6 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
     {
         return Err(ENOMEM);
     }
-    let exact = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0;
     if exact
         && address != 0
         && process.attaches.iter().any(|(start, attach)| {
@@ -75,14 +133,10 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
         // its attachment record, so keep the mapping owned by shmdt.
         return Err(EINVAL);
     }
-    let replace = flags & MAP_FIXED != 0;
     if exact && !address.is_multiple_of(PAGE_SIZE) {
         return Err(EINVAL);
     }
-    if exact && address == 0 {
-        return Err(ENOMEM);
-    }
-    if flags & MAP_ANONYMOUS != 0 {
+    if anonymous {
         let result = process
             .address_space
             .map_anonymous(
@@ -91,7 +145,7 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
                 permissions,
                 exact,
                 replace,
-                flags & 3 == 1,
+                flags & 3 == MAP_SHARED,
             )
             .map_err(|error| {
                 if replace {
@@ -101,10 +155,6 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
                 }
             });
         return Ok(Pending::Complete(Some(result)));
-    }
-    if flags & 3 != MAP_PRIVATE {
-        // TODO: Support file MAP_SHARED and synchronize data with the file service.
-        return Err(EOPNOTSUPP);
     }
     let description = Rc::clone(
         &process
@@ -119,9 +169,6 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
     let OpenFileDescription::Regular { file, path, .. } = description.as_ref() else {
         return Err(ENODEV);
     };
-    if description.flags() & 3 == 1 {
-        return Err(EACCES);
-    }
     offset
         .checked_add(length)
         .filter(|end| *end <= i64::MAX as usize)
@@ -129,26 +176,193 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
     let origin = path
         .as_ref()
         .map(|path| Rc::new(Origin::File(Rc::clone(path))));
-    let request = Stage::Metadata(file.start_metadata().map_err(filesystem_error)?);
-    Ok(Pending::File(FileMapping {
+    // Probe the descriptor asynchronously so a huge page file does not make the
+    // caller wait for the file service inside the trap dispatch loop. Ordinary
+    // files use the same probe and continue with their metadata request.
+    let request = Stage::Info(file.start_hugepage_info().map_err(filesystem_error)?);
+    Ok(Pending::File(alloc::boxed::Box::new(FileMapping::new(
         description,
         origin,
         request,
-        address: (address != 0).then_some(address & !(PAGE_SIZE - 1)),
+        HugeRequest {
+            address,
+            length: requested_length,
+            offset,
+            flags,
+            permissions,
+            exact,
+            replace,
+        },
         length,
-        offset,
-        permissions,
-        exact,
-        replace,
-        size: 0,
-        pages: Vec::new(),
-    }))
+    ))))
 }
 
-fn map_error(error: runtime::Error, exact: bool) -> Errno {
+#[derive(Clone, Copy)]
+pub(super) struct HugeRequest {
+    address: usize,
+    length: usize,
+    offset: usize,
+    flags: usize,
+    permissions: Permissions,
+    exact: bool,
+    replace: bool,
+}
+
+/// Validates the flags and offsets shared by anonymous and file-backed huge mappings.
+pub(super) fn validate_huge_request(request: &HugeRequest) -> Result<(), Errno> {
+    if !request.length.is_multiple_of(HUGE_PAGE_SIZE)
+        || !request.offset.is_multiple_of(HUGE_PAGE_SIZE)
+        || request.address != 0 && !request.address.is_multiple_of(HUGE_PAGE_SIZE)
+    {
+        return Err(EINVAL);
+    }
+    if request.length > isize::MAX as usize {
+        return Err(ENOMEM);
+    }
+    if request.length / HUGE_PAGE_SIZE > MAX_HUGE_BLOCKS {
+        return Err(ENOMEM);
+    }
+    if request
+        .offset
+        .checked_add(request.length)
+        .filter(|end| *end <= i64::MAX as usize)
+        .is_none()
+    {
+        return Err(EOVERFLOW);
+    }
+    if request.exact && !request.address.is_multiple_of(HUGE_PAGE_SIZE) {
+        return Err(EINVAL);
+    }
+    if request.address != 0 && !request.exact && !request.address.is_multiple_of(PAGE_SIZE) {
+        return Err(EINVAL);
+    }
+    Ok(())
+}
+
+fn anonymous_huge_mapping(process: &Process<'_>, request: HugeRequest) -> SyscallResult {
+    validate_huge_request(&request)?;
+    let start = reserve_huge_start(process, &request)?;
+    let count = request.length / HUGE_PAGE_SIZE;
+    let backing = if request.flags & 3 == MAP_SHARED {
+        PageBacking::Shared
+    } else {
+        PageBacking::Anonymous
+    };
+    let mut blocks = Vec::new();
+    blocks.try_reserve(count).map_err(|_| ENOMEM)?;
+    for index in 0..count {
+        blocks.push(HugeBlock {
+            address: huge_block_address(start, index)?,
+            frames: Rc::new(allocate_huge(process, HUGE_RIGHTS)?),
+            permissions: request.permissions,
+            backing,
+        });
+    }
+    process
+        .address_space
+        .install_huge(&blocks, request.replace)
+        .map_err(|error| huge_error(error, request.exact, request.replace))?;
+    Ok(start)
+}
+
+fn reserve_huge_start(process: &Process<'_>, request: &HugeRequest) -> Result<usize, Errno> {
+    let (start, reservation) = huge_start(process, request)?;
+    if let Some(mut reservation) = reservation {
+        reservation
+            .release()
+            .map_err(|error| huge_error(error, request.exact, request.replace))?;
+    }
+    Ok(start)
+}
+
+/// Chooses and validates the start of a huge mapping.
+///
+/// A non-fixed mapping keeps its reservation in the returned guard, so validation
+/// failures release the range automatically. Fixed mappings never reserve.
+fn huge_start(
+    process: &Process<'_>,
+    request: &HugeRequest,
+) -> Result<(usize, Option<Reservation>), Errno> {
+    let bounds = process
+        .address_space
+        .native
+        .task()
+        .address_range()
+        .map_err(mapping_error)?;
+    let (start, reservation) = if request.exact {
+        (request.address, None)
+    } else {
+        let hint = (request.address != 0).then_some(request.address);
+        let reservation = process
+            .address_space
+            .reserve_huge(request.length, hint)
+            .map_err(|error| huge_error(error, request.exact, request.replace))?;
+        let range = reservation.range().ok_or(EIO)?;
+        (range.start, Some(reservation))
+    };
+    // Validate the whole range before any block is allocated or materialized, and
+    // before per-chunk arithmetic can overflow. The guard releases the range on
+    // every error return below.
+    let end = start.checked_add(request.length).ok_or(ENOMEM)?;
+    if !start.is_multiple_of(HUGE_PAGE_SIZE) || start < bounds.start || end > bounds.end {
+        return Err(ENOMEM);
+    }
+    Ok((start, reservation))
+}
+
+pub(super) fn check_huge_file_mapping(
+    flags: usize,
+    permissions: Permissions,
+    description: &OpenFileDescription<'_>,
+) -> Result<(), Errno> {
+    // REFERENCE: https://man7.org/linux/man-pages/man2/mmap.2.html
+    let mode = description.flags() & 3;
+    if mode == O_WRONLY {
+        // A mapping is readable unless PROT_NONE is requested, and a writable shared
+        // mapping needs write access.
+        return Err(EACCES);
+    }
+    if flags & 3 == MAP_PRIVATE {
+        // TODO: Copy a huge page block on the first private write.
+        return Err(EOPNOTSUPP);
+    }
+    if mode == O_RDONLY && permissions == Permissions::ReadWrite {
+        return Err(EACCES);
+    }
+    Ok(())
+}
+
+pub(super) fn huge_block_address(start: usize, index: usize) -> Result<usize, Errno> {
+    index
+        .checked_mul(HUGE_PAGE_SIZE)
+        .and_then(|offset| start.checked_add(offset))
+        .ok_or(ENOMEM)
+}
+
+pub(super) fn allocate_huge(
+    process: &Process<'_>,
+    rights: Rights,
+) -> Result<Handle<FrameAllocation>, Errno> {
+    process
+        .address_space
+        .native
+        .task()
+        .allocate_contiguous(HUGE_FRAMES, HUGE_PAGE_SIZE, rights)
+        .map_err(mapping_error)
+}
+
+pub(super) fn map_error(error: runtime::Error, exact: bool) -> Errno {
     match error {
         runtime::Error::Kernel(runtime::KernelError::Busy) if exact => EEXIST,
         error => mapping_error(error),
+    }
+}
+
+pub(super) fn huge_error(error: runtime::Error, exact: bool, replace: bool) -> Errno {
+    if replace {
+        mapping_error(error)
+    } else {
+        map_error(error, exact)
     }
 }
 
@@ -375,6 +589,7 @@ fn permissions(protection: usize) -> Result<Permissions, Errno> {
 fn mapping_error(error: runtime::Error) -> Errno {
     match error {
         runtime::Error::Kernel(runtime::KernelError::Denied | runtime::KernelError::Busy) => EACCES,
+        runtime::Error::Kernel(runtime::KernelError::Unsupported) => EOPNOTSUPP,
         runtime::Error::Kernel(
             runtime::KernelError::NoMemory
             | runtime::KernelError::BadAddress

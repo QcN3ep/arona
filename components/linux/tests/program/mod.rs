@@ -178,7 +178,7 @@ fn mount_target_bounds(mounts: &fs::Control<'_>, files: &fs::Client<'_>) {
     );
     drop(file);
     control
-        .start_unmount_tmpfs(b"/mount-atomic/child")
+        .start_unmount_memory(b"/mount-atomic/child")
         .unwrap()
         .wait(WaitMode::Until(until))
         .unwrap();

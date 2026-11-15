@@ -35,8 +35,11 @@ pub const STATFS: u64 = 24;
 pub const TMPFS: u64 = 25;
 pub const SYNC: u64 = 26;
 pub const MOUNT_TMPFS: u64 = 27;
-pub const UNMOUNT_TMPFS: u64 = 28;
 pub const CONNECT_MOUNT: u64 = 29;
+pub const UNMOUNT_MEMORY: u64 = 30;
+pub const MOUNT_HUGEPAGES: u64 = 31;
+pub const HUGEPAGE_INFO: u64 = 32;
+pub const MAP_HUGEPAGE: u64 = 33;
 
 pub const SUCCESS: u64 = 0;
 pub const INVALID_REQUEST: u64 = 1;
@@ -71,7 +74,12 @@ pub fn transfer<T: runtime::Object>(
         .map_err(|_| Error::InvalidRequest)
 }
 
-pub fn call(
+/// Sends a request and returns the raw reply.
+///
+/// The caller owns the reply contract, including the error tag and any payload or
+/// transferred handles. This lets the sync and pending `MAP_HUGEPAGE` paths share
+/// one validator.
+pub(crate) fn call_with_reply(
     channel: &Handle<Channel>,
     message: &mut Message,
     deadline: u64,
@@ -79,8 +87,15 @@ pub fn call(
     if matches!(deadline, 0 | u64::MAX) {
         return Err(Error::InvalidRequest);
     }
-    let response = channel.call(message, Some(deadline)).map_err(Error::Call)?;
-    response_result(response)
+    channel.call(message, Some(deadline)).map_err(Error::Call)
+}
+
+pub fn call(
+    channel: &Handle<Channel>,
+    message: &mut Message,
+    deadline: u64,
+) -> Result<ReceivedMessage, Error> {
+    response_result(call_with_reply(channel, message, deadline)?)
 }
 
 pub(crate) fn response_result(response: ReceivedMessage) -> Result<ReceivedMessage, Error> {
@@ -93,7 +108,11 @@ pub(crate) fn response_result(response: ReceivedMessage) -> Result<ReceivedMessa
     if !response.words().is_empty() {
         return Err(Error::InvalidData);
     }
-    Err(match response.tag {
+    Err(tag_error(response.tag))
+}
+
+pub(crate) fn tag_error(tag: u64) -> Error {
+    match tag {
         INVALID_REQUEST => Error::InvalidRequest,
         NOT_FOUND => Error::NotFound,
         IS_DIRECTORY => Error::IsDirectory,
@@ -111,7 +130,7 @@ pub(crate) fn response_result(response: ReceivedMessage) -> Result<ReceivedMessa
         NAME_TOO_LONG => Error::NameTooLong,
         UNSUPPORTED => Error::Unsupported,
         _ => Error::InvalidData,
-    })
+    }
 }
 
 pub fn respond(reply: Handle<Reply>, result: Result<Message, Error>) -> Result<(), Error> {

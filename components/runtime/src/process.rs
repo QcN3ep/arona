@@ -6,6 +6,7 @@ use crate::{
     Channel, Error, FrameAllocation, Handle, Object, Rights, Task, memory::Permissions,
     thread::UserEntry,
 };
+use abi::method::task;
 pub use abi::process::ProcessStart;
 use core::ops::Range;
 
@@ -65,6 +66,19 @@ impl SupervisedTask {
             .into_range()
     }
 
+    pub fn map_huge(
+        &self,
+        frames: &Handle<FrameAllocation>,
+        offset: u64,
+        count: u64,
+        address: Option<usize>,
+        permissions: Permissions,
+    ) -> Result<Range<usize>, Error> {
+        self.task
+            .map_huge(frames, offset, count, address, permissions)?
+            .into_range()
+    }
+
     pub fn reserve(
         &self,
         length: usize,
@@ -81,6 +95,19 @@ impl SupervisedTask {
             .ok_or(Error::Kernel(abi::Error::InvalidArgument))?;
         self.task.borrow().invoke(
             abi::method::task::UNMAP,
+            [range.start as u64, length as u64, 0, 0, 0],
+        )?;
+        Ok(())
+    }
+
+    /// Releases a reservation previously established by [`Self::reserve`].
+    pub fn unreserve(&self, range: Range<usize>) -> Result<(), Error> {
+        let length = range
+            .end
+            .checked_sub(range.start)
+            .ok_or(Error::Kernel(abi::Error::InvalidArgument))?;
+        self.task.borrow().invoke(
+            task::UNRESERVE,
             [range.start as u64, length as u64, 0, 0, 0],
         )?;
         Ok(())

@@ -27,8 +27,10 @@ pub(crate) trait Format: Mmu {
 
     fn encode_table(&self, address: u64) -> u64;
     fn decode_table(&self, entry: u64) -> Result<u64, MmuError>;
-    fn encode_mapping(&self, mapping: PageMapping) -> Result<u64, MmuError>;
-    fn decode_mapping(&self, entry: u64) -> Result<PageMapping, MmuError>;
+    fn encode_mapping(&self, mapping: PageMapping, level: usize) -> Result<u64, MmuError>;
+    fn decode_mapping(&self, entry: u64, level: usize) -> Result<PageMapping, MmuError>;
+    /// Reports whether a nonzero entry above the base level is a leaf mapping rather than a table.
+    fn is_mapping(entry: u64, level: usize) -> bool;
     fn window_table_address(&self) -> u64 {
         window_table_physical()
     }
@@ -325,8 +327,10 @@ fn decode_entry<F: Format>(
 ) -> Result<PageTableEntry, MmuError> {
     if entry == 0 {
         Ok(PageTableEntry::Empty)
-    } else if level == 0 {
-        format.decode_mapping(entry).map(PageTableEntry::Mapping)
+    } else if level == 0 || F::is_mapping(entry, level) {
+        format
+            .decode_mapping(entry, level)
+            .map(PageTableEntry::Mapping)
     } else {
         let address = format.decode_table(entry)?;
         validate_physical::<F>(address)?;
@@ -435,9 +439,13 @@ pub(crate) fn write_entry<F: Format>(
             }
             entry
         }
-        PageTableEntry::Mapping(mapping) if level == 0 => {
+        PageTableEntry::Mapping(mapping) if level <= 1 => {
             validate_physical::<F>(mapping.physical_address)?;
-            format.encode_mapping(mapping)?
+            let page_size = PAGE_SIZE << (level * ENTRIES.trailing_zeros() as usize);
+            if !mapping.physical_address.is_multiple_of(page_size as u64) {
+                return Err(MmuError::InvalidAlignment);
+            }
+            format.encode_mapping(mapping, level)?
         }
         _ => return Err(MmuError::InvalidTable),
     };

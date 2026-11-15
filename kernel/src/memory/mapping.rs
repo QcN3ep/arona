@@ -81,6 +81,7 @@ pub(super) enum MappingKind {
     Reserved,
     Preparing,
     Mapped,
+    Huge,
     Permanent { physical_start: u64 },
     DirectMap,
     Owned,
@@ -102,6 +103,7 @@ pub(super) struct MappingJournal {
     pub written: bool,
     pub referenced: bool,
     pub direct_was_writable: bool,
+    pub reserved: u64,
 }
 
 impl MappingJournal {
@@ -120,6 +122,14 @@ impl MappingJournal {
             .attributes
             .permissions
     }
+
+    /// Page table level of the staged leaf; zero for base pages.
+    pub fn level(self) -> usize {
+        self.tables
+            .iter()
+            .position(Option::is_some)
+            .expect("missing staged page table")
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -129,6 +139,21 @@ pub(super) struct MappingRecord {
     pub generation: u64,
     pub kind: MappingKind,
     pub journal: MappingJournal,
+}
+
+impl MappingRecord {
+    /// Physical frame backing `address`, accounting for large leaf mappings.
+    pub fn frame_at(self, address: usize) -> Frame {
+        let offset = u64::try_from(address - self.range.start).expect("address outside mapping");
+        Frame::new(
+            self.journal
+                .mapping
+                .expect("missing staged mapping")
+                .physical_address
+                + offset,
+        )
+        .expect("unaligned mapping frame")
+    }
 }
 
 pub(super) struct MappingIndex {
@@ -709,6 +734,7 @@ impl MappingRecord {
                     physical_start: words[6],
                 },
                 7 => MappingKind::Guard,
+                8 => MappingKind::Huge,
                 _ => panic!("invalid mapping kind"),
             },
             journal: MappingJournal {
@@ -716,6 +742,7 @@ impl MappingRecord {
                     (words[2 + i] != NIL).then(|| Frame::new(words[2 + i]).unwrap())
                 }),
                 mapping,
+                reserved: words[8] >> 8,
                 detached: words[8] & 15,
                 written: words[8] & 16 != 0,
                 referenced: words[8] & 32 != 0,
@@ -756,6 +783,7 @@ impl MappingRecord {
                 6
             }
             MappingKind::Guard => 7,
+            MappingKind::Huge => 8,
         };
         write(
             address + (TREE_WORDS * size_of::<u64>()) as u64,
@@ -772,7 +800,8 @@ impl MappingRecord {
                     | u64::from(journal.written) << 4
                     | u64::from(journal.referenced) << 5
                     | u64::from(journal.mapping.is_some()) << 6
-                    | u64::from(journal.direct_was_writable) << 7,
+                    | u64::from(journal.direct_was_writable) << 7
+                    | journal.reserved << 8,
             ],
         );
     }

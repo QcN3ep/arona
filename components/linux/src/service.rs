@@ -300,6 +300,14 @@ fn wait(
     for guest in running {
         guest.process.waits(&mut items);
     }
-    ipc::wait_many(&items, WaitMode::Forever)?;
-    Ok(())
+    let deadline = running
+        .iter()
+        .filter_map(|guest| guest.process.deadline())
+        .min();
+    match ipc::wait_many(&items, deadline.map_or(WaitMode::Forever, WaitMode::Until)) {
+        // A deadline only wakes the loop so the owning pending operation can
+        // report its own timeout; it must not stop the service.
+        Ok(_) | Err(runtime::Error::Kernel(runtime::KernelError::TimedOut)) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }

@@ -14,7 +14,7 @@ Both paths return a File session, and clients read and write through the same IP
 | Interface | Operations |
 |---|---|
 | Client | open file or directory, create, query metadata, make directory, delete, rename, hard link and symbolic link |
-| File | read/write by offset, append, truncate, size, metadata, attribute modification, fsync |
+| File | read/write by offset, append, truncate, size, metadata, attribute modification, fsync, huge page size and block mapping |
 | Directory | metadata, attributes, directory entry reading, and directory anchor for relative path operations |
 | Control | connect client, mount ext4, FAT32, or tmpfs, unmount |
 | MountControl | mount and unmount tmpfs created by a client |

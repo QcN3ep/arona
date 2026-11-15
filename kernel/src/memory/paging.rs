@@ -198,27 +198,41 @@ impl PageTableState {
     }
 
     pub(super) fn prepare(&mut self, address: usize) -> Result<PageWalk, MemoryError> {
+        self.prepare_leaf(address, 0)
+    }
+
+    /// Prepares the tables needed for a leaf at `leaf_level` without installing the leaf.
+    pub(super) fn prepare_leaf(
+        &mut self,
+        address: usize,
+        leaf_level: usize,
+    ) -> Result<PageWalk, MemoryError> {
+        let layout = hardware::mmu().layout();
+        if leaf_level >= layout.levels {
+            return Err(MemoryError::InvalidRequest);
+        }
         validate_address(address, true)?;
         self.validate_edit(address)?;
         let mmu = hardware::mmu();
         let layout = mmu.layout();
         let mut walk = self.walk(address)?;
-        if walk.entry != PageTableEntry::Empty {
+        if walk.entry != PageTableEntry::Empty || walk.level < leaf_level {
             return Err(MemoryError::AlreadyMapped);
         }
-        if walk.level != 0 {
+        if walk.level != leaf_level {
             let allocation = manager().allocate(
                 FrameOwner::Kernel,
                 FramePurpose::PageTable,
-                walk.level as u64,
+                (walk.level - leaf_level) as u64,
             )?;
             let frames: ArrayVec<Frame, MAX_LEVELS> = allocation.frames().collect();
-            for level in 1..frames.len() {
+            for slot in 1..frames.len() {
+                let level = leaf_level + slot;
                 mmu.write_entry(
-                    frames[level],
+                    frames[slot],
                     index(layout, address, level),
                     level,
-                    PageTableEntry::Table(frames[level - 1]),
+                    PageTableEntry::Table(frames[slot - 1]),
                 )?;
             }
             mmu.write_entry(
@@ -241,10 +255,19 @@ impl PageTableState {
         table: Frame,
         mapping: Option<PageMapping>,
     ) -> Result<(), MemoryError> {
+        Self::write_leaf_at(address, 0, table, mapping)
+    }
+
+    pub(super) fn write_leaf_at(
+        address: usize,
+        level: usize,
+        table: Frame,
+        mapping: Option<PageMapping>,
+    ) -> Result<(), MemoryError> {
         hardware::mmu().write_entry(
             table,
-            index(hardware::mmu().layout(), address, 0),
-            0,
+            index(hardware::mmu().layout(), address, level),
+            level,
             mapping.map_or(PageTableEntry::Empty, PageTableEntry::Mapping),
         )?;
         Ok(())
@@ -343,10 +366,14 @@ impl PageTableState {
                 PageTableEntry::Table(next) if next == layout.window.table => {}
                 PageTableEntry::Table(next) => self.release_mappings(next, level - 1)?,
                 PageTableEntry::Mapping(mapping) => {
-                    let frame =
-                        Frame::new(mapping.physical_address).ok_or(MemoryError::InvalidFrame)?;
-                    if manager().is_managed(frame.address()) {
-                        manager().release_mapping(frame, mapping.attributes.permissions.into())?;
+                    let pages = 1u64 << (layout.index_bits * level as u32);
+                    for index in 0..pages {
+                        let frame = Frame::new(mapping.physical_address + index * PAGE_SIZE as u64)
+                            .ok_or(MemoryError::InvalidFrame)?;
+                        if manager().is_managed(frame.address()) {
+                            manager()
+                                .release_mapping(frame, mapping.attributes.permissions.into())?;
+                        }
                     }
                 }
             }

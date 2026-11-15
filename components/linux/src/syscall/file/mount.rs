@@ -194,7 +194,7 @@ impl<'a> Mount<'a> {
                         self.mounts.start_mount_tmpfs(&path)
                     }
                     Operation::Mount => return Some(Err(EPERM)),
-                    Operation::Unmount => self.mounts.start_unmount_tmpfs(&path),
+                    Operation::Unmount => self.mounts.start_unmount_memory(&path),
                 };
                 match request {
                     Ok(request) => self.stage = Stage::Request(request),

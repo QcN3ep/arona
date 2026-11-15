@@ -181,6 +181,9 @@ fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, S
             .map_err(|error| format!("failed to read {}: {error}", executable.display()))?;
         append_entry(&mut bytes, &format!("bin/{component}"), 0o100755, &image)?;
     }
+    // The huge page volume is mounted at /dev/hugepages, so path lookup requires the directory.
+    append_entry(&mut bytes, "dev", 0o040755, &[])?;
+    append_entry(&mut bytes, "dev/hugepages", 0o040755, &[])?;
     if test == Some("linux") {
         linux_test::append(options, &root, &target_directory, &mut bytes)?;
     }
@@ -188,6 +191,8 @@ fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, S
         net_test::append(options, &root, &mut bytes)?;
     }
     let mut reserved = vec![
+        "dev",
+        "dev/hugepages",
         "bin/init",
         "bin/devmgr",
         "bin/logger",

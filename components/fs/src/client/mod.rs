@@ -7,13 +7,17 @@ pub use path::{OpenedNode, PendingNode};
 
 pub use pending::PendingStatistics;
 pub use pending::{
-    Pending, PendingAppend, PendingDirectory, PendingDirectoryPage, PendingMetadata, PendingOpen,
-    PendingRead, PendingSize, PendingTruncate, PendingWrite,
+    Pending, PendingAppend, PendingDirectory, PendingDirectoryPage, PendingHugeMap,
+    PendingHugepageInfo, PendingMetadata, PendingOpen, PendingRead, PendingSize, PendingTruncate,
+    PendingWrite,
 };
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use runtime::{Channel, Handle, Rights, Task, ipc::Message};
+use runtime::{
+    Channel, Handle, Rights, Task,
+    ipc::{Message, WaitMode},
+};
 
 use crate::{
     Error,
@@ -393,6 +397,32 @@ impl File<'_> {
         self.length.store(length, Ordering::Relaxed);
         Ok(())
     }
+    /// Returns the huge page size of a huge page backed file, or zero for other files.
+    pub fn hugepage_size(&self, deadline: u64) -> Result<usize, Error> {
+        let response = call(
+            &self.channel,
+            &mut Message::new(protocol::HUGEPAGE_INFO, &[])?,
+            deadline,
+        )?;
+        let [size] = *response.words() else {
+            return Err(Error::InvalidData);
+        };
+        usize::try_from(size).map_err(|_| Error::InvalidData)
+    }
+
+    /// Materializes a huge page block and returns its frame allocation for mapping.
+    pub fn map_huge(
+        &self,
+        offset: usize,
+        deadline: u64,
+    ) -> Result<runtime::Handle<runtime::FrameAllocation>, Error> {
+        pending::complete_map_huge(protocol::call_with_reply(
+            &self.channel,
+            &mut Message::new(protocol::MAP_HUGEPAGE, &[offset as u64])?,
+            deadline,
+        )?)
+    }
+
     pub fn size(&self, deadline: u64) -> Result<usize, Error> {
         let response = call(
             &self.channel,
@@ -464,34 +494,15 @@ impl Directory<'_> {
         self.file.set_attributes(attributes, deadline)
     }
     pub fn read_dir(&self, deadline: u64) -> Result<alloc::vec::Vec<crate::DirEntry>, Error> {
-        let output = self
-            .file
-            .task
-            .allocate(1, Rights::READ_WRITE | Rights::DUPLICATE | Rights::TRANSFER)?;
         let mut result = alloc::vec::Vec::new();
         loop {
-            let mut request = Message::new(protocol::LIST, &[result.len() as u64])?;
-            transfer(
-                &mut request,
-                output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
-                Rights::WRITE,
-            )?;
-            let response = call(&self.file.channel, &mut request, deadline)?;
-            let [count, length] = *response.words() else {
-                return Err(Error::InvalidData);
-            };
-            if length > PAGE_SIZE as u64 || count > length / 11 {
-                return Err(Error::InvalidData);
-            }
-            let mut bytes = [0; PAGE_SIZE];
-            output.read(0, &mut bytes[..length as usize])?;
-            result.extend(pending::directory_entries(
-                &bytes[..length as usize],
-                count as usize,
-            )?);
-            if count == 0 {
+            let page = self
+                .start_read_dir(result.len())?
+                .wait(WaitMode::Until(deadline))?;
+            if page.is_empty() {
                 return Ok(result);
             }
+            result.extend(page);
         }
     }
 }

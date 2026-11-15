@@ -38,7 +38,12 @@ pub(crate) use mmio::UserDeviceMapping;
 pub use region::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRange, VirtRange};
 pub use stack::KernelStack;
 
-pub const MAX_USER_MAPPING_RECORDS: usize = 65536;
+pub const MAX_USER_MAPPING_RECORDS: usize = abi::memory::MAX_USER_MAPPING_RECORDS;
+
+/// Large leaf size shared by the supported page table layouts (Sv39 and LoongArch 4-level).
+pub use abi::memory::HUGE_PAGE_SIZE;
+
+pub const HUGE_PAGE_FRAMES: u64 = (HUGE_PAGE_SIZE / crate::hardware::mmu::PAGE_SIZE) as u64;
 
 static MEMORY_MANAGER: MemoryManager = MemoryManager {
     allocator: Once::new(),
@@ -60,6 +65,7 @@ pub enum MemoryError {
     InUse,
     NoMemory,
     ReferenceOverflow,
+    Unsupported,
     Mmu(MmuError),
 }
 

@@ -20,6 +20,8 @@ pub type PendingDirectory<'a> =
 pub type PendingRead = Pending<Vec<u8>, (Handle<FrameAllocation>, usize)>;
 pub type PendingMetadata = Pending<Metadata, Handle<FrameAllocation>>;
 pub type PendingStatistics = Pending<crate::Statistics, Handle<FrameAllocation>>;
+pub type PendingHugepageInfo = Pending<usize>;
+pub type PendingHugeMap = Pending<Handle<FrameAllocation>>;
 pub type PendingWrite = Pending<usize, (Arc<AtomicUsize>, usize)>;
 pub type PendingAppend = Pending<(usize, usize), (Arc<AtomicUsize>, usize)>;
 pub type PendingSize = Pending<usize, Arc<AtomicUsize>>;
@@ -284,6 +286,32 @@ impl File<'_> {
     pub fn start_fsync(&self) -> Result<Pending<()>, Error> {
         empty_call(&self.channel, Message::new(protocol::FSYNC, &[])?)
     }
+
+    /// Probes the huge page size exposed by the file without blocking the caller.
+    pub fn start_hugepage_info(&self) -> Result<PendingHugepageInfo, Error> {
+        Ok(Pending::new(
+            self.channel
+                .start_call(&mut Message::new(protocol::HUGEPAGE_INFO, &[])?)?,
+            (),
+            |(), response| {
+                let response = response_result(response)?;
+                let [size] = *response.words() else {
+                    return Err(Error::InvalidData);
+                };
+                usize::try_from(size).map_err(|_| Error::InvalidData)
+            },
+        ))
+    }
+
+    /// Requests the materialized block containing `offset` for a huge page mapping.
+    pub fn start_map_huge(&self, offset: usize) -> Result<PendingHugeMap, Error> {
+        let mut request = Message::new(protocol::MAP_HUGEPAGE, &[offset as u64])?;
+        Ok(Pending::new(
+            self.channel.start_call(&mut request)?,
+            (),
+            |(), response| complete_map_huge(response),
+        ))
+    }
 }
 
 impl Directory<'_> {
@@ -371,6 +399,26 @@ pub(super) fn complete_read(
     let mut bytes = alloc::vec![0; count];
     frames.read(0, &mut bytes)?;
     Ok(bytes)
+}
+
+/// Validates a `MAP_HUGEPAGE` reply, which carries exactly one frame allocation.
+pub(super) fn complete_map_huge(
+    mut response: ReceivedMessage,
+) -> Result<Handle<FrameAllocation>, Error> {
+    if response.tag != protocol::SUCCESS {
+        if !response.handles().is_empty() || !response.words().is_empty() {
+            return Err(Error::InvalidData);
+        }
+        return Err(protocol::tag_error(response.tag));
+    }
+    if !response.words().is_empty() || response.handles().len() != 1 {
+        return Err(Error::InvalidData);
+    }
+    response
+        .take_handle(0)
+        .ok_or(Error::InvalidData)?
+        .downcast::<FrameAllocation>()
+        .map_err(|_| Error::InvalidData)
 }
 
 pub(super) fn empty_call(

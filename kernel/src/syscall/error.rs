@@ -42,6 +42,7 @@ impl From<MemoryError> for Error {
             MemoryError::InvalidFrame | MemoryError::InvalidRequest => Self::InvalidArgument,
             MemoryError::NotMapped => Self::BadAddress,
             MemoryError::AlreadyMapped => Self::Busy,
+            MemoryError::Unsupported => Self::Unsupported,
             _ => Self::InvalidState,
         }
     }

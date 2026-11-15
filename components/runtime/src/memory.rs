@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use crate::{BorrowedHandle, Error, FrameAllocation, Handle, Rights, Task};
-pub use abi::memory::Permissions;
+pub use abi::memory::{HUGE_PAGE_SIZE, MAX_USER_MAPPING_RECORDS, Permissions};
 use abi::method::{memory, task};
 use core::ops::Range;
 
@@ -79,6 +79,22 @@ impl Handle<Task> {
         // SAFETY: A successful ALLOCATE must deliver an exclusive page frame allocation handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
+
+    /// Allocates physically contiguous frames aligned to `alignment` bytes.
+    pub fn allocate_contiguous(
+        &self,
+        frames: u64,
+        alignment: usize,
+        rights: Rights,
+    ) -> Result<Handle<FrameAllocation>, Error> {
+        let [raw, _] = self.borrow().invoke(
+            task::ALLOCATE,
+            [frames, rights.bits(), alignment as u64, 0, 0],
+        )?;
+        // SAFETY: A successful ALLOCATE must deliver an exclusive page frame allocation handle.
+        Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
+    }
+
     pub fn map(
         &self,
         frames: &Handle<FrameAllocation>,
@@ -89,6 +105,31 @@ impl Handle<Task> {
     ) -> Result<Mapping<'_>, Error> {
         let [start, length] = self.borrow().invoke(
             task::MAP,
+            [
+                frames.borrow().raw().raw(),
+                offset,
+                count,
+                address.unwrap_or(0) as u64,
+                permissions as u64,
+            ],
+        )?;
+        Ok(Mapping {
+            task: self.borrow(),
+            range: Some(decode_range(start, length)?),
+        })
+    }
+
+    /// Maps `count` frames as large page leaves; `offset` and `count` must be huge page aligned.
+    pub fn map_huge(
+        &self,
+        frames: &Handle<FrameAllocation>,
+        offset: u64,
+        count: u64,
+        address: Option<usize>,
+        permissions: Permissions,
+    ) -> Result<Mapping<'_>, Error> {
+        let [start, length] = self.borrow().invoke(
+            task::MAP_HUGE,
             [
                 frames.borrow().raw().raw(),
                 offset,
@@ -148,9 +189,24 @@ impl Handle<Task> {
         }))
     }
 }
+/// Live references to a frame allocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AllocationState {
+    /// Kernel mapping references that keep the frames installed in page tables.
+    pub mappings: u64,
+    /// Handles that keep the allocation object alive, including the caller's handle
+    /// and the transient reference used to answer the query.
+    pub handles: u64,
+}
+
 impl Handle<FrameAllocation> {
     pub fn frames(&self) -> Result<u64, Error> {
         Ok(self.borrow().invoke(memory::SIZE, [0; 5])?[0])
+    }
+
+    pub fn state(&self) -> Result<AllocationState, Error> {
+        let [mappings, handles] = self.borrow().invoke(memory::STATE, [0; 5])?;
+        Ok(AllocationState { mappings, handles })
     }
     pub fn read(&self, offset: usize, output: &mut [u8]) -> Result<(), Error> {
         self.borrow().invoke(

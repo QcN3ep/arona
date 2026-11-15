@@ -311,6 +311,21 @@ The compatibility layer's AddressSpace records program mappings and their backin
 `mmap` establishes anonymous or file-private mappings and handles address hints, page alignment, `MAP_FIXED` replacement, and `MAP_FIXED_NOREPLACE`.
 Anonymous shared mappings retain a shared backing relationship between the relevant processes.
 
+Huge mappings are selected either by the `MAP_HUGETLB` flag, with the optional `MAP_HUGE_2MB` encoding, or by mapping a file from the huge page volume.
+Addresses, lengths, and file offsets must be multiples of 2 MiB, otherwise the call returns `EINVAL`.
+An anonymous huge mapping of any 2 MiB multiple is allocated and mapped one block at a time, so a request above 2 MiB succeeds when enough contiguous blocks are available.
+A mapping is bounded by the address space and by the kernel mapping-record budget, which is global to the user address space and counts base-page, reserved, and large-leaf records together: each 2 MiB block consumes one record, so a single mapping holds at most `MAX_USER_MAPPING_RECORDS` blocks and a longer request reports `ENOMEM` before any block is allocated. The complete target range is checked before the first block is materialized.
+File-backed huge pages request one block from the file service per 2 MiB chunk.
+The compatibility layer probes the descriptor's huge page size asynchronously and then requests the chunks one at a time; each wait lets the service handle other guests, traps, and timers.
+The blocks are installed only after every chunk has been materialized, so `MAP_FIXED` keeps the previous mapping when any request fails and a non-fixed mapping holds its address range until installation.
+Each file-service wait is bounded; when the service does not answer before the deadline, the pending mapping reports `EIO` and releases the reservation and any blocks already obtained.
+Ordinary file mappings use the same probe before their metadata request, so they no longer perform a synchronous huge page query.
+Only `MAP_SHARED` is supported for huge page files; `MAP_PRIVATE` returns `EOPNOTSUPP` instead of aliasing the file's blocks, and each fork copies a private anonymous block while shared blocks stay shared.
+The descriptor access mode constrains the mapping: an `O_RDONLY` descriptor with a writable mapping and an `O_WRONLY` descriptor with any mapping report `EACCES`.
+`getpagesize` and `AT_PAGESZ` remain 4 KiB.
+A mapping that extends beyond the end of a huge page file maps the trailing chunks with no access, so touching them raises `SIGBUS`.
+`mprotect` on a huge mapping is not supported. Unmapping a range that covers only part of a huge mapping reports `EINVAL` before any part of the range is removed, so the address space is unchanged.
+
 File-private mappings read content through the file service, allocate and fill the backing page frames, and then map them with the requested permissions.
 `munmap` and `mprotect` modify the native mapping and the compatibility layer records.
 

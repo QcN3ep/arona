@@ -14,12 +14,70 @@ use crate::{
     protocol::Arguments,
 };
 
+const HUGE_PAGE_SIZE: usize = runtime::memory::HUGE_PAGE_SIZE;
+const HUGE_FRAMES: u64 = (HUGE_PAGE_SIZE / PAGE_SIZE) as u64;
+
 pub(crate) struct AddressSpace {
-    pub native: SupervisedTask,
+    pub native: Rc<SupervisedTask>,
     heap: Range<usize>,
     pages: RefCell<BTreeMap<usize, Page>>,
     stack_origin: Rc<Origin>,
     heap_origin: Rc<Origin>,
+    /// Ranges held by an in-flight huge mapping, shared with its [`Reservation`].
+    ///
+    /// This is not an owner: the guard releases the range and removes it here. The
+    /// set remains readable while the guard is alive so a fork can leave an
+    /// in-flight reservation out of its child.
+    pending: Rc<RefCell<Vec<Range<usize>>>>,
+}
+
+/// Owns a reserved range until installation releases it.
+///
+/// The guard keeps the task alive and releases the range when dropped. The range
+/// also stays in the address space's pending set until the kernel confirms the
+/// unreserve, which lets [`AddressSpace::clone_space`] leave an in-flight
+/// reservation out of a child. If the unreserve itself fails, the range stays
+/// reserved until the task exits; the guard drops the error because it has no
+/// caller left to report it.
+pub(super) struct Reservation {
+    task: Rc<SupervisedTask>,
+    pending: Rc<RefCell<Vec<Range<usize>>>>,
+    range: Option<Range<usize>>,
+}
+
+impl Reservation {
+    fn new(
+        task: Rc<SupervisedTask>,
+        pending: Rc<RefCell<Vec<Range<usize>>>>,
+        range: Range<usize>,
+    ) -> Self {
+        pending.borrow_mut().push(range.clone());
+        Self {
+            task,
+            pending,
+            range: Some(range),
+        }
+    }
+
+    pub(super) fn range(&self) -> Option<Range<usize>> {
+        self.range.clone()
+    }
+
+    pub(super) fn release(&mut self) -> Result<(), runtime::Error> {
+        let Some(range) = self.range.clone() else {
+            return Ok(());
+        };
+        self.task.unreserve(range.clone())?;
+        self.range = None;
+        self.pending.borrow_mut().retain(|entry| *entry != range);
+        Ok(())
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let _ = self.release();
+    }
 }
 
 #[derive(Clone)]
@@ -27,6 +85,7 @@ pub(super) struct Page {
     pub frames: Rc<Handle<FrameAllocation>>,
     pub offset: u64,
     pub backing: PageBacking,
+    pub huge: bool,
     pub origin: Option<Rc<Origin>>,
     /// File offset of this page for file-backed origins, otherwise zero.
     pub file_offset: u64,
@@ -73,6 +132,22 @@ fn effective_permissions(page: &Page, permissions: Permissions) -> Permissions {
     }
 }
 
+/// One fully materialized 2 MiB block of a huge mapping.
+pub(super) struct HugeBlock {
+    pub address: usize,
+    pub frames: Rc<Handle<FrameAllocation>>,
+    pub permissions: Permissions,
+    pub backing: PageBacking,
+}
+
+/// A replaced mapping record saved before its range is removed, so a failed
+/// replacement can put the previous address space back.
+struct SavedPage {
+    range: Range<usize>,
+    page: Page,
+    permissions: Permissions,
+}
+
 impl AddressSpace {
     pub fn load(
         parent: &Handle<Task>,
@@ -112,11 +187,12 @@ impl AddressSpace {
             .pages()
             .end;
         let address_space = Self {
-            native: SupervisedTask::new(parent, port)?,
+            native: Rc::new(SupervisedTask::new(parent, port)?),
             heap: start..start,
             pages: RefCell::new(BTreeMap::new()),
             stack_origin: Rc::new(Origin::Stack),
             heap_origin: Rc::new(Origin::Heap),
+            pending: Rc::new(RefCell::new(Vec::new())),
         };
         for (segment, path) in segments {
             let range = segment.pages();
@@ -452,6 +528,248 @@ impl AddressSpace {
         Ok(range.start)
     }
 
+    /// Reserves a huge mapping range, trying `address` first when it is a hint.
+    ///
+    /// The returned guard releases the range when dropped, so validation failures
+    /// after this call cannot leak a reservation.
+    pub(super) fn reserve_huge(
+        &self,
+        length: usize,
+        address: Option<usize>,
+    ) -> Result<Reservation, runtime::Error> {
+        let range = match self.native.reserve(length, HUGE_PAGE_SIZE, address) {
+            Err(runtime::Error::Kernel(
+                runtime::KernelError::Busy | runtime::KernelError::InvalidArgument,
+            )) if address.is_some() => self.native.reserve(length, HUGE_PAGE_SIZE, None),
+            result => result,
+        }?;
+        Ok(Reservation::new(
+            Rc::clone(&self.native),
+            Rc::clone(&self.pending),
+            range,
+        ))
+    }
+
+    /// Maps `count` frames as 2 MiB large leaves and records the block at base page granularity.
+    pub fn map_huge(
+        &self,
+        frames: Rc<Handle<FrameAllocation>>,
+        offset: u64,
+        count: u64,
+        address: Option<usize>,
+        permissions: Permissions,
+        backing: PageBacking,
+    ) -> Result<usize, runtime::Error> {
+        if count == 0 || !count.is_multiple_of(HUGE_FRAMES) || !offset.is_multiple_of(HUGE_FRAMES) {
+            return Err(runtime::Error::Kernel(
+                runtime::KernelError::InvalidArgument,
+            ));
+        }
+        if let Some(address) = address
+            && !address.is_multiple_of(HUGE_PAGE_SIZE)
+        {
+            return Err(runtime::Error::Kernel(
+                runtime::KernelError::InvalidArgument,
+            ));
+        }
+        let range = self
+            .native
+            .map_huge(&frames, offset, count, address, permissions)?;
+        let huge = Rc::clone(&frames);
+        let mut pages = self.pages.borrow_mut();
+        for index in 0..count {
+            pages.insert(
+                range.start + index as usize * PAGE_SIZE,
+                Page {
+                    frames: Rc::clone(&huge),
+                    offset: offset + index,
+                    backing,
+                    huge: true,
+                    origin: None,
+                    file_offset: 0,
+                },
+            );
+        }
+        Ok(range.start)
+    }
+
+    /// Installs every materialized block of a huge mapping.
+    ///
+    /// All blocks are obtained before this call. A replacement removes the old
+    /// range only after that point and restores it when a block cannot be installed,
+    /// so a successful rollback leaves `MAP_FIXED` with the previous mapping intact.
+    /// If unmapping the blocks installed so far or restoring the saved records
+    /// fails, this returns `InvalidState` instead and the replaced range may be left
+    /// only partially restored.
+    pub(super) fn install_huge(
+        &self,
+        blocks: &[HugeBlock],
+        replace: bool,
+    ) -> Result<(), runtime::Error> {
+        let first = blocks.first().ok_or(runtime::Error::Kernel(
+            runtime::KernelError::InvalidArgument,
+        ))?;
+        let length = blocks
+            .len()
+            .checked_mul(HUGE_PAGE_SIZE)
+            .ok_or(runtime::Error::Kernel(runtime::KernelError::NoMemory))?;
+        let start = first.address;
+        let end = start
+            .checked_add(length)
+            .ok_or(runtime::Error::Kernel(runtime::KernelError::NoMemory))?;
+        let saved = if replace {
+            let saved = self.save_pages(start..end)?;
+            self.unmap(start..end)?;
+            Some(saved)
+        } else {
+            None
+        };
+        for (mapped, block) in blocks.iter().enumerate() {
+            if let Err(error) = self.map_huge(
+                Rc::clone(&block.frames),
+                0,
+                HUGE_FRAMES,
+                Some(block.address),
+                block.permissions,
+                block.backing,
+            ) {
+                let mut rollback_failed = false;
+                for block in &blocks[..mapped] {
+                    let address = block.address;
+                    if self.unmap(address..address + HUGE_PAGE_SIZE).is_err() {
+                        rollback_failed = true;
+                    }
+                }
+                if let Some(saved) = saved
+                    && self.restore_pages(saved).is_err()
+                {
+                    rollback_failed = true;
+                }
+                if rollback_failed {
+                    return Err(runtime::Error::Kernel(runtime::KernelError::InvalidState));
+                }
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    /// Saves the mapping records in `range` with their effective permissions.
+    ///
+    /// A 2 MiB large leaf is one kernel mapping record, so the range is walked with
+    /// one `query_next` per record instead of one query per base page.
+    fn save_pages(&self, range: Range<usize>) -> Result<Vec<SavedPage>, runtime::Error> {
+        let mut saved = Vec::new();
+        saved
+            .try_reserve(range.len() / PAGE_SIZE)
+            .map_err(|_| runtime::Error::Kernel(runtime::KernelError::NoMemory))?;
+        let mut cursor = range.start;
+        while cursor < range.end {
+            let Some(info) = self.native.task().query_next(cursor)? else {
+                break;
+            };
+            if info.range.start >= range.end {
+                break;
+            }
+            if info.range.start < cursor {
+                // The range starts in the middle of a record, which the kernel
+                // cannot remove as a whole.
+                return Err(runtime::Error::Kernel(
+                    runtime::KernelError::InvalidArgument,
+                ));
+            }
+            if info.range.start > cursor {
+                // Unmapped gap: the replacement only saves and restores records.
+                cursor = info.range.start;
+                continue;
+            }
+            let permissions = info.permissions.ok_or(runtime::Error::Kernel(
+                runtime::KernelError::InvalidArgument,
+            ))?;
+            let page = self
+                .pages
+                .borrow()
+                .get(&info.range.start)
+                .cloned()
+                .ok_or(runtime::Error::Protocol)?;
+            saved.push(SavedPage {
+                range: info.range.clone(),
+                page,
+                permissions,
+            });
+            cursor = info.range.end;
+        }
+        Ok(saved)
+    }
+
+    /// Restores saved mapping records, keeping large leaves as large leaves.
+    fn restore_pages(&self, saved: Vec<SavedPage>) -> Result<(), runtime::Error> {
+        let mut failed = false;
+        for entry in saved {
+            let effective = if matches!(entry.page.backing, PageBacking::BeyondEof(_)) {
+                Permissions::NoAccess
+            } else {
+                entry.permissions
+            };
+            if entry.page.huge {
+                if entry.range.len() != HUGE_PAGE_SIZE {
+                    failed = true;
+                    continue;
+                }
+                let count = (entry.range.len() / PAGE_SIZE) as u64;
+                match self.native.map_huge(
+                    &entry.page.frames,
+                    entry.page.offset,
+                    count,
+                    Some(entry.range.start),
+                    effective,
+                ) {
+                    Ok(_) => {
+                        let mut pages = self.pages.borrow_mut();
+                        for index in 0..count as usize {
+                            let mut page = entry.page.clone();
+                            page.offset += index as u64;
+                            pages.insert(entry.range.start + index * PAGE_SIZE, page);
+                        }
+                    }
+                    Err(_) => failed = true,
+                }
+                continue;
+            }
+            if entry.range.len() < PAGE_SIZE || !entry.range.len().is_multiple_of(PAGE_SIZE) {
+                failed = true;
+                continue;
+            }
+            // The kernel records one base page per mapping, so a saved record is
+            // normally one page. Restore a wider record page by page rather than
+            // losing the whole record if one page cannot be mapped.
+            for index in 0..entry.range.len() / PAGE_SIZE {
+                let address = entry.range.start + index * PAGE_SIZE;
+                if self
+                    .native
+                    .map(
+                        &entry.page.frames,
+                        entry.page.offset + index as u64,
+                        1,
+                        Some(address),
+                        effective,
+                    )
+                    .is_err()
+                {
+                    failed = true;
+                    continue;
+                }
+                let mut page = entry.page.clone();
+                page.offset += index as u64;
+                self.pages.borrow_mut().insert(address, page);
+            }
+        }
+        if failed {
+            return Err(runtime::Error::Kernel(runtime::KernelError::InvalidState));
+        }
+        Ok(())
+    }
+
     fn zeroed_pages(
         &self,
         length: usize,
@@ -474,6 +792,7 @@ impl AddressSpace {
                 },
                 origin: origin.clone(),
                 file_offset: 0,
+                huge: false,
             });
         }
         Ok(pages)
@@ -493,39 +812,14 @@ impl AddressSpace {
             ..start.checked_add(length).ok_or(runtime::Error::Kernel(
                 runtime::KernelError::InvalidArgument,
             ))?;
-        let saved: Vec<(usize, Page, Permissions)> = {
-            let records = self.pages.borrow();
-            records
-                .range(range.clone())
-                .map(|(address, page)| {
-                    let permissions = self
-                        .native
-                        .task()
-                        .query(*address)
-                        .ok()
-                        .flatten()
-                        .and_then(|info| info.permissions)
-                        .unwrap_or(Permissions::ReadWrite);
-                    (*address, page.clone(), permissions)
-                })
-                .collect()
-        };
+        let saved = self.save_pages(range.clone())?;
         self.unmap(range)?;
         if let Err(error) = self.install(start, pages, permissions) {
-            // 新映射安装失败时恢复被替换的旧页，避免调用方丢失原有映射。
-            for (address, page, permissions) in saved {
-                let effective = if matches!(page.backing, PageBacking::BeyondEof(_)) {
-                    Permissions::NoAccess
-                } else {
-                    permissions
-                };
-                if self
-                    .native
-                    .map(&page.frames, page.offset, 1, Some(address), effective)
-                    .is_ok()
-                {
-                    self.pages.borrow_mut().insert(address, page);
-                }
+            // Restore the replaced pages when installing the new mapping fails, so
+            // the caller keeps the previous mapping. A failed restore is surfaced
+            // instead of being hidden behind the install error.
+            if self.restore_pages(saved).is_err() {
+                return Err(runtime::Error::Kernel(runtime::KernelError::InvalidState));
             }
             return Err(error);
         }
@@ -599,6 +893,9 @@ impl AddressSpace {
                 .get(&address)
                 .cloned()
                 .ok_or(runtime::Error::Protocol)?;
+            if page.huge {
+                return Err(runtime::Error::Kernel(runtime::KernelError::Unsupported));
+            }
             if matches!(page.backing, PageBacking::File | PageBacking::BeyondEof(_)) {
                 return Err(runtime::Error::Kernel(runtime::KernelError::Unsupported));
             }
@@ -638,7 +935,7 @@ impl AddressSpace {
         Ok(())
     }
 
-    /// 校验同步范围已映射；文件共享映射尚未支持，匿名共享映射没有回写目标。
+    /// Checks that the range is mapped; shared huge page mappings need no write-back.
     pub fn msync(&self, range: Range<usize>) -> Result<(), runtime::Error> {
         let pages = self.pages.borrow();
         for address in range.step_by(PAGE_SIZE) {
@@ -657,20 +954,32 @@ impl AddressSpace {
             ));
         }
         let range = range.start.max(bounds.start)..range.end.min(bounds.end);
-        let mut cursor = range.start;
-        while cursor < range.end {
-            let Some(info) = self.native.task().query_next(cursor)? else {
-                break;
-            };
-            if info.range.start >= range.end {
-                break;
+        // Large leaves cannot be split. Reject a range that only covers part of a
+        // huge record before any earlier run is unmapped, so the address space is
+        // unchanged when the call reports EINVAL.
+        {
+            let pages = self.pages.borrow();
+            let mut cursor = range.start;
+            while cursor < range.end {
+                let Some(info) = self.native.task().query_next(cursor)? else {
+                    break;
+                };
+                if info.range.start >= range.end {
+                    break;
+                }
+                if info.permissions.is_none() {
+                    return Err(runtime::Error::Kernel(runtime::KernelError::Busy));
+                }
+                let huge = pages.get(&info.range.start).is_some_and(|page| page.huge);
+                if huge && (info.range.start < range.start || info.range.end > range.end) {
+                    return Err(runtime::Error::Kernel(
+                        runtime::KernelError::InvalidArgument,
+                    ));
+                }
+                cursor = info.range.end;
             }
-            if info.permissions.is_none() {
-                return Err(runtime::Error::Kernel(runtime::KernelError::Busy));
-            }
-            cursor = info.range.end;
         }
-        cursor = range.start;
+        let mut cursor = range.start;
         while cursor < range.end {
             let Some(info) = self.native.task().query_next(cursor)? else {
                 break;
@@ -790,6 +1099,7 @@ impl AddressSpace {
                     } else {
                         0
                     },
+                    huge: false,
                 },
             );
         }
@@ -927,20 +1237,28 @@ impl AddressSpace {
         share: bool,
     ) -> Result<Self, runtime::Error> {
         let child = Self {
-            native: SupervisedTask::new(parent, port)?,
+            native: Rc::new(SupervisedTask::new(parent, port)?),
             heap: self.heap.clone(),
             pages: RefCell::new(BTreeMap::new()),
             stack_origin: Rc::clone(&self.stack_origin),
             heap_origin: Rc::clone(&self.heap_origin),
+            pending: Rc::new(RefCell::new(Vec::new())),
         };
         let bounds = self.native.task().address_range()?;
+        // Copy the pending ranges instead of holding the `RefCell` borrow: the
+        // query and reserve calls below can run a pending operation to completion,
+        // whose guard removes its range from the same list.
+        let pending = self.pending.borrow().clone();
         let mut cursor = bounds.start;
         while cursor < bounds.end {
             let Some(info) = self.native.task().query_next(cursor)? else {
                 break;
             };
             cursor = info.range.end;
-            if info.permissions.is_none() {
+            // An in-flight huge mapping belongs to the parent's pending operation;
+            // copying its reservation would leave the child with a range that only
+            // the parent's guard can release.
+            if info.permissions.is_none() && !pending.contains(&info.range) {
                 child
                     .native
                     .reserve(info.range.len(), PAGE_SIZE, Some(info.range.start))?;
@@ -953,6 +1271,28 @@ impl AddressSpace {
                 .query(address)?
                 .and_then(|info| info.permissions)
                 .ok_or(runtime::Error::Protocol)?;
+            if page.huge {
+                if address.is_multiple_of(HUGE_PAGE_SIZE) {
+                    // REFERENCE: https://man7.org/linux/man-pages/man2/fork.2.html
+                    // File-backed and shared huge mappings stay aliased after fork.
+                    // Only an anonymous private block is copied for the child.
+                    let (frames, offset) =
+                        if share || !matches!(page.backing, PageBacking::Anonymous) {
+                            (Rc::clone(&page.frames), page.offset)
+                        } else {
+                            (copy_huge_block(parent, page)?, 0)
+                        };
+                    child.map_huge(
+                        frames,
+                        offset,
+                        (HUGE_PAGE_SIZE / PAGE_SIZE) as u64,
+                        Some(address),
+                        permissions,
+                        page.backing,
+                    )?;
+                }
+                continue;
+            }
             let (frames, offset) =
                 if share || matches!(page.backing, PageBacking::Shared | PageBacking::SystemV(_)) {
                     (Rc::clone(&page.frames), page.offset)
@@ -1006,4 +1346,23 @@ impl AddressSpace {
         )?;
         Ok(address)
     }
+}
+
+fn copy_huge_block(
+    parent: &Handle<Task>,
+    page: &Page,
+) -> Result<Rc<Handle<FrameAllocation>>, runtime::Error> {
+    const RIGHTS: Rights = Rights::READ_WRITE
+        .union(Rights::MAP)
+        .union(Rights::EXECUTE)
+        .union(Rights::DUPLICATE)
+        .union(Rights::TRANSFER);
+    let mut frames = parent.allocate_contiguous(HUGE_FRAMES, HUGE_PAGE_SIZE, RIGHTS)?;
+    let mut bytes = [0; PAGE_SIZE];
+    for index in 0..HUGE_FRAMES {
+        page.frames
+            .read((page.offset + index) as usize * PAGE_SIZE, &mut bytes)?;
+        frames.write(index as usize * PAGE_SIZE, &bytes)?;
+    }
+    Ok(Rc::new(frames))
 }

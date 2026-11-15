@@ -311,17 +311,22 @@ fn compile_guest(
     for name in sources {
         let object = directory.join(format!("{executable_name}-{name}.o"));
         let mut compile = Command::new("clang");
-        compile.arg(format!("--target={triple}")).args([
-            "-c",
-            "-O2",
-            "-ffreestanding",
-            "-fno-builtin",
-            "-fno-stack-protector",
-            "-fno-pic",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-        ]);
+        compile.arg(format!("--target={triple}"));
+        if name.ends_with(".S") {
+            compile.args(["-c", "-x", "assembler"]);
+        } else {
+            compile.args([
+                "-c",
+                "-O2",
+                "-ffreestanding",
+                "-fno-builtin",
+                "-fno-stack-protector",
+                "-fno-pic",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+            ]);
+        }
         if isa == "riscv64" {
             compile.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
         } else {
@@ -357,7 +362,7 @@ fn compile_guest(
         "max-page-size=4096",
         "-Ttext=0x400000",
     ])
-    .args(&objects)
+    .args(objects)
     .arg("-o")
     .arg(&executable);
     execute(link)?;

@@ -20,8 +20,11 @@ const EXECUTE: u64 = 1 << 3;
 const USER: u64 = 1 << 4;
 const ACCESSED: u64 = 1 << 6;
 const DIRTY: u64 = 1 << 7;
-// Use RSW to mark invalid leaf entries that retain their backing page frames.
-const NO_ACCESS: u64 = 1 << 8;
+// Dirty marks an invalid leaf that retains its backing page frames. A non-leaf
+// entry must keep dirty clear, and hardware ignores dirty while valid is clear, so
+// a set dirty bit cannot be mistaken for a table entry above the base level; the
+// RSW bits remain available for software-defined metadata.
+const NO_ACCESS: u64 = 1 << 7;
 const PPN: u64 = ((1 << 44) - 1) << 10;
 
 fn invalidate_address(address: usize) {
@@ -50,7 +53,7 @@ impl Format for Sv39 {
         Ok((entry & PPN) << 2)
     }
 
-    fn encode_mapping(&self, mapping: PageMapping) -> Result<u64, MmuError> {
+    fn encode_mapping(&self, mapping: PageMapping, level: usize) -> Result<u64, MmuError> {
         let attributes = mapping.attributes;
         let permissions = match attributes.permissions {
             PagePermissions::NoAccess => NO_ACCESS,
@@ -66,6 +69,9 @@ impl Format for Sv39 {
                 MmuError::Unsupported
             });
         }
+        if level > 1 {
+            return Err(MmuError::Unsupported);
+        }
         Ok((mapping.physical_address >> 2)
             | if attributes.permissions == PagePermissions::NoAccess {
                 0
@@ -76,7 +82,10 @@ impl Format for Sv39 {
             | if attributes.user_accessible { USER } else { 0 })
     }
 
-    fn decode_mapping(&self, entry: u64) -> Result<PageMapping, MmuError> {
+    fn decode_mapping(&self, entry: u64, level: usize) -> Result<PageMapping, MmuError> {
+        if level > 1 {
+            return Err(MmuError::InvalidTable);
+        }
         let no_access = entry & !(PPN | USER) == NO_ACCESS;
         if !no_access
             && (entry & VALID == 0
@@ -84,13 +93,16 @@ impl Format for Sv39 {
         {
             return Err(MmuError::InvalidTable);
         }
-        let permissions = match entry & (READ | WRITE | EXECUTE | NO_ACCESS) {
-            NO_ACCESS => PagePermissions::NoAccess,
-            READ => PagePermissions::ReadOnly,
-            flags if flags == READ | WRITE => PagePermissions::ReadWrite,
-            flags if flags == READ | EXECUTE => PagePermissions::ReadExecute,
-            EXECUTE => PagePermissions::ExecuteOnly,
-            _ => return Err(MmuError::InvalidAttributes),
+        let permissions = if no_access {
+            PagePermissions::NoAccess
+        } else {
+            match entry & (READ | WRITE | EXECUTE) {
+                READ => PagePermissions::ReadOnly,
+                flags if flags == READ | WRITE => PagePermissions::ReadWrite,
+                flags if flags == READ | EXECUTE => PagePermissions::ReadExecute,
+                EXECUTE => PagePermissions::ExecuteOnly,
+                _ => return Err(MmuError::InvalidAttributes),
+            }
         };
         Ok(PageMapping {
             physical_address: (entry & PPN) << 2,
@@ -102,6 +114,10 @@ impl Format for Sv39 {
         })
     }
 
+    fn is_mapping(entry: u64, level: usize) -> bool {
+        level == 0 || entry & (READ | WRITE | EXECUTE | NO_ACCESS) != 0
+    }
+
     #[inline(always)]
     fn with_frame<T>(
         &self,
@@ -111,14 +127,17 @@ impl Format for Sv39 {
     ) -> Result<T, MmuError> {
         paging::validate_physical::<Self>(address)?;
         let _access = paging::lock_memory();
-        let entry = self.encode_mapping(PageMapping {
-            physical_address: address,
-            attributes: PageAttributes {
-                permissions,
-                memory_type: MemoryType::Normal,
-                user_accessible: false,
+        let entry = self.encode_mapping(
+            PageMapping {
+                physical_address: address,
+                attributes: PageAttributes {
+                    permissions,
+                    memory_type: MemoryType::Normal,
+                    user_accessible: false,
+                },
             },
-        })?;
+            0,
+        )?;
         let table = core::ptr::addr_of_mut!(PAGE_TABLE_WINDOW_TABLE);
         // SAFETY: The physical access window lock must be held.
         unsafe {

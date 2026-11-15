@@ -9,7 +9,7 @@ mod volume;
 mod write;
 
 use crate::{Error, FileSystem, ReadAt, block::Disk};
-use alloc::{rc::Rc, vec::Vec};
+use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use core::cell::RefCell;
 use directory::Entry;
 use volume::Volume;
@@ -280,4 +280,109 @@ fn half(bytes: &[u8], offset: usize) -> u16 {
 }
 fn word(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
+
+impl crate::backend::Backend for Fat32 {
+    fn sync(&self) -> Result<(), Error> {
+        Fat32::sync(self)
+    }
+    fn open_path(&self, path: &[u8]) -> Result<Box<dyn crate::backend::File>, Error> {
+        Fat32::open_path(self, path).map(|file| Box::new(file) as Box<dyn crate::backend::File>)
+    }
+
+    fn statistics(&self) -> Result<crate::Statistics, Error> {
+        Fat32::statistics(self)
+    }
+
+    fn unmount(&self) -> Result<(), Error> {
+        Fat32::unmount(self)
+    }
+
+    fn open_bytes(&self, path: &[u8]) -> Result<Box<dyn crate::backend::File>, Error> {
+        Fat32::open_bytes(self, path).map(|file| Box::new(file) as Box<dyn crate::backend::File>)
+    }
+
+    fn open_directory(&self, path: &[u8]) -> Result<Box<dyn crate::backend::File>, Error> {
+        Fat32::open_directory(self, path)
+            .map(|file| Box::new(file) as Box<dyn crate::backend::File>)
+    }
+
+    fn create(&self, path: &[u8]) -> Result<Box<dyn crate::backend::File>, Error> {
+        Fat32::create(self, path).map(|file| Box::new(file) as Box<dyn crate::backend::File>)
+    }
+
+    fn create_with_permissions(
+        &self,
+        path: &[u8],
+        permissions: u16,
+    ) -> Result<Box<dyn crate::backend::File>, Error> {
+        Fat32::create_with_permissions(self, path, permissions)
+            .map(|file| Box::new(file) as Box<dyn crate::backend::File>)
+    }
+
+    fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
+        Fat32::metadata(self, path)
+    }
+
+    fn mkdir_with_permissions(&self, path: &[u8], permissions: u16) -> Result<(), Error> {
+        Fat32::mkdir_with_permissions(self, path, permissions)
+    }
+
+    fn unlink(&self, path: &[u8]) -> Result<(), Error> {
+        Fat32::unlink(self, path)
+    }
+
+    fn rename(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
+        Fat32::rename(self, source, target)
+    }
+
+    fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
+        Fat32::read_dir(self, path)
+    }
+}
+
+impl crate::backend::File for File {
+    fn statistics(&self) -> Result<crate::Statistics, Error> {
+        File::statistics(self)
+    }
+
+    fn path(&self) -> Result<Vec<u8>, Error> {
+        File::path(self)
+    }
+
+    fn check_writable(&self) -> Result<(), Error> {
+        File::check_writable(self)
+    }
+
+    fn read_dir(&self) -> Result<Vec<crate::DirEntry>, Error> {
+        File::read_dir(self)
+    }
+
+    fn metadata(&self) -> Result<crate::Metadata, Error> {
+        File::metadata(self)
+    }
+
+    fn parent_metadata(&self) -> Result<Option<crate::Metadata>, Error> {
+        File::parent_metadata(self)
+    }
+
+    fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
+        File::set_attributes(self, attributes)
+    }
+
+    fn append(&self, bytes: &[u8]) -> Result<(usize, usize), Error> {
+        File::append(self, bytes)
+    }
+
+    fn fsync(&self) -> Result<(), Error> {
+        File::fsync(self)
+    }
+
+    fn write_at(&self, offset: usize, bytes: &[u8]) -> Result<usize, Error> {
+        File::write_at(self, offset, bytes)
+    }
+
+    fn truncate(&self, size: usize) -> Result<(), Error> {
+        File::truncate(self, size)
+    }
 }

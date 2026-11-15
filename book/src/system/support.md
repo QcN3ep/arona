@@ -47,6 +47,7 @@ init starts applications according to `/etc/init.toml` and enforces restart poli
 | Root file tree | Files, directories, and links in the cpio newc archive |
 | Temporary files | In-memory tmpfs mounted at `/tmp`, regular files, directories, links, and a size limit |
 | Persistent files | 4 KiB block ext4, extents, directory modification, JBD2 transactions and recovery |
+| Huge page files | `/dev/hugepages` backed by 2 MiB physically contiguous mappings, sparse files, shared file mappings |
 | Log files | logger record append, history recovery, tail handling, and fsync |
 
 devmgr matches these devices from the boot hardware description and PCI enumeration results, and creates driver instances after obtaining resource authorization.

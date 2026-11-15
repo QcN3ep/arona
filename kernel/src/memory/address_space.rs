@@ -7,8 +7,8 @@ use core::{
 use spin::Mutex;
 
 use super::{
-    Frame, FrameAccess, FrameAllocation, FrameAllocationReference, MemoryError, PhysRange,
-    ReferenceKind, VirtRange,
+    Frame, FrameAccess, FrameAllocation, FrameAllocationReference, HUGE_PAGE_FRAMES,
+    HUGE_PAGE_SIZE, MemoryError, PhysRange, ReferenceKind, VirtRange,
     direct_map::{DirectMap, DirectMapLayout},
     frame_allocator::FrameAllocator,
     manager,
@@ -305,6 +305,93 @@ impl AddressSpace {
         Ok(range)
     }
 
+    /// Maps `frames` as large leaves into the first suitably aligned gap.
+    pub fn map_huge(
+        &self,
+        allocation: &FrameAllocation,
+        frames: Range<u64>,
+        options: MappingOptions,
+    ) -> Result<VirtRange, MemoryError> {
+        self.map_huge_reference(
+            allocation.reference(ReferenceKind::Mapping)?,
+            frames,
+            None,
+            options,
+        )
+    }
+
+    /// Maps `frames` as large leaves at the requested address.
+    pub fn map_huge_at(
+        &self,
+        address: usize,
+        allocation: &FrameAllocation,
+        frames: Range<u64>,
+        options: MappingOptions,
+    ) -> Result<VirtRange, MemoryError> {
+        self.map_huge_reference(
+            allocation.reference(ReferenceKind::Mapping)?,
+            frames,
+            Some(address),
+            options,
+        )
+    }
+
+    fn map_huge_reference(
+        &self,
+        reference: FrameAllocationReference,
+        frames: Range<u64>,
+        address: Option<usize>,
+        options: MappingOptions,
+    ) -> Result<VirtRange, MemoryError> {
+        let count = frames
+            .end
+            .checked_sub(frames.start)
+            .ok_or(MemoryError::InvalidRequest)?;
+        if frames.start >= frames.end
+            || !frames.start.is_multiple_of(HUGE_PAGE_FRAMES)
+            || !count.is_multiple_of(HUGE_PAGE_FRAMES)
+        {
+            return Err(MemoryError::InvalidRequest);
+        }
+        let length = self.validate_source(&reference, &frames, options)?;
+        if !length.is_multiple_of(HUGE_PAGE_SIZE) {
+            return Err(MemoryError::InvalidRequest);
+        }
+        self.validate_huge_source(&reference, &frames)?;
+        let mut state = self.state.lock();
+        let range = match address {
+            Some(address) => {
+                if !address.is_multiple_of(HUGE_PAGE_SIZE) {
+                    return Err(MemoryError::InvalidRequest);
+                }
+                let range = VirtRange {
+                    start: address,
+                    end: address
+                        .checked_add(length)
+                        .ok_or(MemoryError::InvalidRequest)?,
+                };
+                self.validate_range(range)?;
+                range
+            }
+            None => state
+                .mappings
+                .gap(self.bounds, length, HUGE_PAGE_SIZE)
+                .ok_or(MemoryError::NoMemory)?,
+        };
+        self.map_leaves_locked(
+            &mut state,
+            range,
+            &reference,
+            frames,
+            options,
+            LeafLayout {
+                level: 1,
+                kind: MappingKind::Huge,
+            },
+        )?;
+        Ok(range)
+    }
+
     fn validate_source(
         &self,
         reference: &FrameAllocationReference,
@@ -327,6 +414,35 @@ impl AddressSpace {
             .ok_or(MemoryError::InvalidRequest)
     }
 
+    /// Checks that `frames` covers one physically contiguous, large-leaf aligned range.
+    ///
+    /// A large leaf maps `base .. base + leaf size` directly, so the underlying
+    /// allocation must cover exactly those frames in physical order. Rejecting the
+    /// request here keeps a later per-frame reservation failure from leaving the
+    /// allocation head referenced.
+    fn validate_huge_source(
+        &self,
+        reference: &FrameAllocationReference,
+        frames: &Range<u64>,
+    ) -> Result<(), MemoryError> {
+        let start = usize::try_from(frames.start).map_err(|_| MemoryError::InvalidRequest)?;
+        let count =
+            usize::try_from(frames.end - frames.start).map_err(|_| MemoryError::InvalidRequest)?;
+        let mut addresses = reference.frames().skip(start);
+        let base = addresses.next().ok_or(MemoryError::InvalidFrame)?.address();
+        if !base.is_multiple_of(HUGE_PAGE_SIZE as u64) {
+            return Err(MemoryError::InvalidRequest);
+        }
+        let mut expected = base;
+        for frame in addresses.take(count - 1) {
+            expected += PAGE_SIZE as u64;
+            if frame.address() != expected {
+                return Err(MemoryError::InvalidRequest);
+            }
+        }
+        Ok(())
+    }
+
     fn map_locked(
         &self,
         state: &mut AddressSpaceState,
@@ -336,67 +452,132 @@ impl AddressSpace {
         options: MappingOptions,
         kind: MappingKind,
     ) -> Result<(), MemoryError> {
+        self.map_leaves_locked(
+            state,
+            range,
+            reference,
+            frames,
+            options,
+            LeafLayout { level: 0, kind },
+        )
+    }
+
+    /// Installs one mapping record per leaf of `leaf_level`, so base-page and large
+    /// leaf mappings share preparation, reference accounting, rollback, and teardown.
+    fn map_leaves_locked(
+        &self,
+        state: &mut AddressSpaceState,
+        range: VirtRange,
+        reference: &FrameAllocationReference,
+        frames: Range<u64>,
+        options: MappingOptions,
+        leaf: LeafLayout,
+    ) -> Result<(), MemoryError> {
+        let leaf_level = leaf.level;
+        let leaf_size = leaf_size(leaf_level);
+        let frames_per_leaf = leaf_size / PAGE_SIZE;
+        let length = range.end - range.start;
+        if length == 0
+            || !length.is_multiple_of(leaf_size)
+            || frames.end - frames.start != (length / PAGE_SIZE) as u64
+        {
+            return Err(MemoryError::InvalidRequest);
+        }
         if state.mappings.overlaps(range) {
             return Err(MemoryError::AlreadyMapped);
         }
         let user = self.table.is_user();
-        let mut quota =
-            manager().reserve_mapping_records(if user { pages(range).len() } else { 0 })?;
+        let records = length / leaf_size;
+        let mut quota = manager().reserve_mapping_records(if user { records } else { 0 })?;
         let generation = state.next_generation()?;
-        let result = self.table.edit(|table| {
-            for (address, frame) in pages(range).zip(
-                reference
-                    .frames()
-                    .skip(frames.start as usize)
-                    .take((frames.end - frames.start) as usize),
-            ) {
-                let record = MappingRecord {
-                    range: page_range(address),
-                    maximum: options.maximum,
-                    generation,
-                    kind: MappingKind::Preparing,
-                    journal: MappingJournal {
-                        mapping: Some(PageMapping {
-                            physical_address: frame.address(),
-                            attributes: PageAttributes {
-                                permissions: options.permissions,
-                                memory_type: MemoryType::Normal,
-                                user_accessible: user,
-                            },
-                        }),
-                        ..MappingJournal::default()
-                    },
-                };
-                state.mappings.insert(record)?;
-                state.update_record(address, |record| {
-                    record.journal.tables = table.prepare(address)?.tables;
-                    let access = reference
-                        .reference(ReferenceKind::Mapping)?
-                        .access(frame, options.permissions.into())?;
-                    record.journal.direct_was_writable = access.direct_was_writable;
-                    core::mem::forget(access);
+        let attributes = PageAttributes {
+            permissions: options.permissions,
+            memory_type: MemoryType::Normal,
+            user_accessible: user,
+        };
+        let access_kind = FrameAccess::from(options.permissions);
+        // Walk the allocation once. Rebuilding `frames()` and calling `nth` for
+        // every leaf made base-page mappings quadratic in the page count because
+        // each step locks the frame allocator.
+        let start = usize::try_from(frames.start).map_err(|_| MemoryError::InvalidRequest)?;
+        let mut source = reference.frames().skip(start);
+        let result = (|| {
+            self.table.edit(|table| {
+                for address in (range.start..range.end).step_by(leaf_size) {
+                    let frame = if address == range.start {
+                        source.next()
+                    } else {
+                        source.nth(frames_per_leaf - 1)
+                    }
+                    .ok_or(MemoryError::InvalidFrame)?;
+                    let mut record = MappingRecord {
+                        range: VirtRange {
+                            start: address,
+                            end: address + leaf_size,
+                        },
+                        maximum: options.maximum,
+                        generation,
+                        kind: MappingKind::Preparing,
+                        journal: MappingJournal {
+                            mapping: Some(PageMapping {
+                                physical_address: frame.address(),
+                                attributes,
+                            }),
+                            ..MappingJournal::default()
+                        },
+                    };
+                    state.mappings.insert(record)?;
+                    record.journal.tables = table.prepare_leaf(address, leaf_level)?.tables;
+                    state.mappings.set(record);
+                }
+                Ok::<_, MemoryError>(())
+            })?;
+            for address in (range.start..range.end).step_by(leaf_size) {
+                let mut record = state.record(address);
+                let mut reserved = 0;
+                let result = (|| {
+                    for index in 0..frames_per_leaf {
+                        let frame = record.frame_at(address + index * PAGE_SIZE);
+                        let access = reference
+                            .reference(ReferenceKind::Mapping)?
+                            .access(frame, access_kind)?;
+                        record.journal.direct_was_writable = access.direct_was_writable;
+                        core::mem::forget(access);
+                        reserved += 1;
+                    }
+                    Ok::<(), MemoryError>(())
+                })();
+                record.journal.reserved = reserved;
+                if result.is_ok() {
                     record.journal.referenced = true;
-                    PageTableState::write_leaf(
-                        address,
-                        record.journal.tables[0].unwrap(),
-                        record.journal.mapping,
-                    )?;
-                    record.journal.written = true;
-                    Ok::<_, MemoryError>(())
-                })?;
+                }
+                state.mappings.set(record);
+                result?;
+            }
+            for address in (range.start..range.end).step_by(leaf_size) {
+                let mut record = state.record(address);
+                PageTableState::write_leaf_at(
+                    address,
+                    leaf_level,
+                    record.journal.tables[leaf_level].ok_or(MemoryError::InvalidRequest)?,
+                    record.journal.mapping,
+                )?;
+                record.journal.written = true;
+                state.mappings.set(record);
             }
             Ok::<_, MemoryError>(())
-        });
+        })();
         if result.is_err() {
-            self.table.edit(|table| state.rollback_map(table, range));
+            self.table
+                .edit(|table| state.rollback_map(table, range, leaf_level))?;
             return result;
         }
         hardware::mmu().invalidate_all();
-        for address in pages(range) {
-            state.update_record(address, |record| {
-                record.kind = kind;
-                record.journal = MappingJournal::default();
-            });
+        for address in (range.start..range.end).step_by(leaf_size) {
+            let mut record = state.record(address);
+            record.kind = leaf.kind;
+            record.journal = MappingJournal::default();
+            state.mappings.set(record);
         }
         quota.0 = 0;
         Ok(())
@@ -463,6 +644,14 @@ impl AddressSpace {
     fn unmap_inner(&self, range: VirtRange, owner: Option<u64>) -> Result<(), MemoryError> {
         self.validate_range(range)?;
         let mut state = self.state.lock();
+        let mut cursor = range.start;
+        while cursor < range.end {
+            let record = state.mappings.get(cursor).ok_or(MemoryError::NotMapped)?;
+            if record.range.start < range.start || record.range.end > range.end {
+                return Err(MemoryError::InUse);
+            }
+            cursor = record.range.end;
+        }
         let staged = self
             .table
             .edit(|table| state.stage(table, range, None, owner));
@@ -471,27 +660,25 @@ impl AddressSpace {
             return Err(error);
         }
         let result = self.table.edit(|table| {
-            for address in pages(range) {
-                state.update_record(address, |record| {
-                    PageTableState::write_leaf(address, record.journal.tables[0].unwrap(), None)?;
-                    record.journal.written = true;
-                    Ok::<_, MemoryError>(())
-                })?;
+            let mut cursor = range.start;
+            while cursor < range.end {
+                let mut record = state.record(cursor);
+                let end = record.range.end;
+                write_record_leaf(cursor, &record, None)?;
+                record.journal.written = true;
+                state.mappings.set(record);
+                cursor = end;
             }
-            let block_bits = PAGE_SIZE.trailing_zeros() + hardware::mmu().layout().index_bits;
-            let mut previous = None;
-            for address in pages(range) {
-                let block = address >> block_bits;
-                if previous == Some(block) {
-                    continue;
-                }
-                previous = Some(block);
-                let mut record = state.record(address);
+            let mut cursor = range.start;
+            while cursor < range.end {
+                let mut record = state.record(cursor);
                 let tables = record.journal.tables;
-                table.detach_empty(address, &tables, |level| {
+                let end = record.range.end;
+                table.detach_empty(cursor, &tables, |level| {
                     record.journal.detached |= 1 << level;
                     state.mappings.set(record);
                 })?;
+                cursor = end;
             }
             Ok(())
         });
@@ -502,19 +689,32 @@ impl AddressSpace {
         }
         hardware::mmu().invalidate_all();
         self.table.edit(|table| {
-            for address in pages(range) {
-                let record = state.record(address);
+            let mut cursor = range.start;
+            while cursor < range.end {
+                let record = state.record(cursor);
                 table.release_tables(&record.journal.tables, record.journal.detached);
-                manager()
-                    .release_mapping(record.journal.frame(), record.journal.permissions().into())
-                    .expect("lost mapping allocation");
+                for address in (record.range.start..record.range.end).step_by(PAGE_SIZE) {
+                    manager()
+                        .release_mapping(
+                            record.frame_at(address),
+                            record.journal.permissions().into(),
+                        )
+                        .expect("lost mapping allocation");
+                }
+                cursor = record.range.end;
             }
         });
-        for address in pages(range) {
-            state.mappings.remove(address);
+        let mut records = 0;
+        let mut cursor = range.start;
+        while cursor < range.end {
+            let record = state.record(cursor);
+            let end = record.range.end;
+            state.mappings.remove(record.range.start);
+            records += 1;
+            cursor = end;
         }
         if self.table.is_user() {
-            manager().release_mapping_records(pages(range).len());
+            manager().release_mapping_records(records);
         }
         Ok(())
     }
@@ -526,6 +726,14 @@ impl AddressSpace {
     ) -> Result<(), MemoryError> {
         self.validate_range(range)?;
         let mut state = self.state.lock();
+        let mut cursor = range.start;
+        while cursor < range.end {
+            let record = state.mappings.get(cursor).ok_or(MemoryError::NotMapped)?;
+            if record.kind == MappingKind::Huge {
+                return Err(MemoryError::Unsupported);
+            }
+            cursor = record.range.end;
+        }
         let generation = state.next_generation()?;
         let staged = self
             .table
@@ -645,7 +853,7 @@ impl AddressSpace {
             let state = self.state.lock();
             for page in (address & !(PAGE_SIZE - 1)..end).step_by(PAGE_SIZE) {
                 let record = state.mappings.get(page).ok_or(MemoryError::NotMapped)?;
-                if record.kind != MappingKind::Mapped {
+                if !matches!(record.kind, MappingKind::Mapped | MappingKind::Huge) {
                     return Err(MemoryError::InvalidRequest);
                 }
                 let mapping = self.table.query(page)?.ok_or(MemoryError::NotMapped)?;
@@ -661,8 +869,12 @@ impl AddressSpace {
                 {
                     return Err(MemoryError::AccessConflict);
                 }
-                let frame =
-                    Frame::new(mapping.physical_address).ok_or(MemoryError::InvalidFrame)?;
+                let frame = Frame::new(
+                    mapping.physical_address
+                        + u64::try_from(page - record.range.start)
+                            .map_err(|_| MemoryError::InvalidRequest)?,
+                )
+                .ok_or(MemoryError::InvalidFrame)?;
                 let head = manager().allocator().lock().allocation_of(frame)?;
                 buffer.push(
                     manager()
@@ -685,7 +897,7 @@ impl AddressSpace {
     pub fn translate(&self, address: usize) -> Result<Option<u64>, MemoryError> {
         Ok(self.query(address)?.and_then(|info| {
             info.mapping
-                .map(|mapping| mapping.physical_address + (address % PAGE_SIZE) as u64)
+                .map(|mapping| mapping.physical_address + (address - info.range.start) as u64)
         }))
     }
 
@@ -914,29 +1126,28 @@ impl AddressSpaceState {
         owner: Option<u64>,
     ) -> Result<(), MemoryError> {
         for address in pages(range) {
-            self.mappings
-                .update(address, |record| {
-                    let owned = owner.is_some_and(|generation| {
-                        record.kind == MappingKind::Owned && record.generation == generation
-                    });
-                    if !(owned || owner.is_none() && record.kind == MappingKind::Mapped) {
-                        return Err(MemoryError::InUse);
-                    }
-                    if permissions.is_some_and(|permissions| !record.maximum.allows(permissions)) {
-                        return Err(MemoryError::AccessConflict);
-                    }
-                    let walk = table.walk(address)?;
-                    let PageTableEntry::Mapping(mapping) = walk.entry else {
-                        return Err(MmuError::InvalidTable.into());
-                    };
-                    record.journal = MappingJournal {
-                        tables: walk.tables,
-                        mapping: Some(mapping),
-                        ..MappingJournal::default()
-                    };
-                    Ok(())
-                })
-                .ok_or(MemoryError::NotMapped)??;
+            let mut record = self.mappings.get(address).ok_or(MemoryError::NotMapped)?;
+            let owned = owner.is_some_and(|generation| {
+                record.kind == MappingKind::Owned && record.generation == generation
+            });
+            let mapped = record.kind == MappingKind::Mapped
+                || (record.kind == MappingKind::Huge && permissions.is_none());
+            if !(owned || owner.is_none() && mapped) {
+                return Err(MemoryError::InUse);
+            }
+            if permissions.is_some_and(|permissions| !record.maximum.allows(permissions)) {
+                return Err(MemoryError::AccessConflict);
+            }
+            let walk = table.walk(address)?;
+            let PageTableEntry::Mapping(mapping) = walk.entry else {
+                return Err(MmuError::InvalidTable.into());
+            };
+            record.journal = MappingJournal {
+                tables: walk.tables,
+                mapping: Some(mapping),
+                ..MappingJournal::default()
+            };
+            self.mappings.set(record);
         }
         Ok(())
     }
@@ -958,11 +1169,10 @@ impl AddressSpaceState {
 
     fn withdraw_entries(&mut self, range: VirtRange) -> Result<(), MemoryError> {
         for address in pages(range) {
-            self.update_record(address, |record| {
-                PageTableState::write_leaf(address, record.journal.tables[0].unwrap(), None)?;
-                record.journal.written = true;
-                Ok::<_, MemoryError>(())
-            })?;
+            let mut record = self.record(address);
+            write_record_leaf(address, &record, None)?;
+            record.journal.written = true;
+            self.mappings.set(record);
         }
         hardware::mmu().invalidate_all();
         Ok(())
@@ -982,61 +1192,67 @@ impl AddressSpaceState {
             if let Some(record) = self.mappings.get(address)
                 && record.journal.written
             {
-                PageTableState::write_leaf(
-                    address,
-                    record.journal.tables[0].unwrap(),
-                    record.journal.mapping,
-                )
-                .expect("failed to restore page mapping");
+                write_record_leaf(address, &record, record.journal.mapping)
+                    .expect("failed to restore page mapping");
             }
         }
         hardware::mmu().invalidate_all();
     }
 
-    fn rollback_map(&mut self, table: &mut PageTableState, range: VirtRange) {
-        for address in pages(range) {
+    fn rollback_map(
+        &mut self,
+        table: &mut PageTableState,
+        range: VirtRange,
+        leaf_level: usize,
+    ) -> Result<(), MemoryError> {
+        let leaf_size = leaf_size(leaf_level);
+        for address in (range.start..range.end).step_by(leaf_size) {
             let Some(record) = self.mappings.get(address) else {
                 break;
             };
             if record.journal.written {
-                PageTableState::write_leaf(address, record.journal.tables[0].unwrap(), None)
-                    .expect("failed to roll back page mapping");
+                write_record_leaf(address, &record, None)?;
             }
         }
         hardware::mmu().invalidate_all();
-        for address in pages(range) {
+        for address in (range.start..range.end).step_by(leaf_size) {
             let Some(record) = self.mappings.get(address) else {
                 break;
             };
-            if record.journal.referenced {
-                manager()
-                    .release_mapping(record.journal.frame(), record.journal.permissions().into())
-                    .expect("lost mapping allocation");
+            if record.journal.reserved != 0 {
+                let permissions = record.journal.permissions().into();
+                for index in 0..record.journal.reserved {
+                    manager().release_mapping(
+                        record.frame_at(address + index as usize * PAGE_SIZE),
+                        permissions,
+                    )?;
+                }
             }
         }
         let allocator = manager().allocator().lock();
-        for address in pages(range).rev() {
+        for address in (range.start..range.end).step_by(leaf_size).rev() {
             if let Some(record) = self.mappings.get(address)
-                && record.journal.referenced
+                && record.journal.reserved != 0
                 && FrameAccess::from(record.journal.permissions()) != FrameAccess::Read
             {
-                manager().restore_direct_access(
-                    &allocator,
-                    record.journal.frame(),
-                    record.journal.direct_was_writable,
-                );
+                for index in 0..record.journal.reserved {
+                    manager().restore_direct_access(
+                        &allocator,
+                        record.frame_at(address + index as usize * PAGE_SIZE),
+                        record.journal.direct_was_writable,
+                    );
+                }
             }
         }
         drop(allocator);
-        for address in pages(range) {
+        for address in (range.start..range.end).step_by(leaf_size) {
             if self.mappings.get(address).is_none() {
                 break;
             }
-            table
-                .prune_empty(address)
-                .expect("failed to discard prepared page tables");
+            table.prune_empty(address)?;
             self.mappings.remove(address);
         }
+        Ok(())
     }
 
     fn restore_access(
@@ -1119,15 +1335,35 @@ fn clear_device_pages(table: &mut PageTableState, range: VirtRange) -> Result<()
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+struct LeafLayout {
+    level: usize,
+    kind: MappingKind,
+}
+
+fn leaf_size(leaf_level: usize) -> usize {
+    PAGE_SIZE << (hardware::mmu().layout().index_bits * leaf_level as u32)
+}
+
 fn pages(range: VirtRange) -> core::iter::StepBy<Range<usize>> {
     (range.start..range.end).step_by(PAGE_SIZE)
 }
 
-fn page_range(address: usize) -> VirtRange {
-    VirtRange {
-        start: address,
-        end: address + PAGE_SIZE,
-    }
+/// Writes or clears the leaf covering `address` at the staged page table level.
+fn write_record_leaf(
+    address: usize,
+    record: &MappingRecord,
+    mapping: Option<PageMapping>,
+) -> Result<(), MemoryError> {
+    let level = record.journal.level();
+    let table = record
+        .journal
+        .tables
+        .get(level)
+        .copied()
+        .flatten()
+        .ok_or(MemoryError::InvalidRequest)?;
+    PageTableState::write_leaf_at(address, level, table, mapping)
 }
 
 fn validate_alignment(alignment: usize) -> Result<(), MemoryError> {

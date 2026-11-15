@@ -8,7 +8,7 @@ use crate::{
     Error, ReadAt,
     archive::Archive,
     block::Disk,
-    namespace::{Directory, File, Namespace},
+    namespace::{Directory, File, MountOwner, Namespace},
     protocol,
 };
 use alloc::{rc::Rc, vec, vec::Vec};
@@ -30,7 +30,7 @@ enum Node {
     Directory(Rc<Directory>),
 }
 
-pub fn run(task: &Handle<runtime::Task>, control: Handle<Channel>) -> Result<(), Error> {
+pub fn run(task: &'static Handle<runtime::Task>, control: Handle<Channel>) -> Result<(), Error> {
     let mut startup = control.receive(WaitMode::Forever)?;
     let reply = startup.take_reply().ok_or(Error::InvalidRequest)?;
     let archive = match load_archive(startup) {
@@ -41,7 +41,7 @@ pub fn run(task: &Handle<runtime::Task>, control: Handle<Channel>) -> Result<(),
         }
     };
     protocol::respond(reply, Ok(Message::new(protocol::SUCCESS, &[])?))?;
-    let namespace = Namespace::new(archive);
+    let namespace = Namespace::new(archive)?;
     serve(task, control, &namespace)
 }
 
@@ -64,8 +64,8 @@ struct MountChannel {
     id: u64,
 }
 
-pub fn serve(
-    task: &Handle<runtime::Task>,
+pub(crate) fn serve(
+    task: &'static Handle<runtime::Task>,
     control: Handle<Channel>,
     namespace: &Namespace,
 ) -> Result<(), Error> {
@@ -96,7 +96,7 @@ pub fn serve(
             }
             Err(error) => return Err(error.into()),
         }
-        poll_mounts(namespace, &mut mounts)?;
+        poll_mounts(task, namespace, &mut mounts)?;
         let mut index = 0;
         while index < clients.len() {
             match clients[index].receive(WaitMode::Poll) {
@@ -135,13 +135,20 @@ pub fn serve(
     }
 }
 
-fn poll_mounts(namespace: &Namespace, mounts: &mut Vec<MountChannel>) -> Result<(), Error> {
+fn poll_mounts(
+    task: &'static Handle<runtime::Task>,
+    namespace: &Namespace,
+    mounts: &mut Vec<MountChannel>,
+) -> Result<(), Error> {
     let mut index = 0;
     while index < mounts.len() {
         match mounts[index].channel.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
-                    protocol::respond(reply, mount_admin(namespace, mounts[index].id, request))?;
+                    protocol::respond(
+                        reply,
+                        mount_admin(task, namespace, mounts[index].id, request),
+                    )?;
                 }
                 index += 1;
             }
@@ -183,7 +190,7 @@ fn poll_files(namespace: &Namespace, files: &mut Vec<FileSession>) -> Result<(),
 }
 
 fn admin(
-    task: &Handle<runtime::Task>,
+    task: &'static Handle<runtime::Task>,
     namespace: &Namespace,
     clients: &mut Vec<Handle<Channel>>,
     mounts: &mut Vec<MountChannel>,
@@ -210,6 +217,10 @@ fn admin(
             let disk = Rc::new(Disk::new(task, session)?);
             namespace.mount(&path, disk, start, size)?;
         }
+        (protocol::MOUNT_HUGEPAGES, [length]) if request.handles().len() == 1 => {
+            let length = *length;
+            namespace.mount_hugepages(task, &path(&mut request, length)?, MountOwner::Service)?;
+        }
         (protocol::TMPFS, [length, capacity]) if request.handles().len() == 1 => {
             let (length, capacity) = (*length, *capacity);
             let capacity = usize::try_from(capacity).map_err(|_| Error::InvalidRequest)?;
@@ -225,18 +236,27 @@ fn admin(
 }
 
 fn mount_admin(
+    task: &'static Handle<runtime::Task>,
     namespace: &Namespace,
     channel: u64,
     mut request: ReceivedMessage,
 ) -> Result<Message, Error> {
     match (request.tag, request.words()) {
+        (protocol::MOUNT_HUGEPAGES, [length]) if request.handles().len() == 1 => {
+            let length = *length;
+            namespace.mount_hugepages(
+                task,
+                &path(&mut request, length)?,
+                MountOwner::User(channel),
+            )?;
+        }
         (protocol::MOUNT_TMPFS, [length]) if request.handles().len() == 1 => {
             let length = *length;
-            namespace.mount_user_tmpfs(&path(&mut request, length)?, channel)?;
+            namespace.mount_tmpfs_user(&path(&mut request, length)?, channel)?;
         }
-        (protocol::UNMOUNT_TMPFS, [length]) if request.handles().len() == 1 => {
+        (protocol::UNMOUNT_MEMORY, [length]) if request.handles().len() == 1 => {
             let length = *length;
-            namespace.unmount_user_tmpfs(&path(&mut request, length)?, channel)?;
+            namespace.unmount_user_memory(&path(&mut request, length)?, channel)?;
         }
         _ => return Err(Error::InvalidRequest),
     }
@@ -460,6 +480,23 @@ fn file_request(file: &File, mut request: ReceivedMessage) -> Result<Message, Er
         }
         (protocol::FILE_INFO, []) if request.handles().is_empty() => {
             Ok(Message::new(protocol::SUCCESS, &[file.len() as u64])?)
+        }
+        (protocol::HUGEPAGE_INFO, []) if request.handles().is_empty() => {
+            Ok(Message::new(protocol::SUCCESS, &[file.hugepage_size()])?)
+        }
+        (protocol::MAP_HUGEPAGE, [offset]) if request.handles().is_empty() => {
+            let offset = usize::try_from(*offset).map_err(|_| Error::InvalidRequest)?;
+            let frames = file.map_huge(offset)?;
+            let mut response = Message::new(protocol::SUCCESS, &[])?;
+            protocol::transfer(
+                &mut response,
+                frames,
+                Rights::READ_WRITE
+                    .union(Rights::MAP)
+                    .union(Rights::EXECUTE)
+                    .union(Rights::TRANSFER),
+            )?;
+            Ok(response)
         }
         _ => Err(Error::InvalidRequest),
     }

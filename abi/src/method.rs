@@ -39,11 +39,13 @@ methods!(task {
     MEMORY_STATS = 38 => NONE;
     LOAD_AVERAGE = 39 => NONE;
     ATOMIC_COMPARE_EXCHANGE = 40 => WRITE_MEMORY;
+    MAP_HUGE = 41 => MAP_MEMORY;
 });
 methods!(memory {
     SIZE = 16 => NONE;
     READ = 17 => READ;
     WRITE = 18 => WRITE;
+    STATE = 19 => NONE;
 });
 
 methods!(thread {

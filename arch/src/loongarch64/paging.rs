@@ -17,6 +17,7 @@ const VALID: u64 = 1;
 const DIRTY: u64 = 1 << 1;
 const USER: u64 = 3 << 2;
 const CACHED: u64 = 1 << 4;
+const HUGE: u64 = 1 << 6;
 const NO_READ: u64 = 1 << 61;
 const NO_EXECUTE: u64 = 1 << 62;
 const PHYSICAL: u64 = ((1 << 48) - 1) & !0xfff;
@@ -60,7 +61,7 @@ impl Format for LoongArchMmu {
         Ok(entry)
     }
 
-    fn encode_mapping(&self, mapping: PageMapping) -> Result<u64, MmuError> {
+    fn encode_mapping(&self, mapping: PageMapping, level: usize) -> Result<u64, MmuError> {
         let attributes = mapping.attributes;
         let permissions = match attributes.permissions {
             PagePermissions::NoAccess => NO_READ | NO_EXECUTE,
@@ -76,16 +77,23 @@ impl Format for LoongArchMmu {
             }
             MemoryType::Device => 0,
         };
+        if level > 1 {
+            return Err(MmuError::Unsupported);
+        }
         Ok(mapping.physical_address
             | VALID
             | permissions
             | memory_type
+            | if level > 0 { HUGE } else { 0 }
             | if attributes.user_accessible { USER } else { 0 })
     }
 
-    fn decode_mapping(&self, entry: u64) -> Result<PageMapping, MmuError> {
-        if entry & VALID == 0
-            || entry & !(PHYSICAL | VALID | DIRTY | USER | CACHED | NO_READ | NO_EXECUTE) != 0
+    fn decode_mapping(&self, entry: u64, level: usize) -> Result<PageMapping, MmuError> {
+        if level > 1
+            || entry & VALID == 0
+            || entry & !(PHYSICAL | VALID | DIRTY | USER | CACHED | HUGE | NO_READ | NO_EXECUTE)
+                != 0
+            || (level > 0) != (entry & HUGE != 0)
         {
             return Err(MmuError::InvalidTable);
         }
@@ -117,6 +125,10 @@ impl Format for LoongArchMmu {
         })
     }
 
+    fn is_mapping(entry: u64, level: usize) -> bool {
+        level == 0 || entry & HUGE != 0
+    }
+
     #[inline(always)]
     fn with_frame<T>(
         &self,
@@ -126,14 +138,17 @@ impl Format for LoongArchMmu {
     ) -> Result<T, MmuError> {
         paging::validate_physical::<Self>(address)?;
         let _access = paging::lock_memory();
-        let entry = self.encode_mapping(PageMapping {
-            physical_address: address,
-            attributes: PageAttributes {
-                permissions,
-                memory_type: MemoryType::Normal,
-                user_accessible: false,
+        let entry = self.encode_mapping(
+            PageMapping {
+                physical_address: address,
+                attributes: PageAttributes {
+                    permissions,
+                    memory_type: MemoryType::Normal,
+                    user_accessible: false,
+                },
             },
-        })?;
+            0,
+        )?;
         let table = core::ptr::addr_of_mut!(PAGE_TABLE_WINDOW_TABLE);
         // SAFETY: The physical access window lock must be held.
         unsafe {
