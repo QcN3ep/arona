@@ -96,6 +96,8 @@ static void addresses(void) {
     struct timespec timeout = {0, 30000};
     CHECK(SC(208, fd, 1, 20, P(&timeout), 16) == 0);
     CHECK(SC(207, fd, P(payload), 1, 0, 0, 0) == -11);
+    timeout = (struct timespec){0, 0};
+    CHECK(SC(208, fd, 1, 20, P(&timeout), 16) == 0);
     CHECK(SC(206, fd, P(payload), 65488, 0, P(&address), 28) == -90);
     CHECK(SC(206, fd, P(payload), 1, 0, P(&address), 28) == 1);
     CHECK(SC(207, fd, P(payload), 1, 0, 0, 0) == 1);
