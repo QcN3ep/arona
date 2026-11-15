@@ -9,8 +9,8 @@ pub use allocator_api2::boxed::Box as HeapBox;
 pub use triomphe::Arc as HeapArc;
 
 use super::{
-    Frame, FrameAccess, FrameAccessReference, FrameAllocation, FrameOwner, FramePurpose,
-    MappingOptions, MemoryError, ReferenceKind, manager, mapping::OwnedMapping,
+    Frame, FrameAccess, FrameAllocation, FrameOwner, FramePurpose, MappingOptions, MemoryError,
+    ReferenceKind, manager, mapping::OwnedMapping,
 };
 use crate::hardware::{
     self,
@@ -72,7 +72,6 @@ struct SlabAllocator {
 struct SlabAllocation {
     address: usize,
     record: u64,
-    _access: FrameAccessReference,
 }
 
 struct Slab {
@@ -236,15 +235,10 @@ impl SlabAllocator {
     }
 
     fn allocate(&mut self, class: usize) -> Result<SlabAllocation, MemoryError> {
-        let (record, access) = if self.partial[class] == NIL {
+        let record = if self.partial[class] == NIL {
             self.create(class)?
         } else {
-            let record = self.partial[class];
-            let slab = Slab::read(record);
-            let access = manager()
-                .reference(slab.backing, ReferenceKind::Temporary)?
-                .access(slab.frame, FrameAccess::Write)?;
-            (record, access)
+            self.partial[class]
         };
         let mut slab = Slab::read(record);
         let word = slab
@@ -264,14 +258,10 @@ impl SlabAllocator {
         if slab.used == PAGE_SIZE / class_size(class) {
             self.unlink_partial(record);
         }
-        Ok(SlabAllocation {
-            address,
-            record,
-            _access: access,
-        })
+        Ok(SlabAllocation { address, record })
     }
 
-    fn create(&mut self, class: usize) -> Result<(u64, FrameAccessReference), MemoryError> {
+    fn create(&mut self, class: usize) -> Result<u64, MemoryError> {
         let backing = manager().allocate(FrameOwner::Kernel, FramePurpose::Data, 1)?;
         let frame = backing.frames().next().unwrap();
         let access = backing.access(frame, ReferenceKind::Temporary, FrameAccess::Write)?;
@@ -295,11 +285,11 @@ impl SlabAllocator {
             bitmap,
         }
         .write(record);
-        // Page frame ownership transfers to the metadata record and is reclaimed when the slab is released.
-        core::mem::forget(backing);
+        // The record retains the page owner and one write reference until the slab is released.
+        core::mem::forget((backing, access));
         self.frames += 1;
         self.link_partial(record);
-        Ok((record, access))
+        Ok(record)
     }
 
     fn release(&mut self, allocation: &SlabAllocation) {
@@ -339,7 +329,12 @@ impl SlabAllocator {
         if self.empty[slab.class] == record {
             self.empty[slab.class] = NIL;
         }
-        drop(FrameAllocation { head: slab.backing });
+        {
+            let mut allocator = manager().allocator().lock();
+            allocator.release_access(slab.frame, ReferenceKind::Temporary, FrameAccess::Write);
+            allocator.release_reference(slab.backing, ReferenceKind::Temporary);
+            allocator.release_owner(slab.backing);
+        }
         self.frames -= 1;
         self.release_record(record);
     }
