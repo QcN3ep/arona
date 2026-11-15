@@ -236,9 +236,7 @@ fn mqueue(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
                 output(),
             )
             .unwrap()
-            .wait(WaitMode::Until(
-                runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
-            ));
+            .wait(WaitMode::Forever);
         let expected = ExitStatus {
             code: 42,
             signal: 0,

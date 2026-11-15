@@ -62,11 +62,11 @@ fn open(process: &mut Process<'_>, arguments: [usize; 6]) -> SyscallResult {
     let name = name(process, arguments[0])?;
     let oflag = arguments[1] as u32;
     if oflag & !(O_ACCMODE | O_CREAT | O_EXCL | O_NONBLOCK | O_CLOEXEC) != 0
-        || !matches!(oflag & O_ACCMODE, 0 | 1)
+        || oflag & O_ACCMODE == 3
     {
         return Err(EINVAL);
     }
-    let key = name[1..].to_vec();
+    let key = name.clone();
     let access = oflag & O_ACCMODE;
     let close_on_exec = oflag & O_CLOEXEC != 0;
     if let Some(queue) = process.namespace.mqueues.get(&key) {
@@ -114,7 +114,7 @@ fn install(
 
 fn unlink(process: &mut Process<'_>, address: usize) -> SyscallResult {
     let name = name(process, address)?;
-    let key = &name[1..];
+    let key = name.as_slice();
     let queue = process.namespace.mqueues.get(key).ok_or(ENOENT)?;
     if process.credentials.euid != 0 && process.credentials.euid != queue.uid() {
         return Err(EACCES);
@@ -289,7 +289,7 @@ fn receive<'a>(
         if arguments[2] < queue.msgsize() {
             return Err(EMSGSIZE);
         }
-        if arguments[1] == 0 || arguments[3] == 0 {
+        if arguments[1] == 0 {
             return Err(EFAULT);
         }
         let queue = Rc::clone(queue);
@@ -413,7 +413,9 @@ fn copy_message(
     value: u32,
 ) -> SyscallResult {
     wait::write_bytes(process, address, &data)?;
-    wait::write_bytes(process, priority, &value.to_le_bytes())?;
+    if priority != 0 {
+        wait::write_bytes(process, priority, &value.to_le_bytes())?;
+    }
     Ok(data.len())
 }
 
@@ -466,14 +468,11 @@ fn name(process: &Process<'_>, address: usize) -> Result<Vec<u8>, Errno> {
     if path.is_empty() {
         return Err(ENOENT);
     }
-    if path[0] != b'/' || path.len() == 1 {
-        return Err(EINVAL);
-    }
-    if path.len() > NAME_MAX + 1 {
+    if path.len() > NAME_MAX {
         return Err(ENAMETOOLONG);
     }
-    if path[1..].contains(&b'/') {
-        return Err(EINVAL);
+    if path.contains(&b'/') {
+        return Err(EACCES);
     }
     Ok(path)
 }
@@ -490,8 +489,12 @@ fn permitted(process: &Process<'_>, queue: &Queue, access: u32) -> Result<(), Er
     } else {
         queue.mode() & 7
     };
-    let required = if access == 1 { 2 } else { 4 };
-    if bits & required == 0 {
+    let required = match access {
+        1 => 2,
+        2 => 6,
+        _ => 4,
+    };
+    if bits & required != required {
         return Err(EACCES);
     }
     Ok(())
@@ -707,7 +710,7 @@ pub(crate) fn entries(queues: &Queues) -> Vec<fs::DirEntry> {
     ];
     for queue in queues.list() {
         entries.push(fs::DirEntry {
-            name: queue.name()[1..].to_vec(),
+            name: queue.name().to_vec(),
             inode: queue.inode(),
             kind: fs::FileType::Regular,
         });

@@ -10,6 +10,7 @@ extern long mqueue_syscall(long number, const long arguments[6]);
 
 #define O_RDONLY 0
 #define O_WRONLY 1
+#define O_RDWR 2
 #define O_CREAT 0x40
 #define O_EXCL 0x80
 #define O_TRUNC 0x200
@@ -184,20 +185,19 @@ static long fork_child(void) {
 
 static void basic(void) {
     struct mq_attr attr = attributes(4, 128);
-    long fd = open_queue("/mq-basic", O_CREAT | O_RDONLY, 0600, &attr);
+    long fd = open_queue("mq-basic", O_CREAT | O_RDONLY, 0600, &attr);
     CHECK(fd >= 0);
     struct mq_attr got;
     CHECK(SC(MQ_GETSETATTR, fd, 0, P(&got)) == 0);
     CHECK(got.maxmsg == 4 && got.msgsize == 128 && got.curmsgs == 0 && got.flags == 0);
 
-    CHECK(open_queue("/mq-basic", O_CREAT | O_EXCL | O_RDONLY, 0600, &attr) == -EEXIST);
-    CHECK(open_queue("/mq-absent", O_RDONLY, 0, 0) == -ENOENT);
-    CHECK(open_queue("mq-noslash", O_CREAT | O_RDONLY, 0600, &attr) == -EINVAL);
-    CHECK(open_queue("/mq/nested", O_CREAT | O_RDONLY, 0600, &attr) == -EINVAL);
+    CHECK(open_queue("mq-basic", O_CREAT | O_EXCL | O_RDONLY, 0600, &attr) == -EEXIST);
+    CHECK(open_queue("mq-absent", O_RDONLY, 0, 0) == -ENOENT);
+    CHECK(open_queue("/mq-slash", O_CREAT | O_RDONLY, 0600, &attr) == -EACCES);
+    CHECK(open_queue("mq/nested", O_CREAT | O_RDONLY, 0600, &attr) == -EACCES);
     CHECK(open_queue("", O_CREAT | O_RDONLY, 0600, &attr) == -ENOENT);
     CHECK(open_queue(0, O_CREAT | O_RDONLY, 0600, &attr) == -EFAULT);
     for (long i = 0; i < 298; ++i) path[i] = 'q';
-    path[0] = '/';
     path[298] = 0;
     CHECK(open_queue(path, O_CREAT | O_RDONLY, 0600, &attr) == -ENAMETOOLONG);
 
@@ -210,7 +210,7 @@ static void basic(void) {
     struct mq_attr clear = {0, 0, 0, 0, {0, 0, 0, 0}};
     CHECK(SC(MQ_GETSETATTR, fd, P(&clear), 0) == 0);
 
-    long writer = open_queue("/mq-basic", O_WRONLY | O_NONBLOCK, 0, 0);
+    long writer = open_queue("mq-basic", O_WRONLY | O_NONBLOCK, 0, 0);
     CHECK(writer >= 0);
     CHECK(send(writer, "a", 1, 1) == 0);
     CHECK(SC(MQ_GETSETATTR, fd, 0, P(&got)) == 0 && got.curmsgs == 1);
@@ -236,9 +236,14 @@ static void basic(void) {
     unsigned priority = 0;
     char message[128];
     CHECK(receive(fd, message, 128, &priority) == 1 && message[0] == 'a' && priority == 1);
-    CHECK(SC(181, P("/mq-basic")) == 0);
-    CHECK(SC(181, P("/mq-basic")) == -ENOENT);
-    CHECK(open_queue("/mq-basic", O_RDONLY, 0, 0) == -ENOENT);
+    long both = open_queue("mq-basic", O_RDWR, 0, 0);
+    CHECK(both >= 0 && send(both, "rw", 2, 2) == 0);
+    CHECK(receive(both, message, 128, 0) == 2 && message[0] == 'r' && message[1] == 'w');
+    CHECK(SC(57, both) == 0);
+    CHECK(open_queue("mq-basic", 3, 0, 0) == -EINVAL);
+    CHECK(SC(181, P("mq-basic")) == 0);
+    CHECK(SC(181, P("mq-basic")) == -ENOENT);
+    CHECK(open_queue("mq-basic", O_RDONLY, 0, 0) == -ENOENT);
     CHECK(send(writer, "b", 1, 0) == 0);
     CHECK(receive(fd, message, 128, &priority) == 1 && message[0] == 'b');
     CHECK(SC(57, writer) == 0 && SC(57, fd) == 0);
@@ -246,8 +251,8 @@ static void basic(void) {
 
 static void priority(void) {
     struct mq_attr attr = attributes(4, 64);
-    long writer = open_queue("/mq-priority", O_CREAT | O_WRONLY | O_NONBLOCK, 0600, &attr);
-    long reader = open_queue("/mq-priority", O_RDONLY | O_NONBLOCK, 0600, &attr);
+    long writer = open_queue("mq-priority", O_CREAT | O_WRONLY | O_NONBLOCK, 0600, &attr);
+    long reader = open_queue("mq-priority", O_RDONLY | O_NONBLOCK, 0600, &attr);
     CHECK(writer >= 0 && reader >= 0);
     CHECK(send(writer, "low", 3, 1) == 0);
     CHECK(send(writer, "high1", 5, 5) == 0);
@@ -270,7 +275,7 @@ static void priority(void) {
     CHECK(send(writer, "x", 1, 32768) == -EINVAL);
     CHECK(SC(MQ_TIMEDSEND, writer, 0, 1, 0, 0) == -EFAULT);
     CHECK(SC(MQ_TIMEDRECEIVE, reader, 0, 64, P(&priority), 0) == -EFAULT);
-    CHECK(SC(MQ_TIMEDRECEIVE, reader, P(message), 64, 0, 0) == -EFAULT);
+    CHECK(SC(MQ_TIMEDRECEIVE, reader, P(message), 64, 0, 0) == -EAGAIN);
     CHECK(receive(reader, message, 63, &priority) == -EMSGSIZE);
     CHECK(receive(writer, message, 64, &priority) == -EBADF);
     CHECK(send(reader, "x", 1, 0) == -EBADF);
@@ -278,16 +283,16 @@ static void priority(void) {
     CHECK(SC(MQ_GETSETATTR, 99, 0, P(&attr)) == -EBADF);
     CHECK(SC(MQ_NOTIFY, 99, 0) == -EBADF);
 
-    CHECK(SC(181, P("/mq-priority")) == 0);
+    CHECK(SC(181, P("mq-priority")) == 0);
     CHECK(SC(57, writer) == 0 && SC(57, reader) == 0);
 }
 
 static void block(void) {
     install_handler();
     struct mq_attr attr = attributes(1, 16);
-    long reader = open_queue("/mq-block", O_CREAT | O_RDONLY, 0600, &attr);
-    long writer = open_queue("/mq-block", O_WRONLY, 0600, &attr);
-    long nonblock = open_queue("/mq-block", O_RDONLY | O_NONBLOCK, 0600, &attr);
+    long reader = open_queue("mq-block", O_CREAT | O_RDONLY, 0600, &attr);
+    long writer = open_queue("mq-block", O_WRONLY, 0600, &attr);
+    long nonblock = open_queue("mq-block", O_RDONLY | O_NONBLOCK, 0600, &attr);
     CHECK(reader >= 0 && writer >= 0 && nonblock >= 0);
 
     unsigned priority = 0;
@@ -310,7 +315,7 @@ static void block(void) {
     long parent = SC(172);
     long child = fork_child();
     if (!child) {
-        CHECK(receive(reader, message, 16, &priority) == 1 && message[0] == 'F');
+        CHECK(receive(reader, message, 16, 0) == 1 && message[0] == 'F');
         SC(94, 0);
         for (;;) {}
     }
@@ -343,15 +348,15 @@ static void block(void) {
     CHECK(signals == before + 1);
     wait_child(child);
 
-    CHECK(SC(181, P("/mq-block")) == 0);
+    CHECK(SC(181, P("mq-block")) == 0);
     CHECK(SC(57, reader) == 0 && SC(57, writer) == 0 && SC(57, nonblock) == 0);
 }
 
 static void notify(void) {
     install_handler();
     struct mq_attr attr = attributes(4, 32);
-    long reader = open_queue("/mq-notify", O_CREAT | O_RDONLY, 0600, &attr);
-    long writer = open_queue("/mq-notify", O_WRONLY, 0600, &attr);
+    long reader = open_queue("mq-notify", O_CREAT | O_RDONLY, 0600, &attr);
+    long writer = open_queue("mq-notify", O_WRONLY, 0600, &attr);
     CHECK(reader >= 0 && writer >= 0);
     char message[32];
     unsigned priority = 0;
@@ -418,15 +423,15 @@ static void notify(void) {
     struct sigevent kind = {0, SIGUSR1, 7, {0}};
     CHECK(SC(MQ_NOTIFY, reader, P(&kind)) == -EINVAL);
 
-    CHECK(SC(181, P("/mq-notify")) == 0);
+    CHECK(SC(181, P("mq-notify")) == 0);
     CHECK(SC(57, reader) == 0 && SC(57, writer) == 0);
 }
 
 static void path_view(void) {
     struct mq_attr attr = attributes(2, 32);
-    long fd = open_queue("/mq-path", O_CREAT | O_RDONLY, 0600, &attr);
+    long fd = open_queue("mq-path", O_CREAT | O_RDONLY, 0600, &attr);
     CHECK(fd >= 0);
-    CHECK(send(open_queue("/mq-path", O_WRONLY, 0, 0), "P", 1, 0) == 0);
+    CHECK(send(open_queue("mq-path", O_WRONLY, 0, 0), "P", 1, 0) == 0);
 
     char stat[128];
     CHECK(SC(79, AT_FDCWD, P("/dev/mqueue/mq-path"), P(stat), 0) == 0);
@@ -445,15 +450,15 @@ static void path_view(void) {
     CHECK(SC(35, AT_FDCWD, P("/dev/mqueue/mq-path"), 0) == 0);
     CHECK(SC(35, AT_FDCWD, P("/dev/mqueue/mq-path"), 0) == -ENOENT);
     CHECK(SC(35, AT_FDCWD, P("/dev/mqueue"), 0) == -EBUSY);
-    CHECK(open_queue("/mq-path", O_RDONLY, 0, 0) == -ENOENT);
+    CHECK(open_queue("mq-path", O_RDONLY, 0, 0) == -ENOENT);
     CHECK(receive(fd, payload, 32, (unsigned *)stat) == 1 && payload[0] == 'P');
     CHECK(SC(57, fd) == 0);
 }
 
 static void lifecycle(void) {
     struct mq_attr attr = attributes(4, 32);
-    long reader = open_queue("/mq-life", O_CREAT | O_RDONLY, 0600, &attr);
-    long writer = open_queue("/mq-life", O_WRONLY | O_NONBLOCK, 0600, &attr);
+    long reader = open_queue("mq-life", O_CREAT | O_RDONLY, 0600, &attr);
+    long writer = open_queue("mq-life", O_WRONLY | O_NONBLOCK, 0600, &attr);
     CHECK(reader >= 0 && writer >= 0);
 
     long copy = SC(23, reader);
@@ -465,8 +470,8 @@ static void lifecycle(void) {
     unsigned priority = 0;
     CHECK(receive(copy, message, 32, &priority) == 1 && message[0] == 'D');
 
-    CHECK(SC(181, P("/mq-life")) == 0);
-    CHECK(open_queue("/mq-life", O_RDONLY, 0, 0) == -ENOENT);
+    CHECK(SC(181, P("mq-life")) == 0);
+    CHECK(open_queue("mq-life", O_RDONLY, 0, 0) == -ENOENT);
     CHECK(send(writer, "U", 1, 0) == 0);
     CHECK(receive(copy, message, 32, &priority) == 1 && message[0] == 'U');
 
@@ -483,50 +488,56 @@ static void lifecycle(void) {
     wait_child(child);
     CHECK(SC(57, copy) == 0);
 
-    long fresh = open_queue("/mq-life", O_CREAT | O_RDONLY, 0600, &attr);
+    long fresh = open_queue("mq-life", O_CREAT | O_RDONLY, 0600, &attr);
     CHECK(fresh >= 0);
     struct mq_attr got;
     CHECK(SC(MQ_GETSETATTR, fresh, 0, P(&got)) == 0 && got.curmsgs == 0);
     CHECK(SC(57, fresh) == 0);
-    CHECK(SC(181, P("/mq-life")) == 0);
+    CHECK(SC(181, P("mq-life")) == 0);
 
-    long linked = open_queue("/mq-keep", O_CREAT | O_WRONLY, 0600, &attr);
+    long linked = open_queue("mq-keep", O_CREAT | O_WRONLY, 0600, &attr);
     CHECK(linked >= 0 && send(linked, "K", 1, 0) == 0);
     CHECK(SC(57, linked) == 0);
-    long reopened = open_queue("/mq-keep", O_RDONLY, 0, 0);
+    long reopened = open_queue("mq-keep", O_RDONLY, 0, 0);
     CHECK(reopened >= 0);
     CHECK(SC(MQ_GETSETATTR, reopened, 0, P(&got)) == 0 && got.curmsgs == 1);
     CHECK(receive(reopened, message, 32, &priority) == 1 && message[0] == 'K');
     CHECK(SC(57, reopened) == 0);
-    CHECK(SC(181, P("/mq-keep")) == 0);
+    CHECK(SC(181, P("mq-keep")) == 0);
 }
 
 static void permission(void) {
     struct mq_attr attr = attributes(2, 32);
     long previous_umask = SC(166, 0);
     CHECK(previous_umask >= 0);
-    long owner = open_queue("/mq-perm", O_CREAT | O_RDONLY, 0600, &attr);
+    long owner = open_queue("mq-perm", O_CREAT | O_RDONLY, 0600, &attr);
     CHECK(owner >= 0);
-    CHECK(open_queue("/mq-perm", O_WRONLY, 0, 0) >= 0);
+    CHECK(open_queue("mq-perm", O_WRONLY, 0, 0) >= 0);
     long child = fork_child();
     if (!child) {
         CHECK(SC(146, 1234) == 0);
-        CHECK(open_queue("/mq-perm", O_RDONLY, 0, 0) == -EACCES);
-        CHECK(open_queue("/mq-perm", O_WRONLY, 0, 0) == -EACCES);
-        CHECK(SC(MQ_UNLINK, P("/mq-perm")) == -EACCES);
+        CHECK(open_queue("mq-perm", O_RDONLY, 0, 0) == -EACCES);
+        CHECK(open_queue("mq-perm", O_WRONLY, 0, 0) == -EACCES);
+        CHECK(SC(MQ_UNLINK, P("mq-perm")) == -EACCES);
         SC(94, 0);
         for (;;) {}
     }
     wait_child(child);
 
-    CHECK(open_queue("/mq-perm-world", O_CREAT | O_RDONLY, 0606, &attr) >= 0);
+    CHECK(open_queue("mq-perm-world", O_CREAT | O_RDONLY, 0606, &attr) >= 0);
+    CHECK(open_queue("mq-read-only", O_CREAT | O_RDONLY, 0404, &attr) >= 0);
+    CHECK(open_queue("mq-write-only", O_CREAT | O_WRONLY, 0202, &attr) >= 0);
     child = fork_child();
     if (!child) {
         CHECK(SC(144, 1234) == 0);
         CHECK(SC(146, 1234) == 0);
-        long read = open_queue("/mq-perm-world", O_RDONLY, 0, 0);
-        long write = open_queue("/mq-perm-world", O_WRONLY, 0, 0);
-        CHECK(read >= 0 && write >= 0);
+        long read = open_queue("mq-perm-world", O_RDONLY, 0, 0);
+        long write = open_queue("mq-perm-world", O_WRONLY, 0, 0);
+        long both = open_queue("mq-perm-world", O_RDWR, 0, 0);
+        CHECK(read >= 0 && write >= 0 && both >= 0);
+        CHECK(open_queue("mq-read-only", O_RDWR, 0, 0) == -EACCES);
+        CHECK(open_queue("mq-write-only", O_RDWR, 0, 0) == -EACCES);
+        SC(57, both);
         SC(57, read);
         SC(57, write);
         SC(94, 0);
@@ -534,8 +545,10 @@ static void permission(void) {
     }
     wait_child(child);
 
-    CHECK(SC(181, P("/mq-perm-world")) == 0);
-    CHECK(SC(181, P("/mq-perm")) == 0);
+    CHECK(SC(181, P("mq-read-only")) == 0);
+    CHECK(SC(181, P("mq-write-only")) == 0);
+    CHECK(SC(181, P("mq-perm-world")) == 0);
+    CHECK(SC(181, P("mq-perm")) == 0);
     CHECK(SC(57, owner) == 0);
     CHECK(SC(166, previous_umask) == 0);
 }

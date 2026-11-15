@@ -98,10 +98,11 @@ The compatibility service implements POSIX message queues with the asm-generic c
 These are the numbers used by RISC-V and LoongArch, which share the generic table.
 The x86_64 numbers 240 through 245 are not accepted because 242 and 243 collide with `accept4` and `recvmmsg` in this ABI.
 
-A queue name must begin with `/`, contain exactly one nonempty path component, and fit within 255 bytes.
+The raw `mq_open` and `mq_unlink` calls take a nonempty name without `/`, up to 255 bytes.
+Libc removes the leading slash from POSIX queue names before issuing these calls.
 The registry belongs to the compatibility service, so all Linux processes it manages see the same queues.
 A queue records its creator's effective user and group IDs, its permission bits after umask, `mq_maxmsg`, and `mq_msgsize`.
-`mq_open` accepts `O_RDONLY` or `O_WRONLY`, together with `O_CREAT`, `O_EXCL`, `O_NONBLOCK`, and `O_CLOEXEC`.
+`mq_open` accepts `O_RDONLY`, `O_WRONLY`, or `O_RDWR`, together with `O_CREAT`, `O_EXCL`, `O_NONBLOCK`, and `O_CLOEXEC`.
 An existing queue is reopened when the requested read or write access is allowed by its owner, group, or other bits; root bypasses the check.
 `O_CREAT` without `O_EXCL` on an existing name ignores the supplied attributes, and `O_CREAT | O_EXCL` returns `EEXIST`.
 When `O_CREAT` is given without an attribute buffer, the queue uses 10 messages and 8,192 bytes per message.
@@ -110,7 +111,8 @@ Explicit attributes must have positive `mq_maxmsg` and `mq_msgsize` values, curr
 Each message stores its priority and data.
 `mq_timedsend` rejects data longer than `mq_msgsize` with `EMSGSIZE` and priorities at or above 32,768 with `EINVAL`.
 Queues deliver higher priorities first and preserve FIFO order between equal priorities.
-`mq_timedreceive` requires an output buffer at least as large as `mq_msgsize` and reports the message length plus its priority.
+`mq_timedreceive` requires an output buffer at least as large as `mq_msgsize` and reports the message length.
+It also writes the priority when the caller supplies a priority pointer.
 A full queue or an empty queue returns `EAGAIN` on a nonblocking description, and otherwise saves the calling thread as a pending operation.
 Pending sends and receives accept an absolute `CLOCK_REALTIME` timeout, which the service converts through the RTC session into a monotonic deadline.
 Expiry returns `ETIMEDOUT`; a delivered signal returns `EINTR`.
