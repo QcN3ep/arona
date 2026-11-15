@@ -31,7 +31,6 @@ struct Waiter {
     key: Cell<Key>,
     mask: u32,
     ready: Cell<bool>,
-    owner_died: Cell<bool>,
     frames: RefCell<Rc<Handle<FrameAllocation>>>,
 }
 
@@ -51,7 +50,6 @@ impl Futexes {
             key: Cell::new(key),
             mask,
             ready: Cell::new(false),
-            owner_died: Cell::new(false),
             frames: RefCell::new(frames),
         });
         self.queues
@@ -87,35 +85,6 @@ impl Futexes {
             queues.remove(&key);
         }
         woken
-    }
-
-    /// Wake one waiter because the futex owner died.
-    ///
-    /// The woken waiter is told why so it can report `EOWNERDEAD`, and the
-    /// caller has already marked the futex word. Linux wakes at most one
-    /// waiter here as well; the next owner death or unlock wakes the next one.
-    pub fn wake_owner_died(&self, key: Key) -> usize {
-        let mut queues = self.queues.borrow_mut();
-        let Some(queue) = queues.get_mut(&key) else {
-            return 0;
-        };
-        let mut woken = false;
-        queue.retain(|entry| {
-            let Some(waiter) = entry.upgrade() else {
-                return false;
-            };
-            if woken {
-                return true;
-            }
-            waiter.owner_died.set(true);
-            waiter.ready.set(true);
-            woken = true;
-            false
-        });
-        if queue.is_empty() {
-            queues.remove(&key);
-        }
-        usize::from(woken)
     }
 
     pub fn requeue(
@@ -158,11 +127,6 @@ impl Futexes {
 impl Registration {
     pub fn ready(&self) -> bool {
         self.waiter.ready.get()
-    }
-
-    /// Report whether the futex owner died before this waiter was woken.
-    pub fn owner_died(&self) -> bool {
-        self.waiter.owner_died.get()
     }
 }
 

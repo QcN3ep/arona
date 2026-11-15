@@ -376,7 +376,7 @@ impl<'a> Process<'a> {
         // the wait key from it. Wake both interpretations of the futex word.
         for private in [true, false] {
             if let Ok((key, _)) = self.address_space.futex_key(self.pid, address, private) {
-                self.namespace.futexes.wake_owner_died(key);
+                self.namespace.futexes.wake(key, 1, u32::MAX);
             }
         }
     }

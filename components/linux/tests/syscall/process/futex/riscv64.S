@@ -403,7 +403,7 @@ robust_dead_ready_done:
     li a4, 0
     li a5, 0
     invoke 98
-    check -130
+    check 0
     li s8, 15
     lw t0, 0(s2)
     li t1, 0x40000000

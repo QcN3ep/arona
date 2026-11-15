@@ -240,7 +240,8 @@ futex combines user word validation, wait registration, wakeup, and timeout into
 When a thread exits, the whole thread group exits, or exec replaces the image, the service walks the registered list, marks each futex word still owned by the thread with `FUTEX_OWNER_DIED`, and wakes one waiter.
 The walk follows the head's `futex_offset`, also handles the pending list operation that covers the lock-acquire race, and stops when user memory is unreadable or the Linux walk limit is reached.
 Fork and clone do not transfer a registration to the child thread, and the thread created by exec starts without one.
-A waiting `FUTEX_WAIT` that observes the owner-died bit when it is woken reports `EOWNERDEAD`, so the guest can recover the mutex.
+`FUTEX_WAIT` returns zero after this wakeup.
+The guest checks `FUTEX_OWNER_DIED` in the futex word to recover the mutex.
 The registering call rejects lengths other than 24 with `EINVAL` and unreadable heads with `EFAULT`, while the query reports `ESRCH` for unknown thread IDs and `EFAULT` for unwritable result pointers.
 
 The signal implementation maintains the process-shared disposition and each thread's mask, pending set, and alternate stack.

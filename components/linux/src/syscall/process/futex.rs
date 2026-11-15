@@ -6,15 +6,10 @@
 
 use crate::{
     Services,
-    process::{
-        Process,
-        futex::{self, Registration},
-    },
+    process::{Process, futex::Registration},
     syscall::{
         Operation, Outcome,
-        abi::{
-            EAGAIN, EFAULT, EINVAL, EIO, EOPNOTSUPP, EOWNERDEAD, ETIMEDOUT, Errno, SyscallResult,
-        },
+        abi::{EAGAIN, EFAULT, EINVAL, EIO, EOPNOTSUPP, ETIMEDOUT, Errno, SyscallResult},
         wait::{self, Deadline},
     },
 };
@@ -22,7 +17,6 @@ use runtime::{KernelError, ipc::WaitItem};
 
 pub(in crate::syscall) struct Pending {
     registration: Registration,
-    address: usize,
     deadline: Deadline,
     clock: Option<devmgr::device::Pending<devmgr::rtc::Timestamp>>,
     realtime: Option<u64>,
@@ -72,7 +66,6 @@ pub(super) fn start<'a>(
                 let registration = process.namespace.futexes.register(key, mask, frames);
                 Ok(Outcome::Pending(Operation::Futex(Pending {
                     registration,
-                    address,
                     deadline,
                     clock,
                     realtime: realtime_deadline,
@@ -193,20 +186,6 @@ impl Pending {
 
     pub fn poll(&mut self, process: &Process<'_>) -> Option<SyscallResult> {
         if self.registration.ready() {
-            // A robust owner marked this wait as owner-died. Linux leaves the
-            // decision to userspace after FUTEX_WAIT returns; report it here so
-            // a guest that issues raw system calls can recover the mutex.
-            let mut word = [0; 4];
-            if self.registration.owner_died()
-                && process
-                    .address_space
-                    .read(self.address, &mut word)
-                    .map_or(true, |()| {
-                        u32::from_le_bytes(word) & futex::FUTEX_OWNER_DIED != 0
-                    })
-            {
-                return Some(Err(EOWNERDEAD));
-            }
             return Some(Ok(0));
         }
         if let Some(request) = &mut self.clock {

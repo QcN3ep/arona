@@ -191,7 +191,6 @@ pub(super) const ETIMEDOUT: Errno = Errno(110);
 pub(super) const ECONNREFUSED: Errno = Errno(111);
 pub(super) const EALREADY: Errno = Errno(114);
 pub(super) const EINPROGRESS: Errno = Errno(115);
-pub(super) const EOWNERDEAD: Errno = Errno(130);
 
 impl Machine {
     pub(crate) fn initial(self, entry: usize, stack: usize) -> UserState {
