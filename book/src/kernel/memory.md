@@ -105,7 +105,8 @@ Both kinds of mapping occupy virtual ranges; their backing resources are held by
 ## Kernel Heap
 
 `HeapAllocator` obtains memory from the Kernel page frame pool and establishes mappings in the kernel address space.
-Small objects use 8 size classes divided by powers of 2, ranging from 16 to 2048 bytes; larger objects or those requiring higher alignment use dedicated allocations.
+Objects up to 4096 bytes use 9 size classes divided by powers of 2, starting at 16 bytes.
+Larger objects or those requiring alignment greater than a page use dedicated allocations.
 The occupancy state of small objects is recorded in bitmaps.
 
 Allocation results enter kernel data structures through ownership types:

@@ -19,7 +19,7 @@ use crate::hardware::{
 
 const NIL: u64 = u64::MAX;
 const MIN_SIZE: usize = 16;
-const CLASSES: usize = 8;
+const CLASSES: usize = 9;
 const BITMAP_WORDS: usize = PAGE_SIZE / MIN_SIZE / u64::BITS as usize;
 const HEADER_WORDS: usize = 4;
 const RECORD_WORDS: usize = 7 + BITMAP_WORDS;

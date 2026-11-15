@@ -60,7 +60,7 @@ pub fn perf_grow_reclaim(perf: &mut Perf) {
     assert_eq!(manager.stats(), initial);
 }
 
-/// Allocate, map, unmap, and release one large heap object per iteration.
+/// Allocate and release one page-aligned heap object per iteration.
 pub fn perf_large(perf: &mut Perf, size: usize) {
     let manager = memory::manager();
     manager.reclaim_heap();
@@ -72,7 +72,12 @@ pub fn perf_large(perf: &mut Perf, size: usize) {
     write(&sample, 91);
     assert_eq!(read(&sample), 91);
     drop(sample);
+    let warmed = manager.stats();
+    let cached = manager.heap_stats();
     perf.iter(|| manager.allocate_heap(layout).unwrap());
+    assert_eq!(manager.heap_stats(), cached);
+    assert_eq!(manager.stats(), warmed);
+    manager.reclaim_heap();
     assert_eq!(manager.heap_stats(), heap);
     assert_eq!(manager.stats(), initial);
 }
@@ -146,6 +151,10 @@ fn layouts() {
         (8, 8),
         (24, 16),
         (2048, 2048),
+        (2049, 8),
+        (PAGE_SIZE - 1, PAGE_SIZE),
+        (PAGE_SIZE, PAGE_SIZE),
+        (PAGE_SIZE + 1, 8),
         (PAGE_SIZE + 17, 4 * PAGE_SIZE),
         (8, 16 * PAGE_SIZE),
     ] {
@@ -188,7 +197,7 @@ fn live_allocations() {
     let initial = manager.stats();
     let heap = manager.heap_stats();
     let mut allocations: [Option<HeapAllocation>; 64] = core::array::from_fn(|index| {
-        let alignment = 16 << (index % 8);
+        let alignment = 16 << (index % 9);
         let layout = Layout::from_size_align(alignment - 3, alignment).unwrap();
         let allocation = manager.allocate_heap(layout).unwrap();
         assert!(allocation.address().is_multiple_of(alignment));
