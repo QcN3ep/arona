@@ -199,7 +199,11 @@ void timer_selftest(void) {
     get_timer(2, &timer);
     CHECK(zero(&timer.value));
 
-    set_timer(0, 0, 0, 2, 0);
+    // Keep expiry from interrupting the fork and exec lifecycle checks.
+    unsigned long mask = 1UL << (14 - 1);
+    unsigned long saved_mask;
+    CHECK(SC(135, 0, P(&mask), P(&saved_mask), 8) == 0);
+    set_timer(0, 1, 0, 1, 0);
     long child = SC(220, 17, 0, 0, 0, 0);
     if (child == 0) {
         get_timer(0, &timer);
@@ -211,14 +215,15 @@ void timer_selftest(void) {
     CHECK(child > 0);
     wait_child(child);
     get_timer(0, &timer);
-    CHECK(!zero(&timer.value) && within(&timer.value, 2, 0));
+    CHECK(timer.interval.seconds == 1 && timer.interval.microseconds == 0);
+    CHECK(within(&timer.value, 1, 0));
     stop_timer(0, 0, 0);
     sleep_us(20000);
 
     unsigned before_exec = real_count;
     child = SC(220, 17, 0, 0, 0, 0);
     if (child == 0) {
-        set_timer(0, 0, 0, 2, 0);
+        set_timer(0, 1, 0, 1, 0);
         static char path[] = "/bin/linux-test";
         static char mode[] = "timer-exec";
         static char environment[] = "ARONA_TEST=yes";
@@ -232,13 +237,14 @@ void timer_selftest(void) {
     CHECK(child > 0);
     wait_child(child);
     CHECK(real_count == before_exec);
+    CHECK(SC(135, 2, P(&saved_mask), 0, 8) == 0);
 }
 
 void timer_exec_check(void) {
     struct itimerval timer;
     get_timer(0, &timer);
-    CHECK(!zero(&timer.value) && within(&timer.value, 2, 0));
-    CHECK(zero(&timer.interval));
+    CHECK(timer.interval.seconds == 1 && timer.interval.microseconds == 0);
+    CHECK(within(&timer.value, 1, 0));
     SC(94, 42);
     for (;;) {
     }
