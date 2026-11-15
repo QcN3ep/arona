@@ -364,7 +364,7 @@ fn writable(
     path_session(files);
     tmpfs_path_session(files);
     for mode in [
-        b"Log".as_slice(),
+        b"log".as_slice(),
         b"metadata".as_slice(),
         b"directory",
         b"path",
