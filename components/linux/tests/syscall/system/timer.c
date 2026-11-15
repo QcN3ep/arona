@@ -144,6 +144,8 @@ static void wait_child(long child) {
 
 void timer_selftest(void) {
     struct itimerval timer;
+    unsigned long mask = 1UL << (14 - 1);
+    unsigned long saved_mask;
     install(14, real_handler);
     install(26, virtual_handler);
     install(27, prof_handler);
@@ -169,15 +171,21 @@ void timer_selftest(void) {
     CHECK(real_count == 1);
     get_timer(0, &timer);
     CHECK(zero(&timer.value));
+    // Consume periodic expiries synchronously so handler overhead cannot starve the test.
+    CHECK(SC(135, 0, P(&mask), P(&saved_mask), 8) == 0);
     set_timer(0, 0, 20000, 0, 20000);
     get_timer(0, &timer);
     CHECK(timer.interval.seconds == 0 && timer.interval.microseconds == 20000);
     CHECK(timer.value.seconds == 0 && timer.value.microseconds <= 20000);
-    wait_real(real_count + 3);
+    struct timespec timeout = {2, 0};
+    for (unsigned expiry = 0; expiry < 3; ++expiry) {
+        CHECK(SC(137, P(&mask), 0, P(&timeout), 8) == 14);
+    }
     get_timer(0, &timer);
     CHECK(within(&timer.value, 0, 20000));
     CHECK(timer.interval.seconds == 0 && timer.interval.microseconds == 20000);
     stop_timer(0, 0, 0);
+    CHECK(SC(135, 2, P(&saved_mask), 0, 8) == 0);
     sleep_us(1000);
     unsigned stopped = real_count;
     sleep_us(60000);
@@ -200,8 +208,6 @@ void timer_selftest(void) {
     CHECK(zero(&timer.value));
 
     // Keep expiry from interrupting the fork and exec lifecycle checks.
-    unsigned long mask = 1UL << (14 - 1);
-    unsigned long saved_mask;
     CHECK(SC(135, 0, P(&mask), P(&saved_mask), 8) == 0);
     set_timer(0, 1, 0, 1, 0);
     long child = SC(220, 17, 0, 0, 0, 0);
