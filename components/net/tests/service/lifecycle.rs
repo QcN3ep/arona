@@ -2,6 +2,7 @@
 
 use super::{launch, until};
 use net::{CancelOutcome, Client, Completion, Endpoint, Error, Request, Shutdown, SocketKind};
+use runtime::ipc::{self, WaitItem};
 
 pub fn run(client: &Client<'_>, output: &devmgr::uart::Session) {
     let mut listener = client.socket(SocketKind::Tcp, until()).unwrap();
@@ -13,19 +14,32 @@ pub fn run(client: &Client<'_>, output: &devmgr::uart::Session) {
         Completion::Endpoint(address) => address,
         _ => panic!("missing address"),
     };
+    let (incoming, mut state) = listener.subscribe(launch::deadline()).unwrap();
     let mut peer = client.socket(SocketKind::Tcp, until()).unwrap();
     assert!(matches!(
         peer.perform(Request::Connect(address), until()),
         Ok(Completion::Done) | Err(Error::InProgress)
     ));
+    while !state.readable {
+        state = incoming.wait(state, until()).unwrap();
+    }
     listener.start(Request::Accept).unwrap();
+    ipc::wait_many(
+        &[WaitItem::new(listener.call().unwrap(), ipc::READABLE)],
+        until(),
+    )
+    .unwrap();
     let _ = listener.call().unwrap().cancel();
     listener.forget_reply();
     let mut accepted = match listener.complete(until()).unwrap() {
         Completion::Accepted { socket, .. } => socket,
         _ => panic!("lost accepted socket"),
     };
+    let (received, mut state) = accepted.subscribe(launch::deadline()).unwrap();
     peer.perform(Request::Send(b"retained"), until()).unwrap();
+    while !state.readable {
+        state = received.wait(state, until()).unwrap();
+    }
     accepted.start(Request::Receive(8)).unwrap();
     accepted.forget_reply();
     let data = match accepted.complete(until()).unwrap() {
