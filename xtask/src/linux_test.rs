@@ -170,7 +170,7 @@ fn build_guest(
             .arg(format!("--target={triple}"))
             .args(["-c", "-x", "assembler"]);
         if isa == "riscv64" {
-            assemble.arg("-mno-relax");
+            assemble.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
         }
         assemble
             .arg(root.join(format!("components/linux/tests/{module}/{isa}.S")))
@@ -225,7 +225,7 @@ fn socket_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
             "-Werror",
         ]);
         if isa == "riscv64" {
-            compile.arg("-mno-relax");
+            compile.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
         } else {
             compile.args(["-mno-lsx", "-mno-lasx"]);
         }
@@ -303,7 +303,7 @@ fn assemble_fixture(
         .arg(format!("--target={triple}"))
         .args(["-c", "-x", "assembler"]);
     if isa == "riscv64" {
-        assemble.arg("-mno-relax");
+        assemble.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
     }
     assemble
         .arg(root.join(format!("components/linux/tests/{module}/{isa}.S")))
