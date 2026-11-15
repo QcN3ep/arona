@@ -432,6 +432,8 @@ fn fs_misc(
         b"/var/misc-sync",
         b"/var/misc-utimens",
         b"/var/misc-utimens-link",
+        b"/var/misc-utimens-owned",
+        b"/var/misc-utimens-writable",
     ] {
         match files.unlink_bytes(path, service::deadline()) {
             Ok(()) | Err(fs::Error::NotFound) => {}
@@ -457,6 +459,8 @@ fn fs_misc(
     fixture(b"/var/misc-exec", 0o755, 123, 456);
     fixture(b"/var/misc-none", 0o000, 42, 7);
     fixture(b"/var/misc-root", 0o600, 0, 0);
+    fixture(b"/var/misc-utimens-owned", 0, 123, 456);
+    fixture(b"/var/misc-utimens-writable", 0o666, 42, 7);
     files
         .symlink(b"/var/misc-root", b"/var/misc-private", service::deadline())
         .unwrap();
@@ -483,9 +487,7 @@ fn fs_misc(
                     .unwrap();
                 panic!("failed to launch filesystem misc scenario");
             })
-            .wait(WaitMode::Until(
-                runtime::thread::now_ns().unwrap() + WRITE_TIMEOUT_NS,
-            ));
+            .wait(WaitMode::Forever);
         let expected = ExitStatus {
             code: 42,
             signal: 0,

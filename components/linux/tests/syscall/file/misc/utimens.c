@@ -11,6 +11,45 @@ static void remove_path(const char *name, long directory) {
     CHECK(result == 0 || result == -ENOENT);
 }
 
+static void unchanged(const struct statx *before, const struct statx *after) {
+    CHECK(before->accessed.seconds == after->accessed.seconds);
+    CHECK(before->accessed.nanoseconds == after->accessed.nanoseconds);
+    CHECK(before->modified.seconds == after->modified.seconds);
+    CHECK(before->modified.nanoseconds == after->modified.nanoseconds);
+    CHECK(before->changed.seconds == after->changed.seconds);
+    CHECK(before->changed.nanoseconds == after->changed.nanoseconds);
+}
+
+static void permissions(long descriptor) {
+    struct timespec times[2] = {{9000, 1}, {10000, 2}};
+    struct statx before, after;
+    CHECK(misc_statx(path, 0, &before) == 0);
+    CHECK(SC(SYS_SETRESUID, 0, 123, 0) == 0);
+    CHECK(SC(SYS_SETRESGID, 0, 456, 0) == 0);
+    CHECK_ERR(SC(SYS_UTIMENSAT, AT_FDCWD, P(path), P(times), 0), EPERM);
+    CHECK_ERR(SC(SYS_UTIMENSAT, descriptor, P(""), P(times), AT_EMPTY_PATH), EPERM);
+    CHECK_ERR(SC(SYS_UTIMENSAT, AT_FDCWD, P(path), 0, 0), EACCES);
+    times[0].nanoseconds = times[1].nanoseconds = UTIME_OMIT;
+    CHECK(SC(SYS_UTIMENSAT, AT_FDCWD, P(path), P(times), 0) == 0);
+    CHECK(misc_statx(path, 0, &after) == 0);
+    unchanged(&before, &after);
+
+    times[0].nanoseconds = 1;
+    times[1].nanoseconds = 2;
+    CHECK(SC(SYS_UTIMENSAT, AT_FDCWD, P("/var/misc-utimens-owned"), P(times), 0) == 0);
+    CHECK(misc_statx("/var/misc-utimens-owned", 0, &after) == 0);
+    CHECK(after.accessed.seconds == 9000 && after.modified.seconds == 10000);
+    CHECK(SC(SYS_UTIMENSAT, AT_FDCWD, P("/var/misc-utimens-owned"), 0, 0) == 0);
+
+    CHECK(SC(SYS_UTIMENSAT, AT_FDCWD, P("/var/misc-utimens-writable"), 0, 0) == 0);
+    CHECK(misc_statx("/var/misc-utimens-writable", 0, &before) == 0);
+    CHECK_ERR(SC(SYS_UTIMENSAT, AT_FDCWD, P("/var/misc-utimens-writable"), P(times), 0), EPERM);
+    CHECK(misc_statx("/var/misc-utimens-writable", 0, &after) == 0);
+    unchanged(&before, &after);
+    CHECK(SC(SYS_SETRESUID, 0, 0, 0) == 0);
+    CHECK(SC(SYS_SETRESGID, 0, 0, 0) == 0);
+}
+
 int utimens_main(void) {
     static struct statx info;
     struct timespec times[2];
@@ -131,6 +170,7 @@ int utimens_main(void) {
     CHECK(misc_statx(directory_path, 0, &info) == 0);
     CHECK(info.accessed.seconds == 11 && info.modified.seconds == 12);
 
+    permissions(descriptor);
     CHECK(misc_close(directory) == 0);
     CHECK(misc_close(descriptor) == 0);
     return 42;

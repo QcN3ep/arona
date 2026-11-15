@@ -4,7 +4,7 @@
 
 use super::super::{
     Outcome,
-    abi::{EBADF, EINVAL, EIO, ENOENT, EOPNOTSUPP, Errno, SyscallResult},
+    abi::{EBADF, EINVAL, EIO, ENOENT, EOPNOTSUPP, EPERM, Errno, SyscallResult},
 };
 use super::{Pending, completion, filesystem_error, open, outcome};
 use crate::{Services, file::OpenFileDescription, process::Process};
@@ -26,6 +26,7 @@ enum Target<'a> {
         follow: bool,
     },
     Descriptor(Rc<OpenFileDescription<'a>>),
+    Node(fs::client::OpenedNode<'a>),
 }
 
 /// An in-flight timestamp update.
@@ -33,10 +34,13 @@ pub(in crate::syscall) struct Utimens<'a> {
     target: Target<'a>,
     times: [Time; 2],
     now: Option<fs::Timestamp>,
-    phase: Phase,
+    phase: Phase<'a>,
+    uid: u32,
+    gid: u32,
 }
 
-enum Phase {
+enum Phase<'a> {
+    Resolve(fs::client::PendingNode<'a>),
     Clock(devmgr::device::Pending<devmgr::rtc::Timestamp>),
     Metadata(fs::client::PendingMetadata),
     Update(fs::client::Pending<()>),
@@ -83,7 +87,7 @@ pub(in crate::syscall) fn start<'a>(
             }
         };
         let phase = if matches!(times, [Time::Omit, Time::Omit]) {
-            Phase::Metadata(metadata(&target, files)?)
+            start_target(&target, files)?
         } else {
             let clock = services.clock.as_ref().ok_or(EOPNOTSUPP)?;
             Phase::Clock(clock.start_now().map_err(|_| EIO)?)
@@ -93,6 +97,8 @@ pub(in crate::syscall) fn start<'a>(
             times,
             now: None,
             phase,
+            uid: process.credentials.euid,
+            gid: process.credentials.egid,
         }))
     })();
     outcome(prepared)
@@ -135,39 +141,57 @@ fn read_times(process: &Process<'_>, address: usize) -> Result<[Time; 2], Errno>
     Ok([parse(0)?, parse(16)?])
 }
 
-fn metadata<'a>(
-    target: &Target<'a>,
-    files: &fs::Client<'a>,
-) -> Result<fs::client::PendingMetadata, Errno> {
+fn start_target<'a>(target: &Target<'a>, files: &fs::Client<'a>) -> Result<Phase<'a>, Errno> {
+    if let Target::Path {
+        directory,
+        name,
+        follow,
+    } = target
+    {
+        let directory = directory.as_ref().and_then(|anchor| match anchor.as_ref() {
+            OpenFileDescription::Directory { session, .. } => Some(session),
+            _ => None,
+        });
+        let request = files
+            .start_open_at(
+                directory,
+                name,
+                fs::OpenOptions {
+                    path_only: true,
+                    write: false,
+                    create: false,
+                    exclusive: false,
+                    truncate: false,
+                    permissions: 0,
+                },
+                *follow,
+                false,
+            )
+            .map_err(filesystem_error)?;
+        Ok(Phase::Resolve(request))
+    } else {
+        Ok(Phase::Metadata(metadata(target)?))
+    }
+}
+
+fn metadata(target: &Target<'_>) -> Result<fs::client::PendingMetadata, Errno> {
     match target {
-        Target::Path {
-            directory,
-            name,
-            follow,
-        } => {
-            let directory = directory.as_ref().and_then(|anchor| match anchor.as_ref() {
-                OpenFileDescription::Directory { session, .. } => Some(session),
-                _ => None,
-            });
-            files
-                .start_metadata_at(directory, name, *follow)
-                .map_err(filesystem_error)
-        }
+        Target::Node(fs::client::OpenedNode::File(file)) => file.start_metadata(),
+        Target::Node(fs::client::OpenedNode::Directory(directory)) => directory.start_metadata(),
         Target::Descriptor(description) => match description.as_ref() {
-            OpenFileDescription::Regular { file, .. } => {
-                file.start_metadata().map_err(filesystem_error)
-            }
-            OpenFileDescription::Directory { session, .. } => {
-                session.start_metadata().map_err(filesystem_error)
-            }
+            OpenFileDescription::Regular { file, .. } => file.start_metadata(),
+            OpenFileDescription::Directory { session, .. } => session.start_metadata(),
             _ => unreachable!(),
         },
+        Target::Path { .. } => unreachable!(),
     }
+    .map_err(filesystem_error)
 }
 
 impl<'a> Utimens<'a> {
     pub fn call(&self) -> Option<&Handle<Call>> {
         match &self.phase {
+            Phase::Resolve(request) => Some(request.call()),
             Phase::Clock(request) => Some(request.call()),
             Phase::Metadata(request) => Some(request.call()),
             Phase::Update(request) => Some(request.call()),
@@ -176,6 +200,19 @@ impl<'a> Utimens<'a> {
 
     pub fn poll(&mut self, files: &fs::Client<'a>) -> Option<SyscallResult> {
         match &mut self.phase {
+            Phase::Resolve(request) => {
+                let node = match completion(request.try_complete())? {
+                    Ok(node) => node,
+                    Err(error) => return Some(Err(filesystem_error(error))),
+                };
+                self.target = Target::Node(node);
+                let request = match metadata(&self.target) {
+                    Ok(request) => request,
+                    Err(error) => return Some(Err(error)),
+                };
+                self.phase = Phase::Metadata(request);
+                None
+            }
             Phase::Clock(request) => {
                 let timestamp = match request.try_complete() {
                     Err(devmgr::Error::Runtime(runtime::Error::Kernel(
@@ -188,11 +225,11 @@ impl<'a> Utimens<'a> {
                     seconds: timestamp.seconds,
                     nanoseconds: timestamp.nanoseconds,
                 });
-                let request = match metadata(&self.target, files) {
+                let phase = match start_target(&self.target, files) {
                     Ok(request) => request,
                     Err(error) => return Some(Err(error)),
                 };
-                self.phase = Phase::Metadata(request);
+                self.phase = phase;
                 None
             }
             Phase::Metadata(request) => {
@@ -202,6 +239,16 @@ impl<'a> Utimens<'a> {
                 };
                 if matches!(self.times, [Time::Omit, Time::Omit]) {
                     return Some(Ok(0));
+                }
+                if self.uid != 0 && self.uid != info.uid {
+                    if !matches!(self.times, [Time::Now, Time::Now]) {
+                        return Some(Err(EPERM));
+                    }
+                    if let Err(error) =
+                        super::access::permit(&info, super::access::W_OK, self.uid, self.gid)
+                    {
+                        return Some(Err(error));
+                    }
                 }
                 let now = self.now.unwrap_or_default();
                 let resolve = |time: &Time, current: fs::Timestamp| match time {
@@ -217,7 +264,7 @@ impl<'a> Utimens<'a> {
                     modified: resolve(&self.times[1], info.modified),
                     changed: now,
                 };
-                let request = match start_update(&self.target, attributes, files) {
+                let request = match start_update(&self.target, attributes) {
                     Ok(request) => request,
                     Err(error) => return Some(Err(error)),
                 };
@@ -233,33 +280,23 @@ impl<'a> Utimens<'a> {
     }
 }
 
-fn start_update<'a>(
-    target: &Target<'a>,
+fn start_update(
+    target: &Target<'_>,
     attributes: fs::Attributes,
-    files: &fs::Client<'a>,
 ) -> Result<fs::client::Pending<()>, Errno> {
     match target {
-        Target::Path {
-            directory,
-            name,
-            follow,
-        } => {
-            let directory = directory.as_ref().and_then(|anchor| match anchor.as_ref() {
-                OpenFileDescription::Directory { session, .. } => Some(session),
-                _ => None,
-            });
-            files
-                .start_set_attributes_at(directory, name, attributes, *follow)
-                .map_err(filesystem_error)
+        Target::Node(fs::client::OpenedNode::File(file)) => file.start_set_attributes(attributes),
+        Target::Node(fs::client::OpenedNode::Directory(directory)) => {
+            directory.start_set_attributes(attributes)
         }
         Target::Descriptor(description) => match description.as_ref() {
-            OpenFileDescription::Regular { file, .. } => file
-                .start_set_attributes(attributes)
-                .map_err(filesystem_error),
-            OpenFileDescription::Directory { session, .. } => session
-                .start_set_attributes(attributes)
-                .map_err(filesystem_error),
+            OpenFileDescription::Regular { file, .. } => file.start_set_attributes(attributes),
+            OpenFileDescription::Directory { session, .. } => {
+                session.start_set_attributes(attributes)
+            }
             _ => unreachable!(),
         },
+        Target::Path { .. } => unreachable!(),
     }
+    .map_err(filesystem_error)
 }
