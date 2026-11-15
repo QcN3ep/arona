@@ -129,6 +129,10 @@ static void transfer_to_pipe(void) {
 }
 
 static void reader_closes(long source, int explicit_offset) {
+    // Keep the process alive to inspect the result after the reader closes.
+    unsigned long action[4] = {1, 0, 0, 0};
+    unsigned long previous[4];
+    CHECK(SC(SYS_RT_SIGACTION, 13, P(action), P(previous), 8) == 0);
     CHECK(SC(SYS_PIPE2, P(pipe_fds), 0) == 0);
     CHECK(SC(SYS_FCNTL, pipe_fds[1], F_SETPIPE_SZ, 4096) == 4096);
     CHECK(SC(SYS_LSEEK, source, explicit_offset ? 123 : 0, 0) >= 0);
@@ -154,6 +158,7 @@ static void reader_closes(long source, int explicit_offset) {
     int status = -1;
     CHECK(SC(SYS_WAIT4, child, P(&status), 0, 0) == child && status == 0);
     CHECK(misc_close(pipe_fds[1]) == 0);
+    CHECK(SC(SYS_RT_SIGACTION, 13, P(previous), 0, 8) == 0);
 }
 
 static long prepare_listener(struct in_address *address) {

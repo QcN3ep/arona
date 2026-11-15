@@ -32,6 +32,7 @@ struct termios { unsigned char bytes[36]; };
 struct winsize { unsigned short rows, columns, x, y; };
 
 // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/unistd.h?h=v6.12
+#define SYS_FCNTL 25
 #define SYS_IOCTL 29
 #define SYS_MKDIRAT 34
 #define SYS_UNLINKAT 35
@@ -49,6 +50,7 @@ struct winsize { unsigned short rows, columns, x, y; };
 #define SYS_UTIMENSAT 88
 #define SYS_EXIT_GROUP 94
 #define SYS_CLOCK_GETTIME 113
+#define SYS_RT_SIGACTION 134
 #define SYS_SETRESUID 147
 #define SYS_SETRESGID 149
 #define SYS_GETPID 172
@@ -70,7 +72,6 @@ struct winsize { unsigned short rows, columns, x, y; };
 #define SYS_STATX 291
 #define SYS_FACCESSAT2 439
 
-#define SYS_FCNTL 25
 
 // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/fcntl.h?h=v6.12
 #define O_RDONLY 0
