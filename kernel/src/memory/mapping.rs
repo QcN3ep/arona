@@ -468,7 +468,13 @@ impl MappingIndex {
     fn allocate_node(&mut self) -> Result<u64, MemoryError> {
         if self.free == NIL {
             let allocation = manager().allocate(FrameOwner::Kernel, FramePurpose::Data, 1)?;
-            let frame = allocation.frames().next().unwrap().address();
+            let frame = allocation.frames().next().unwrap();
+            {
+                let _allocator = manager().allocator().lock();
+                // Reclaimed boot pages and former executable pages may still be read-only in the direct map.
+                manager().direct_map.set_writable(frame, true)?;
+            }
+            let frame = frame.address();
             write(frame, &[0, NIL, NIL]);
             if let Some(backing) = &mut self.backing {
                 backing.merge(allocation);
@@ -676,21 +682,35 @@ fn align(address: usize, alignment: usize) -> Option<usize> {
 }
 
 fn read(address: u64, words: &mut [u64]) {
-    hardware::mmu()
-        .read_frame(
-            address & !(PAGE_SIZE as u64 - 1),
-            address as usize % PAGE_SIZE / 8,
-            words,
-        )
-        .expect("failed to read mapping metadata");
+    let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
+    let offset = address as usize % PAGE_SIZE / 8;
+    let direct_map = &super::MEMORY_MANAGER.direct_map;
+    let result = if let Some(address) = direct_map.active_address(frame) {
+        // SAFETY: The index owns its backing pages exclusively and keeps them writable. The address-space state lock serializes access.
+        hardware::mmu().read_mapped_frame(address, offset, words)
+    } else {
+        assert!(
+            !direct_map.is_active(),
+            "mapping metadata is not directly mapped"
+        );
+        hardware::mmu().read_frame(frame.address(), offset, words)
+    };
+    result.expect("failed to read mapping metadata");
 }
 
 fn write(address: u64, words: &[u64]) {
-    hardware::mmu()
-        .write_frame(
-            address & !(PAGE_SIZE as u64 - 1),
-            address as usize % PAGE_SIZE / 8,
-            words,
-        )
-        .expect("failed to write mapping metadata");
+    let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
+    let offset = address as usize % PAGE_SIZE / 8;
+    let direct_map = &super::MEMORY_MANAGER.direct_map;
+    let result = if let Some(address) = direct_map.active_address(frame) {
+        // SAFETY: The index owns its backing pages exclusively and keeps them writable. The address-space state lock serializes access.
+        hardware::mmu().write_mapped_frame(address, offset, words)
+    } else {
+        assert!(
+            !direct_map.is_active(),
+            "mapping metadata is not directly mapped"
+        );
+        hardware::mmu().write_frame(frame.address(), offset, words)
+    };
+    result.expect("failed to write mapping metadata");
 }
