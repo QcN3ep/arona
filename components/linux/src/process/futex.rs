@@ -11,17 +11,6 @@ use runtime::{FrameAllocation, Handle};
 
 pub(crate) type Key = (usize, usize, usize);
 
-/// Bits of a futex word that record the owning thread ID.
-pub(crate) const FUTEX_TID_MASK: u32 = 0x3fff_ffff;
-/// Set when the owning thread exits without releasing the futex.
-pub(crate) const FUTEX_OWNER_DIED: u32 = 0x4000_0000;
-/// Set by waiters that must be woken when the owner releases the futex.
-pub(crate) const FUTEX_WAITERS: u32 = 0x8000_0000;
-/// Size of `struct robust_list_head` on 64-bit Linux.
-pub(crate) const ROBUST_LIST_HEAD_SIZE: usize = 24;
-/// Walk limit for one robust list, matching Linux `ROBUST_LIST_LIMIT`.
-pub(crate) const ROBUST_LIST_LIMIT: usize = 2048;
-
 #[derive(Default)]
 pub(crate) struct Futexes {
     queues: RefCell<BTreeMap<Key, VecDeque<Weak<Waiter>>>>,

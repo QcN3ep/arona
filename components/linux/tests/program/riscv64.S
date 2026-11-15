@@ -157,8 +157,6 @@ auxv_done:
     beq s3, t1, exec_pie
     li t1, 106
     beq s3, t1, exec_interp
-    li t1, 68
-    beq s3, t1, robust_futex
     li t1, 54
     bltu s3, t1, memory_fault
     jal ra, heap

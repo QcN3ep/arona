@@ -317,15 +317,8 @@ A process clone with `CLONE_VM | CLONE_VFORK` shares the parent's page frames an
 When requested, wait calls return the child's recorded thread execution time in the user-time fields of `rusage`.
 The remaining resource counters are zero.
 
-A thread stores the clear-tid address, its futex wait state, and the address of an optional robust list head.
+A thread stores the clear-tid address and futex wait state.
 futex combines user word validation, wait registration, wakeup, and timeout into compatibility layer operations.
-`set_robust_list` records the 24-byte `struct robust_list_head`, and `get_robust_list` reports that head and length for the calling thread or another thread of the same process.
-When a thread exits, the whole thread group exits, or exec replaces the image, the service walks the registered list, marks each futex word still owned by the thread with `FUTEX_OWNER_DIED`, and wakes one waiter.
-The walk follows the head's `futex_offset`, also handles the pending list operation that covers the lock-acquire race, and stops when user memory is unreadable or the Linux walk limit is reached.
-Fork and clone do not transfer a registration to the child thread, and the thread created by exec starts without one.
-`FUTEX_WAIT` returns zero after this wakeup.
-The guest checks `FUTEX_OWNER_DIED` in the futex word to recover the mutex.
-The registering call rejects lengths other than 24 with `EINVAL` and unreadable heads with `EFAULT`, while the query reports `ESRCH` for unknown thread IDs and `EFAULT` for unwritable result pointers.
 
 The signal implementation maintains the process-shared disposition and each thread's mask, pending set, and alternate stack.
 It supports `kill`, `tkill`, `tgkill`, `rt_sigaction`, `rt_sigprocmask`, `rt_sigpending`, `rt_sigsuspend`, `rt_sigtimedwait`, `sigaltstack`, and `rt_sigreturn`.

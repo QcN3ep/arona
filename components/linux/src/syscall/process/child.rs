@@ -110,7 +110,6 @@ fn spawn<'a>(
             native_id,
             tid: pid,
             clear_tid: 0,
-            robust_list: 0,
             pending: None,
             signals: thread_signals,
             held: None,
