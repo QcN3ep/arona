@@ -56,7 +56,7 @@ Cases that deliberately trigger fatal exceptions declare the expected diagnostic
 Those diagnostics must appear after the selected case starts.
 
 CI runs all functional QEMU tests for both architectures in debug and release builds.
-The Rust checks, builds, and QEMU jobs use `ghcr.io/qcn3ep/arona-ci:latest`, which contains the pinned Rust toolchain, LLVM, QEMU, OpenSBI, Python, and ext4 tools.
+The Rust checks, builds, and QEMU jobs use `ghcr.io/qcn3ep/arona-ci:latest`, which contains the pinned Rust toolchain, LLVM, QEMU 11.1.3, OpenSBI, Python, and ext4 tools.
 Each QEMU job uploads the test logs, commands, and result summaries even when a test fails.
 QEMU jobs allow up to 900 seconds per case in release builds and 5400 seconds in debug builds.
 
