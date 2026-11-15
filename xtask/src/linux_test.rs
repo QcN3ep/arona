@@ -210,7 +210,7 @@ fn build_guest(
             "-Werror",
         ]);
         if isa == "riscv64" {
-            compile.arg("-mno-relax");
+            compile.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
         } else {
             compile.args(["-mno-lsx", "-mno-lasx"]);
         }
@@ -324,7 +324,7 @@ fn mqueue_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
         "-Werror",
     ]);
     if isa == "riscv64" {
-        compile.arg("-mno-relax");
+        compile.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
     } else {
         compile.args(["-mno-lsx", "-mno-lasx"]);
     }
@@ -340,7 +340,7 @@ fn mqueue_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Ve
         .arg(format!("--target={triple}"))
         .args(["-c", "-x", "assembler"]);
     if isa == "riscv64" {
-        assemble.arg("-mno-relax");
+        assemble.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
     }
     assemble
         .arg(root.join(format!("components/linux/tests/syscall/mqueue/{isa}.S")))
@@ -401,7 +401,7 @@ fn misc_guest(options: &BuildOptions, root: &Path, target: &Path) -> Result<Vec<
             "-Werror",
         ]);
         if isa == "riscv64" {
-            compile.arg("-mno-relax");
+            compile.args(["-march=rv64gc", "-mabi=lp64d", "-mno-relax"]);
         } else {
             compile.args(["-mno-lsx", "-mno-lasx"]);
         }
