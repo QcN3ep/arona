@@ -24,8 +24,8 @@ static void permissions(long descriptor) {
     struct timespec times[2] = {{9000, 1}, {10000, 2}};
     struct statx before, after;
     CHECK(misc_statx(path, 0, &before) == 0);
-    CHECK(SC(SYS_SETRESUID, 0, 123, 0) == 0);
     CHECK(SC(SYS_SETRESGID, 0, 456, 0) == 0);
+    CHECK(SC(SYS_SETRESUID, 0, 123, 0) == 0);
     CHECK_ERR(SC(SYS_UTIMENSAT, AT_FDCWD, P(path), P(times), 0), EPERM);
     CHECK_ERR(SC(SYS_UTIMENSAT, descriptor, P(""), P(times), AT_EMPTY_PATH), EPERM);
     CHECK_ERR(SC(SYS_UTIMENSAT, AT_FDCWD, P(path), 0, 0), EACCES);
