@@ -382,11 +382,6 @@ impl AddressSpace {
                     record.journal.direct_was_writable = access.direct_was_writable;
                     core::mem::forget(access);
                     record.journal.referenced = true;
-                    Ok::<_, MemoryError>(())
-                })?;
-            }
-            for address in pages(range) {
-                state.update_record(address, |record| {
                     PageTableState::write_leaf(
                         address,
                         record.journal.tables[0].unwrap(),
