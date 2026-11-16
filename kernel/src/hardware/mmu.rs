@@ -8,6 +8,7 @@ use super::{BindError, Slot};
 use crate::memory::Frame;
 
 pub const PAGE_SIZE: usize = 4096;
+pub const MAX_PAGE_TABLE_LEVELS: usize = 4;
 
 static SLOT: Slot<&'static dyn Mmu> = Slot::new();
 
@@ -64,6 +65,12 @@ pub enum PageTableEntry {
     Mapping(PageMapping),
 }
 
+pub struct PageWalk {
+    pub tables: [Option<Frame>; MAX_PAGE_TABLE_LEVELS],
+    pub level: usize,
+    pub entry: PageTableEntry,
+}
+
 /// Fixed page table branch required by arch for physical memory access; not owned by the caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TableWindow {
@@ -99,6 +106,20 @@ pub trait Mmu: Sync {
         index: usize,
         level: usize,
     ) -> Result<PageTableEntry, MmuError>;
+
+    /// Reads the path from the root through the first non-branch entry.
+    ///
+    /// # Safety
+    ///
+    /// The physical mapping must remain readable and map the stated physical range.
+    /// Page table modification must be excluded throughout the walk.
+    fn walk_mapped(
+        &self,
+        root: Frame,
+        address: usize,
+        physical_start: u64,
+        mapping: Range<usize>,
+    ) -> Result<PageWalk, MmuError>;
 
     /// Copies the upper half of the root table after checking that every entry is a branch.
     /// The destination entries remain unchanged on failure.

@@ -199,6 +199,7 @@ fn run_entries(mmu: &dyn Mmu, tables: &Tables, data: u64) {
         let entry = mapping(data, permissions);
         tables.set(mmu, TEST_ADDRESS, entry).unwrap();
         assert_eq!(tables.get(mmu, TEST_ADDRESS).unwrap(), entry);
+        check_walk(mmu, tables, TEST_ADDRESS + 1, entry);
     }
     let original = tables.get(mmu, TEST_ADDRESS).unwrap();
     assert_eq!(
@@ -234,6 +235,7 @@ fn run_entries(mmu: &dyn Mmu, tables: &Tables, data: u64) {
     tables
         .set(mmu, TEST_ADDRESS, PageTableEntry::Empty)
         .unwrap();
+    check_walk(mmu, tables, TEST_ADDRESS, PageTableEntry::Empty);
     assert_eq!(mmu.synchronize_code(19..19), Ok(()));
     assert_eq!(
         mmu.synchronize_code(core::ops::Range { start: 19, end: 0 }),
@@ -247,6 +249,37 @@ fn run_entries(mmu: &dyn Mmu, tables: &Tables, data: u64) {
         mmu.synchronize_frame(Frame::new(!(PAGE_SIZE as u64 - 1)).unwrap()),
         Err(MmuError::InvalidAddress)
     );
+}
+
+fn check_walk(mmu: &dyn Mmu, tables: &Tables, address: usize, entry: PageTableEntry) {
+    let levels = mmu.layout().levels;
+    let physical_start = tables.root.address();
+    let start = (physical_start as usize).wrapping_add(KERNEL_OFFSET);
+    let mapping = start..start + levels * PAGE_SIZE;
+    // SAFETY: The test owns these page tables, and the boot mapping covers their static storage.
+    let walk = mmu
+        .walk_mapped(tables.root, address, physical_start, mapping.clone())
+        .unwrap();
+    assert_eq!(walk.entry, entry);
+    assert_eq!(walk.level, 0);
+    assert_eq!(walk.tables[0], Some(tables.leaf));
+    assert_eq!(walk.tables[levels - 1], Some(tables.root));
+    let hole = 1 << (PAGE_SIZE.trailing_zeros() + 9 * (levels as u32 - 1));
+    let walk = mmu
+        .walk_mapped(tables.root, hole, physical_start, mapping.clone())
+        .unwrap();
+    assert_eq!(walk.entry, PageTableEntry::Empty);
+    assert_eq!(walk.level, levels - 1);
+    assert!(walk.tables[..levels - 1].iter().all(Option::is_none));
+    assert!(matches!(
+        mmu.walk_mapped(
+            tables.root,
+            address,
+            physical_start,
+            start..start + PAGE_SIZE
+        ),
+        Err(MmuError::InvalidAddress)
+    ));
 }
 
 fn run_empty_tables(mmu: &dyn Mmu, tables: &Tables, data: u64) {

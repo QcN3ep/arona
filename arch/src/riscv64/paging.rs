@@ -5,7 +5,7 @@ use core::ops::Range;
 
 use kernel::hardware::mmu::{
     MemoryType, Mmu, MmuError, PageAttributes, PageMapping, PagePermissions, PageTableEntry,
-    PageTableLayout,
+    PageTableLayout, PageWalk,
 };
 
 use kernel::memory::Frame;
@@ -102,6 +102,7 @@ impl Format for Sv39 {
         })
     }
 
+    #[inline(always)]
     fn with_frame<T>(
         &self,
         address: u64,
@@ -163,6 +164,16 @@ impl Mmu for Sv39 {
 
     fn copy_kernel_entries(&self, source: Frame, destination: Frame) -> Result<(), MmuError> {
         paging::copy_kernel_entries(self, source, destination)
+    }
+
+    fn walk_mapped(
+        &self,
+        root: Frame,
+        address: usize,
+        physical_start: u64,
+        mapping: Range<usize>,
+    ) -> Result<PageWalk, MmuError> {
+        paging::walk_mapped(self, root, address, physical_start, mapping)
     }
 
     fn write_entry(

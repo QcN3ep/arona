@@ -8,10 +8,13 @@ use spin::Mutex;
 use super::{Frame, FrameAllocation, FrameOwner, FramePurpose, MemoryError, manager};
 use crate::hardware::{
     self,
-    mmu::{MmuError, PAGE_SIZE, PageMapping, PageTableEntry, PageTableLayout},
+    mmu::{
+        MAX_PAGE_TABLE_LEVELS, MmuError, PAGE_SIZE, PageMapping, PageTableEntry, PageTableLayout,
+        PageWalk,
+    },
 };
 
-const MAX_LEVELS: usize = 4;
+const MAX_LEVELS: usize = MAX_PAGE_TABLE_LEVELS;
 
 /// # Safety
 ///
@@ -25,12 +28,6 @@ pub(super) struct PageTableState {
     root: Frame,
     backing: FrameAllocation,
     shared_kernel: Option<&'static PageTable>,
-}
-
-pub(super) struct PageWalk {
-    pub tables: [Option<Frame>; MAX_LEVELS],
-    pub level: usize,
-    pub entry: PageTableEntry,
 }
 
 impl PageTable {
@@ -164,6 +161,10 @@ impl PageTableState {
 
     pub(super) fn walk_from(root: Frame, address: usize) -> Result<PageWalk, MemoryError> {
         let mmu = hardware::mmu();
+        if let Some((physical_start, mapping)) = super::MEMORY_MANAGER.direct_map.active_mapping() {
+            // SAFETY: Direct-map page tables stay mapped, and callers hold the page-table or allocator lock.
+            return Ok(mmu.walk_mapped(root, address, physical_start, mapping)?);
+        }
         let layout = mmu.layout();
         let mut walk = PageWalk {
             tables: [None; MAX_LEVELS],

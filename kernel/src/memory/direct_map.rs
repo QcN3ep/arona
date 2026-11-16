@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use arrayvec::ArrayVec;
+use core::ops::Range;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::{Mutex, Once};
 
@@ -87,6 +88,14 @@ impl DirectMap {
             return None;
         }
         self.address(frame)
+    }
+
+    pub fn active_mapping(&self) -> Option<(u64, Range<usize>)> {
+        if !self.is_active() {
+            return None;
+        }
+        let layout = self.layout.get()?;
+        Some((layout.physical_start, layout.range.start..layout.range.end))
     }
 
     fn address(&self, frame: Frame) -> Option<usize> {

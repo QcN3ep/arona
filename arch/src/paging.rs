@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    ops::Range,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use kernel::{
     hardware::mmu::{
-        Mmu, MmuError, PAGE_SIZE, PageMapping, PagePermissions, PageTableEntry, PageTableLayout,
-        TableWindow,
+        MAX_PAGE_TABLE_LEVELS, Mmu, MmuError, PAGE_SIZE, PageMapping, PagePermissions,
+        PageTableEntry, PageTableLayout, PageWalk, TableWindow,
     },
     memory::Frame,
 };
@@ -293,6 +296,55 @@ fn decode_entry<F: Format>(
         Ok(PageTableEntry::Table(
             Frame::new(address).ok_or(MmuError::InvalidAlignment)?,
         ))
+    }
+}
+
+pub(crate) fn walk_mapped<F: Format>(
+    format: &F,
+    root: Frame,
+    address: usize,
+    physical_start: u64,
+    mapping: Range<usize>,
+) -> Result<PageWalk, MmuError> {
+    validate_physical::<F>(root.address())?;
+    if !format.is_valid_virtual_address(address) {
+        return Err(MmuError::InvalidAddress);
+    }
+    let _access = lock_memory();
+    let mut walk = PageWalk {
+        tables: [None; MAX_PAGE_TABLE_LEVELS],
+        level: F::LEVELS - 1,
+        entry: PageTableEntry::Empty,
+    };
+    let mut table = root;
+    loop {
+        walk.tables[walk.level] = Some(table);
+        let slot =
+            (address >> (PAGE_SIZE.trailing_zeros() as usize + 9 * walk.level)) & (ENTRIES - 1);
+        let offset = table
+            .address()
+            .checked_sub(physical_start)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or(MmuError::InvalidAddress)?;
+        let mapped = mapping
+            .start
+            .checked_add(offset)
+            .filter(|mapped| {
+                mapped
+                    .checked_add(PAGE_SIZE)
+                    .is_some_and(|end| end <= mapping.end)
+            })
+            .ok_or(MmuError::InvalidAddress)?;
+        // SAFETY: The supplied mapping covers the validated table page; the access lock excludes software writes.
+        let entry = unsafe { ((mapped + slot * size_of::<u64>()) as *const u64).read_volatile() };
+        walk.entry = decode_entry(format, entry, walk.level)?;
+        match walk.entry {
+            PageTableEntry::Table(next) if walk.level > 0 => {
+                table = next;
+                walk.level -= 1;
+            }
+            _ => return Ok(walk),
+        }
     }
 }
 
