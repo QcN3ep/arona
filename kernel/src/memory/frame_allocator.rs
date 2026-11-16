@@ -194,9 +194,7 @@ impl FrameAllocator {
             if head == END {
                 head = block;
             } else {
-                let mut record = self.metadata.read(tail);
-                record.next = block;
-                self.metadata.write(tail, record);
+                self.metadata.write_words(tail, 0, &[block]);
             }
             for offset in 0..count {
                 let index = block + offset;
@@ -501,13 +499,10 @@ impl FrameAllocator {
             if head == END {
                 continue;
             }
-            let record = self.metadata.read(head);
-            let next = record.next;
+            let next = self.metadata.read_words::<1>(head, 0)[0];
             self.set_list_head(region, pool, order, next);
             if next != END {
-                let mut record = self.metadata.read(next);
-                record.previous = END;
-                self.metadata.write(next, record);
+                self.metadata.write_words(next, 1, &[END]);
             }
             return Some((region, head));
         }
@@ -518,15 +513,19 @@ impl FrameAllocator {
 
     fn insert_free(&mut self, region: ManagedRegion, pool: FramePool, order: usize, index: u64) {
         let head = self.list_head(region, pool, order);
-        let mut record = FrameRecord::new(FrameState::Free, pool);
-        record.order = order as u64;
-        record.next = head;
         if head != END {
-            let mut next = self.metadata.read(head);
-            next.previous = index;
-            self.metadata.write(head, next);
+            self.metadata.write_words(head, 1, &[index]);
         }
-        self.metadata.write(index, record);
+        // Free blocks use only links, state, pool, and order; allocation fields are initialized on reuse.
+        self.metadata.write_words(
+            index,
+            0,
+            &[
+                head,
+                END,
+                FrameState::Free as u64 | (pool as u64) << 8 | (order as u64) << 24,
+            ],
+        );
         self.set_list_head(region, pool, order, index);
     }
 
@@ -535,9 +534,6 @@ impl FrameAllocator {
         let mut address = region.range.start + (index - region.first) * PAGE_SIZE as u64;
         let mut head = index;
         let mut current = order;
-        let mut record = FrameRecord::new(FrameState::Free, pool);
-        record.order = current as u64;
-        self.metadata.write(index, record);
         loop {
             if current + 1 >= ORDERS {
                 break;
@@ -552,29 +548,27 @@ impl FrameAllocator {
                 break;
             }
             let buddy_index = region.first + (buddy - region.range.start) / PAGE_SIZE as u64;
-            let buddy_record = self.metadata.read(buddy_index);
-            if buddy_record.state != FrameState::Free
-                || buddy_record.order != current as u64
-                || buddy_record.pool != pool
+            let [next, previous, flags] = self.metadata.read_words::<3>(buddy_index, 0);
+            if FrameState::from_word(flags) != FrameState::Free
+                || (flags >> 24) & 0xff != current as u64
+                || (flags >> 8) & 0xff != pool as u64
             {
                 break;
             }
-            self.unlink_free(region, pool, current, buddy_record);
+            self.unlink_free(region, pool, current, next, previous);
             let (next_head, next_address) = if buddy < address {
                 (buddy_index, buddy)
             } else {
                 (head, address)
             };
-            self.metadata.write(
+            self.metadata.write_words(
                 if buddy < address { head } else { buddy_index },
-                FrameRecord::new(FrameState::Interior, pool),
+                FLAGS_WORD,
+                &[FrameState::Interior as u64 | (pool as u64) << 8],
             );
             head = next_head;
             address = next_address;
             current += 1;
-            let mut record = FrameRecord::new(FrameState::Free, pool);
-            record.order = current as u64;
-            self.metadata.write(head, record);
         }
         self.insert_free(region, pool, current, head);
     }
@@ -584,19 +578,16 @@ impl FrameAllocator {
         region: ManagedRegion,
         pool: FramePool,
         order: usize,
-        record: FrameRecord,
+        next: u64,
+        previous: u64,
     ) {
-        if record.previous != END {
-            let mut previous = self.metadata.read(record.previous);
-            previous.next = record.next;
-            self.metadata.write(record.previous, previous);
+        if previous != END {
+            self.metadata.write_words(previous, 0, &[next]);
         } else {
-            self.set_list_head(region, pool, order, record.next);
+            self.set_list_head(region, pool, order, next);
         }
-        if record.next != END {
-            let mut next = self.metadata.read(record.next);
-            next.previous = record.previous;
-            self.metadata.write(record.next, next);
+        if next != END {
+            self.metadata.write_words(next, 1, &[previous]);
         }
     }
 
