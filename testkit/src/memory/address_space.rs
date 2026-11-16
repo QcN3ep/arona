@@ -14,6 +14,7 @@ use crate::perf::Perf;
 
 pub(super) fn run() {
     mappings();
+    partial_unmap();
     reservations();
     shared_kernel();
     permissions();
@@ -219,6 +220,45 @@ fn mappings() {
     space.unmap(range(ADDRESS, 1)).unwrap();
     space.unmap(range(ADDRESS + 2 * PAGE_SIZE, 1)).unwrap();
     drop(space);
+    manager.reclaim_heap();
+    assert_eq!(manager.stats(), initial);
+}
+
+fn partial_unmap() {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let space = AddressSpace::new().unwrap();
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 5)
+        .unwrap();
+    let options = MappingOptions::new(PagePermissions::ReadWrite);
+    let boundary = PAGE_SIZE << hardware::mmu().layout().index_bits;
+    let start = boundary - PAGE_SIZE;
+    let mapped = space.map_at(start, &allocation, 0..5, options).unwrap();
+    let first = space.query(start).unwrap();
+    let last = space.query(mapped.end - 1).unwrap();
+    let middle = range(boundary, 3);
+    space.unmap(middle).unwrap();
+    assert_eq!(allocation.info().mappings, 2);
+    assert_eq!(space.query(start).unwrap(), first);
+    assert_eq!(space.query(mapped.end - 1).unwrap(), last);
+    for address in (middle.start..middle.end).step_by(PAGE_SIZE) {
+        assert_eq!(space.query(address).unwrap(), None);
+    }
+    assert_eq!(
+        space
+            .map_at(middle.start, &allocation, 1..4, options)
+            .unwrap(),
+        middle
+    );
+    assert_eq!(allocation.info().mappings, 5);
+    space.unmap(mapped).unwrap();
+    assert_eq!(allocation.info().mappings, 0);
+    for address in (mapped.start..mapped.end).step_by(PAGE_SIZE) {
+        assert_eq!(space.query(address).unwrap(), None);
+    }
+    drop((space, allocation));
     manager.reclaim_heap();
     assert_eq!(manager.stats(), initial);
 }

@@ -484,7 +484,14 @@ impl AddressSpace {
                     Ok::<_, MemoryError>(())
                 })?;
             }
+            let block_bits = PAGE_SIZE.trailing_zeros() + hardware::mmu().layout().index_bits;
+            let mut previous = None;
             for address in pages(range) {
+                let block = address >> block_bits;
+                if previous == Some(block) {
+                    continue;
+                }
+                previous = Some(block);
                 let mut record = state.record(address);
                 let tables = record.journal.tables;
                 table.detach_empty(address, &tables, |level| {
