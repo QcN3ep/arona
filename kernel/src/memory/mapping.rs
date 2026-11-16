@@ -186,6 +186,20 @@ impl MappingIndex {
             .map(|(address, node)| MappingRecord::read(address, node.range))
     }
 
+    pub fn update<R>(
+        &mut self,
+        address: usize,
+        update: impl FnOnce(&mut MappingRecord) -> R,
+    ) -> Option<R> {
+        let (location, node) = self.find(address)?;
+        let mut record = MappingRecord::read(location, node.range);
+        let result = update(&mut record);
+        assert_eq!(node.range, record.range, "mapping extent changed");
+        // Write back before returning the callback result so rollback sees any completed changes.
+        record.write(location);
+        Some(result)
+    }
+
     pub fn next(&self, address: usize) -> Option<MappingRecord> {
         let mut current = self.root;
         let mut candidate = None;

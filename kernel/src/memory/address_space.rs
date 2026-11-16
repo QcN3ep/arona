@@ -375,24 +375,26 @@ impl AddressSpace {
                 Ok::<_, MemoryError>(())
             })?;
             for address in pages(range) {
-                let mut record = state.record(address);
-                let access = reference
-                    .reference(ReferenceKind::Mapping)?
-                    .access(record.journal.frame(), options.permissions.into())?;
-                record.journal.direct_was_writable = access.direct_was_writable;
-                core::mem::forget(access);
-                record.journal.referenced = true;
-                state.mappings.set(record);
+                state.update_record(address, |record| {
+                    let access = reference
+                        .reference(ReferenceKind::Mapping)?
+                        .access(record.journal.frame(), options.permissions.into())?;
+                    record.journal.direct_was_writable = access.direct_was_writable;
+                    core::mem::forget(access);
+                    record.journal.referenced = true;
+                    Ok::<_, MemoryError>(())
+                })?;
             }
             for address in pages(range) {
-                let mut record = state.record(address);
-                PageTableState::write_leaf(
-                    address,
-                    record.journal.tables[0].unwrap(),
-                    record.journal.mapping,
-                )?;
-                record.journal.written = true;
-                state.mappings.set(record);
+                state.update_record(address, |record| {
+                    PageTableState::write_leaf(
+                        address,
+                        record.journal.tables[0].unwrap(),
+                        record.journal.mapping,
+                    )?;
+                    record.journal.written = true;
+                    Ok::<_, MemoryError>(())
+                })?;
             }
             Ok(())
         })();
@@ -402,10 +404,10 @@ impl AddressSpace {
         }
         hardware::mmu().invalidate_all();
         for address in pages(range) {
-            let mut record = state.record(address);
-            record.kind = kind;
-            record.journal = MappingJournal::default();
-            state.mappings.set(record);
+            state.update_record(address, |record| {
+                record.kind = kind;
+                record.journal = MappingJournal::default();
+            });
         }
         quota.0 = 0;
         Ok(())
@@ -481,10 +483,11 @@ impl AddressSpace {
         }
         let result = self.table.edit(|table| {
             for address in pages(range) {
-                let mut record = state.record(address);
-                PageTableState::write_leaf(address, record.journal.tables[0].unwrap(), None)?;
-                record.journal.written = true;
-                state.mappings.set(record);
+                state.update_record(address, |record| {
+                    PageTableState::write_leaf(address, record.journal.tables[0].unwrap(), None)?;
+                    record.journal.written = true;
+                    Ok::<_, MemoryError>(())
+                })?;
             }
             for address in pages(range) {
                 let mut record = state.record(address);
@@ -552,18 +555,19 @@ impl AddressSpace {
         }
         let result = (|| {
             for address in pages(range) {
-                let mut record = state.record(address);
-                let frame = record.journal.frame();
-                let head = allocator.allocation_of(frame)?;
-                record.journal.direct_was_writable = manager().reserve_access(
-                    &mut allocator,
-                    head,
-                    frame,
-                    ReferenceKind::Mapping,
-                    permissions.into(),
-                )?;
-                record.journal.referenced = true;
-                state.mappings.set(record);
+                state.update_record(address, |record| {
+                    let frame = record.journal.frame();
+                    let head = allocator.allocation_of(frame)?;
+                    record.journal.direct_was_writable = manager().reserve_access(
+                        &mut allocator,
+                        head,
+                        frame,
+                        ReferenceKind::Mapping,
+                        permissions.into(),
+                    )?;
+                    record.journal.referenced = true;
+                    Ok::<_, MemoryError>(())
+                })?;
             }
             for address in pages(range) {
                 let record = state.record(address);
@@ -591,9 +595,7 @@ impl AddressSpace {
         } else {
             hardware::mmu().invalidate_all();
             for address in pages(range) {
-                let mut record = state.record(address);
-                record.generation = generation;
-                state.mappings.set(record);
+                state.update_record(address, |record| record.generation = generation);
             }
         }
         state.clear_journals(range);
@@ -899,6 +901,16 @@ impl AddressSpaceState {
         self.mappings.get(address).expect("missing mapping record")
     }
 
+    fn update_record<R>(
+        &mut self,
+        address: usize,
+        update: impl FnOnce(&mut MappingRecord) -> R,
+    ) -> R {
+        self.mappings
+            .update(address, update)
+            .expect("missing mapping record")
+    }
+
     fn reserve(&mut self, range: VirtRange) -> Result<(), MemoryError> {
         let generation = self.next_generation()?;
         self.mappings.insert(MappingRecord {
@@ -918,49 +930,55 @@ impl AddressSpaceState {
         owner: Option<u64>,
     ) -> Result<(), MemoryError> {
         for address in pages(range) {
-            let mut record = self.mappings.get(address).ok_or(MemoryError::NotMapped)?;
-            let owned = owner.is_some_and(|generation| {
-                record.kind == MappingKind::Owned && record.generation == generation
-            });
-            if !(owned || owner.is_none() && record.kind == MappingKind::Mapped) {
-                return Err(MemoryError::InUse);
-            }
-            if permissions.is_some_and(|permissions| !record.maximum.allows(permissions)) {
-                return Err(MemoryError::AccessConflict);
-            }
-            let walk = table.walk(address)?;
-            let PageTableEntry::Mapping(mapping) = walk.entry else {
-                return Err(MmuError::InvalidTable.into());
-            };
-            record.journal = MappingJournal {
-                tables: walk.tables,
-                mapping: Some(mapping),
-                ..MappingJournal::default()
-            };
-            self.mappings.set(record);
+            self.mappings
+                .update(address, |record| {
+                    let owned = owner.is_some_and(|generation| {
+                        record.kind == MappingKind::Owned && record.generation == generation
+                    });
+                    if !(owned || owner.is_none() && record.kind == MappingKind::Mapped) {
+                        return Err(MemoryError::InUse);
+                    }
+                    if permissions.is_some_and(|permissions| !record.maximum.allows(permissions)) {
+                        return Err(MemoryError::AccessConflict);
+                    }
+                    let walk = table.walk(address)?;
+                    let PageTableEntry::Mapping(mapping) = walk.entry else {
+                        return Err(MmuError::InvalidTable.into());
+                    };
+                    record.journal = MappingJournal {
+                        tables: walk.tables,
+                        mapping: Some(mapping),
+                        ..MappingJournal::default()
+                    };
+                    Ok(())
+                })
+                .ok_or(MemoryError::NotMapped)??;
         }
         Ok(())
     }
 
     fn clear_journals(&mut self, range: VirtRange) {
         for address in pages(range) {
-            let Some(mut record) = self.mappings.get(address) else {
-                break;
-            };
-            if record.journal.mapping.is_none() {
+            let cleared = self.mappings.update(address, |record| {
+                if record.journal.mapping.is_none() {
+                    return false;
+                }
+                record.journal = MappingJournal::default();
+                true
+            });
+            if cleared != Some(true) {
                 break;
             }
-            record.journal = MappingJournal::default();
-            self.mappings.set(record);
         }
     }
 
     fn withdraw_entries(&mut self, range: VirtRange) -> Result<(), MemoryError> {
         for address in pages(range) {
-            let mut record = self.record(address);
-            PageTableState::write_leaf(address, record.journal.tables[0].unwrap(), None)?;
-            record.journal.written = true;
-            self.mappings.set(record);
+            self.update_record(address, |record| {
+                PageTableState::write_leaf(address, record.journal.tables[0].unwrap(), None)?;
+                record.journal.written = true;
+                Ok::<_, MemoryError>(())
+            })?;
         }
         hardware::mmu().invalidate_all();
         Ok(())
