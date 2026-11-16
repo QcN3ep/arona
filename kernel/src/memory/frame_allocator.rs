@@ -40,6 +40,7 @@ pub struct MemoryStats {
 pub(super) struct FrameAllocator {
     metadata: FrameMetadata,
     pools: [PoolStats; 2],
+    free_orders: [u64; POOLS],
     reserved_frames: u64,
 }
 
@@ -96,6 +97,7 @@ impl FrameAllocator {
         let mut allocator = Self {
             metadata,
             pools: [PoolStats::default(); 2],
+            free_orders: [0; POOLS],
             reserved_frames: 0,
         };
         let mut kernel_frames = KERNEL_POOL_FRAMES;
@@ -173,31 +175,41 @@ impl FrameAllocator {
             return Err(MemoryError::NoMemory);
         }
         let mut head = END;
-        for _ in 0..frames {
-            let Some(index) = self.take_frame(pool) else {
+        let mut tail = END;
+        let mut remaining = frames;
+        while remaining != 0 {
+            let Some((block, order)) = self.take_frames(pool, remaining) else {
                 self.free_chain(head, pool);
                 return Err(MemoryError::NoMemory);
             };
-            self.pools[pool as usize].free_frames -= 1;
-            let mut record = FrameRecord::new(FrameState::Owned, pool);
-            record.next = head;
-            record.owner = match owner {
-                FrameOwner::Kernel => 0,
-                FrameOwner::User(id) => id,
-            };
-            record.purpose = purpose;
-            self.metadata.write(index, record);
-            head = index;
-        }
-        let mut record = self.metadata.read(head);
-        record.frames = frames;
-        self.metadata.write(head, record);
-        let mut index = head;
-        while index != END {
-            let mut record = self.metadata.read(index);
-            record.allocation = head;
-            self.metadata.write(index, record);
-            index = record.next;
+            let count = 1u64 << order;
+            // Consume available blocks without splitting them into single-page allocations.
+            if head == END {
+                head = block;
+            } else {
+                let mut record = self.metadata.read(tail);
+                record.next = block;
+                self.metadata.write(tail, record);
+            }
+            for offset in 0..count {
+                let index = block + offset;
+                let mut record = FrameRecord::new(FrameState::Owned, pool);
+                record.next = if offset + 1 < count { index + 1 } else { END };
+                record.allocation = head;
+                record.owner = match owner {
+                    FrameOwner::Kernel => 0,
+                    FrameOwner::User(id) => id,
+                };
+                record.purpose = purpose;
+                if index == head {
+                    record.frames = frames;
+                    record.order = if count == frames { order as u64 } else { 0 };
+                }
+                self.metadata.write(index, record);
+            }
+            self.pools[pool as usize].free_frames -= count;
+            tail = block + count - 1;
+            remaining -= count;
         }
         Ok(head)
     }
@@ -387,29 +399,64 @@ impl FrameAllocator {
     fn free_chain(&mut self, mut index: u64, pool: FramePool) {
         while index != END {
             let record = self.metadata.read(index);
-            let next = record.next;
-            self.free_block(index, 0, pool);
-            self.pools[pool as usize].free_frames += 1;
+            let mut next = record.next;
+            let mut count = 1;
+            if next == index + 1 {
+                let region = self.metadata.region_of(index);
+                let end = region.first + region.frame_count();
+                while next == index + count && next < end {
+                    let current = next;
+                    next = self.metadata.read(current).next;
+                    self.metadata
+                        .write(current, FrameRecord::new(FrameState::Interior, pool));
+                    count += 1;
+                }
+            }
+            self.pools[pool as usize].free_frames += count;
+            // Return contiguous runs as aligned blocks, including chains changed by merge or detach.
+            let mut remaining = count;
+            while remaining != 0 {
+                let order = if remaining == 1 {
+                    0
+                } else {
+                    block_order(self.metadata.physical_address(index), remaining)
+                };
+                self.free_block(index, order, pool);
+                let frames = 1u64 << order;
+                index += frames;
+                remaining -= frames;
+            }
             index = next;
         }
     }
 
-    fn take_frame(&mut self, pool: FramePool) -> Option<u64> {
-        for order in 0..ORDERS {
+    fn take_frames(&mut self, pool: FramePool, maximum: u64) -> Option<(u64, usize)> {
+        let target = (u64::BITS - maximum.leading_zeros() - 1) as usize;
+        while self.free_orders[pool as usize] != 0 {
+            let available = self.free_orders[pool as usize];
+            let sufficient = available & (u64::MAX << target);
+            let order = if sufficient != 0 {
+                sufficient.trailing_zeros() as usize
+            } else {
+                (u64::BITS - available.leading_zeros() - 1) as usize
+            };
             let Some((region, head)) = self.take_block(pool, order) else {
                 continue;
             };
             let mut current = order;
-            while current > 0 {
+            while current > target {
                 current -= 1;
                 self.insert_free(region, pool, current, head + (1u64 << current));
             }
-            return Some(head);
+            return Some((head, current));
         }
         None
     }
 
     fn take_block(&mut self, pool: FramePool, order: usize) -> Option<(ManagedRegion, u64)> {
+        if self.free_orders[pool as usize] & (1 << order) == 0 {
+            return None;
+        }
         for region_index in 0..self.metadata.region_count {
             let region = self.metadata.region(region_index);
             let head = self.list_head(region, pool, order);
@@ -426,6 +473,8 @@ impl FrameAllocator {
             }
             return Some((region, head));
         }
+        // A bit may remain set after the last block is removed from one of several regions.
+        self.free_orders[pool as usize] &= !(1 << order);
         None
     }
 
@@ -520,9 +569,12 @@ impl FrameAllocator {
         words[0]
     }
 
-    fn set_list_head(&self, region: ManagedRegion, pool: FramePool, order: usize, head: u64) {
+    fn set_list_head(&mut self, region: ManagedRegion, pool: FramePool, order: usize, head: u64) {
         write_metadata(region.lists, pool as usize * ORDERS + order, &[head])
             .expect("failed to write free list");
+        if head != END {
+            self.free_orders[pool as usize] |= 1 << order;
+        }
     }
 
     pub fn allocation_of(&self, frame: Frame) -> Result<u64, MemoryError> {
