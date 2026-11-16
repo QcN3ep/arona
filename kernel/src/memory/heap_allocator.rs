@@ -67,6 +67,7 @@ enum HeapStorage {
 struct SlabAllocator {
     partial: [u64; CLASSES],
     empty: [u64; CLASSES],
+    cached_slots: Option<(u64, SlabSlots)>,
     free_records: u64,
     frames: usize,
     metadata_frames: usize,
@@ -85,6 +86,7 @@ struct Slab {
     slots: SlabSlots,
 }
 
+#[derive(Clone, Copy)]
 struct SlabSlots {
     address: usize,
     class: usize,
@@ -300,6 +302,7 @@ impl SlabAllocator {
         Self {
             partial: [NIL; CLASSES],
             empty: [NIL; CLASSES],
+            cached_slots: None,
             free_records: NIL,
             frames: 0,
             metadata_frames: 0,
@@ -312,7 +315,7 @@ impl SlabAllocator {
         } else {
             self.partial[class]
         };
-        let mut slab = SlabSlots::read(record);
+        let mut slab = self.slots(record);
         let word = slab
             .bitmap
             .iter()
@@ -323,7 +326,7 @@ impl SlabAllocator {
         slab.bitmap[word] |= 1 << bit;
         slab.used += 1;
         let address = slab.address + slot * class_size(class);
-        slab.write_usage(record);
+        self.cached_slots = Some((record, slab));
         if self.empty[class] == record {
             self.empty[class] = NIL;
         }
@@ -368,13 +371,13 @@ impl SlabAllocator {
 
     fn release(&mut self, allocation: &SlabAllocation) {
         let record = allocation.record;
-        let mut slab = SlabSlots::read(record);
+        let mut slab = self.slots(record);
         let size = class_size(slab.class);
         let slot = (allocation.address - slab.address) / size;
         let was_full = slab.used == PAGE_SIZE / size;
         slab.bitmap[slot / 64] &= !(1 << (slot % 64));
         slab.used -= 1;
-        slab.write_usage(record);
+        self.cached_slots = Some((record, slab));
         if was_full {
             self.link_partial(record);
         }
@@ -397,7 +400,24 @@ impl SlabAllocator {
         before - self.frames - self.metadata_frames
     }
 
+    fn slots(&mut self, record: u64) -> SlabSlots {
+        if let Some((cached, slots)) = self.cached_slots.take() {
+            if cached == record {
+                return slots;
+            }
+            slots.write_usage(cached);
+        }
+        SlabSlots::read(record)
+    }
+
+    fn flush_slots(&mut self) {
+        if let Some((record, slots)) = self.cached_slots.take() {
+            slots.write_usage(record);
+        }
+    }
+
     fn release_slab(&mut self, record: u64) {
+        self.flush_slots();
         let slab = Slab::read(record);
         self.unlink_partial(record);
         if self.empty[slab.slots.class] == record {
@@ -414,6 +434,7 @@ impl SlabAllocator {
     }
 
     fn link_partial(&mut self, record: u64) {
+        self.flush_slots();
         let mut slab = Slab::read(record);
         slab.previous = NIL;
         slab.next = self.partial[slab.slots.class];
@@ -427,6 +448,7 @@ impl SlabAllocator {
     }
 
     fn unlink_partial(&mut self, record: u64) {
+        self.flush_slots();
         let mut slab = Slab::read(record);
         if slab.previous == NIL {
             self.partial[slab.slots.class] = slab.next;
