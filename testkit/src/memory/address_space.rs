@@ -15,6 +15,7 @@ use crate::perf::Perf;
 pub(super) fn run() {
     mappings();
     partial_unmap();
+    mapping_conflict();
     reservations();
     shared_kernel();
     permissions();
@@ -258,6 +259,51 @@ fn partial_unmap() {
     for address in (mapped.start..mapped.end).step_by(PAGE_SIZE) {
         assert_eq!(space.query(address).unwrap(), None);
     }
+    drop((space, allocation));
+    manager.reclaim_heap();
+    assert_eq!(manager.stats(), initial);
+}
+
+fn mapping_conflict() {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let space = AddressSpace::new().unwrap();
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 3)
+        .unwrap();
+    let last = allocation.frames().last().unwrap();
+    let writer = allocation
+        .access(last, ReferenceKind::Temporary, FrameAccess::Write)
+        .unwrap();
+    let info = allocation.info();
+    let before = manager.stats();
+    assert_eq!(
+        space.map_at(
+            ADDRESS,
+            &allocation,
+            0..3,
+            MappingOptions::new(PagePermissions::ReadExecute)
+        ),
+        Err(MemoryError::AccessConflict)
+    );
+    for address in (ADDRESS..ADDRESS + 3 * PAGE_SIZE).step_by(PAGE_SIZE) {
+        assert_eq!(space.query(address).unwrap(), None);
+    }
+    assert_eq!(allocation.info(), info);
+    assert_eq!(manager.stats(), before);
+    for frame in allocation.frames() {
+        allocation
+            .access(frame, ReferenceKind::Temporary, FrameAccess::Write)
+            .unwrap()
+            .write(0, &[73])
+            .unwrap();
+    }
+    drop(writer);
+    let mapped = space
+        .map_at(ADDRESS, &allocation, 0..3, mutable_code())
+        .unwrap();
+    space.unmap(mapped).unwrap();
     drop((space, allocation));
     manager.reclaim_heap();
     assert_eq!(manager.stats(), initial);

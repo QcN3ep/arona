@@ -343,42 +343,36 @@ impl AddressSpace {
         let mut quota =
             manager().reserve_mapping_records(if user { pages(range).len() } else { 0 })?;
         let generation = state.next_generation()?;
-        let result = (|| {
-            self.table.edit(|table| {
-                for (address, frame) in pages(range).zip(
-                    reference
-                        .frames()
-                        .skip(frames.start as usize)
-                        .take((frames.end - frames.start) as usize),
-                ) {
-                    let mut record = MappingRecord {
-                        range: page_range(address),
-                        maximum: options.maximum,
-                        generation,
-                        kind: MappingKind::Preparing,
-                        journal: MappingJournal {
-                            mapping: Some(PageMapping {
-                                physical_address: frame.address(),
-                                attributes: PageAttributes {
-                                    permissions: options.permissions,
-                                    memory_type: MemoryType::Normal,
-                                    user_accessible: user,
-                                },
-                            }),
-                            ..MappingJournal::default()
-                        },
-                    };
-                    state.mappings.insert(record)?;
-                    record.journal.tables = table.prepare(address)?.tables;
-                    state.mappings.set(record);
-                }
-                Ok::<_, MemoryError>(())
-            })?;
-            for address in pages(range) {
+        let result = self.table.edit(|table| {
+            for (address, frame) in pages(range).zip(
+                reference
+                    .frames()
+                    .skip(frames.start as usize)
+                    .take((frames.end - frames.start) as usize),
+            ) {
+                let record = MappingRecord {
+                    range: page_range(address),
+                    maximum: options.maximum,
+                    generation,
+                    kind: MappingKind::Preparing,
+                    journal: MappingJournal {
+                        mapping: Some(PageMapping {
+                            physical_address: frame.address(),
+                            attributes: PageAttributes {
+                                permissions: options.permissions,
+                                memory_type: MemoryType::Normal,
+                                user_accessible: user,
+                            },
+                        }),
+                        ..MappingJournal::default()
+                    },
+                };
+                state.mappings.insert(record)?;
                 state.update_record(address, |record| {
+                    record.journal.tables = table.prepare(address)?.tables;
                     let access = reference
                         .reference(ReferenceKind::Mapping)?
-                        .access(record.journal.frame(), options.permissions.into())?;
+                        .access(frame, options.permissions.into())?;
                     record.journal.direct_was_writable = access.direct_was_writable;
                     core::mem::forget(access);
                     record.journal.referenced = true;
@@ -391,8 +385,8 @@ impl AddressSpace {
                     Ok::<_, MemoryError>(())
                 })?;
             }
-            Ok(())
-        })();
+            Ok::<_, MemoryError>(())
+        });
         if result.is_err() {
             self.table.edit(|table| state.rollback_map(table, range));
             return result;
