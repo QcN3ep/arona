@@ -183,7 +183,7 @@ impl MappingIndex {
 
     pub fn get(&self, address: usize) -> Option<MappingRecord> {
         self.find(address)
-            .map(|(address, node)| MappingRecord::read(address, node.range))
+            .map(|(address, range)| MappingRecord::read(address, range))
     }
 
     pub fn update<R>(
@@ -191,10 +191,10 @@ impl MappingIndex {
         address: usize,
         update: impl FnOnce(&mut MappingRecord) -> R,
     ) -> Option<R> {
-        let (location, node) = self.find(address)?;
-        let mut record = MappingRecord::read(location, node.range);
+        let (location, range) = self.find(address)?;
+        let mut record = MappingRecord::read(location, range);
         let result = update(&mut record);
-        assert_eq!(node.range, record.range, "mapping extent changed");
+        assert_eq!(range, record.range, "mapping extent changed");
         // Write back before returning the callback result so rollback sees any completed changes.
         record.write(location);
         Some(result)
@@ -204,53 +204,53 @@ impl MappingIndex {
         let mut current = self.root;
         let mut candidate = None;
         while current != NIL {
-            let node = MappingNode::read(current);
-            if address < node.range.start {
-                candidate = Some((current, node.range));
-                current = node.left;
-            } else if address >= node.range.end {
-                current = node.right;
+            let (range, left, right) = MappingNode::search_fields(current);
+            if address < range.start {
+                candidate = Some((current, range));
+                current = left;
+            } else if address >= range.end {
+                current = right;
             } else {
-                return Some(MappingRecord::read(current, node.range));
+                return Some(MappingRecord::read(current, range));
             }
         }
         candidate.map(|(address, range)| MappingRecord::read(address, range))
     }
 
-    fn find(&self, address: usize) -> Option<(u64, MappingNode)> {
+    fn find(&self, address: usize) -> Option<(u64, VirtRange)> {
         let mut current = self.root;
         while current != NIL {
-            let node = MappingNode::read(current);
-            if address < node.range.start {
-                current = node.left;
-            } else if address >= node.range.end {
-                current = node.right;
+            let (range, left, right) = MappingNode::search_fields(current);
+            if address < range.start {
+                current = left;
+            } else if address >= range.end {
+                current = right;
             } else {
-                return Some((current, node));
+                return Some((current, range));
             }
         }
         None
     }
 
     pub fn set(&mut self, record: MappingRecord) {
-        let (address, node) = self
+        let (address, range) = self
             .find(record.range.start)
             .expect("missing mapping record");
-        assert_eq!(node.range, record.range, "mapping extent changed");
+        assert_eq!(range, record.range, "mapping extent changed");
         record.write(address);
     }
 
     pub fn overlaps(&self, range: VirtRange) -> bool {
         let mut current = self.root;
         while current != NIL {
-            let node = MappingNode::read(current);
-            if node.range.overlaps(range) {
+            let (current_range, left, right) = MappingNode::search_fields(current);
+            if current_range.overlaps(range) {
                 return true;
             }
-            current = if range.end <= node.range.start {
-                node.left
+            current = if range.end <= current_range.start {
+                left
             } else {
-                node.right
+                right
             };
         }
         false
@@ -300,7 +300,8 @@ impl MappingIndex {
     }
 
     pub fn remove(&mut self, start: usize) -> MappingRecord {
-        let (mut address, mut node) = self.find(start).expect("missing mapping record");
+        let (mut address, _) = self.find(start).expect("missing mapping record");
+        let mut node = MappingNode::read(address);
         assert_eq!(node.range.start, start, "partial reservation removal");
         let record = MappingRecord::read(address, node.range);
         if node.left != NIL && node.right != NIL {
@@ -559,6 +560,19 @@ impl MappingIndex {
 }
 
 impl MappingNode {
+    fn search_fields(address: u64) -> (VirtRange, u64, u64) {
+        let mut words = [0; 5];
+        read(address, &mut words);
+        (
+            VirtRange {
+                start: words[0] as usize,
+                end: words[1] as usize,
+            },
+            words[3],
+            words[4],
+        )
+    }
+
     fn read(address: u64) -> Self {
         let mut words = [0; TREE_WORDS];
         read(address, &mut words);
