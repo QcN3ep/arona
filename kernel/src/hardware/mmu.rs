@@ -133,6 +133,11 @@ pub trait Mmu: Sync {
 
     /// # Safety
     ///
+    /// The caller must exclusively own the complete, writable normal memory page.
+    fn zero_mapped_frame(&self, address: usize) -> Result<(), MmuError>;
+
+    /// # Safety
+    ///
     /// The full normal memory page must remain readable during access.
     fn read_mapped_frame(
         &self,

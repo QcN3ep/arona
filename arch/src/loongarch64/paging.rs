@@ -10,9 +10,7 @@ use kernel::hardware::mmu::{
 
 use kernel::memory::Frame;
 
-use crate::paging::{
-    self, Format, PAGE_TABLE_WINDOW, PAGE_TABLE_WINDOW_TABLE, PageTable, WINDOW_INDEX,
-};
+use crate::paging::{self, Format, PAGE_TABLE_WINDOW, PAGE_TABLE_WINDOW_TABLE, WINDOW_INDEX};
 
 // REFERENCE: https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html
 const VALID: u64 = 1;
@@ -251,7 +249,15 @@ impl Mmu for LoongArchMmu {
     }
 
     fn zero_frame(&self, physical_address: u64) -> Result<(), MmuError> {
-        self.with_table(physical_address, PageTable::clear)
+        self.with_frame(
+            physical_address,
+            PagePermissions::ReadWrite,
+            paging::zero_page,
+        )
+    }
+
+    fn zero_mapped_frame(&self, address: usize) -> Result<(), MmuError> {
+        paging::zero_mapped_frame(self, address)
     }
 
     fn read_mapped_frame(

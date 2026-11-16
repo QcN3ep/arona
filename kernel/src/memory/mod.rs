@@ -173,9 +173,7 @@ impl MemoryManager {
     ) -> Result<FrameAllocation, MemoryError> {
         let head = self.allocator().lock().allocate(owner, purpose, frames)?;
         let allocation = FrameAllocation { head };
-        for frame in allocation.frames() {
-            crate::hardware::mmu().zero_frame(frame.address())?;
-        }
+        self.zero_allocation(&allocation)?;
         Ok(allocation)
     }
 
@@ -196,10 +194,23 @@ impl MemoryManager {
             .lock()
             .allocate_contiguous(owner, purpose, frames, alignment)?;
         let allocation = FrameAllocation { head };
-        for frame in allocation.frames() {
-            crate::hardware::mmu().zero_frame(frame.address())?;
-        }
+        self.zero_allocation(&allocation)?;
         Ok(allocation)
+    }
+
+    fn zero_allocation(&self, allocation: &FrameAllocation) -> Result<(), MemoryError> {
+        let mmu = crate::hardware::mmu();
+        for frame in allocation.frames() {
+            if let Some(address) = self.direct_map.active_address(frame) {
+                let _allocator = self.allocator().lock();
+                self.direct_map.set_writable(frame, true)?;
+                // SAFETY: The new allocation is unpublished and has no access references.
+                mmu.zero_mapped_frame(address)?;
+            } else {
+                mmu.zero_frame(frame.address())?;
+            }
+        }
+        Ok(())
     }
 
     fn reference(

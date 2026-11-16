@@ -83,12 +83,6 @@ impl PageTable {
         }
     }
 
-    pub(crate) fn clear(&mut self) {
-        for index in 0..ENTRIES {
-            self.write(index, 0);
-        }
-    }
-
     pub(crate) fn read(&self, index: usize) -> u64 {
         // SAFETY: index must be within the page table, and hardware and other processors must not modify the entry concurrently.
         unsafe { (&raw const self.entries[index]).read_volatile() }
@@ -186,6 +180,20 @@ pub(crate) fn write_mapped_frame(
         unsafe { pointer.write_volatile(*word) };
     }
     Ok(())
+}
+
+pub(crate) fn zero_mapped_frame(mmu: &dyn Mmu, address: usize) -> Result<(), MmuError> {
+    validate_mapped_frame(mmu, address, 0, ENTRIES)?;
+    let _access = lock_memory();
+    zero_page(address);
+    Ok(())
+}
+
+pub(crate) fn zero_page(address: usize) {
+    for offset in (0..PAGE_SIZE).step_by(size_of::<[u64; 8]>()) {
+        // SAFETY: The caller owns the writable page exclusively; each store covers eight aligned words within it.
+        unsafe { ((address + offset) as *mut [u64; 8]).write([0; 8]) };
+    }
 }
 
 pub(crate) fn validate_physical<F: Format>(address: u64) -> Result<(), MmuError> {
