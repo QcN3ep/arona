@@ -161,10 +161,12 @@ pub(crate) fn read_mapped_frame(
 ) -> Result<(), MmuError> {
     validate_mapped_frame(mmu, address, offset, words.len())?;
     let _access = lock_memory();
-    for (index, word) in words.iter_mut().enumerate() {
+    let mut index = 0;
+    while index < words.len() {
         let pointer = (address + (offset + index) * size_of::<u64>()) as *const u64;
         // SAFETY: The mapping must remain readable, and the access must not conflict with an active write reference.
-        *word = unsafe { pointer.read_volatile() };
+        words[index] = unsafe { pointer.read_volatile() };
+        index += 1;
     }
     Ok(())
 }
@@ -177,10 +179,12 @@ pub(crate) fn write_mapped_frame(
 ) -> Result<(), MmuError> {
     validate_mapped_frame(mmu, address, offset, words.len())?;
     let _access = lock_memory();
-    for (index, word) in words.iter().enumerate() {
+    let mut index = 0;
+    while index < words.len() {
         let pointer = (address + (offset + index) * size_of::<u64>()) as *mut u64;
         // SAFETY: The mapping must remain writable, and the access must not conflict with an active Rust reference.
-        unsafe { pointer.write_volatile(*word) };
+        unsafe { pointer.write_volatile(words[index]) };
+        index += 1;
     }
     Ok(())
 }
