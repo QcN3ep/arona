@@ -200,7 +200,7 @@ impl PageTableState {
         self.validate_edit(address)?;
         let mmu = hardware::mmu();
         let layout = mmu.layout();
-        let walk = self.walk(address)?;
+        let mut walk = self.walk(address)?;
         if walk.entry != PageTableEntry::Empty {
             return Err(MemoryError::AlreadyMapped);
         }
@@ -225,9 +225,13 @@ impl PageTableState {
                 walk.level,
                 PageTableEntry::Table(*frames.last().unwrap()),
             )?;
+            for (slot, frame) in walk.tables.iter_mut().zip(frames) {
+                *slot = Some(frame);
+            }
+            walk.level = 0;
             self.backing.merge(allocation);
         }
-        self.walk(address)
+        Ok(walk)
     }
 
     pub(super) fn write_leaf(
