@@ -792,6 +792,7 @@ impl FrameRecord {
         }
     }
 
+    #[inline(always)]
     fn words(self) -> [u64; WORDS] {
         [
             self.next,
@@ -813,6 +814,7 @@ impl FrameRecord {
         ]
     }
 
+    #[inline(always)]
     fn from_words(words: [u64; WORDS]) -> Self {
         let state = FrameState::from_word(words[FLAGS_WORD]);
         let pool = match (words[2] >> 8) & 0xff {
@@ -1123,10 +1125,12 @@ impl FrameMetadata {
         (address, (index % RECORDS_PER_FRAME) as usize * WORDS)
     }
 
+    #[inline(always)]
     fn read(&self, index: u64) -> FrameRecord {
         FrameRecord::from_words(self.read_words(index, 0))
     }
 
+    #[inline(always)]
     fn write(&self, index: u64, record: FrameRecord) {
         self.write_words(index, 0, &record.words());
     }
