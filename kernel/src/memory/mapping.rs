@@ -395,26 +395,36 @@ impl MappingIndex {
         node.write(parent);
     }
 
-    fn refresh(address: u64) {
+    fn refresh(address: u64) -> (MappingNode, i64) {
         let mut node = MappingNode::read(address);
-        let mut height = 0;
+        let mut left_height = 0;
+        let mut right_height = 0;
         node.first = node.range.start;
         node.last = node.range.end;
         node.gap = 0;
         if node.left != NIL {
             let left = MappingNode::read(node.left);
-            height = left.height;
+            left_height = left.height;
             node.first = left.first;
             node.gap = left.gap.max(node.range.start - left.last);
         }
         if node.right != NIL {
             let right = MappingNode::read(node.right);
-            height = height.max(right.height);
+            right_height = right.height;
             node.last = right.last;
             node.gap = node.gap.max(right.gap).max(right.first - node.range.end);
         }
-        node.height = height + 1;
-        node.write(address);
+        node.height = left_height.max(right_height) + 1;
+        write(
+            address + 5 * size_of::<u64>() as u64,
+            &[
+                node.height,
+                node.first as u64,
+                node.last as u64,
+                node.gap as u64,
+            ],
+        );
+        (node, left_height as i64 - right_height as i64)
     }
 
     fn balance(address: u64) -> i64 {
@@ -459,22 +469,21 @@ impl MappingIndex {
     // REFERENCE: https://en.wikipedia.org/wiki/AVL_tree
     fn rebalance(&mut self, mut address: u64) {
         while address != NIL {
-            Self::refresh(address);
-            let balance = Self::balance(address);
+            let (node, balance) = Self::refresh(address);
             if balance > 1 {
-                let child = MappingNode::read(address).left;
+                let child = node.left;
                 if Self::balance(child) < 0 {
                     self.rotate(child, true);
                 }
-                address = self.rotate(address, false);
+                self.rotate(address, false);
             } else if balance < -1 {
-                let child = MappingNode::read(address).right;
+                let child = node.right;
                 if Self::balance(child) > 0 {
                     self.rotate(child, false);
                 }
-                address = self.rotate(address, true);
+                self.rotate(address, true);
             }
-            address = MappingNode::read(address).parent;
+            address = node.parent;
         }
     }
 
