@@ -17,6 +17,7 @@ const REFERENCES_WORD: usize = 4;
 const ALLOCATION_WORD: usize = 7;
 const WRITERS_WORD: usize = 8;
 const EXECUTORS_WORD: usize = 11;
+const RUN_LENGTH_WORD: usize = 1;
 const REGION_WORDS: usize = 6;
 const REGIONS_PER_FRAME: usize = PAGE_SIZE / (REGION_WORDS * size_of::<u64>());
 const DIRECTORY_FRAMES: usize = MAX_MEMORY_REGIONS.div_ceil(REGIONS_PER_FRAME);
@@ -83,6 +84,7 @@ enum FrameState {
 #[derive(Clone, Copy)]
 struct FrameRecord {
     next: u64,
+    // Free-list backlink while free, remaining contiguous run length while allocated.
     previous: u64,
     allocation: u64,
     owner: u64,
@@ -206,6 +208,7 @@ impl FrameAllocator {
                     FrameOwner::User(id) => id,
                 };
                 record.purpose = purpose;
+                record.previous = count - offset;
                 if index == head {
                     record.frames = frames;
                     record.order = if count == frames { order as u64 } else { 0 };
@@ -276,6 +279,7 @@ impl FrameAllocator {
                 FrameOwner::User(id) => id,
             };
             record.purpose = purpose;
+            record.previous = frames - offset;
             record.frames = if offset == 0 { frames } else { 0 };
             record.order = if offset == 0 { order as u64 } else { 0 };
             self.metadata.write(head + offset, record);
@@ -299,11 +303,17 @@ impl FrameAllocator {
         }
     }
 
-    pub fn frame(&self, index: u64) -> (u64, u64) {
-        (
-            self.metadata.physical_address(index),
-            self.metadata.read_words::<1>(index, 0)[0],
-        )
+    pub fn frame_run(&self, index: u64) -> (u64, u64, u64) {
+        let [mut next, length] = self.metadata.read_words::<2>(index, 0);
+        assert!(length != 0 && length != END, "missing allocated frame run");
+        if length > 1 {
+            next = self.metadata.read_words::<1>(index + length - 1, 0)[0];
+        }
+        (self.metadata.physical_address(index), length, next)
+    }
+
+    pub fn frame_count(&self, head: u64) -> u64 {
+        self.metadata.read_words::<1>(head, 3)[0]
     }
 
     pub fn reference(&mut self, head: u64, kind: ReferenceKind) -> Result<(), MemoryError> {
@@ -641,6 +651,7 @@ impl FrameAllocator {
             tail = last.next;
         }
         record.next = other;
+        record.previous = 1;
         record.frames += source.frames;
         record.order = 0;
         self.metadata.write(head, record);
@@ -657,11 +668,22 @@ impl FrameAllocator {
             "cannot detach frame"
         );
         let mut previous = head;
+        let mut run = head;
         loop {
             let mut record = self.metadata.read(previous);
             assert_ne!(record.next, END, "frame is outside allocation");
             if record.next == index {
                 let mut detached = self.metadata.read(index);
+                if record.previous > 1 {
+                    for offset in 0..previous - run {
+                        self.metadata.write_words(
+                            run + offset,
+                            RUN_LENGTH_WORD,
+                            &[index - run - offset],
+                        );
+                    }
+                    record.previous = 1;
+                }
                 record.next = detached.next;
                 record.order = 0;
                 self.metadata.write(previous, record);
@@ -673,8 +695,12 @@ impl FrameAllocator {
                 detached.allocation = index;
                 detached.frames = 1;
                 detached.order = 0;
+                detached.previous = 1;
                 self.metadata.write(index, detached);
                 return index;
+            }
+            if record.previous == 1 {
+                run = record.next;
             }
             previous = record.next;
         }
@@ -777,7 +803,7 @@ impl FrameRecord {
     fn words(self) -> [u64; WORDS] {
         [
             self.next,
-            self.owner,
+            self.previous,
             self.state as u64
                 | (self.pool as u64) << 8
                 | (self.purpose as u64) << 16
@@ -791,7 +817,7 @@ impl FrameRecord {
             self.writers[1],
             self.writers[2],
             self.executors,
-            self.previous,
+            self.owner,
         ]
     }
 
@@ -811,7 +837,7 @@ impl FrameRecord {
         Self {
             next: words[0],
             allocation: words[7],
-            owner: words[1],
+            owner: words[12],
             state,
             pool,
             purpose,
@@ -820,7 +846,7 @@ impl FrameRecord {
             references: [words[4], words[5], words[6]],
             writers: [words[8], words[9], words[10]],
             executors: words[11],
-            previous: words[12],
+            previous: words[RUN_LENGTH_WORD],
         }
     }
 }

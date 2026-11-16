@@ -286,8 +286,12 @@ impl MemoryManager {
         Ok(())
     }
 
-    fn frame(&self, index: u64) -> (u64, u64) {
-        self.allocator().lock().frame(index)
+    fn frame_run(&self, index: u64) -> (u64, u64, u64) {
+        self.allocator().lock().frame_run(index)
+    }
+
+    fn frame_count(&self, head: u64) -> u64 {
+        self.allocator().lock().frame_count(head)
     }
 
     fn release_owner(&self, head: u64) {

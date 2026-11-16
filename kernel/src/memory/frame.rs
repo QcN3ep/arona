@@ -114,6 +114,8 @@ pub struct FrameAccessReference {
 pub struct Frames<'frame> {
     next: u64,
     remaining: u64,
+    address: u64,
+    run_remaining: u64,
     _frame: PhantomData<&'frame u64>,
 }
 
@@ -257,7 +259,9 @@ impl<'frame> Frames<'frame> {
     fn new(head: &'frame u64) -> Self {
         Frames {
             next: *head,
-            remaining: manager().info(*head).frames,
+            remaining: manager().frame_count(*head),
+            address: 0,
+            run_remaining: 0,
             _frame: PhantomData,
         }
     }
@@ -270,8 +274,15 @@ impl Iterator for Frames<'_> {
         if self.remaining == 0 {
             return None;
         }
-        let (address, next) = manager().frame(self.next);
-        self.next = next;
+        if self.run_remaining == 0 {
+            let (address, length, next) = manager().frame_run(self.next);
+            self.address = address;
+            self.run_remaining = length;
+            self.next = next;
+        }
+        let address = self.address;
+        self.address += PAGE_SIZE as u64;
+        self.run_remaining -= 1;
         self.remaining -= 1;
         Some(Frame::new(address).expect("unaligned allocated frame"))
     }
