@@ -56,6 +56,7 @@ struct FrameMetadata {
     directory: [u64; DIRECTORY_FRAMES],
     // Region descriptors only change during initialization; the allocator lock protects this cache.
     cached_region: Cell<Option<(usize, ManagedRegion)>>,
+    cached_metadata_region: Cell<Option<ManagedRegion>>,
     region_count: usize,
     directory_frames: u64,
     list_frames: u64,
@@ -801,6 +802,7 @@ impl FrameMetadata {
         let mut metadata = Self {
             directory: [0; DIRECTORY_FRAMES],
             cached_region: Cell::new(None),
+            cached_metadata_region: Cell::new(None),
             region_count,
             directory_frames,
             list_frames,
@@ -991,6 +993,12 @@ impl FrameMetadata {
         if !address.is_multiple_of(PAGE_SIZE as u64) {
             return Err(MemoryError::InvalidFrame);
         }
+        if let Some((_, region)) = self.cached_region.get()
+            && region.range.start <= address
+            && address < region.range.end
+        {
+            return Ok(region.first + (address - region.range.start) / PAGE_SIZE as u64);
+        }
         self.find_region(|region| region.range.end <= address)
             .filter(|(_, region)| region.range.start <= address)
             .map(|(_, region)| region.first + (address - region.range.start) / PAGE_SIZE as u64)
@@ -998,19 +1006,29 @@ impl FrameMetadata {
     }
 
     fn physical_address(&self, index: u64) -> u64 {
-        let (_, region) = self
-            .find_region(|region| region.first + region.frame_count() <= index)
-            .expect("frame index is outside managed memory");
+        let region = self.region_of(index);
         region.range.start + (index - region.first) * PAGE_SIZE as u64
     }
 
     fn region_of(&self, index: u64) -> ManagedRegion {
+        if let Some((_, region)) = self.cached_region.get()
+            && region.first <= index
+            && index - region.first < region.frame_count()
+        {
+            return region;
+        }
         self.find_region(|region| region.first + region.frame_count() <= index)
             .map(|(_, region)| region)
             .expect("frame index is outside managed memory")
     }
 
     fn metadata_address(&self, frame: u64) -> u64 {
+        if let Some(region) = self.cached_metadata_region.get()
+            && region.available_first <= frame
+            && frame - region.available_first < region.frame_count()
+        {
+            return region.range.start + (frame - region.available_first) * PAGE_SIZE as u64;
+        }
         let (_, region) = self
             .find_region(|region| {
                 let available = if region.state == MemoryRegionState::Available {
@@ -1021,6 +1039,7 @@ impl FrameMetadata {
                 region.available_first + available <= frame
             })
             .expect("metadata frame is missing");
+        self.cached_metadata_region.set(Some(region));
         region.range.start + (frame - region.available_first) * PAGE_SIZE as u64
     }
 
