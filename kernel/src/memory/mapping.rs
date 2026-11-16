@@ -200,21 +200,43 @@ impl MappingIndex {
         Some(result)
     }
 
-    pub fn next(&self, address: usize) -> Option<MappingRecord> {
+    pub fn query(&self, address: usize, next: bool) -> Option<(MappingInfo, bool)> {
         let mut current = self.root;
         let mut candidate = None;
         while current != NIL {
             let (range, left, right) = MappingNode::search_fields(current);
             if address < range.start {
-                candidate = Some((current, range));
+                if next {
+                    candidate = Some((current, range));
+                }
                 current = left;
             } else if address >= range.end {
                 current = right;
             } else {
-                return Some(MappingRecord::read(current, range));
+                candidate = Some((current, range));
+                break;
             }
         }
-        candidate.map(|(address, range)| MappingRecord::read(address, range))
+        let (location, range) = candidate?;
+        let mut words = [0; 2];
+        read(
+            location + (TREE_WORDS * size_of::<u64>()) as u64,
+            &mut words,
+        );
+        let mapped = match words[1] >> 8 {
+            0 | 7 => false,
+            1..=6 => true,
+            _ => panic!("invalid mapping kind"),
+        };
+        Some((
+            MappingInfo {
+                range,
+                mapping: None,
+                maximum: MappingRights(words[1] as u8),
+                generation: words[0],
+            },
+            mapped,
+        ))
     }
 
     fn find(&self, address: usize) -> Option<(u64, VirtRange)> {

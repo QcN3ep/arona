@@ -615,25 +615,13 @@ impl AddressSpace {
         }
         super::paging::validate_address(address, false)?;
         let state = self.state.lock();
-        let record = if next {
-            state.mappings.next(address)
-        } else {
-            state.mappings.get(address)
-        };
-        let Some(record) = record else {
+        let Some((mut info, mapped)) = state.mappings.query(address, next) else {
             return Ok(None);
         };
-        let mapping = if matches!(record.kind, MappingKind::Reserved | MappingKind::Guard) {
-            None
-        } else {
-            self.table.query(address.max(record.range.start))?
-        };
-        Ok(Some(MappingInfo {
-            range: record.range,
-            mapping,
-            maximum: record.maximum,
-            generation: record.generation,
-        }))
+        if mapped {
+            info.mapping = self.table.query(address.max(info.range.start))?;
+        }
+        Ok(Some(info))
     }
 
     pub(crate) fn pin_user_memory(
