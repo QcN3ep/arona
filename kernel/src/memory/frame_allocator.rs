@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use core::cell::Cell;
+use core::sync::atomic::Ordering;
 
 use super::{
     Frame, FrameAccess, FrameAllocationInfo, FrameOwner, FramePool, FramePurpose,
@@ -1130,6 +1131,7 @@ impl FrameMetadata {
         self.write_words(index, 0, &record.words());
     }
 
+    #[inline(always)]
     fn read_words<const N: usize>(&self, index: u64, field: usize) -> [u64; N] {
         let (address, offset) = self.location(index);
         let mut words = [0; N];
@@ -1137,18 +1139,24 @@ impl FrameMetadata {
         words
     }
 
+    #[inline(always)]
     fn write_words(&self, index: u64, field: usize, words: &[u64]) {
         let (address, offset) = self.location(index);
         write_metadata(address, offset + field, words).expect("failed to write frame metadata");
     }
 }
 
+#[inline(always)]
 fn read_metadata(address: u64, offset: usize, words: &mut [u64]) -> Result<(), MemoryError> {
     let direct_map = &super::MEMORY_MANAGER.direct_map;
     let frame = Frame::new(address).ok_or(MemoryError::InvalidFrame)?;
     if let Some(address) = direct_map.active_address(frame) {
         // SAFETY: Metadata pages are permanently reserved in mapped RAM and remain writable. The frame allocator lock serializes access.
-        hardware::mmu().read_mapped_frame(address, offset, words)?;
+        let mapped = hardware::mmu().mapped_atomic_words(address)?;
+        let source = &mapped[offset..offset + words.len()];
+        for (word, source) in words.iter_mut().zip(source) {
+            *word = source.load(Ordering::Relaxed);
+        }
     } else if direct_map.is_active() {
         return Err(MemoryError::NotMapped);
     } else {
@@ -1158,12 +1166,16 @@ fn read_metadata(address: u64, offset: usize, words: &mut [u64]) -> Result<(), M
     Ok(())
 }
 
+#[inline(always)]
 fn write_metadata(address: u64, offset: usize, words: &[u64]) -> Result<(), MemoryError> {
     let direct_map = &super::MEMORY_MANAGER.direct_map;
     let frame = Frame::new(address).ok_or(MemoryError::InvalidFrame)?;
     if let Some(address) = direct_map.active_address(frame) {
         // SAFETY: Metadata pages are permanently reserved in mapped RAM and remain writable. The frame allocator lock serializes access.
-        hardware::mmu().write_mapped_frame(address, offset, words)?;
+        let mapped = hardware::mmu().mapped_atomic_words(address)?;
+        for (target, word) in mapped[offset..offset + words.len()].iter().zip(words) {
+            target.store(*word, Ordering::Relaxed);
+        }
     } else if direct_map.is_active() {
         return Err(MemoryError::NotMapped);
     } else {

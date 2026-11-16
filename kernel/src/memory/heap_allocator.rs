@@ -3,6 +3,7 @@
 //! Kernel heap allocation, usage accounting, and free cache reclamation.
 
 use core::alloc::Layout;
+use core::sync::atomic::Ordering;
 use spin::Mutex;
 
 pub use allocator_api2::boxed::Box as HeapBox;
@@ -617,6 +618,7 @@ impl SlabMetadata {
     }
 }
 
+#[inline(always)]
 fn read<const N: usize>(address: u64) -> [u64; N] {
     let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
     let mapped = manager()
@@ -625,16 +627,17 @@ fn read<const N: usize>(address: u64) -> [u64; N] {
         .expect("slab metadata is not directly mapped");
     let mut words = [0; N];
     // SAFETY: The slab allocator owns its metadata pages exclusively and keeps them writable. The heap state lock serializes access.
-    hardware::mmu()
-        .read_mapped_frame(
-            mapped,
-            address as usize % PAGE_SIZE / size_of::<u64>(),
-            &mut words,
-        )
+    let mapped = hardware::mmu()
+        .mapped_atomic_words(mapped)
         .expect("failed to read slab metadata");
+    let offset = address as usize % PAGE_SIZE / size_of::<u64>();
+    for (word, source) in words.iter_mut().zip(&mapped[offset..offset + N]) {
+        *word = source.load(Ordering::Relaxed);
+    }
     words
 }
 
+#[inline(always)]
 fn write(address: u64, words: &[u64]) {
     let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
     let mapped = manager()
@@ -642,13 +645,13 @@ fn write(address: u64, words: &[u64]) {
         .active_address(frame)
         .expect("slab metadata is not directly mapped");
     // SAFETY: The slab allocator owns its metadata pages exclusively and keeps them writable. The heap state lock serializes access.
-    hardware::mmu()
-        .write_mapped_frame(
-            mapped,
-            address as usize % PAGE_SIZE / size_of::<u64>(),
-            words,
-        )
+    let mapped = hardware::mmu()
+        .mapped_atomic_words(mapped)
         .expect("failed to write slab metadata");
+    let offset = address as usize % PAGE_SIZE / size_of::<u64>();
+    for (target, word) in mapped[offset..offset + words.len()].iter().zip(words) {
+        target.store(*word, Ordering::Relaxed);
+    }
 }
 
 fn size_class(layout: Layout) -> Option<usize> {

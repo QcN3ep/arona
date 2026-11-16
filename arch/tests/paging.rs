@@ -352,6 +352,24 @@ fn run_frame_access(mmu: &dyn Mmu, address: u64) {
     mmu.zero_frame(address).unwrap();
     mmu.read_frame(address, 0, &mut words).unwrap();
     assert_eq!(words, [0; PAGE_SIZE / size_of::<u64>()]);
+    let mapped = (address as usize).wrapping_add(KERNEL_OFFSET);
+    {
+        // SAFETY: This test exclusively owns the mapped data page during atomic access.
+        let atomic = mmu.mapped_atomic_words(mapped).unwrap();
+        atomic[0].store(17, Ordering::Relaxed);
+        atomic[atomic.len() - 1].store(29, Ordering::Relaxed);
+        assert_eq!(atomic[0].load(Ordering::Relaxed), 17);
+        assert_eq!(atomic[atomic.len() - 1].load(Ordering::Relaxed), 29);
+    }
+    assert!(matches!(
+        mmu.mapped_atomic_words(mapped + 1),
+        Err(MmuError::InvalidAlignment)
+    ));
+    mmu.read_frame(address, 0, &mut words).unwrap();
+    assert_eq!(words[0], 17);
+    assert_eq!(words[words.len() - 1], 29);
+    assert!(words[1..words.len() - 1].iter().all(|word| *word == 0));
+    mmu.zero_frame(address).unwrap();
     let last = words.len() - 1;
     mmu.write_frame(address, last, &[41]).unwrap();
     assert_eq!(

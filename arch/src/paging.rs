@@ -2,11 +2,11 @@
 
 use core::{
     ops::Range,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use kernel::{
     hardware::mmu::{
-        MAX_PAGE_TABLE_LEVELS, Mmu, MmuError, PAGE_SIZE, PageMapping, PagePermissions,
+        MAX_PAGE_TABLE_LEVELS, Mmu, MmuError, PAGE_SIZE, PAGE_WORDS, PageMapping, PagePermissions,
         PageTableEntry, PageTableLayout, PageWalk, TableWindow,
     },
     memory::Frame,
@@ -194,6 +194,15 @@ pub(crate) fn zero_mapped_frame(mmu: &dyn Mmu, address: usize) -> Result<(), Mmu
     let _access = lock_memory();
     zero_page(address);
     Ok(())
+}
+
+pub(crate) fn mapped_atomic_words(
+    mmu: &dyn Mmu,
+    address: usize,
+) -> Result<&[AtomicU64; PAGE_WORDS], MmuError> {
+    validate_mapped_frame(mmu, address, 0, PAGE_WORDS)?;
+    // SAFETY: The caller retains the writable normal memory mapping and excludes conflicting references and non-atomic accesses for the borrow.
+    Ok(unsafe { &*(address as *const [AtomicU64; PAGE_WORDS]) })
 }
 
 pub(crate) fn zero_page(address: usize) {

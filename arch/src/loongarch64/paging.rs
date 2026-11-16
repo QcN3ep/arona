@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use core::arch::{asm, naked_asm};
-use core::ops::Range;
+use core::{ops::Range, sync::atomic::AtomicU64};
 
 use kernel::hardware::mmu::{
-    MemoryType, Mmu, MmuError, PageAttributes, PageMapping, PagePermissions, PageTableEntry,
-    PageTableLayout, PageWalk,
+    MemoryType, Mmu, MmuError, PAGE_WORDS, PageAttributes, PageMapping, PagePermissions,
+    PageTableEntry, PageTableLayout, PageWalk,
 };
 
 use kernel::memory::Frame;
@@ -273,6 +273,10 @@ impl Mmu for LoongArchMmu {
 
     fn zero_mapped_frame(&self, address: usize) -> Result<(), MmuError> {
         paging::zero_mapped_frame(self, address)
+    }
+
+    fn mapped_atomic_words(&self, address: usize) -> Result<&[AtomicU64; PAGE_WORDS], MmuError> {
+        paging::mapped_atomic_words(self, address)
     }
 
     fn read_mapped_frame(

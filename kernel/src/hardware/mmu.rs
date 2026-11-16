@@ -3,12 +3,14 @@
 //! Hardware capability for page table entry access, address translation switching, and cache synchronization.
 
 use core::ops::Range;
+use core::sync::atomic::AtomicU64;
 
 use super::{BindError, Slot};
 use crate::memory::Frame;
 
 pub const PAGE_SIZE: usize = 4096;
 pub const MAX_PAGE_TABLE_LEVELS: usize = 4;
+pub const PAGE_WORDS: usize = PAGE_SIZE / size_of::<u64>();
 
 static SLOT: Slot<&'static dyn Mmu> = Slot::new();
 
@@ -160,6 +162,14 @@ pub trait Mmu: Sync {
     ///
     /// The caller must exclusively own the complete, writable normal memory page.
     fn zero_mapped_frame(&self, address: usize) -> Result<(), MmuError>;
+
+    /// Borrows the atomic words of a mapped normal memory page.
+    ///
+    /// # Safety
+    ///
+    /// The page must remain mapped and writable for the borrow. Its contents must not
+    /// overlap other Rust references or concurrent non-atomic memory accesses.
+    fn mapped_atomic_words(&self, address: usize) -> Result<&[AtomicU64; PAGE_WORDS], MmuError>;
 
     /// # Safety
     ///

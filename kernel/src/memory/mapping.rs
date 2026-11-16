@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use core::ops::BitOr;
+use core::sync::atomic::Ordering;
 
 use super::{Frame, FrameAllocation, FrameOwner, FramePurpose, MemoryError, VirtRange, manager};
 use crate::hardware::{
@@ -761,13 +762,21 @@ fn align(address: usize, alignment: usize) -> Option<usize> {
         .map(|value| value & !(alignment - 1))
 }
 
+#[inline(always)]
 fn read(address: u64, words: &mut [u64]) {
     let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
     let offset = address as usize % PAGE_SIZE / 8;
     let direct_map = &super::MEMORY_MANAGER.direct_map;
     let result = if let Some(address) = direct_map.active_address(frame) {
         // SAFETY: The index owns its backing pages exclusively and keeps them writable. The address-space state lock serializes access.
-        hardware::mmu().read_mapped_frame(address, offset, words)
+        let mapped = hardware::mmu()
+            .mapped_atomic_words(address)
+            .expect("invalid metadata mapping");
+        let source = &mapped[offset..offset + words.len()];
+        for (word, source) in words.iter_mut().zip(source) {
+            *word = source.load(Ordering::Relaxed);
+        }
+        Ok(())
     } else {
         assert!(
             !direct_map.is_active(),
@@ -778,13 +787,20 @@ fn read(address: u64, words: &mut [u64]) {
     result.expect("failed to read mapping metadata");
 }
 
+#[inline(always)]
 fn write(address: u64, words: &[u64]) {
     let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
     let offset = address as usize % PAGE_SIZE / 8;
     let direct_map = &super::MEMORY_MANAGER.direct_map;
     let result = if let Some(address) = direct_map.active_address(frame) {
         // SAFETY: The index owns its backing pages exclusively and keeps them writable. The address-space state lock serializes access.
-        hardware::mmu().write_mapped_frame(address, offset, words)
+        let mapped = hardware::mmu()
+            .mapped_atomic_words(address)
+            .expect("invalid metadata mapping");
+        for (target, word) in mapped[offset..offset + words.len()].iter().zip(words) {
+            target.store(*word, Ordering::Relaxed);
+        }
+        Ok(())
     } else {
         assert!(
             !direct_map.is_active(),
