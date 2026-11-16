@@ -22,7 +22,8 @@ const MIN_SIZE: usize = 16;
 const CLASSES: usize = 9;
 const BITMAP_WORDS: usize = PAGE_SIZE / MIN_SIZE / u64::BITS as usize;
 const HEADER_WORDS: usize = 4;
-const RECORD_WORDS: usize = 7 + BITMAP_WORDS;
+const SLOT_WORDS: usize = 3 + BITMAP_WORDS;
+const RECORD_WORDS: usize = SLOT_WORDS + 4;
 const RECORDS: usize = (PAGE_SIZE / size_of::<u64>() - HEADER_WORDS) / RECORD_WORDS;
 const FULL: u64 = (1 << RECORDS) - 1;
 
@@ -77,9 +78,13 @@ struct SlabAllocation {
 struct Slab {
     backing: u64,
     frame: Frame,
-    address: usize,
     previous: u64,
     next: u64,
+    slots: SlabSlots,
+}
+
+struct SlabSlots {
+    address: usize,
     class: usize,
     used: usize,
     bitmap: [u64; BITMAP_WORDS],
@@ -240,7 +245,7 @@ impl SlabAllocator {
         } else {
             self.partial[class]
         };
-        let mut slab = Slab::read(record);
+        let mut slab = SlabSlots::read(record);
         let word = slab
             .bitmap
             .iter()
@@ -251,7 +256,7 @@ impl SlabAllocator {
         slab.bitmap[word] |= 1 << bit;
         slab.used += 1;
         let address = slab.address + slot * class_size(class);
-        slab.write(record);
+        slab.write_usage(record);
         if self.empty[class] == record {
             self.empty[class] = NIL;
         }
@@ -277,12 +282,14 @@ impl SlabAllocator {
         Slab {
             backing: backing.head,
             frame,
-            address,
             previous: NIL,
             next: NIL,
-            class,
-            used: 0,
-            bitmap,
+            slots: SlabSlots {
+                address,
+                class,
+                used: 0,
+                bitmap,
+            },
         }
         .write(record);
         // The record retains the page owner and one write reference until the slab is released.
@@ -294,13 +301,13 @@ impl SlabAllocator {
 
     fn release(&mut self, allocation: &SlabAllocation) {
         let record = allocation.record;
-        let mut slab = Slab::read(record);
+        let mut slab = SlabSlots::read(record);
         let size = class_size(slab.class);
         let slot = (allocation.address - slab.address) / size;
         let was_full = slab.used == PAGE_SIZE / size;
         slab.bitmap[slot / 64] &= !(1 << (slot % 64));
         slab.used -= 1;
-        slab.write(record);
+        slab.write_usage(record);
         if was_full {
             self.link_partial(record);
         }
@@ -326,8 +333,8 @@ impl SlabAllocator {
     fn release_slab(&mut self, record: u64) {
         let slab = Slab::read(record);
         self.unlink_partial(record);
-        if self.empty[slab.class] == record {
-            self.empty[slab.class] = NIL;
+        if self.empty[slab.slots.class] == record {
+            self.empty[slab.slots.class] = NIL;
         }
         {
             let mut allocator = manager().allocator().lock();
@@ -342,20 +349,20 @@ impl SlabAllocator {
     fn link_partial(&mut self, record: u64) {
         let mut slab = Slab::read(record);
         slab.previous = NIL;
-        slab.next = self.partial[slab.class];
+        slab.next = self.partial[slab.slots.class];
         if slab.next != NIL {
             let mut next = Slab::read(slab.next);
             next.previous = record;
             next.write(slab.next);
         }
-        self.partial[slab.class] = record;
+        self.partial[slab.slots.class] = record;
         slab.write(record);
     }
 
     fn unlink_partial(&mut self, record: u64) {
         let mut slab = Slab::read(record);
         if slab.previous == NIL {
-            self.partial[slab.class] = slab.next;
+            self.partial[slab.slots.class] = slab.next;
         } else {
             let mut previous = Slab::read(slab.previous);
             previous.next = slab.next;
@@ -450,33 +457,54 @@ impl SlabAllocator {
     }
 }
 
+impl SlabSlots {
+    fn from_words(words: &[u64]) -> Self {
+        Self {
+            address: words[0] as usize,
+            class: words[1] as usize,
+            used: words[2] as usize,
+            bitmap: words[3..SLOT_WORDS].try_into().unwrap(),
+        }
+    }
+
+    fn read(address: u64) -> Self {
+        Self::from_words(&read::<SLOT_WORDS>(address))
+    }
+
+    fn write_usage(&self, address: u64) {
+        let mut words = [0; 1 + BITMAP_WORDS];
+        words[0] = self.used as u64;
+        words[1..].copy_from_slice(&self.bitmap);
+        write(address + 2 * size_of::<u64>() as u64, &words);
+    }
+}
+
 impl Slab {
     fn read(address: u64) -> Self {
         let words = read::<RECORD_WORDS>(address);
         Self {
-            backing: words[0],
-            frame: Frame::new(words[1]).unwrap(),
-            address: words[2] as usize,
-            previous: words[3],
-            next: words[4],
-            class: words[5] as usize,
-            used: words[6] as usize,
-            bitmap: words[7..].try_into().unwrap(),
+            slots: SlabSlots::from_words(&words),
+            backing: words[SLOT_WORDS],
+            frame: Frame::new(words[SLOT_WORDS + 1]).unwrap(),
+            previous: words[SLOT_WORDS + 2],
+            next: words[SLOT_WORDS + 3],
         }
     }
 
     fn write(&self, address: u64) {
         let mut words = [0; RECORD_WORDS];
-        words[..7].copy_from_slice(&[
+        words[..3].copy_from_slice(&[
+            self.slots.address as u64,
+            self.slots.class as u64,
+            self.slots.used as u64,
+        ]);
+        words[3..SLOT_WORDS].copy_from_slice(&self.slots.bitmap);
+        words[SLOT_WORDS..].copy_from_slice(&[
             self.backing,
             self.frame.address(),
-            self.address as u64,
             self.previous,
             self.next,
-            self.class as u64,
-            self.used as u64,
         ]);
-        words[7..].copy_from_slice(&self.bitmap);
         write(address, &words);
     }
 }

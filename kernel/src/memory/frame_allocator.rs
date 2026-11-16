@@ -12,6 +12,11 @@ pub(super) const KERNEL_POOL_FRAMES: u64 = 32 * 1024 * 1024 / PAGE_SIZE as u64;
 
 const END: u64 = u64::MAX;
 const WORDS: usize = 13;
+const FLAGS_WORD: usize = 2;
+const REFERENCES_WORD: usize = 4;
+const ALLOCATION_WORD: usize = 7;
+const WRITERS_WORD: usize = 8;
+const EXECUTORS_WORD: usize = 11;
 const REGION_WORDS: usize = 6;
 const REGIONS_PER_FRAME: usize = PAGE_SIZE / (REGION_WORDS * size_of::<u64>());
 const DIRECTORY_FRAMES: usize = MAX_MEMORY_REGIONS.div_ceil(REGIONS_PER_FRAME);
@@ -297,15 +302,15 @@ impl FrameAllocator {
     pub fn frame(&self, index: u64) -> (u64, u64) {
         (
             self.metadata.physical_address(index),
-            self.metadata.read(index).next,
+            self.metadata.read_words::<1>(index, 0)[0],
         )
     }
 
     pub fn reference(&mut self, head: u64, kind: ReferenceKind) -> Result<(), MemoryError> {
-        let mut record = self.metadata.read(head);
-        let count = &mut record.references[kind as usize];
-        *count = count.checked_add(1).ok_or(MemoryError::ReferenceOverflow)?;
-        self.metadata.write(head, record);
+        let offset = REFERENCES_WORD + kind as usize;
+        let count = self.metadata.read_words::<1>(head, offset)[0];
+        let count = count.checked_add(1).ok_or(MemoryError::ReferenceOverflow)?;
+        self.metadata.write_words(head, offset, &[count]);
         Ok(())
     }
 
@@ -317,28 +322,41 @@ impl FrameAllocator {
         access: FrameAccess,
     ) -> Result<(), MemoryError> {
         let index = self.metadata.index(frame.address())?;
-        let mut record = self.metadata.read(index);
-        if record.allocation_head()? != head {
+        let flags = self.metadata.read_words::<1>(index, FLAGS_WORD)[0];
+        let state = FrameState::from_word(flags);
+        let fields = self.metadata.read_words::<5>(index, ALLOCATION_WORD);
+        if !matches!(state, FrameState::Owned | FrameState::Referenced) || fields[0] != head {
             return Err(MemoryError::InvalidFrame);
         }
-        if access == FrameAccess::Read {
-            return Ok(());
-        }
-        record.reserve_access(kind, access)?;
-        self.metadata.write(index, record);
+        let (offset, count) = match access {
+            FrameAccess::Read => return Ok(()),
+            FrameAccess::Write if fields[4] == 0 => {
+                (WRITERS_WORD + kind as usize, fields[1 + kind as usize])
+            }
+            FrameAccess::Execute
+                if kind == ReferenceKind::Mapping
+                    && FramePurpose::Data as u64 == (flags >> 16) & 0xff
+                    && fields[1..4] == [0; 3] =>
+            {
+                (EXECUTORS_WORD, fields[4])
+            }
+            _ => return Err(MemoryError::AccessConflict),
+        };
+        let count = count.checked_add(1).ok_or(MemoryError::ReferenceOverflow)?;
+        self.metadata.write_words(index, offset, &[count]);
         Ok(())
     }
 
     pub fn has_executors(&self, frame: Frame) -> bool {
         self.metadata
             .index(frame.address())
-            .is_ok_and(|index| self.metadata.read(index).executors != 0)
+            .is_ok_and(|index| self.metadata.read_words::<1>(index, EXECUTORS_WORD)[0] != 0)
     }
 
     pub fn has_writers(&self, frame: Frame) -> bool {
         self.metadata
             .index(frame.address())
-            .is_ok_and(|index| self.metadata.read(index).writers != [0; 3])
+            .is_ok_and(|index| self.metadata.read_words::<3>(index, WRITERS_WORD) != [0; 3])
     }
 
     pub fn release_access(&mut self, frame: Frame, kind: ReferenceKind, access: FrameAccess) {
@@ -349,9 +367,15 @@ impl FrameAllocator {
             .metadata
             .index(frame.address())
             .expect("unmanaged frame access");
-        let mut record = self.metadata.read(index);
-        record.release_access(kind, access);
-        self.metadata.write(index, record);
+        let offset = match access {
+            FrameAccess::Read => return,
+            FrameAccess::Write => WRITERS_WORD + kind as usize,
+            FrameAccess::Execute => EXECUTORS_WORD,
+        };
+        let count = self.metadata.read_words::<1>(index, offset)[0]
+            .checked_sub(1)
+            .expect("frame access count underflow");
+        self.metadata.write_words(index, offset, &[count]);
     }
 
     pub fn release_owner(&mut self, head: u64) {
@@ -370,12 +394,16 @@ impl FrameAllocator {
     }
 
     pub fn release_reference(&mut self, head: u64, kind: ReferenceKind) {
-        let mut record = self.metadata.read(head);
-        record.references[kind as usize] = record.references[kind as usize]
+        let mut fields = self.metadata.read_words::<5>(head, FLAGS_WORD);
+        fields[2 + kind as usize] = fields[2 + kind as usize]
             .checked_sub(1)
             .expect("frame reference count underflow");
-        self.metadata.write(head, record);
-        if record.state == FrameState::Referenced && !record.is_referenced() {
+        self.metadata.write_words(
+            head,
+            REFERENCES_WORD + kind as usize,
+            &[fields[2 + kind as usize]],
+        );
+        if FrameState::from_word(fields[0]) == FrameState::Referenced && fields[2..] == [0; 3] {
             self.recycle(head);
         }
     }
@@ -746,36 +774,6 @@ impl FrameRecord {
         }
     }
 
-    fn reserve_access(
-        &mut self,
-        kind: ReferenceKind,
-        access: FrameAccess,
-    ) -> Result<(), MemoryError> {
-        let count = match access {
-            FrameAccess::Read => return Ok(()),
-            FrameAccess::Write if self.executors == 0 => &mut self.writers[kind as usize],
-            FrameAccess::Execute
-                if kind == ReferenceKind::Mapping
-                    && self.purpose == FramePurpose::Data
-                    && self.writers == [0; 3] =>
-            {
-                &mut self.executors
-            }
-            _ => return Err(MemoryError::AccessConflict),
-        };
-        *count = count.checked_add(1).ok_or(MemoryError::ReferenceOverflow)?;
-        Ok(())
-    }
-
-    fn release_access(&mut self, kind: ReferenceKind, access: FrameAccess) {
-        let count = match access {
-            FrameAccess::Read => return,
-            FrameAccess::Write => &mut self.writers[kind as usize],
-            FrameAccess::Execute => &mut self.executors,
-        };
-        *count = count.checked_sub(1).expect("frame access count underflow");
-    }
-
     fn words(self) -> [u64; WORDS] {
         [
             self.next,
@@ -798,15 +796,7 @@ impl FrameRecord {
     }
 
     fn from_words(words: [u64; WORDS]) -> Self {
-        let state = match words[2] & 0xff {
-            0 => FrameState::Interior,
-            1 => FrameState::Free,
-            2 => FrameState::Owned,
-            3 => FrameState::Referenced,
-            4 => FrameState::Reserved,
-            5 => FrameState::Metadata,
-            _ => panic!("invalid frame state"),
-        };
+        let state = FrameState::from_word(words[FLAGS_WORD]);
         let pool = match (words[2] >> 8) & 0xff {
             0 => FramePool::Kernel,
             1 => FramePool::User,
@@ -831,6 +821,20 @@ impl FrameRecord {
             writers: [words[8], words[9], words[10]],
             executors: words[11],
             previous: words[12],
+        }
+    }
+}
+
+impl FrameState {
+    fn from_word(word: u64) -> Self {
+        match word & 0xff {
+            0 => Self::Interior,
+            1 => Self::Free,
+            2 => Self::Owned,
+            3 => Self::Referenced,
+            4 => Self::Reserved,
+            5 => Self::Metadata,
+            _ => panic!("invalid frame state"),
         }
     }
 }
@@ -1102,15 +1106,23 @@ impl FrameMetadata {
     }
 
     fn read(&self, index: u64) -> FrameRecord {
-        let (address, offset) = self.location(index);
-        let mut words = [0; WORDS];
-        read_metadata(address, offset, &mut words).expect("failed to read frame metadata");
-        FrameRecord::from_words(words)
+        FrameRecord::from_words(self.read_words(index, 0))
     }
 
     fn write(&self, index: u64, record: FrameRecord) {
+        self.write_words(index, 0, &record.words());
+    }
+
+    fn read_words<const N: usize>(&self, index: u64, field: usize) -> [u64; N] {
         let (address, offset) = self.location(index);
-        write_metadata(address, offset, &record.words()).expect("failed to write frame metadata");
+        let mut words = [0; N];
+        read_metadata(address, offset + field, &mut words).expect("failed to read frame metadata");
+        words
+    }
+
+    fn write_words(&self, index: u64, field: usize, words: &[u64]) {
+        let (address, offset) = self.location(index);
+        write_metadata(address, offset + field, words).expect("failed to write frame metadata");
     }
 }
 
