@@ -10,7 +10,7 @@ use crate::hardware::{
 };
 
 const NIL: u64 = u64::MAX;
-const HEADER_WORDS: usize = 3;
+const HEADER_WORDS: usize = 4;
 const TREE_WORDS: usize = 9;
 const RECORD_WORDS: usize = 9;
 const NODE_WORDS: usize = TREE_WORDS + RECORD_WORDS;
@@ -520,8 +520,12 @@ impl MappingIndex {
                 // Reclaimed boot pages and former executable pages may still be read-only in the direct map.
                 manager().direct_map.set_writable(frame, true)?;
             }
-            let frame = frame.address();
-            write(frame, &[0, NIL, NIL]);
+            let physical = frame.address();
+            let frame = manager()
+                .direct_map
+                .active_address(frame)
+                .map_or(physical, |address| address as u64);
+            write(frame, &[0, NIL, NIL, physical]);
             if let Some(backing) = &mut self.backing {
                 backing.merge(allocation);
             } else {
@@ -561,13 +565,13 @@ impl MappingIndex {
         }
         write(page, &header);
         let backing = self.backing.as_ref().unwrap();
-        if header[0] == 0 && page != backing.frames().next().unwrap().address() {
+        if header[0] == 0 && header[3] != backing.frames().next().unwrap().address() {
             self.unlink(page);
             drop(
                 self.backing
                     .as_mut()
                     .unwrap()
-                    .detach(Frame::new(page).unwrap()),
+                    .detach(Frame::new(header[3]).unwrap()),
             );
         }
     }
@@ -769,7 +773,12 @@ fn read(address: u64, words: &mut [u64]) {
     let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
     let offset = address as usize % PAGE_SIZE / 8;
     let direct_map = &super::MEMORY_MANAGER.direct_map;
-    let result = if let Some(address) = direct_map.active_address(frame) {
+    let mapped = if address > isize::MAX as u64 {
+        Some(frame.address() as usize)
+    } else {
+        direct_map.active_address(frame)
+    };
+    let result = if let Some(address) = mapped {
         // SAFETY: The index owns its backing pages exclusively and keeps them writable. The address-space state lock serializes access.
         let mapped = hardware::mmu()
             .mapped_atomic_words(address)
@@ -794,7 +803,12 @@ fn write(address: u64, words: &[u64]) {
     let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
     let offset = address as usize % PAGE_SIZE / 8;
     let direct_map = &super::MEMORY_MANAGER.direct_map;
-    let result = if let Some(address) = direct_map.active_address(frame) {
+    let mapped = if address > isize::MAX as u64 {
+        Some(frame.address() as usize)
+    } else {
+        direct_map.active_address(frame)
+    };
+    let result = if let Some(address) = mapped {
         // SAFETY: The index owns its backing pages exclusively and keeps them writable. The address-space state lock serializes access.
         let mapped = hardware::mmu()
             .mapped_atomic_words(address)
