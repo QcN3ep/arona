@@ -260,6 +260,24 @@ pub(crate) fn read_entry<F: Format>(
     decode_entry(format, words[0], level)
 }
 
+pub(crate) fn copy_kernel_entries<F: Format>(
+    format: &F,
+    source: Frame,
+    destination: Frame,
+) -> Result<(), MmuError> {
+    let mut entries = [0; ENTRIES / 2];
+    read_frame(format, source.address(), ENTRIES / 2, &mut entries)?;
+    for &entry in &entries {
+        if !matches!(
+            decode_entry(format, entry, F::LEVELS - 1)?,
+            PageTableEntry::Table(_)
+        ) {
+            return Err(MmuError::InvalidTable);
+        }
+    }
+    write_frame(format, destination.address(), ENTRIES / 2, &entries)
+}
+
 fn decode_entry<F: Format>(
     format: &F,
     entry: u64,

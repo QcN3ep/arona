@@ -176,6 +176,10 @@ impl Mmu for LoongArchMmu {
         paging::read_entry(self, table, index, level)
     }
 
+    fn copy_kernel_entries(&self, source: Frame, destination: Frame) -> Result<(), MmuError> {
+        paging::copy_kernel_entries(self, source, destination)
+    }
+
     fn write_entry(
         &self,
         table: Frame,

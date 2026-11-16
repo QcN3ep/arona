@@ -100,6 +100,10 @@ pub trait Mmu: Sync {
         level: usize,
     ) -> Result<PageTableEntry, MmuError>;
 
+    /// Copies the upper half of the root table after checking that every entry is a branch.
+    /// The destination entries remain unchanged on failure.
+    fn copy_kernel_entries(&self, source: Frame, destination: Frame) -> Result<(), MmuError>;
+
     /// Checks whether every entry is empty, validating the first nonempty entry at the given level.
     fn table_is_empty(&self, table: Frame, level: usize) -> Result<bool, MmuError>;
 

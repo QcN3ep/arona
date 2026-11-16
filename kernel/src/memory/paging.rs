@@ -70,13 +70,7 @@ impl PageTable {
         };
         if let Some(kernel) = shared_kernel {
             let kernel = kernel.state.lock();
-            for slot in first_shared..2 * first_shared {
-                let entry = hardware::mmu().read_entry(kernel.root, slot, layout.levels - 1)?;
-                if !matches!(entry, PageTableEntry::Table(_)) {
-                    return Err(MmuError::InvalidTable.into());
-                }
-                hardware::mmu().write_entry(root, slot, layout.levels - 1, entry)?;
-            }
+            hardware::mmu().copy_kernel_entries(kernel.root, root)?;
         } else {
             // Shared branches are all established before the user root is created and do not participate in runtime pruning.
             let mut branches = state.backing.frames().skip(1);
