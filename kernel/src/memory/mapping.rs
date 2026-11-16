@@ -283,14 +283,14 @@ impl MappingIndex {
         let mut current = self.root;
         while current != NIL {
             parent = current;
-            let node = MappingNode::read(current);
-            if node.range.overlaps(record.range) {
+            let (range, left, right) = MappingNode::search_fields(current);
+            if range.overlaps(record.range) {
                 return Err(MemoryError::AlreadyMapped);
             }
-            current = if record.range.start < node.range.start {
-                node.left
+            current = if record.range.start < range.start {
+                left
             } else {
-                node.right
+                right
             };
         }
         let address = self.allocate_node()?;
@@ -309,13 +309,13 @@ impl MappingIndex {
         if parent == NIL {
             self.root = address;
         } else {
-            let mut node = MappingNode::read(parent);
-            if record.range.start < node.range.start {
-                node.left = address;
+            let (range, _, _) = MappingNode::search_fields(parent);
+            let field = if record.range.start < range.start {
+                2
             } else {
-                node.right = address;
-            }
-            node.write(parent);
+                3
+            };
+            write(parent + field * size_of::<u64>() as u64, &[address]);
             self.rebalance(parent);
         }
         Ok(())
@@ -346,9 +346,7 @@ impl MappingIndex {
         };
         self.replace_child(node.parent, address, child);
         if child != NIL {
-            let mut replacement = MappingNode::read(child);
-            replacement.parent = node.parent;
-            replacement.write(child);
+            write(child + 4 * size_of::<u64>() as u64, &[node.parent]);
         }
         self.rebalance(node.parent);
         if self.root == NIL {
@@ -407,14 +405,14 @@ impl MappingIndex {
             self.root = new;
             return;
         }
-        let mut node = MappingNode::read(parent);
-        if node.left == old {
-            node.left = new;
+        let (_, left, right) = MappingNode::search_fields(parent);
+        let field = if left == old {
+            2
         } else {
-            assert_eq!(node.right, old);
-            node.right = new;
-        }
-        node.write(parent);
+            assert_eq!(right, old);
+            3
+        };
+        write(parent + field * size_of::<u64>() as u64, &[new]);
     }
 
     fn refresh(address: u64) -> (MappingNode, i64) {
@@ -425,16 +423,19 @@ impl MappingIndex {
         node.last = node.range.end;
         node.gap = 0;
         if node.left != NIL {
-            let left = MappingNode::read(node.left);
-            left_height = left.height;
-            node.first = left.first;
-            node.gap = left.gap.max(node.range.start - left.last);
+            let [height, first, last, gap] = MappingNode::summary(node.left);
+            left_height = height;
+            node.first = first as usize;
+            node.gap = (gap as usize).max(node.range.start - last as usize);
         }
         if node.right != NIL {
-            let right = MappingNode::read(node.right);
-            right_height = right.height;
-            node.last = right.last;
-            node.gap = node.gap.max(right.gap).max(right.first - node.range.end);
+            let [height, first, last, gap] = MappingNode::summary(node.right);
+            right_height = height;
+            node.last = last as usize;
+            node.gap = node
+                .gap
+                .max(gap as usize)
+                .max(first as usize - node.range.end);
         }
         node.height = left_height.max(right_height) + 1;
         write(
@@ -455,7 +456,9 @@ impl MappingIndex {
             if child == NIL {
                 0
             } else {
-                MappingNode::read(child).height as i64
+                let mut height = [0];
+                read(child + 5 * size_of::<u64>() as u64, &mut height);
+                height[0] as i64
             }
         };
         height(node.left) - height(node.right)
@@ -478,9 +481,7 @@ impl MappingIndex {
         upper.write(address);
         lower.write(child);
         if middle != NIL {
-            let mut node = MappingNode::read(middle);
-            node.parent = address;
-            node.write(middle);
+            write(middle + 4 * size_of::<u64>() as u64, &[address]);
         }
         self.replace_child(lower.parent, address, child);
         Self::refresh(address);
@@ -591,16 +592,22 @@ impl MappingIndex {
 }
 
 impl MappingNode {
+    fn summary(address: u64) -> [u64; 4] {
+        let mut words = [0; 4];
+        read(address + 5 * size_of::<u64>() as u64, &mut words);
+        words
+    }
+
     fn search_fields(address: u64) -> (VirtRange, u64, u64) {
-        let mut words = [0; 5];
+        let mut words = [0; 4];
         read(address, &mut words);
         (
             VirtRange {
                 start: words[0] as usize,
                 end: words[1] as usize,
             },
+            words[2],
             words[3],
-            words[4],
         )
     }
 
@@ -612,9 +619,9 @@ impl MappingNode {
                 start: words[0] as usize,
                 end: words[1] as usize,
             },
-            parent: words[2],
-            left: words[3],
-            right: words[4],
+            left: words[2],
+            right: words[3],
+            parent: words[4],
             height: words[5],
             first: words[6] as usize,
             last: words[7] as usize,
@@ -628,9 +635,9 @@ impl MappingNode {
             &[
                 self.range.start as u64,
                 self.range.end as u64,
-                self.parent,
                 self.left,
                 self.right,
+                self.parent,
                 self.height,
                 self.first as u64,
                 self.last as u64,
