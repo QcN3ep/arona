@@ -83,6 +83,7 @@ impl DirectMap {
     }
 
     /// Returns the direct-map address of an allocated frame or a reserved metadata page.
+    #[inline(always)]
     pub fn active_address(&self, frame: Frame) -> Option<usize> {
         if !self.is_active() {
             return None;
@@ -98,6 +99,7 @@ impl DirectMap {
         Some((layout.physical_start, layout.range.start..layout.range.end))
     }
 
+    #[inline(always)]
     fn address(&self, frame: Frame) -> Option<usize> {
         let layout = self.layout.get()?;
         // Callers provide validated allocations or metadata pages, so no RAM-directory lookup is needed.

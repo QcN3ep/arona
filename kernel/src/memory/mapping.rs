@@ -593,12 +593,14 @@ impl MappingIndex {
 }
 
 impl MappingNode {
+    #[inline(always)]
     fn summary(address: u64) -> [u64; 4] {
         let mut words = [0; 4];
         read(address + 5 * size_of::<u64>() as u64, &mut words);
         words
     }
 
+    #[inline(always)]
     fn search_fields(address: u64) -> (VirtRange, u64, u64) {
         let mut words = [0; 4];
         read(address, &mut words);

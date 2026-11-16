@@ -99,6 +99,7 @@ impl PageTable {
         operation(&mut self.state.lock())
     }
 
+    #[inline(always)]
     pub(super) fn query(&self, address: usize) -> Result<Option<PageMapping>, MemoryError> {
         validate_address(address, false)?;
         match self.state.lock().walk(address)?.entry {
