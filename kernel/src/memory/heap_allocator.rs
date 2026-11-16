@@ -53,13 +53,15 @@ pub struct HeapStats {
 #[must_use]
 pub struct HeapAllocation {
     layout: Layout,
+    address: usize,
     storage: HeapStorage,
 }
 
 enum HeapStorage {
     Empty,
-    Slab(SlabAllocation),
-    Mapped(OwnedMapping),
+    Slab(u64),
+    Mapped(u64),
+    Direct(u64),
 }
 
 struct SlabAllocator {
@@ -114,6 +116,7 @@ impl HeapAllocator {
         if layout.size() == 0 {
             return Ok(HeapAllocation {
                 layout,
+                address: layout.align(),
                 storage: HeapStorage::Empty,
             });
         }
@@ -121,11 +124,15 @@ impl HeapAllocator {
             return Err(MemoryError::NotInitialized);
         }
         let mut state = self.state.lock();
-        let storage = match state.allocate(layout) {
+        let (address, storage) = match state.allocate(layout) {
             Err(MemoryError::NoMemory) if state.slabs.reclaim() != 0 => state.allocate(layout)?,
             result => result?,
         };
-        let allocation = HeapAllocation { layout, storage };
+        let allocation = HeapAllocation {
+            layout,
+            address,
+            storage,
+        };
         state.allocations += 1;
         state.requested_bytes += layout.size();
         state.allocated_bytes += allocation.capacity();
@@ -159,11 +166,32 @@ impl HeapAllocator {
         }
         let mut state = self.state.lock();
         match &allocation.storage {
-            HeapStorage::Slab(slab) => state.slabs.release(slab),
-            HeapStorage::Mapped(mapping) => {
+            HeapStorage::Slab(record) => state.slabs.release(&SlabAllocation {
+                address: allocation.address,
+                record: *record,
+            }),
+            HeapStorage::Direct(head) => {
+                let backing = FrameAllocation { head: *head };
+                for frame in backing.frames() {
+                    manager().allocator().lock().release_access(
+                        frame,
+                        ReferenceKind::Temporary,
+                        FrameAccess::Write,
+                    );
+                }
+                drop(backing);
+                state.mapped_frames -= allocation.capacity() / PAGE_SIZE;
+            }
+            HeapStorage::Mapped(generation) => {
                 manager()
                     .kernel_address_space()
-                    .unmap_owned(mapping)
+                    .unmap_owned(&OwnedMapping {
+                        range: super::VirtRange {
+                            start: allocation.address,
+                            end: allocation.address + allocation.capacity(),
+                        },
+                        generation: *generation,
+                    })
                     .expect("failed to unmap heap allocation");
                 state.mapped_frames -= allocation.capacity() / PAGE_SIZE;
             }
@@ -176,9 +204,12 @@ impl HeapAllocator {
 }
 
 impl HeapAllocatorState {
-    fn allocate(&mut self, layout: Layout) -> Result<HeapStorage, MemoryError> {
+    fn allocate(&mut self, layout: Layout) -> Result<(usize, HeapStorage), MemoryError> {
         if let Some(class) = size_class(layout) {
-            return self.slabs.allocate(class).map(HeapStorage::Slab);
+            return self
+                .slabs
+                .allocate(class)
+                .map(|slab| (slab.address, HeapStorage::Slab(slab.record)));
         }
         let length = layout
             .size()
@@ -187,6 +218,44 @@ impl HeapAllocatorState {
             .ok_or(MemoryError::NoMemory)?;
         let frames = length / PAGE_SIZE;
         let backing = manager().allocate(FrameOwner::Kernel, FramePurpose::Data, frames as u64)?;
+        let mut start = u64::MAX;
+        let mut end = 0;
+        for frame in backing.frames() {
+            start = start.min(frame.address());
+            end = end.max(frame.address() + PAGE_SIZE as u64);
+        }
+        let address = manager()
+            .direct_map
+            .active_address(Frame::new(start).unwrap())
+            .unwrap();
+        // The allocation chain may visit a physically contiguous interval in either order.
+        let contiguous = end - start == length as u64 && address.is_multiple_of(layout.align());
+        if contiguous {
+            let mut allocator = manager().allocator().lock();
+            for index in 0..frames {
+                let frame = Frame::new(start + (index * PAGE_SIZE) as u64).unwrap();
+                // Allocation zeroing made these unpublished pages writable in the direct map.
+                if let Err(error) = allocator.reserve_access(
+                    backing.head,
+                    frame,
+                    ReferenceKind::Temporary,
+                    FrameAccess::Write,
+                ) {
+                    for previous in 0..index {
+                        allocator.release_access(
+                            Frame::new(start + (previous * PAGE_SIZE) as u64).unwrap(),
+                            ReferenceKind::Temporary,
+                            FrameAccess::Write,
+                        );
+                    }
+                    return Err(error);
+                }
+            }
+            self.mapped_frames += frames;
+            let head = backing.head;
+            core::mem::forget(backing);
+            return Ok((address, HeapStorage::Direct(head)));
+        }
         let mapping = manager().kernel_address_space().map_owned(
             &backing,
             0..frames as u64,
@@ -196,17 +265,13 @@ impl HeapAllocatorState {
             },
         )?;
         self.mapped_frames += frames;
-        Ok(HeapStorage::Mapped(mapping))
+        Ok((mapping.range.start, HeapStorage::Mapped(mapping.generation)))
     }
 }
 
 impl HeapAllocation {
     pub fn address(&self) -> usize {
-        match &self.storage {
-            HeapStorage::Empty => self.layout.align(),
-            HeapStorage::Slab(slab) => slab.address,
-            HeapStorage::Mapped(mapping) => mapping.range.start,
-        }
+        self.address
     }
 
     pub fn layout(&self) -> Layout {
@@ -217,7 +282,9 @@ impl HeapAllocation {
         match &self.storage {
             HeapStorage::Empty => 0,
             HeapStorage::Slab(_) => class_size(size_class(self.layout).unwrap()),
-            HeapStorage::Mapped(mapping) => mapping.range.end - mapping.range.start,
+            HeapStorage::Direct(_) | HeapStorage::Mapped(_) => {
+                self.layout.size().next_multiple_of(PAGE_SIZE)
+            }
         }
     }
 }

@@ -5,7 +5,7 @@
 use alloc::boxed::Box;
 use core::{alloc::Layout, hint::black_box};
 
-use kernel::memory::{FrameOwner, FramePurpose, HeapAllocation};
+use kernel::memory::{FrameAllocation, FrameOwner, FramePurpose, HeapAllocation};
 
 use super::*;
 use crate::perf::Perf;
@@ -14,6 +14,7 @@ pub(super) fn run() {
     layouts();
     live_allocations();
     pressure();
+    fragmented();
 }
 
 /// Allocate and release one object per iteration after warming its slab cache.
@@ -260,6 +261,54 @@ fn pressure() {
     assert_eq!(read(&recovered), 91);
     assert_eq!(read(&live), 73);
     drop((recovered, live));
+    manager.reclaim_heap();
+    assert_eq!(manager.heap_stats(), heap);
+    assert_eq!(manager.stats(), initial);
+}
+
+fn fragmented() {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let heap = manager.heap_stats();
+    let held = manager
+        .allocate(
+            FrameOwner::Kernel,
+            FramePurpose::Data,
+            initial.kernel.free_frames - 64,
+        )
+        .unwrap();
+    let mut background: [Option<FrameAllocation>; 64] = core::array::from_fn(|_| {
+        Some(
+            manager
+                .allocate(FrameOwner::Kernel, FramePurpose::Data, 1)
+                .unwrap(),
+        )
+    });
+    background.sort_unstable_by_key(|allocation| first_frame(allocation.as_ref().unwrap()));
+    for index in (0..background.len()).step_by(2) {
+        background[index] = None;
+    }
+    let allocation = manager
+        .allocate_heap(Layout::from_size_align(4 * PAGE_SIZE, PAGE_SIZE).unwrap())
+        .unwrap();
+    for index in 0..4 {
+        hardware::mmu()
+            .write_mapped_frame(
+                allocation.address() + index * PAGE_SIZE,
+                0,
+                &[index as u64 + 1],
+            )
+            .unwrap();
+    }
+    for index in 0..4 {
+        let mut value = [0];
+        hardware::mmu()
+            .read_mapped_frame(allocation.address() + index * PAGE_SIZE, 0, &mut value)
+            .unwrap();
+        assert_eq!(value, [index as u64 + 1]);
+    }
+    drop((allocation, background, held));
     manager.reclaim_heap();
     assert_eq!(manager.heap_stats(), heap);
     assert_eq!(manager.stats(), initial);
