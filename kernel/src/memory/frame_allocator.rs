@@ -65,6 +65,7 @@ struct FrameMetadata {
     // Region descriptors only change during initialization; the allocator lock protects this cache.
     cached_region: Cell<Option<(usize, ManagedRegion)>>,
     cached_metadata_region: Cell<Option<ManagedRegion>>,
+    cached_page: Cell<Option<(u64, u64)>>,
     region_count: usize,
     directory_frames: u64,
     list_frames: u64,
@@ -879,6 +880,7 @@ impl FrameMetadata {
             directory: [0; DIRECTORY_FRAMES],
             cached_region: Cell::new(None),
             cached_metadata_region: Cell::new(None),
+            cached_page: Cell::new(None),
             region_count,
             directory_frames,
             list_frames,
@@ -1121,8 +1123,21 @@ impl FrameMetadata {
 
     fn location(&self, index: u64) -> (u64, usize) {
         let frame = self.directory_frames + self.list_frames + index / RECORDS_PER_FRAME;
-        let address = self.metadata_address(frame);
-        (address, (index % RECORDS_PER_FRAME) as usize * WORDS)
+        let offset = (index % RECORDS_PER_FRAME) as usize * WORDS;
+        if let Some((cached_frame, address)) = self.cached_page.get()
+            && cached_frame == frame
+        {
+            return (address, offset);
+        }
+        let physical = self.metadata_address(frame);
+        let page = Frame::new(physical).expect("unaligned metadata page");
+        if let Some(address) = super::MEMORY_MANAGER.direct_map.active_address(page) {
+            // Metadata pages remain reserved and writable after direct-map activation.
+            self.cached_page.set(Some((frame, address as u64)));
+            (address as u64, offset)
+        } else {
+            (physical, offset)
+        }
     }
 
     #[inline(always)]
@@ -1153,8 +1168,13 @@ impl FrameMetadata {
 #[inline(always)]
 fn read_metadata(address: u64, offset: usize, words: &mut [u64]) -> Result<(), MemoryError> {
     let direct_map = &super::MEMORY_MANAGER.direct_map;
-    let frame = Frame::new(address).ok_or(MemoryError::InvalidFrame)?;
-    if let Some(address) = direct_map.active_address(frame) {
+    let mapped = if address > isize::MAX as u64 {
+        Some(address as usize)
+    } else {
+        let frame = Frame::new(address).ok_or(MemoryError::InvalidFrame)?;
+        direct_map.active_address(frame)
+    };
+    if let Some(address) = mapped {
         // SAFETY: Metadata pages are permanently reserved in mapped RAM and remain writable. The frame allocator lock serializes access.
         let mapped = hardware::mmu().mapped_atomic_words(address)?;
         let source = &mapped[offset..offset + words.len()];
@@ -1173,8 +1193,13 @@ fn read_metadata(address: u64, offset: usize, words: &mut [u64]) -> Result<(), M
 #[inline(always)]
 fn write_metadata(address: u64, offset: usize, words: &[u64]) -> Result<(), MemoryError> {
     let direct_map = &super::MEMORY_MANAGER.direct_map;
-    let frame = Frame::new(address).ok_or(MemoryError::InvalidFrame)?;
-    if let Some(address) = direct_map.active_address(frame) {
+    let mapped = if address > isize::MAX as u64 {
+        Some(address as usize)
+    } else {
+        let frame = Frame::new(address).ok_or(MemoryError::InvalidFrame)?;
+        direct_map.active_address(frame)
+    };
+    if let Some(address) = mapped {
         // SAFETY: Metadata pages are permanently reserved in mapped RAM and remain writable. The frame allocator lock serializes access.
         let mapped = hardware::mmu().mapped_atomic_words(address)?;
         for (target, word) in mapped[offset..offset + words.len()].iter().zip(words) {
