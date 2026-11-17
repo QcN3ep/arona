@@ -201,15 +201,20 @@ static struct context *system_context(uint64_t pc, size_t size)
     return current_context;
 }
 
+static void observe_pending_root(unsigned int cpu, void *userdata)
+{
+    (void)cpu;
+    if (pending_pc) {
+        root_known = pending_valid && (uint64_t)(uintptr_t)userdata == pending_pc + 4;
+        if (root_known) { current_root = pending_root; }
+        pending_pc = 0;
+    }
+}
+
 static void observe_system(unsigned int cpu, void *userdata)
 {
     (void)cpu;
     struct instruction *instruction = userdata;
-    if (pending_pc) {
-        root_known = pending_valid && instruction->pc == pending_pc + 4;
-        if (root_known) { current_root = pending_root; }
-        pending_pc = 0;
-    }
     if (instruction->root_access) {
         root_dirty = true; advance_epoch();
         if (!riscv) {

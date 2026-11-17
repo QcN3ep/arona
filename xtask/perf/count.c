@@ -43,7 +43,6 @@ static GHashTable *instructions;
 static bool system_mode;
 static bool profiling;
 
-#define MAX_INSTRUCTIONS 262144
 #define MAX_SAMPLES 1048576
 
 struct instruction {
@@ -54,6 +53,7 @@ struct instruction {
     bool root_access;
     bool mapping_barrier;
     int root_operand;
+    bool sampled;
 };
 
 static void free_instruction(void *data)
@@ -122,6 +122,7 @@ static uint64_t *sample_count(struct instruction *instruction)
         sample = g_new(struct sample, 1);
         *sample = (struct sample){instruction, context, g_new0(uint64_t, window_count)};
         g_hash_table_insert(samples, bytes, sample);
+        instruction->sampled = true;
     } else {
         g_bytes_unref(bytes);
     }
@@ -148,6 +149,13 @@ static void profile(unsigned int cpu, void *userdata)
 
 static struct instruction *instrument(struct qemu_plugin_insn *insn)
 {
+    if (system_mode && images->len) {
+        if (!riscv) {
+            qemu_plugin_register_vcpu_insn_exec_cb(insn, observe_pending_root, QEMU_PLUGIN_CB_NO_REGS,
+                                                  (void *)(uintptr_t)qemu_plugin_insn_vaddr(insn));
+        }
+        qemu_plugin_register_vcpu_mem_cb(insn, code_written, QEMU_PLUGIN_CB_NO_REGS, QEMU_PLUGIN_MEM_W, NULL);
+    }
     struct {
         uint64_t pc;
         unsigned char bytes[16];
@@ -162,26 +170,42 @@ static struct instruction *instrument(struct qemu_plugin_insn *insn)
     GBytes *bytes = g_bytes_new(&key, sizeof(key));
     struct instruction *instruction = g_hash_table_lookup(instructions, bytes);
     if (!instruction) {
-        if (g_hash_table_size(instructions) >= MAX_INSTRUCTIONS) {
-            fail("profile instruction capacity exhausted");
-            g_bytes_unref(bytes);
-            return NULL;
-        }
         instruction = g_new0(struct instruction, 1);
         instruction->pc = key.pc;
         instruction->size = key.size;
         memcpy(instruction->bytes, key.bytes, key.size);
         instruction->disassembly = qemu_plugin_insn_disas(insn);
-        if (system_mode) { decode_system(instruction); }
+        if (system_mode && images->len) { decode_system(instruction); }
+        if (!profiling) {
+            g_clear_pointer(&instruction->disassembly, g_free);
+            if (!instruction->root_access && !instruction->mapping_barrier) {
+                free_instruction(instruction);
+                g_bytes_unref(bytes);
+                return NULL;
+            }
+        }
         g_hash_table_insert(instructions, bytes, instruction);
     } else {
         g_bytes_unref(bytes);
     }
-    if (system_mode && images->len) {
+    if (system_mode && images->len && (instruction->root_access || instruction->mapping_barrier)) {
         qemu_plugin_register_vcpu_insn_exec_cb(insn, observe_system, QEMU_PLUGIN_CB_R_REGS, instruction);
-        qemu_plugin_register_vcpu_mem_cb(insn, code_written, QEMU_PLUGIN_CB_NO_REGS, QEMU_PLUGIN_MEM_W, NULL);
     }
     return instruction;
+}
+
+static gboolean discard_unsampled(void *key, void *value, void *userdata)
+{
+    (void)key; (void)userdata;
+    return !((struct instruction *)value)->sampled;
+}
+
+// QEMU stops all vCPUs and discards their translated callbacks before this runs.
+// REFERENCE: https://www.qemu.org/docs/master/devel/tcg-plugins.html#c.qemu_plugin_register_flush_cb
+static void flush_instructions(void *userdata)
+{
+    (void)userdata;
+    g_hash_table_foreach_remove(instructions, discard_unsampled, NULL);
 }
 
 static void boundary(unsigned int cpu, void *userdata)
@@ -441,6 +465,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     }
     if (profiling || (system_mode && images->len)) {
         instructions = g_hash_table_new_full(g_bytes_hash, g_bytes_equal, (GDestroyNotify)g_bytes_unref, free_instruction);
+        qemu_plugin_register_flush_cb(id, flush_instructions, NULL);
     }
     if (profiling) {
         samples = g_hash_table_new_full(g_bytes_hash, g_bytes_equal,
