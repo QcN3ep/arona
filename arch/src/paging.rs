@@ -370,11 +370,23 @@ pub(crate) fn table_is_empty<F: Format>(
     format.with_frame(table.address(), PagePermissions::ReadOnly, |address| {
         // SAFETY: The window maps the complete table read-only, and page table access is serialized by the caller.
         let page = unsafe { &*(address as *const PageTable) };
-        for index in 0..ENTRIES {
-            let entry = page.read(index);
-            if entry != 0 {
-                decode_entry(format, entry, level)?;
-                return Ok(false);
+        for first in (0..ENTRIES).step_by(8) {
+            let occupied = page.read(first)
+                | page.read(first + 1)
+                | page.read(first + 2)
+                | page.read(first + 3)
+                | page.read(first + 4)
+                | page.read(first + 5)
+                | page.read(first + 6)
+                | page.read(first + 7);
+            if occupied != 0 {
+                for index in first..first + 8 {
+                    let entry = page.read(index);
+                    if entry != 0 {
+                        decode_entry(format, entry, level)?;
+                        return Ok(false);
+                    }
+                }
             }
         }
         Ok(true)
