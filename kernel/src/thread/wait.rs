@@ -299,7 +299,7 @@ impl Scheduler {
         if data.state == ThreadState::Blocked {
             data.state = ThreadState::Ready;
             drop(data);
-            self.ready.push(thread.clone());
+            self.enqueue(thread.clone(), super::scheduler::Placement::Wake);
         }
         true
     }

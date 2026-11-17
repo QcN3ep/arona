@@ -160,9 +160,11 @@ signals:
     li.d $a3, 8
     invoke 135
     expect 0
+    # Target the thread whose blocked mask is under test.
     move $a0, $s0
-    li.d $a1, 12
-    invoke 129
+    move $a1, $s1
+    li.d $a2, 12
+    invoke 131
     expect 0
     la.pcrel $a0, second_mask
     la.pcrel $a1, info

@@ -59,16 +59,25 @@ The Thread control object remains available for other threads to query and wait 
 
 ## Scheduling and Preemption Requests
 
-The ready queue uses FIFO: enqueued threads are appended to the tail, and dispatch takes from the head.
-Each user thread receives a 10 ms time slice when dispatched.
-When the slice expires, the scheduler moves the thread to the tail before returning to user mode, so other ready threads can run even if it does not yield.
+Arona uses CFS to share CPU time between runnable threads.
+Each thread accumulates virtual runtime from its actual execution time and nice weight.
+The ready queue is a red-black tree ordered by virtual runtime, and dispatch selects its leftmost thread.
+The default nice value is 0. Values from -20 through 19 increase or decrease a thread's relative CPU share.
+
+The scheduling period is at least 6 ms and grows by 0.75 ms per runnable thread above eight threads.
+Each user thread receives a share of this period proportional to its weight.
+New competitors update the running thread's deadline. A thread running alone does not need a fairness timer.
+Sleeping threads retain their execution history and receive at most 3 ms of virtual runtime compensation when they wake.
+Wakeup requests preemption when the running thread is sufficiently ahead, using a 1 ms granularity scaled by the waking thread's weight.
+An explicit yield gives another ready thread a turn without clearing the yielding thread's history.
+
 The scheduler handles four kinds of switch-out reasons: yield, block, exit, and preemption.
 After each dispatch, it returns to the scheduling stack to process state commits and resource reclamation, and gives pending interrupts a chance to enter the handling path.
 
 The preemption mechanism provides `request_preemption` and `set_preemption_deadline`.
 The former requests rescheduling at the user return boundary; the latter registers a one-shot absolute time event and sets a preemption request when it expires.
 A thread's one-shot preemption deadline is cleared when it switches out.
-Explicit deadlines and automatic time slices are tracked separately, and the hardware timer uses the earliest pending deadline.
+Explicit deadlines and CFS deadlines are tracked separately, and the hardware timer uses the earliest pending deadline.
 Kernel execution leaves the current context at controlled switching points.
 
 When there is no ready thread, the scheduler uses the CPU's wait-for-interrupt capability to enter the idle state.

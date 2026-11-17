@@ -316,6 +316,7 @@ fn scenario(_: usize) -> usize {
     }
     let status = usize::from(matches!(mode, 1..=3));
     assert_eq!(user.wait().unwrap(), status, "runtime test scenario {mode}");
+    assert_eq!(task.wait().unwrap(), status);
     assert_eq!(task.state(), TaskState::Dead(status));
     if status == 0 {
         let report = receiver.try_receive().unwrap();

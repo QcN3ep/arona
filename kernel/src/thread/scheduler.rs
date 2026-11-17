@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! FIFO ready queue with user-thread time slices.
+//! Completely Fair Scheduler with virtual runtime and deadline-driven user preemption.
 
-// TODO: A better scheduling algorithm is needed
-// TODO: Support priorities, CPU affinity, and multiprocessor scheduling.
+// TODO: Support CPU affinity and multiprocessor scheduling.
+
+mod fair;
+pub(super) use fair::Entity;
+pub(super) use fair::Placement;
 
 use spin::{Mutex, Once};
 
 use super::{
     Thread, ThreadError, ThreadKind, ThreadResources, ThreadState, WaitOutcome,
-    deadline::DeadlineQueue,
+    deadline::DeadlineQueue, ready::ReadyQueue,
 };
 use crate::hardware::{
     self,
@@ -20,11 +23,7 @@ use crate::hardware::{
 
 static DISPATCHER: Once<Context> = Once::new();
 static STATE: Mutex<Scheduler> = Mutex::new(Scheduler {
-    ready: ReadyQueue {
-        first: None,
-        last: None,
-        count: 0,
-    },
+    ready: ReadyQueue::new(),
     load: LoadAverage {
         one: 0,
         five: 0,
@@ -40,12 +39,12 @@ static STATE: Mutex<Scheduler> = Mutex::new(Scheduler {
     quantum_deadline: None,
     timer_target: None,
     deadlines: DeadlineQueue::new(),
+    min_vruntime: 0,
+    yielded: None,
 });
 
-const TIME_SLICE_NS: u64 = 10_000_000;
-
 pub(super) struct Scheduler {
-    pub ready: ReadyQueue,
+    ready: ReadyQueue,
     live: Option<Thread>,
     reap: Option<Thread>,
     pub current: Option<Thread>,
@@ -56,12 +55,8 @@ pub(super) struct Scheduler {
     timer_target: Option<u64>,
     pub deadlines: DeadlineQueue,
     load: LoadAverage,
-}
-
-pub(super) struct ReadyQueue {
-    first: Option<Thread>,
-    last: Option<Thread>,
-    count: usize,
+    min_vruntime: i128,
+    yielded: Option<u64>,
 }
 
 /// Fixed-point (16 fractional bits) runnable-thread averages updated by timer interrupts.
@@ -82,7 +77,7 @@ pub(super) enum SuspendReason {
 
 /// # Safety
 ///
-/// Initialization and subsequent scheduling must run on the same processor; the exception entry must be installed, and the current stack must stay alive as the scheduling stack.
+/// Initialization and scheduling must run on the same processor. The exception entry and monotonic timer must be initialized before threads start. The current stack must stay alive as the scheduling stack.
 pub fn initialize() -> Result<(), ThreadError> {
     let _interrupts = InterruptGuard::new();
     let mut initialized = false;
@@ -106,6 +101,7 @@ pub(crate) fn start(thread: &Thread) -> Result<(), ThreadError> {
     let _interrupts = InterruptGuard::new();
     dispatcher()?;
     let mut scheduler = STATE.lock();
+    scheduler.account_current(hardware::timer().now_ns()?);
     let mut data = thread.0.data.lock();
     if data.state != ThreadState::Created {
         return Err(ThreadError::InvalidState);
@@ -114,7 +110,7 @@ pub(crate) fn start(thread: &Thread) -> Result<(), ThreadError> {
     data.live_next = scheduler.live.take();
     drop(data);
     scheduler.live = Some(thread.clone());
-    scheduler.ready.push(thread.clone());
+    scheduler.enqueue(thread.clone(), Placement::New);
     Ok(())
 }
 
@@ -125,6 +121,30 @@ pub fn current() -> Option<Thread> {
 
 pub fn yield_now() -> Result<(), ThreadError> {
     suspend(SuspendReason::Yield)
+}
+
+pub(super) fn set_nice(thread: &Thread, nice: i8) -> Result<(), ThreadError> {
+    if !(-20..=19).contains(&nice) {
+        return Err(ThreadError::InvalidPriority);
+    }
+    with_scheduler(|scheduler| {
+        let mut data = thread.0.data.lock();
+        if matches!(data.state, ThreadState::Dying(_) | ThreadState::Dead(_)) {
+            return Err(ThreadError::InvalidState);
+        }
+        let queued = data.state == ThreadState::Ready;
+        drop(data);
+        if queued {
+            scheduler.ready.remove(thread);
+        }
+        data = thread.0.data.lock();
+        data.fair.set_nice(nice);
+        drop(data);
+        if queued {
+            scheduler.ready.restore(thread.clone());
+        }
+        Ok(())
+    })
 }
 
 /// Requests rescheduling before returning to user mode; kernel execution is not switched out asynchronously.
@@ -150,12 +170,13 @@ pub fn set_preemption_deadline(deadline_ns: Option<u64>) -> Result<(), ThreadErr
 
 pub(super) fn preempt_if_requested() -> Result<(), ThreadError> {
     let _interrupts = InterruptGuard::new();
+    with_scheduler(|scheduler| scheduler.arm_timer())?;
     let requested = with_scheduler(|scheduler| {
         if !scheduler.preemption_requested
-            || !scheduler
-                .current
-                .as_ref()
-                .is_some_and(|thread| matches!(thread.0.kind, ThreadKind::User(_)))
+            || !scheduler.current.as_ref().is_some_and(|thread| {
+                matches!(thread.0.kind, ThreadKind::User(_))
+                    && thread.0.data.lock().state == ThreadState::Running
+            })
         {
             return false;
         }
@@ -189,11 +210,28 @@ pub(super) fn suspend(reason: SuspendReason) -> Result<(), ThreadError> {
             return Err(ThreadError::InvalidState);
         }
         drop(data);
+        scheduler.account_current(hardware::timer().now_ns()?);
+        scheduler
+            .current
+            .as_ref()
+            .unwrap()
+            .0
+            .data
+            .lock()
+            .dispatched_ns = None;
         scheduler.request = Some(reason);
     }
     if let Err(error) = dispatcher.switch_from_current() {
         let mut scheduler = STATE.lock();
         scheduler.request = None;
+        scheduler
+            .current
+            .as_ref()
+            .unwrap()
+            .0
+            .data
+            .lock()
+            .dispatched_ns = Some(hardware::timer().now_ns()?);
         return Err(error.into());
     }
     Ok(())
@@ -225,6 +263,7 @@ pub(crate) fn timer_interrupt() -> Result<(), ThreadError> {
     let now = hardware::timer().now_ns()?;
     crate::ipc::timer_interrupt(now);
     let mut scheduler = STATE.lock();
+    scheduler.account_current(now);
     scheduler.timer_target = None;
     while let Some(thread) = scheduler.deadlines.pop_due(now) {
         let generation = thread.0.data.lock().wait.as_ref().unwrap().generation;
@@ -271,7 +310,7 @@ pub fn run() -> ! {
     loop {
         run_ready().unwrap_or_else(|error| panic!("failed to schedule thread: {error:?}"));
         let _interrupts = InterruptGuard::new();
-        if STATE.lock().ready.first.is_none() {
+        if STATE.lock().ready.first().is_none() {
             hardware::cpu().idle_until_interrupt();
         }
     }
@@ -286,24 +325,13 @@ fn dispatch() -> Result<bool, ThreadError> {
             return Err(ThreadError::InvalidState);
         }
         scheduler.preemption_requested = false;
-        let Some(thread) = scheduler.ready.pop() else {
+        let Some(mut thread) = scheduler.ready.pop() else {
             return Ok(false);
         };
-        scheduler.quantum_deadline = if matches!(thread.0.kind, ThreadKind::User(_)) {
-            match hardware::timer().now_ns() {
-                Ok(now) => Some(now.saturating_add(TIME_SLICE_NS)),
-                Err(error) => {
-                    scheduler.ready.push_front(thread);
-                    return Err(error.into());
-                }
-            }
-        } else {
-            None
-        };
-        if let Err(error) = scheduler.arm_timer() {
-            scheduler.quantum_deadline = None;
-            scheduler.ready.push_front(thread);
-            return Err(error);
+        if scheduler.yielded.take() == Some(thread.id()) && scheduler.ready.count != 0 {
+            let other = scheduler.ready.pop().unwrap();
+            scheduler.ready.restore(thread);
+            thread = other;
         }
         let (resources, previous) = {
             let mut data = thread.0.data.lock();
@@ -315,13 +343,23 @@ fn dispatch() -> Result<bool, ThreadError> {
             if previous == ThreadState::Ready {
                 data.state = ThreadState::Running;
             }
-            data.dispatched_ns = hardware::timer().now_ns().ok();
+            data.fair.slice_start = data.cpu_ns;
             (
                 data.resources.take().expect("missing thread resources"),
                 previous,
             )
         };
         scheduler.current = Some(thread.clone());
+        if let Err(error) = scheduler.arm_timer() {
+            scheduler.current = None;
+            let mut data = thread.0.data.lock();
+            data.resources = Some(resources);
+            data.state = previous;
+            drop(data);
+            scheduler.ready.restore(thread);
+            scheduler.quantum_deadline = None;
+            return Err(error);
+        }
         (thread, resources, previous)
     };
     let task = thread.task();
@@ -329,7 +367,10 @@ fn dispatch() -> Result<bool, ThreadError> {
     let result = task
         .as_ref()
         .map_or(Ok(()), |task| task.activate())
-        .and_then(|()| dispatcher.switch_to(&resources.context).map_err(Into::into));
+        .and_then(|()| {
+            thread.0.data.lock().dispatched_ns = Some(hardware::timer().now_ns()?);
+            dispatcher.switch_to(&resources.context).map_err(Into::into)
+        });
     if task.is_some() {
         crate::memory::manager()
             .kernel_address_space()
@@ -342,9 +383,10 @@ fn dispatch() -> Result<bool, ThreadError> {
         resources.executed = executed;
         data.resources = Some(resources);
         data.state = previous;
+        data.dispatched_ns = None;
         drop(data);
         scheduler.current = None;
-        scheduler.ready.push_front(thread);
+        scheduler.ready.restore(thread);
         scheduler.quantum_deadline = None;
         scheduler.arm_timer()?;
         return Err(error);
@@ -364,11 +406,6 @@ fn complete(thread: Thread, resources: ThreadResources) {
     scheduler.preemption_deadline = None;
     scheduler.quantum_deadline = None;
     let mut data = thread.0.data.lock();
-    if let Some(start) = data.dispatched_ns.take()
-        && let Ok(now) = hardware::timer().now_ns()
-    {
-        data.cpu_ns = data.cpu_ns.saturating_add(now.saturating_sub(start));
-    }
     if let ThreadState::Dying(status) = data.state {
         reason = SuspendReason::Exit(status);
     }
@@ -402,8 +439,12 @@ fn complete(thread: Thread, resources: ThreadResources) {
     };
     drop(data);
     if ready {
-        scheduler.ready.push(thread);
+        if matches!(reason, SuspendReason::Yield) {
+            scheduler.yielded = Some(thread.id());
+        }
+        scheduler.enqueue(thread, Placement::Requeue);
     }
+    scheduler.update_min_vruntime();
 }
 
 pub(super) extern "C" fn enter(_: usize) -> ! {
@@ -448,7 +489,7 @@ pub(crate) fn terminate(thread: &Thread, status: usize) {
             thread.0.data.lock().reap_next = scheduler.reap.take();
             scheduler.reap = Some(thread.clone());
         } else if previous == ThreadState::Blocked {
-            scheduler.ready.push(thread.clone());
+            scheduler.enqueue(thread.clone(), Placement::Wake);
         }
     });
 }
@@ -471,7 +512,7 @@ pub(crate) fn suspend_interrupted(thread: &Thread, generation: u64) -> Result<()
 pub(crate) fn resume_interrupted(thread: &Thread) {
     with_scheduler(|scheduler| {
         thread.0.data.lock().state = ThreadState::Ready;
-        scheduler.ready.push(thread.clone());
+        scheduler.enqueue(thread.clone(), Placement::Wake);
     });
 }
 
@@ -503,12 +544,19 @@ pub(crate) fn reap_terminated() {
 
 pub(super) fn with_scheduler<T>(action: impl FnOnce(&mut Scheduler) -> T) -> T {
     let _interrupts = InterruptGuard::new();
-    action(&mut STATE.lock())
+    let mut scheduler = STATE.lock();
+    if let Ok(now) = hardware::timer().now_ns() {
+        scheduler.account_current(now);
+    }
+    action(&mut scheduler)
 }
 
 impl Scheduler {
     fn arm_timer(&mut self) -> Result<(), ThreadError> {
         let timer = hardware::timer();
+        let now = timer.now_ns()?;
+        self.account_current(now);
+        self.refresh_slice(now);
         let target = match (self.deadlines.next_deadline(), self.preemption_deadline) {
             (Some(wait), Some(preemption)) => Some(wait.min(preemption)),
             (wait, preemption) => wait.or(preemption),
@@ -530,7 +578,6 @@ impl Scheduler {
             self.timer_target = None;
             return Ok(());
         };
-        let now = timer.now_ns()?;
         let mut deadline = target.max(now);
         loop {
             match timer.set_deadline(deadline) {
@@ -591,60 +638,5 @@ impl LoadAverage {
             };
             *value = next.min(u128::from(u32::MAX)) as u32;
         }
-    }
-}
-
-impl ReadyQueue {
-    fn remove(&mut self, target: &Thread) {
-        let mut previous: Option<Thread> = None;
-        let mut cursor = self.first.clone();
-        while let Some(thread) = cursor {
-            let next = thread.0.data.lock().ready_next.clone();
-            if thread.same(target) {
-                if let Some(previous) = &previous {
-                    previous.0.data.lock().ready_next = next.clone();
-                } else {
-                    self.first = next.clone();
-                }
-                if next.is_none() {
-                    self.last = previous;
-                }
-                self.count = self.count.saturating_sub(1);
-                thread.0.data.lock().ready_next = None;
-                return;
-            }
-            previous = Some(thread);
-            cursor = next;
-        }
-        panic!("missing ready thread");
-    }
-
-    pub fn push(&mut self, thread: Thread) {
-        self.count = self.count.saturating_add(1);
-        if let Some(last) = &self.last {
-            last.0.data.lock().ready_next = Some(thread.clone());
-        } else {
-            self.first = Some(thread.clone());
-        }
-        self.last = Some(thread);
-    }
-
-    fn push_front(&mut self, thread: Thread) {
-        self.count = self.count.saturating_add(1);
-        thread.0.data.lock().ready_next = self.first.take();
-        if self.last.is_none() {
-            self.last = Some(thread.clone());
-        }
-        self.first = Some(thread);
-    }
-
-    fn pop(&mut self) -> Option<Thread> {
-        let thread = self.first.take()?;
-        self.count = self.count.saturating_sub(1);
-        self.first = thread.0.data.lock().ready_next.take();
-        if self.first.is_none() {
-            self.last = None;
-        }
-        Some(thread)
     }
 }

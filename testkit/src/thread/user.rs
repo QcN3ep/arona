@@ -3,6 +3,8 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::{Mutex, Once};
 
+mod fair;
+
 use kernel::{
     hardware::{
         self,
@@ -303,6 +305,7 @@ fn entry_rollback_and_creator_exit(set_floating_enabled: fn(bool)) {
 }
 
 fn scenarios(_: usize) -> usize {
+    fair::run();
     distinct_spaces_and_start();
     cancelled_continuations();
     cancelled_ipc_wait();
@@ -531,7 +534,7 @@ fn never_entered_and_faulted() {
 
 fn fault_isolation() {
     let faulted = Fixture::new(1, u64::MAX - 1);
-    let sibling = Fixture::new_in(faulted.task.clone(), 73, 4);
+    let sibling = Fixture::new_in(faulted.task.clone(), 73, BUSY);
     let child = faulted.task.create_child().unwrap();
     faulted.thread.start().unwrap();
     sibling.thread.start().unwrap();
@@ -550,6 +553,7 @@ fn fault_isolation() {
             .mapping
             .is_some()
     );
+    sibling.write_tls(1, &[1]);
     wait_dead(&sibling.thread);
     sibling.assert_exit(73);
     assert_eq!(sibling.marker(), 73);

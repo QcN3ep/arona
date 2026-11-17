@@ -65,9 +65,9 @@ fn fifo_delivery(event: &EventReference) {
     let third = Thread::new(waiter, 1).unwrap();
     for thread in [&first, &second, &third] {
         thread.start().unwrap();
-    }
-    thread::yield_now().unwrap();
-    for thread in [&first, &second, &third] {
+        while thread.state() == ThreadState::Ready {
+            thread::yield_now().unwrap();
+        }
         assert_eq!(thread.state(), ThreadState::Blocked);
     }
     event.signal(1).unwrap();

@@ -63,7 +63,8 @@ The kernel log records monotonic timestamps after timer initialization; earlier 
 
 ## CPU Time Accounting
 
-The scheduler timestamps each dispatch and adds the elapsed interval to the thread's `cpu_ns` when the thread suspends.
+The scheduler timestamps each dispatch and accounts for elapsed execution at scheduling events and before suspension.
+Each update advances the accounting timestamp, so overlapping queries and timer events do not count the same interval twice.
 A `CPU_TIME` query also adds the interval that is currently being dispatched, so a running thread reports live execution time instead of only time from its previous suspension.
 The counter covers both user mode and kernel time spent on behalf of the thread; the kernel does not maintain separate user and system counters.
 Process-wide totals therefore sum the finished threads' counters with each live thread's current counter.

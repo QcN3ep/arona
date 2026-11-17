@@ -3,6 +3,7 @@
 //! Thread lifecycle, switching, and waiting for wakeup.
 
 mod deadline;
+mod ready;
 pub mod scheduler;
 mod user;
 mod wait;
@@ -54,6 +55,7 @@ pub enum ThreadError {
     NotInitialized,
     AlreadyInitialized,
     InvalidState,
+    InvalidPriority,
     Terminated,
     Capacity,
     GenerationExhausted,
@@ -98,7 +100,8 @@ enum ThreadKind {
 struct ThreadData {
     state: ThreadState,
     resources: Option<ThreadResources>,
-    ready_next: Option<Thread>,
+    ready: ready::Links,
+    fair: scheduler::Entity,
     live_next: Option<Thread>,
     task_next: Option<Thread>,
     reap_next: Option<Thread>,
@@ -204,7 +207,8 @@ impl Thread {
                     _stack: stack,
                     executed: false,
                 }),
-                ready_next: None,
+                ready: ready::Links::default(),
+                fair: scheduler::Entity::new(),
                 live_next: None,
                 task_next: None,
                 reap_next: None,
@@ -227,6 +231,17 @@ impl Thread {
             Some(task) => task.start_thread(self),
             None => scheduler::start(self),
         }
+    }
+
+    /// Returns the CFS nice value in the range -20 through 19.
+    pub fn nice(&self) -> i8 {
+        let _interrupts = InterruptGuard::new();
+        self.0.data.lock().fair.nice()
+    }
+
+    /// Changes this thread's relative CPU share without resetting its execution history.
+    pub fn set_nice(&self, nice: i8) -> Result<(), ThreadError> {
+        scheduler::set_nice(self, nice)
     }
 
     pub fn terminate(&self, status: usize) -> Result<(), ThreadError> {
