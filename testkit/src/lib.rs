@@ -27,7 +27,7 @@ pub enum CaseKind {
 }
 
 mod device;
-mod ipc;
+pub mod ipc;
 pub mod memory;
 mod syscall;
 mod task;

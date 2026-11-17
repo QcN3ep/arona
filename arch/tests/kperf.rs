@@ -6,9 +6,17 @@
 #![test_runner(support::run)]
 #![reexport_test_harness_main = "test_main"]
 
+#[path = "kperf/ipc.rs"]
+mod ipc;
 #[path = "kperf/memory.rs"]
 mod memory;
+#[path = "kperf/setup.rs"]
+mod setup;
 mod support;
+
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+static FIRMWARE: AtomicUsize = AtomicUsize::new(0);
 
 mod calibration {
     use testkit::{kperf, perf::Perf};
@@ -54,13 +62,14 @@ unsafe extern "C" {
 ///
 /// The boot mapping and stack must be valid, with interrupts disabled and BSS exclusively writable.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn __wrap__start_native() -> ! {
+unsafe extern "C" fn __wrap__start_native(_cpu: usize, firmware: usize) -> ! {
     let start = core::ptr::addr_of!(_sbss) as *mut u8;
     let length = core::ptr::addr_of!(_ebss) as usize - start as usize;
     // SAFETY: BSS is exclusively writable and has not been used since boot.
     unsafe { start.write_bytes(0, length) };
     uart().init().unwrap();
     arch::hardware::bind();
+    FIRMWARE.store(firmware, Ordering::Relaxed);
     test_main();
     kernel::hardware::cpu().halt()
 }

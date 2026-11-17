@@ -3,6 +3,7 @@
 mod call;
 mod channel;
 mod event;
+pub mod perf;
 mod reply;
 mod timer;
 mod wait;

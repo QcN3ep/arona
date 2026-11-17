@@ -140,6 +140,12 @@ Results record the case name, iterations, total instructions, and instructions p
 Use `--artifacts RUN_DIRECTORY` to rerun a saved case with its original iterations and executable.
 The initial cases in `arch/tests/kperf.rs` calibrate the runner with an empty body and four added instructions per iteration.
 
+IPC cases are selected with `--filter ipc::`.
+They measure 64-byte message round trips, transfers of one or eight handles, request/reply, scheduler handoff, and ready or blocking waits.
+Thread, Task, and channel creation precede the interval. Per-call allocation and cleanup are included.
+Blocking waits include a control message that asks the peer to signal the final event.
+The ready wait over 256 objects also includes the scheduler checkpoints in the wait implementation.
+
 ## Instruction Count Calibration
 
 ```sh
