@@ -844,6 +844,22 @@ fn same_origin(left: Option<&Rc<Origin>>, right: Option<&Rc<Origin>>) -> bool {
 }
 
 impl AddressSpace {
+    pub fn unmap_system_v(&self, range: Range<usize>, id: usize) -> Result<(), runtime::Error> {
+        let addresses: Vec<usize> = self
+            .pages
+            .borrow()
+            .range(range)
+            .filter_map(|(address, page)| {
+                matches!(page.backing, PageBacking::SystemV(segment) if segment == id)
+                    .then_some(*address)
+            })
+            .collect();
+        for address in addresses {
+            self.unmap(address..address + PAGE_SIZE)?;
+        }
+        Ok(())
+    }
+
     pub fn has_system_v(&self, range: Range<usize>, id: usize) -> bool {
         self.pages
             .borrow()

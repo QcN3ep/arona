@@ -313,7 +313,12 @@ static void attachment_boundaries(void) {
     CHECK(SC(98, P(first), 0, 0, P(timeout)) == 0);
     CHECK(wait_child(child) == (42 << 8));
     CHECK(SC(215, P(first), PAGE) == 0);
+    char *other = (char *)SC(222, P(first), PAGE, 3, 0x100022, -1, 0);
+    CHECK(other == first);
+    other[0] = 0x31;
     CHECK(SC(197, P(first)) == 0);
+    CHECK(other[0] == 0x31);
+    CHECK(SC(215, P(other), PAGE) == 0);
     CHECK(SC(215, P(second), 8191) == 0);
     struct shmid_ds stat = {0};
     CHECK(SC(195, id, IPC_STAT, P(&stat)) == 0);
@@ -341,7 +346,7 @@ static void mapping_changes(void) {
     char *moved = (char *)SC(216, P(again), 4096, 4096, 3, 0x30000000);
     CHECK(moved == (char *)0x30000000);
     CHECK(SC(197, P(again)) == -22);
-    CHECK(SC(197, P(moved)) == -22);
+    CHECK(SC(197, P(moved)) == 0);
     CHECK(SC(195, id, IPC_RMID, 0) == 0);
 }
 

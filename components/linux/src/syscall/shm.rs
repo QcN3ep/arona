@@ -248,7 +248,11 @@ pub(super) fn shmdt(process: &mut Process<'_>, address: usize) -> SyscallResult 
     };
     let end = address.saturating_add(attach.mapped_length);
     let attach = process.attaches.remove(&address).unwrap();
-    if process.address_space.unmap(address..end).is_err() {
+    if process
+        .address_space
+        .unmap_system_v(address..end, attach.id)
+        .is_err()
+    {
         process.attaches.insert(address, attach);
         return Err(EINVAL);
     }

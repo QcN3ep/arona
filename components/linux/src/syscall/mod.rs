@@ -165,7 +165,15 @@ pub(crate) fn dispatch<'a>(
             }
             abi::MREMAP => {
                 let result = memory::mremap(&process.address_space, arguments);
-                if result.is_ok() {
+                if let Ok(destination) = result {
+                    if destination != arguments[0]
+                        && let Some(mut attach) = process.attaches.remove(&arguments[0])
+                    {
+                        attach.mapped_length = arguments[2]
+                            .checked_next_multiple_of(crate::elf::PAGE_SIZE)
+                            .unwrap_or(attach.mapped_length);
+                        process.attaches.insert(destination, attach);
+                    }
                     process.detach_shared_range(
                         arguments[0],
                         arguments[0].saturating_add(arguments[1]),
