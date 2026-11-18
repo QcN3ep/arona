@@ -3,7 +3,7 @@
 //! Linux `mount` and `umount2` calls backed by the file service namespace.
 
 use super::super::abi::{EINVAL, ENODEV, ENOENT, ENOTDIR, EOPNOTSUPP, EPERM, Errno, SyscallResult};
-use super::{Pending, completion, filesystem_error, open, outcome, path::Lookup};
+use super::{Pending, completion, filesystem_error, open, outcome};
 use crate::{file::OpenFileDescription, process::Process, syscall::Outcome};
 use alloc::{rc::Rc, vec::Vec};
 use runtime::{Call, Handle};
@@ -21,8 +21,6 @@ const MS_LAZYTIME: u32 = 1 << 25;
 // behavior for an in-memory volume.
 const SUPPORTED_FLAGS: u32 =
     MS_SILENT | MS_NOATIME | MS_NODIRATIME | MS_RELATIME | MS_STRICTATIME | MS_LAZYTIME;
-
-const AT_FDCWD: usize = (-100i32) as usize;
 
 // A user mount is checked in two layers. The Linux layer restricts the canonical
 // target to a writable root and its mount call is gated by the process mount
@@ -79,8 +77,9 @@ pub(super) fn mount<'a>(
     files: &fs::Client<'a>,
     services: &crate::Services<'a>,
     arguments: [usize; 6],
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Outcome<'a> {
-    start(process, files, services, arguments, Request::Mount)
+    start(process, files, services, arguments, Request::Mount, paths)
 }
 
 pub(super) fn umount2<'a>(
@@ -88,8 +87,9 @@ pub(super) fn umount2<'a>(
     files: &fs::Client<'a>,
     services: &crate::Services<'a>,
     arguments: [usize; 6],
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Outcome<'a> {
-    start(process, files, services, arguments, Request::Unmount)
+    start(process, files, services, arguments, Request::Unmount, paths)
 }
 
 fn start<'a>(
@@ -98,10 +98,11 @@ fn start<'a>(
     services: &crate::Services<'a>,
     arguments: [usize; 6],
     request: Request,
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Outcome<'a> {
     let request = (|| {
         check_privileged(process)?;
-        let (target, operation) = match request {
+        let (_target, operation) = match request {
             Request::Mount => {
                 let _source = optional_string(process, arguments[0])?;
                 let target = open::path_bytes(process, arguments[1])?;
@@ -142,7 +143,11 @@ fn start<'a>(
         // Resolve the target through the file service so relative paths, symbolic
         // links, and the mount's own directory name all reach the same canonical
         // path that mount table lookups use.
-        let lookup = Lookup::from_name(process, AT_FDCWD, target)?;
+        let resolved = paths.take()?;
+        if resolved.local {
+            return Err(EPERM);
+        }
+        let lookup = resolved.lookup;
         let request = files
             .start_open_at(
                 lookup.directory(),
@@ -232,7 +237,7 @@ fn mount_target_allowed(path: &[u8]) -> bool {
         .any(|root| path == *root || path.starts_with(root) && path.get(root.len()) == Some(&b'/'))
 }
 
-fn check_privileged(process: &Process<'_>) -> Result<(), Errno> {
+pub(super) fn check_privileged(process: &Process<'_>) -> Result<(), Errno> {
     // Every guest starts as uid 0, so root credentials alone cannot distinguish an
     // ordinary program from one that init or a test granted mount permission.
     if process.mount && process.credentials.uid == 0 && process.credentials.euid == 0 {

@@ -39,8 +39,9 @@ pub(in crate::syscall) fn start<'a>(
     files: &fs::Client<'a>,
     number: usize,
     arguments: [usize; 6],
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Outcome<'a> {
-    outcome(build(process, files, number, arguments))
+    outcome(build(process, files, number, arguments, paths))
 }
 
 fn build<'a>(
@@ -48,6 +49,7 @@ fn build<'a>(
     files: &fs::Client<'a>,
     number: usize,
     arguments: [usize; 6],
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Result<Pending<'a>, Errno> {
     let requested = arguments[2] as u32;
     // REFERENCE: https://man7.org/linux/man-pages/man2/faccessat.2.html
@@ -74,7 +76,17 @@ fn build<'a>(
         }
         return descriptor(process, arguments[0], requested, uid, gid);
     }
-    let lookup = super::path::Lookup::from_name(process, arguments[0], path)?;
+    let resolved = paths.take()?;
+    if resolved.local {
+        return Ok(Pending::Access(Access {
+            source: Source::Ready(resolved.info.ok_or(ENOENT)?),
+            requested,
+            uid,
+            gid,
+            _anchor: None,
+        }));
+    }
+    let lookup = resolved.lookup;
     let request = files
         .start_metadata_at(
             lookup.directory(),
@@ -100,50 +112,58 @@ fn descriptor<'a>(
 ) -> Result<Pending<'a>, Errno> {
     let index = usize::try_from(raw as i32).map_err(|_| EBADF)?;
     let description = Rc::clone(&process.files.get(index).ok_or(EBADF)?.description);
-    let source = match description.as_ref() {
-        OpenFileDescription::Regular { file, .. } => {
-            Source::Pending(file.start_metadata().map_err(filesystem_error)?)
-        }
-        OpenFileDescription::Directory { session, .. } => {
-            Source::Pending(session.start_metadata().map_err(filesystem_error)?)
-        }
-        OpenFileDescription::Socket { .. } | OpenFileDescription::SocketPair { .. } => {
-            Source::Ready(synthetic(0o140777, 1))
-        }
-        OpenFileDescription::Pipe { end, .. } => Source::Ready(synthetic(0o010600, end.inode())),
-        OpenFileDescription::Terminal { .. } => Source::Ready(synthetic(0o020600, 0)),
-        OpenFileDescription::Eventfd { .. }
-        | OpenFileDescription::Timerfd { .. }
-        | OpenFileDescription::Signalfd { .. } => Source::Ready(synthetic(0o100600, 0x10)),
-        OpenFileDescription::Block { device, .. } => {
-            Source::Ready(synthetic(0o060600, device.inode()))
-        }
-        OpenFileDescription::Rtc { .. } => Source::Ready(synthetic(0o020600, 0x11)),
-        OpenFileDescription::VirtualDirectory { inode, .. } => {
-            Source::Ready(synthetic(0o041777, *inode))
-        }
-        OpenFileDescription::MessageQueue { queue, .. }
-        | OpenFileDescription::MqueueFile { queue, .. } => {
-            let mode = if matches!(
-                description.as_ref(),
-                OpenFileDescription::MessageQueue { .. }
-            ) {
-                queue.mode()
-            } else {
-                0o444
-            };
-            Source::Ready(fs::Metadata {
-                mode: 0o100000 | mode,
-                inode: queue.inode(),
-                links: 1,
-                uid: queue.uid(),
-                gid: queue.gid(),
-                ..fs::Metadata::default()
-            })
-        }
-        OpenFileDescription::Virtual { .. } => Source::Ready(synthetic(0o020666, 0)),
-        OpenFileDescription::VirtualFile { inode, .. } => {
-            Source::Ready(synthetic(0o100444, *inode))
+    let source = if let Some(info) = process
+        .files
+        .get(index)
+        .and_then(|descriptor| descriptor.node)
+    {
+        Source::Ready(info)
+    } else {
+        match description.as_ref() {
+            OpenFileDescription::Regular { file, .. } => {
+                Source::Pending(file.start_metadata().map_err(filesystem_error)?)
+            }
+            OpenFileDescription::Directory { session, .. } => {
+                Source::Pending(session.start_metadata().map_err(filesystem_error)?)
+            }
+            OpenFileDescription::Socket { .. } | OpenFileDescription::SocketPair { .. } => {
+                Source::Ready(synthetic(0o140777, 1))
+            }
+            OpenFileDescription::Pipe { end, .. } => {
+                Source::Ready(synthetic(0o010600, end.inode()))
+            }
+            OpenFileDescription::Terminal { .. } => Source::Ready(synthetic(0o020600, 0)),
+            OpenFileDescription::Eventfd { .. }
+            | OpenFileDescription::Timerfd { .. }
+            | OpenFileDescription::Signalfd { .. } => Source::Ready(synthetic(0o100600, 0x10)),
+            OpenFileDescription::Block { device, .. } => {
+                Source::Ready(synthetic(0o060600, device.inode()))
+            }
+            OpenFileDescription::Rtc { .. } => Source::Ready(synthetic(0o020600, 0x11)),
+            OpenFileDescription::VirtualDirectory { inode, .. } => {
+                Source::Ready(synthetic(0o041777, *inode))
+            }
+            OpenFileDescription::MessageQueue { queue, .. }
+            | OpenFileDescription::MqueueFile { queue, .. } => {
+                let mode = if matches!(
+                    description.as_ref(),
+                    OpenFileDescription::MessageQueue { .. }
+                ) {
+                    queue.mode()
+                } else {
+                    0o444
+                };
+                Source::Ready(fs::Metadata {
+                    mode: 0o100000 | mode,
+                    inode: queue.inode(),
+                    links: 1,
+                    uid: queue.uid(),
+                    gid: queue.gid(),
+                    ..fs::Metadata::default()
+                })
+            }
+            OpenFileDescription::Virtual { .. } => Source::Ready(synthetic(0o020666, 0)),
+            OpenFileDescription::VirtualFile { metadata, .. } => Source::Ready(*metadata),
         }
     };
     Ok(Pending::Access(Access {

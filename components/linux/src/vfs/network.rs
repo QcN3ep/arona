@@ -20,7 +20,7 @@ const ROUTE_HEADER: &str =
 
 /// A table under `/proc/net`.
 #[derive(Clone, Copy)]
-pub(super) enum File {
+pub(crate) enum File {
     Dev,
     Route,
     Tcp,
@@ -31,7 +31,7 @@ pub(super) enum File {
 }
 
 impl File {
-    pub(super) fn inode(self) -> u64 {
+    pub(crate) fn inode(self) -> u64 {
         0x7072_1000
             + match self {
                 Self::Dev => 0,
@@ -46,7 +46,7 @@ impl File {
 }
 
 /// Build one snapshot, blocking the open until the network service replies.
-pub(super) fn content(file: File, services: &Services<'_>) -> Result<Vec<u8>, Errno> {
+pub(crate) fn content(file: File, services: &Services<'_>) -> Result<Vec<u8>, Errno> {
     let net = services.net.as_ref().ok_or(ENODEV)?;
     let deadline = runtime::thread::now_ns()
         .map_err(|_| EIO)?

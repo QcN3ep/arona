@@ -9,7 +9,7 @@ pub(crate) mod socketpair;
 pub(crate) mod terminal;
 
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use runtime::{Event, Handle, Timer};
 
 use crate::process::mqueue::Queue;
@@ -25,6 +25,8 @@ pub(crate) struct FileTable<'a> {
 }
 
 pub(crate) struct Descriptor<'a> {
+    /// Identity retained when a Linux-local node opens a device or snapshot.
+    pub node: Option<fs::Metadata>,
     pub description: Rc<OpenFileDescription<'a>>,
     pub close_on_exec: bool,
 }
@@ -58,6 +60,7 @@ pub(crate) enum OpenFileDescription<'a> {
         flags: Cell<u32>,
         offset: Cell<usize>,
         busy: Cell<bool>,
+        entries: RefCell<Option<Vec<crate::vfs::Entry>>>,
     },
     Regular {
         file: fs::File<'a>,
@@ -94,12 +97,14 @@ pub(crate) enum OpenFileDescription<'a> {
     },
     VirtualFile {
         data: Vec<u8>,
-        inode: u64,
+        metadata: fs::Metadata,
         flags: Cell<u32>,
         offset: Cell<usize>,
     },
     VirtualDirectory {
         inode: u64,
+        path: Vec<u8>,
+        entries: RefCell<Option<Vec<crate::vfs::Entry>>>,
         flags: Cell<u32>,
         offset: Cell<usize>,
         busy: Cell<bool>,
@@ -138,6 +143,7 @@ impl<'a> FileTable<'a> {
                 (
                     1,
                     Descriptor {
+                        node: None,
                         description: Rc::clone(&description),
                         close_on_exec: false,
                     },
@@ -145,6 +151,7 @@ impl<'a> FileTable<'a> {
                 (
                     2,
                     Descriptor {
+                        node: None,
                         description,
                         close_on_exec: false,
                     },
@@ -157,6 +164,7 @@ impl<'a> FileTable<'a> {
             table.entries.insert(
                 0,
                 Descriptor {
+                    node: None,
                     description: Rc::new(OpenFileDescription::Terminal {
                         terminal,
                         flags: Cell::new(0),
@@ -203,6 +211,7 @@ impl<'a> FileTable<'a> {
 impl<'a> Descriptor<'a> {
     pub fn terminal(terminal: Rc<terminal::Terminal>, flags: u32, close_on_exec: bool) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::Terminal {
                 terminal,
                 flags: Cell::new(flags),
@@ -212,6 +221,7 @@ impl<'a> Descriptor<'a> {
     }
     pub fn signalfd(mask: u64, flags: u32, close_on_exec: bool) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::Signalfd {
                 mask: Cell::new(mask),
                 flags: Cell::new(2 | flags),
@@ -222,6 +232,7 @@ impl<'a> Descriptor<'a> {
 
     pub fn timerfd(state: TimerState, flags: u32, close_on_exec: bool) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::Timerfd {
                 state,
                 flags: Cell::new(2 | flags),
@@ -232,6 +243,7 @@ impl<'a> Descriptor<'a> {
 
     pub fn eventfd(initial: u32, flags: u32, close_on_exec: bool) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::Eventfd {
                 counter: Cell::new(u64::from(initial)),
                 semaphore: flags & 1 != 0,
@@ -242,6 +254,7 @@ impl<'a> Descriptor<'a> {
     }
     pub fn rtc(flags: u32, close_on_exec: bool) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::Rtc {
                 flags: Cell::new(flags),
             }),
@@ -251,6 +264,7 @@ impl<'a> Descriptor<'a> {
 
     pub fn virtual_file(kind: Virtual, flags: u32, close_on_exec: bool) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::Virtual {
                 kind,
                 flags: Cell::new(flags),
@@ -260,6 +274,7 @@ impl<'a> Descriptor<'a> {
     }
     pub fn block(device: Rc<block::BlockDevice>, flags: u32, close_on_exec: bool) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::Block {
                 device,
                 flags: Cell::new(flags),
@@ -276,6 +291,7 @@ impl<'a> Descriptor<'a> {
         path: Option<Rc<Vec<u8>>>,
     ) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::Regular {
                 file,
                 flags: Cell::new(flags),
@@ -288,10 +304,29 @@ impl<'a> Descriptor<'a> {
     }
 
     pub fn snapshot(data: Vec<u8>, inode: u64, flags: u32, close_on_exec: bool) -> Self {
+        let metadata = fs::Metadata {
+            device: 0x7072,
+            inode,
+            size: data.len() as u64,
+            blocks: (data.len() as u64).div_ceil(512),
+            links: 1,
+            mode: 0o100444,
+            ..fs::Metadata::default()
+        };
+        Self::snapshot_node(data, metadata, flags, close_on_exec)
+    }
+
+    pub fn snapshot_node(
+        data: Vec<u8>,
+        metadata: fs::Metadata,
+        flags: u32,
+        close_on_exec: bool,
+    ) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::VirtualFile {
                 data,
-                inode,
+                metadata,
                 flags: Cell::new(flags),
                 offset: Cell::new(0),
             }),
@@ -300,10 +335,17 @@ impl<'a> Descriptor<'a> {
     }
 
     pub fn virtual_directory(inode: u64, flags: u32, close_on_exec: bool) -> Self {
+        Self::local_directory(b"/dev/mqueue".to_vec(), inode, flags, close_on_exec)
+    }
+
+    pub fn local_directory(path: Vec<u8>, inode: u64, flags: u32, close_on_exec: bool) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::VirtualDirectory {
                 inode,
-                flags: Cell::new(flags & 3),
+                path,
+                entries: RefCell::new(None),
+                flags: Cell::new(flags),
                 offset: Cell::new(0),
                 busy: Cell::new(false),
             }),
@@ -313,6 +355,7 @@ impl<'a> Descriptor<'a> {
 
     pub fn message_queue(queue: Rc<Queue>, flags: u32, close_on_exec: bool) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::MessageQueue {
                 queue,
                 flags: Cell::new(flags),
@@ -323,6 +366,7 @@ impl<'a> Descriptor<'a> {
 
     pub fn mqueue_file(queue: Rc<Queue>, flags: u32, close_on_exec: bool) -> Self {
         Self {
+            node: None,
             description: Rc::new(OpenFileDescription::MqueueFile {
                 queue,
                 flags: Cell::new(flags & 3),
@@ -334,6 +378,7 @@ impl<'a> Descriptor<'a> {
 
     pub fn duplicate(&self, close_on_exec: bool) -> Self {
         Self {
+            node: self.node,
             description: Rc::clone(&self.description),
             close_on_exec,
         }
@@ -423,6 +468,12 @@ impl FilePosition<'_> {
             _ => unreachable!(),
         };
         offset.set(position);
+        if position == 0
+            && let OpenFileDescription::Directory { entries, .. }
+            | OpenFileDescription::VirtualDirectory { entries, .. } = self.description.as_ref()
+        {
+            *entries.borrow_mut() = None;
+        }
     }
 }
 

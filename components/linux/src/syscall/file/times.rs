@@ -56,6 +56,7 @@ pub(in crate::syscall) fn start<'a>(
     files: &fs::Client<'a>,
     services: &Services<'_>,
     arguments: [usize; 6],
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Outcome<'a> {
     let prepared = (|| {
         let flags = arguments[3] as u32;
@@ -78,7 +79,14 @@ pub(in crate::syscall) fn start<'a>(
                 descriptor(process, arguments[0])?
             }
         } else {
-            let lookup = super::path::Lookup::from_name(process, arguments[0], path)?;
+            let resolved = paths.take()?;
+            if resolved.local {
+                if matches!(times, [Time::Omit, Time::Omit]) && resolved.info.is_some() {
+                    return Ok(Pending::Completed(Ok(0)));
+                }
+                return Err(super::super::abi::EROFS);
+            }
+            let lookup = resolved.lookup;
             Target::Path {
                 directory: lookup.anchor,
                 name: lookup.name,

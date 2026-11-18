@@ -38,6 +38,7 @@ pub(super) fn create(process: &mut Process<'_>, address: usize, flags: usize) ->
     }
     let (reader, writer) = PipeEnd::pair().map_err(|()| ENOMEM)?;
     let descriptor = |end: PipeEnd| Descriptor {
+        node: None,
         close_on_exec: flags & O_CLOEXEC != 0,
         description: Rc::new(OpenFileDescription::Pipe {
             flags: Cell::new(u32::from(!end.read) | flags & O_NONBLOCK),

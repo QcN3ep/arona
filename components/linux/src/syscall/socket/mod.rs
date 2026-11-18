@@ -320,6 +320,7 @@ fn install<'a>(
         .files
         .insert(
             Descriptor {
+                node: None,
                 description: Rc::new(OpenFileDescription::Socket {
                     state,
                     flags: core::cell::Cell::new(2 | (flags & O_NONBLOCK)),
@@ -331,7 +332,7 @@ fn install<'a>(
         .ok_or(EMFILE)
 }
 
-pub(super) fn error(error: net::Error) -> Errno {
+pub(crate) fn error(error: net::Error) -> Errno {
     match error {
         net::Error::WouldBlock => EAGAIN,
         net::Error::InProgress => EINPROGRESS,

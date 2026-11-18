@@ -6,17 +6,17 @@
 
 mod access;
 pub(super) mod buffer;
-mod device;
 mod directory;
 mod eventfd;
 mod io;
 mod metadata;
 mod mount;
-mod net;
-mod open;
-pub(in crate::syscall) mod path;
+mod mounts;
+pub(crate) mod open;
+pub(crate) mod path;
 mod pipe;
 mod poll;
+mod resolve;
 mod rtc;
 mod sendfile;
 mod signalfd;
@@ -24,7 +24,7 @@ mod statistics;
 mod terminal;
 mod timerfd;
 mod times;
-mod virtual_file;
+pub(crate) mod virtual_file;
 
 use super::{
     Outcome, abi,
@@ -43,6 +43,8 @@ pub(super) use open::{openat, path_bytes};
 pub(super) const O_CLOEXEC: u32 = 0x80000;
 
 pub(super) enum Pending<'a> {
+    Completed(SyscallResult),
+    Resolve(alloc::boxed::Box<resolve::Resolve<'a>>),
     TerminalChange(terminal::Change),
     Terminal(terminal::Read<'a>),
     TerminalOutput(terminal::Output),
@@ -51,6 +53,7 @@ pub(super) enum Pending<'a> {
     Poll(poll::Poll<'a>),
     Open(open::Open<'a>),
     Mount(mount::Mount<'a>),
+    MountTable(mounts::Read),
     Path(path::PathOperation<'a>),
     Eventfd(eventfd::Pending<'a>),
     Timerfd(timerfd::Read<'a>),
@@ -66,7 +69,7 @@ pub(super) enum Pending<'a> {
     },
     Stat(metadata::Stat<'a>),
     Statistics(statistics::Statistics<'a>),
-    Directory(directory::ReadDirectory<'a>),
+    Directory(alloc::boxed::Box<directory::ReadDirectory<'a>>),
     Output {
         request: devmgr::device::Pending<usize, usize>,
         consumed: usize,
@@ -90,7 +93,30 @@ pub(super) fn dispatch<'a>(
     number: usize,
     arguments: [usize; 6],
 ) -> Option<Outcome<'a>> {
-    if let Some(outcome) = path::dispatch(process, files, number, arguments) {
+    if let Some(outcome) = resolve::start(process, number, arguments) {
+        return Some(outcome);
+    }
+    dispatch_resolved(
+        process,
+        index,
+        files,
+        services,
+        number,
+        arguments,
+        &mut resolve::Prepared::empty(),
+    )
+}
+
+fn dispatch_resolved<'a>(
+    process: &mut Process<'a>,
+    index: usize,
+    files: &fs::Client<'a>,
+    services: &crate::Services<'a>,
+    number: usize,
+    arguments: [usize; 6],
+    paths: &mut resolve::Prepared<'a>,
+) -> Option<Outcome<'a>> {
+    if let Some(outcome) = path::dispatch(process, files, number, arguments, paths) {
         return Some(outcome);
     }
     Some(match number {
@@ -108,15 +134,7 @@ pub(super) fn dispatch<'a>(
         abi::DUP => Outcome::Complete(duplicate(process, arguments[0], 0, false)),
         abi::DUP3 => Outcome::Complete(dup3(process, arguments[0], arguments[1], arguments[2])),
         abi::FCNTL => Outcome::Complete(fcntl(process, arguments[0], arguments[1], arguments[2])),
-        abi::OPENAT => openat(
-            process,
-            files,
-            services,
-            arguments[0],
-            arguments[1],
-            arguments[2],
-            arguments[3],
-        ),
+        abi::OPENAT => openat(process, files, services, arguments[2], arguments[3], paths),
         abi::CLOSE => Outcome::Complete(close(process, arguments[0])),
         abi::FSTAT => fstat(process, arguments[0], arguments[1]),
         abi::STATFS | abi::FSTATFS => statistics::start(
@@ -125,6 +143,7 @@ pub(super) fn dispatch<'a>(
             arguments[0],
             arguments[1],
             number == abi::FSTATFS,
+            paths,
         ),
         abi::SIGNALFD4 => Outcome::Complete(signalfd::create(
             process,
@@ -157,8 +176,9 @@ pub(super) fn dispatch<'a>(
             arguments[1],
             arguments[2],
             arguments[3],
+            paths,
         ),
-        abi::STATX => metadata::statx(process, files, arguments),
+        abi::STATX => metadata::statx(process, files, arguments, paths),
         abi::LSEEK => seek(process, arguments[0], arguments[1], arguments[2]),
         abi::READ | abi::PREAD64 | abi::READV | abi::PREADV => read(
             process,
@@ -183,15 +203,15 @@ pub(super) fn dispatch<'a>(
                 .map(|request| Pending::GlobalSync { request })
                 .map_err(filesystem_error),
         ),
-        abi::FACCESSAT | abi::FACCESSAT2 => access::start(process, files, number, arguments),
-        abi::UTIMENSAT => times::start(process, files, services, arguments),
+        abi::FACCESSAT | abi::FACCESSAT2 => access::start(process, files, number, arguments, paths),
+        abi::UTIMENSAT => times::start(process, files, services, arguments, paths),
         abi::SENDFILE => sendfile::start(process, arguments),
         abi::UMASK => Outcome::Complete(Ok(core::mem::replace(
             &mut process.umask,
             arguments[0] as u16 & 0o777,
         ) as usize)),
-        abi::MOUNT => mount::mount(process, files, services, arguments),
-        abi::UMOUNT2 => mount::umount2(process, files, services, arguments),
+        abi::MOUNT => mount::mount(process, files, services, arguments, paths),
+        abi::UMOUNT2 => mount::umount2(process, files, services, arguments, paths),
         _ => return None,
     })
 }
@@ -289,7 +309,7 @@ pub(super) fn fcntl(
     }
 }
 
-fn fd(raw: usize) -> Result<usize, Errno> {
+pub(crate) fn fd(raw: usize) -> Result<usize, Errno> {
     usize::try_from(raw as i32).map_err(|_| EBADF)
 }
 
@@ -303,6 +323,7 @@ fn outcome<'a>(operation: Result<Pending<'a>, Errno>) -> Outcome<'a> {
 impl<'a> Pending<'a> {
     pub fn interrupt(&self, process: &Process<'_>) -> Option<(bool, SyscallResult)> {
         match self {
+            Self::Resolve(resolve) => resolve.interrupt(process),
             Self::Terminal(read) => Some(read.interrupt(process)),
             Self::TerminalOutput(output) => output.interrupt(),
             Self::TerminalWrite(_)
@@ -320,6 +341,7 @@ impl<'a> Pending<'a> {
             items.push(runtime::ipc::WaitItem::new(call, runtime::ipc::READABLE));
         }
         match self {
+            Self::Resolve(resolve) => resolve.waits(items),
             Self::Poll(poll) => poll.waits(items),
             Self::Terminal(read) => read.waits(items),
             Self::Timerfd(read) => read.waits(items),
@@ -330,6 +352,8 @@ impl<'a> Pending<'a> {
 
     pub fn call(&self) -> Option<&Handle<Call>> {
         match self {
+            Self::Completed(_) => None,
+            Self::Resolve(resolve) => resolve.call(),
             Self::Terminal(_)
             | Self::TerminalWrite(_)
             | Self::Eventfd(_)
@@ -340,6 +364,7 @@ impl<'a> Pending<'a> {
             Self::Pipe(_) | Self::Poll(_) => None,
             Self::Open(open) => Some(open.call()),
             Self::Mount(mount) => Some(mount.call()),
+            Self::MountTable(read) => Some(read.call()),
             Self::Path(path) => Some(path.call()),
             Self::Read(read) => read.call(),
             Self::Write(write) => write.call(),
@@ -348,7 +373,7 @@ impl<'a> Pending<'a> {
             Self::Sendfile(sendfile) => sendfile.call(),
             Self::Utimens(utimens) => utimens.call(),
             Self::Stat(stat) => Some(stat.call()),
-            Self::Statistics(statistics) => Some(statistics.call()),
+            Self::Statistics(statistics) => statistics.call(),
             Self::Directory(directory) => directory.call(),
             Self::Output { request, .. } => Some(request.call()),
             Self::Truncate { request, .. } => Some(request.call()),
@@ -362,8 +387,11 @@ impl<'a> Pending<'a> {
         process: &mut Process<'a>,
         index: usize,
         files: &fs::Client<'a>,
+        services: &crate::Services<'a>,
     ) -> Option<SyscallResult> {
         match self {
+            Self::Completed(result) => Some(*result),
+            Self::Resolve(resolve) => resolve.poll(process, index, files, services),
             Self::Terminal(read) => read.poll(process),
             Self::TerminalOutput(output) => output.poll(),
             Self::TerminalWrite(write) => write.poll(),
@@ -375,6 +403,7 @@ impl<'a> Pending<'a> {
             Self::Poll(poll) => poll.poll(process, index),
             Self::Open(open) => open.poll(process, files),
             Self::Mount(mount) => mount.poll(),
+            Self::MountTable(read) => read.poll(process, files),
             Self::Path(path) => path.poll(process),
             Self::Read(read) => read.poll(process),
             Self::Write(write) => write.poll(),
@@ -384,7 +413,7 @@ impl<'a> Pending<'a> {
             Self::Utimens(utimens) => utimens.poll(files),
             Self::Stat(stat) => stat.poll(process),
             Self::Statistics(statistics) => statistics.poll(process),
-            Self::Directory(directory) => directory.poll(process),
+            Self::Directory(directory) => directory.poll(process, files, services),
             Self::Output {
                 request, consumed, ..
             } => match request.try_complete() {
@@ -412,14 +441,14 @@ impl<'a> Pending<'a> {
     }
 }
 
-pub(super) fn completion<T>(result: Result<T, fs::Error>) -> Option<Result<T, fs::Error>> {
+pub(crate) fn completion<T>(result: Result<T, fs::Error>) -> Option<Result<T, fs::Error>> {
     match result {
         Err(fs::Error::Runtime(runtime::Error::Kernel(runtime::KernelError::WouldBlock))) => None,
         result => Some(result),
     }
 }
 
-pub(super) fn filesystem_error(error: fs::Error) -> Errno {
+pub(crate) fn filesystem_error(error: fs::Error) -> Errno {
     use super::abi::{EEXIST, EFBIG, EISDIR, ENOENT, ENOMEM, ENOSPC, ENOTDIR, EROFS};
     match error {
         fs::Error::NotFound => ENOENT,

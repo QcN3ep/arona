@@ -196,8 +196,12 @@ static void sockets(void) {
 
 static void errors(void) {
     CHECK(open_file("/proc/net/absent", 0) == -2);
-    CHECK(open_file("/proc/net", 0) == -20);
-    CHECK(open_file("/proc/net/", 0) == -20);
+    long directory = open_file("/proc/net", 0x10000);
+    CHECK(directory >= 0);
+    close_fd(directory);
+    directory = open_file("/proc/net/", 0);
+    CHECK(directory >= 0);
+    close_fd(directory);
     CHECK(open_file("/proc/net/tcp", 1) == -30);
     CHECK(open_file("/proc/net/tcp", 0x10000) == -20);
 }

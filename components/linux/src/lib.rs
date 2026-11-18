@@ -21,6 +21,7 @@ pub mod service;
 mod shm;
 mod stack;
 mod syscall;
+mod vfs;
 
 pub use client::{Control, Program, Services};
 pub use log::Log;

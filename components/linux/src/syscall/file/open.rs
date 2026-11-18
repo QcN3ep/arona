@@ -13,7 +13,7 @@ use super::super::{
         EOPNOTSUPP, EOVERFLOW, EROFS, Errno, SyscallResult,
     },
 };
-use super::{O_CLOEXEC, Pending, completion, filesystem_error, outcome, virtual_file};
+use super::{O_CLOEXEC, Pending, completion, filesystem_error, outcome};
 use crate::{
     Services,
     elf::PAGE_SIZE,
@@ -44,50 +44,80 @@ pub(in crate::syscall) fn openat<'a>(
     process: &mut Process<'a>,
     files: &fs::Client<'a>,
     services: &Services<'_>,
-    directory: usize,
-    address: usize,
     flags: usize,
     mode: usize,
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Outcome<'a> {
     let operation = (|| {
-        let mut flags = flags as u32;
-        // An O_PATH request resolves the node without opening it for I/O, so every other
-        // flag — including the access mode — is ignored rather than rejected.
-        if flags & O_PATH != 0 {
-            flags &= O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+        let flags = validate_flags(flags)?;
+        let resolved = paths.take()?;
+        let lookup = resolved.lookup;
+        let name = lookup.name.clone();
+        if resolved.local
+            && resolved.info.is_some()
+            && flags & (O_CREAT | O_EXCL) == O_CREAT | O_EXCL
+        {
+            return Err(super::super::abi::EEXIST);
         }
-        if flags & 0x100000 != 0 {
-            flags |= O_DSYNC;
+        if resolved.local
+            && resolved
+                .info
+                .is_some_and(|info| info.mode & 0o170000 == 0o040000)
+        {
+            if flags & (3 | O_CREAT | O_TRUNC) != 0 {
+                return Err(EISDIR);
+            }
+            let info = resolved.info.unwrap();
+            return process
+                .files
+                .insert(
+                    Descriptor::local_directory(
+                        resolved.path,
+                        info.inode,
+                        flags & !O_CLOEXEC,
+                        flags & O_CLOEXEC != 0,
+                    ),
+                    0,
+                )
+                .ok_or(EMFILE)
+                .map(|fd| Outcome::Complete(Ok(fd)));
         }
-        let supported = 3
-            | O_CREAT
-            | O_EXCL
-            | 0x100
-            | O_TRUNC
-            | O_APPEND
-            | O_NONBLOCK
-            | O_DSYNC
-            | 0x100000
-            | 0x8000
-            | 0x40000
-            | 0x4000
-            | O_DIRECTORY
-            | O_NOFOLLOW
-            | O_PATH
-            | O_CLOEXEC;
-        if flags & !supported != 0 {
-            // TODO: Support anonymous temporary files and signal-driven open options.
-            return Err(EOPNOTSUPP);
+        if resolved.local && flags & O_PATH != 0 {
+            let info = resolved.info.ok_or(ENOENT)?;
+            if flags & O_DIRECTORY != 0 {
+                return Err(ENOTDIR);
+            }
+            let data = crate::vfs::local::link(process, &resolved.path).unwrap_or_default();
+            return process
+                .files
+                .insert(
+                    Descriptor::snapshot_node(
+                        data,
+                        info,
+                        flags & !O_CLOEXEC,
+                        flags & O_CLOEXEC != 0,
+                    ),
+                    0,
+                )
+                .ok_or(EMFILE)
+                .map(|fd| Outcome::Complete(Ok(fd)));
         }
-        if flags & 3 == 3 || flags & (O_CREAT | O_DIRECTORY) == O_CREAT | O_DIRECTORY {
-            return Err(EINVAL);
+        if resolved.local
+            && resolved
+                .info
+                .is_some_and(|info| info.mode & 0o170000 == 0o120000)
+        {
+            return Err(super::super::abi::ELOOP);
         }
-        let name = path(process, address)?;
-        if matches!(
-            name.as_slice(),
-            b"/proc" | b"/proc/" | b"/proc/net" | b"/proc/net/" | b"/sys" | b"/sys/"
-        ) {
-            return Err(ENOTDIR);
+        if name == b"/proc/mounts" {
+            if flags & O_DIRECTORY != 0 {
+                return Err(ENOTDIR);
+            }
+            if flags & (3 | O_CREAT | O_TRUNC) != 0 {
+                return Err(EROFS);
+            }
+            let read = super::mounts::Read::new(files, resolved.info.ok_or(ENOENT)?.inode, flags)?;
+            return Ok(super::outcome(Ok(Pending::MountTable(read))));
         }
         if name.starts_with(b"/proc/") || name.starts_with(b"/sys/") {
             return open_snapshot(process, services, &name, flags)
@@ -136,8 +166,7 @@ pub(in crate::syscall) fn openat<'a>(
                 .ok_or(EMFILE)
                 .map(|fd| Outcome::Complete(Ok(fd)));
         }
-        let lookup = super::path::Lookup::from_name(process, directory, name)?;
-        let path = Rc::new(lookup.name.clone());
+        let path = Rc::new(resolved.path);
         let request = files
             .start_open_at(
                 lookup.directory(),
@@ -164,13 +193,49 @@ pub(in crate::syscall) fn openat<'a>(
     operation.unwrap_or_else(|error| Outcome::Complete(Err(error)))
 }
 
+pub(super) fn validate_flags(flags: usize) -> Result<u32, Errno> {
+    let mut flags = flags as u32;
+    // An O_PATH request resolves the node without opening it for I/O, so every other
+    // flag — including the access mode — is ignored rather than rejected.
+    if flags & O_PATH != 0 {
+        flags &= O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+    }
+    if flags & 0x100000 != 0 {
+        flags |= O_DSYNC;
+    }
+    let supported = 3
+        | O_CREAT
+        | O_EXCL
+        | 0x100
+        | O_TRUNC
+        | O_APPEND
+        | O_NONBLOCK
+        | O_DSYNC
+        | 0x100000
+        | 0x8000
+        | 0x40000
+        | 0x4000
+        | O_DIRECTORY
+        | O_NOFOLLOW
+        | O_PATH
+        | O_CLOEXEC;
+    if flags & !supported != 0 {
+        // TODO: Support anonymous temporary files and signal-driven open options.
+        return Err(EOPNOTSUPP);
+    }
+    if flags & 3 == 3 || flags & (O_CREAT | O_DIRECTORY) == O_CREAT | O_DIRECTORY {
+        return Err(EINVAL);
+    }
+    Ok(flags)
+}
+
 fn open_snapshot(
     process: &mut Process<'_>,
     services: &Services<'_>,
     name: &[u8],
     flags: u32,
 ) -> Result<usize, Errno> {
-    let Some(file) = virtual_file::resolve(process, name) else {
+    let Some(file) = crate::vfs::procfs::resolve(process, name) else {
         return Err(ENOENT);
     };
     if flags & O_DIRECTORY != 0 {
@@ -185,7 +250,7 @@ fn open_snapshot(
         .insert(
             Descriptor::snapshot(
                 data,
-                file.inode(),
+                file.inode(process.pid),
                 status_flags(flags, O_NONBLOCK | O_APPEND),
                 flags & O_CLOEXEC != 0,
             ),
@@ -336,7 +401,7 @@ impl<'a> Open<'a> {
     }
 }
 
-pub(super) fn path(process: &Process<'_>, address: usize) -> Result<Vec<u8>, Errno> {
+pub(crate) fn path(process: &Process<'_>, address: usize) -> Result<Vec<u8>, Errno> {
     let path = path_bytes(process, address)?;
     if path.is_empty() {
         return Err(ENOENT);

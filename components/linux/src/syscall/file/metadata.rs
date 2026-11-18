@@ -33,6 +33,20 @@ pub(in crate::syscall) fn fstat<'a>(
 }
 
 fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) -> Outcome<'a> {
+    if let Some(mut metadata) = fd(raw)
+        .ok()
+        .and_then(|fd| process.files.get(fd))
+        .and_then(|descriptor| descriptor.node)
+    {
+        if let Some(OpenFileDescription::MqueueFile { queue, .. }) = fd(raw)
+            .ok()
+            .and_then(|fd| process.files.get(fd))
+            .map(|descriptor| descriptor.description.as_ref())
+        {
+            metadata.size = crate::syscall::mqueue::attribute_len(queue) as u64;
+        }
+        return Outcome::Complete(buffer.write(process, metadata));
+    }
     let description = match fd(raw).ok().and_then(|fd| process.files.get(fd)) {
         Some(descriptor) => Rc::clone(&descriptor.description),
         None => return Outcome::Complete(Err(EBADF)),
@@ -64,19 +78,8 @@ fn descriptor_stat<'a>(process: &Process<'a>, raw: usize, buffer: StatBuffer) ->
             ));
         }
         OpenFileDescription::Directory { session, .. } => session.start_metadata(),
-        OpenFileDescription::VirtualFile { data, inode, .. } => {
-            return Outcome::Complete(buffer.write(
-                process,
-                fs::Metadata {
-                    device: 4,
-                    inode: *inode,
-                    size: data.len() as u64,
-                    blocks: (data.len() as u64).div_ceil(512),
-                    links: 1,
-                    mode: 0o100444,
-                    ..fs::Metadata::default()
-                },
-            ));
+        OpenFileDescription::VirtualFile { metadata, .. } => {
+            return Outcome::Complete(buffer.write(process, *metadata));
         }
         OpenFileDescription::Terminal { .. } => {
             return Outcome::Complete(buffer.write(
@@ -201,6 +204,7 @@ pub(in crate::syscall) fn statat<'a>(
     path: usize,
     address: usize,
     flags: usize,
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Outcome<'a> {
     if flags as u32 & !(0x100 | 0x800 | 0x1000) != 0 {
         return Outcome::Complete(Err(EINVAL));
@@ -212,6 +216,7 @@ pub(in crate::syscall) fn statat<'a>(
         path,
         flags,
         StatBuffer::Stat(address),
+        paths,
     )
 }
 
@@ -219,6 +224,7 @@ pub(in crate::syscall) fn statx<'a>(
     process: &Process<'a>,
     files: &fs::Client<'a>,
     arguments: [usize; 6],
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Outcome<'a> {
     let flags = arguments[2] as u32;
     let mask = arguments[3] as u32;
@@ -235,6 +241,7 @@ pub(in crate::syscall) fn statx<'a>(
         arguments[1],
         flags as usize,
         StatBuffer::Statx(arguments[4]),
+        paths,
     )
 }
 
@@ -245,6 +252,7 @@ fn lookup<'a>(
     path: usize,
     flags: usize,
     buffer: StatBuffer,
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Outcome<'a> {
     if path == 0 && flags & 0x1000 != 0 {
         return empty_stat(process, files, directory, buffer);
@@ -256,22 +264,17 @@ fn lookup<'a>(
     if path.is_empty() && flags & 0x1000 != 0 {
         return empty_stat(process, files, directory, buffer);
     }
-    if let Some(result) = crate::syscall::mqueue::path_metadata(process, &path) {
-        return Outcome::Complete(match result {
-            Ok(info) => buffer.write(process, info),
-            Err(error) => Err(error),
-        });
-    }
-    if path.starts_with(b"/")
-        && let Some(info) = super::device::metadata(&path)
-    {
-        return Outcome::Complete(buffer.write(process, info));
-    }
     let operation = (|| {
         if path.is_empty() {
             return Err(ENOENT);
         }
-        let lookup = super::path::Lookup::from_name(process, directory, path)?;
+        let resolved = paths.take()?;
+        if resolved.local {
+            return buffer
+                .write(process, resolved.info.ok_or(ENOENT)?)
+                .map(|result| Pending::Completed(Ok(result)));
+        }
+        let lookup = resolved.lookup;
         Ok(Pending::Stat(Stat {
             request: files
                 .start_metadata_at(lookup.directory(), &lookup.name, flags & 0x100 == 0)
@@ -291,6 +294,13 @@ fn empty_stat<'a>(
 ) -> Outcome<'a> {
     if directory as i32 != -100 {
         return descriptor_stat(process, directory, buffer);
+    }
+    if let Some(anchor) = process.cwd.as_ref()
+        && let OpenFileDescription::VirtualDirectory { inode, path, .. } = anchor.as_ref()
+    {
+        return Outcome::Complete(
+            buffer.write(process, crate::vfs::local::directory_metadata(path, *inode)),
+        );
     }
     let lookup = super::path::Lookup {
         name: b".".to_vec(),

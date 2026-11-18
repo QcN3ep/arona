@@ -20,7 +20,7 @@ use crate::{
         Process,
         mqueue::{
             DEFAULT_MAXMSG, DEFAULT_MSGSIZE, DIRECTORY_INODE, MAXMSG_LIMIT, MSGSIZE_LIMIT,
-            NAME_MAX, Notify, PRIORITY_MAX, Queue, Queues,
+            NAME_MAX, Notify, PRIORITY_MAX, Queue,
         },
     },
 };
@@ -694,35 +694,11 @@ pub(crate) fn path_metadata(
     })
 }
 
-/// Build the dynamic directory entries exposed at `/dev/mqueue`.
-pub(crate) fn entries(queues: &Queues) -> Vec<fs::DirEntry> {
-    let mut entries = alloc::vec![
-        fs::DirEntry {
-            name: b".".to_vec(),
-            inode: DIRECTORY_INODE,
-            kind: fs::FileType::Directory,
-        },
-        fs::DirEntry {
-            name: b"..".to_vec(),
-            inode: DIRECTORY_INODE,
-            kind: fs::FileType::Directory,
-        },
-    ];
-    for queue in queues.list() {
-        entries.push(fs::DirEntry {
-            name: queue.name().to_vec(),
-            inode: queue.inode(),
-            kind: fs::FileType::Regular,
-        });
-    }
-    entries
-}
-
 pub(crate) fn attribute_len(queue: &Queue) -> usize {
     attributes(queue).len()
 }
 
-pub(crate) fn read_attribute(
+pub(in crate::syscall) fn read_attribute(
     process: &Process<'_>,
     queue: &Queue,
     offset: usize,
@@ -738,7 +714,7 @@ pub(crate) fn read_attribute(
     buffers.scatter(process, &mut bytes)
 }
 
-pub(crate) fn read_attribute_file(
+pub(in crate::syscall) fn read_attribute_file(
     process: &Process<'_>,
     queue: &Queue,
     offset: &Cell<usize>,

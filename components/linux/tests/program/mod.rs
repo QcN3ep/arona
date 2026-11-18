@@ -90,6 +90,7 @@ fn main() {
         )
         .unwrap()
     };
+    vfs(&linux, &output);
     sockets(&linux, &output);
     mqueue(&linux, &output);
     socket_memory(&linux, &files, &output);
@@ -332,6 +333,29 @@ fn mqueue(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
         assert_eq!(result.unwrap(), expected);
     }
     output().write_all(b"Linux mqueue tests passed\n").unwrap();
+}
+
+fn vfs(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
+    let result = linux
+        .start_run(
+            Program {
+                path: b"/bin/linux-vfs",
+                arguments: &[b"/bin/linux-vfs"],
+                environment: &[],
+                mount: true,
+            },
+            output(),
+        )
+        .unwrap()
+        .wait(WaitMode::Forever);
+    assert_eq!(
+        result,
+        Ok(ExitStatus {
+            code: 42,
+            signal: 0
+        })
+    );
+    output().write_all(b"Linux VFS tests passed\n").unwrap();
 }
 
 fn socket_memory(

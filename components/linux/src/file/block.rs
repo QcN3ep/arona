@@ -2,7 +2,7 @@
 
 //! Block devices and MBR primary partitions exposed under `/dev`.
 
-use alloc::rc::Rc;
+use alloc::{rc::Rc, vec::Vec};
 
 use crate::{
     Services,
@@ -126,6 +126,21 @@ impl BlockDevice {
         }
         self.disk.flush().map_err(io_error)
     }
+}
+
+pub(crate) fn disk_name(mut disk: usize) -> Vec<u8> {
+    let mut letters = Vec::new();
+    loop {
+        letters.push(b'a' + (disk % 26) as u8);
+        if disk < 26 {
+            break;
+        }
+        disk = disk / 26 - 1;
+    }
+    letters.reverse();
+    let mut name = b"vd".to_vec();
+    name.extend(letters);
+    name
 }
 
 pub(crate) fn open<'a>(

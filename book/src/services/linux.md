@@ -41,7 +41,8 @@ When there is no progress, the relevant Calls, events, thread exits, and ports a
 | Implementation group | Corresponding content |
 |---|---|
 | `syscall/file/` | open, I/O, path, directory, metadata, pipe, poll, and terminal |
-| `syscall/mqueue.rs` | POSIX message queues and the `/dev/mqueue` attribute view |
+| `syscall/mqueue.rs` | POSIX message queues and queue attribute files |
+| `vfs/` | Linux path traversal, mount views, and virtual filesystems |
 | `syscall/socket/` | TCP and UDP sockets, local Unix socket pairs, messages, addresses, options, and pending I/O |
 | `syscall/process/` | clone, exec, exit, wait, identity, thread, futex, scheduling, affinity, and membarrier |
 | `syscall/memory/` | mmap, munmap, mprotect, mremap, and related memory operations |
@@ -60,6 +61,12 @@ Each fd also stores descriptor attributes such as close-on-exec.
 An eventfd shares a counter across duplicated descriptors and inherited process descriptors.
 Reads wait for a nonzero counter, and writes wait for enough room in the counter.
 Nonblocking operations report `EAGAIN` when they would wait.
+The Linux VFS combines native file service directories with local `/dev`, `/proc`, and `/sys` filesystems.
+Path operations share one resolver for working directories, directory descriptors, symbolic links, and mount boundaries.
+Native directories retain their file service handles across rename, while virtual directories enumerate process, queue, and device registries.
+Directory descriptors share their cursor across duplication and fork. Rewinding refreshes the directory contents.
+The native file service exposes volume information and does not interpret Linux virtual paths.
+
 Selected files under `/proc` and `/sys` expose read-only snapshots taken when the descriptor is opened.
 These include process status and arguments, mount information, the release version, and the online CPU list.
 Virtual character descriptions implement `/dev/null` and `/dev/zero`, while `/dev/random` and `/dev/urandom` read from the configured random number session.
@@ -89,7 +96,7 @@ TCP listeners report state `0A`, established connections report `01`, and unconn
 Interface rows come from lwIP's interface list, and `/proc/net/route` derives a connected route from each IPv4 address and netmask.
 The loopback-only stack does not track interface byte counters yet, so the `/proc/net/dev` counters are zero.
 No Unix-domain sockets are implemented, so `/proc/net/unix` contains only its header.
-Opening `/proc/net` itself returns `ENOTDIR`, and an unknown name below the virtual mounts returns `ENOENT`.
+`/proc/net` can be opened and enumerated as a directory. An unknown name below the virtual mounts returns `ENOENT`.
 
 Block devices not already mounted by init appear as `/dev/vda`, `/dev/vdb`, and so on.
 Each disk also exposes its MBR primary partitions as `/dev/vda1` through `/dev/vda4` when the corresponding entry is present.
@@ -116,7 +123,7 @@ Mount targets must lie below `/tmp` or `/var`; other targets, including the boot
 The file service also rejects mounting on the read-only boot archive, so the namespace boundary does not depend on the compatibility layer alone.
 `umount2` removes in-memory mounts created through `mount` and reports `ENOENT` for a missing target, `EINVAL` for a path that is not one of those mounts, and `EBUSY` for a mount with nested entries or open file and directory sessions.
 The startup `/tmp` mount and disk mounts are not removable through `umount2`.
-The compatibility layer does not expose disk mounts to programs.
+`/proc/mounts` combines native volume information with the local VFS mounts. `statfs` and `fstatfs` report the filesystem that contains the selected node.
 Both calls are dispatched as pending operations, so waiting for the file service does not stall other guests or timer handling.
 In-memory volumes share a 256 MiB capacity budget. User mounts reserve 64 MiB each, while administrative mounts can select a capacity. Mounting beyond the total returns `ENOSPC`, and unmounting releases the reservation.
 
@@ -193,13 +200,13 @@ When a message is added to an empty queue and no receiver is blocked, the servic
 `SIGEV_THREAD` and `SIGEV_THREAD_ID` return `EOPNOTSUPP` because running a guest callback thread is not implemented, and invalid notification kinds or signal numbers return `EINVAL`.
 Process exit clears registrations owned by that process.
 
-`/dev/mqueue` is a virtual path view backed by the queue registry rather than a mounted filesystem.
+`/dev/mqueue` is a local VFS mount backed by the queue registry.
 Opening the directory returns a read-only directory descriptor whose `getdents64` output lists `.`, `..`, and the current queue names.
 Opening `/dev/mqueue/<name>` returns a read-only file that formats the queue state as `QSIZE:<count> NOTIFY:<kind> SIGEV:<signo>` for each read.
 `newfstatat` and `statx` report the directory mode or the queue's synthetic inode, permission bits, and attribute-file size; an unknown name returns `ENOENT`.
 `unlinkat` with a queue path performs the same removal as `mq_unlink`.
 Writing an attribute file returns `EROFS`, opening it for writing returns `EROFS`, and the virtual directory cannot be removed.
-Because this is a path view, it currently has no mount operation or device number beyond the line it adds to `/proc/mounts`.
+Its filesystem identity is shared by path queries and open descriptors.
 
 ## Network Sockets
 

@@ -5,58 +5,20 @@
 // TODO: Support chmod, chown, access, and their relative directory operations.
 
 use alloc::{rc::Rc, vec::Vec};
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use runtime::{Call, Handle};
 
 use super::super::{
     Outcome,
     abi::{self, EBADF, EFAULT, EINVAL, ENOTDIR, EOPNOTSUPP, ERANGE, Errno, SyscallResult},
 };
-use super::{Pending, completion, fd, filesystem_error, open, outcome, virtual_file};
+use super::{Pending, completion, fd, filesystem_error, open, outcome};
 use crate::{
     file::{Descriptor, OpenFileDescription},
     process::Process,
 };
 
-pub(in crate::syscall) struct Lookup<'a> {
-    pub name: Vec<u8>,
-    pub anchor: Option<Rc<OpenFileDescription<'a>>>,
-}
-
-impl<'a> Lookup<'a> {
-    pub fn new(process: &Process<'a>, directory: usize, address: usize) -> Result<Self, Errno> {
-        Self::from_name(process, directory, open::path(process, address)?)
-    }
-
-    pub fn from_name(
-        process: &Process<'a>,
-        directory: usize,
-        name: Vec<u8>,
-    ) -> Result<Self, Errno> {
-        let anchor = if name.starts_with(b"/") {
-            None
-        } else if directory == crate::syscall::AT_FDCWD {
-            process.cwd.clone()
-        } else {
-            let description =
-                Rc::clone(&process.files.get(fd(directory)?).ok_or(EBADF)?.description);
-            if !matches!(description.as_ref(), OpenFileDescription::Directory { .. }) {
-                return Err(ENOTDIR);
-            }
-            Some(description)
-        };
-        Ok(Self { name, anchor })
-    }
-
-    pub fn directory(&self) -> Option<&fs::Directory<'a>> {
-        self.anchor
-            .as_ref()
-            .and_then(|anchor| match anchor.as_ref() {
-                OpenFileDescription::Directory { session, .. } => Some(session),
-                _ => None,
-            })
-    }
-}
+pub(crate) use crate::vfs::Lookup;
 
 pub(in crate::syscall) struct PathOperation<'a> {
     request: Request<'a>,
@@ -83,34 +45,45 @@ pub(super) fn dispatch<'a>(
     files: &fs::Client<'a>,
     number: usize,
     args: [usize; 6],
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Option<Outcome<'a>> {
-    if number == abi::UNLINKAT
-        && let Ok(path) = open::path_bytes(process, args[1])
-        && let Some(result) = crate::syscall::mqueue::unlink_path(process, &path, args[2])
-    {
-        return Some(Outcome::Complete(result));
-    }
     Some(match number {
         abi::FCHDIR => Outcome::Complete((|| {
             let anchor = Rc::clone(&process.files.get(fd(args[0])?).ok_or(EBADF)?.description);
-            if !matches!(anchor.as_ref(), OpenFileDescription::Directory { .. }) {
+            if !matches!(
+                anchor.as_ref(),
+                OpenFileDescription::Directory { .. }
+                    | OpenFileDescription::VirtualDirectory { .. }
+            ) {
                 return Err(ENOTDIR);
             }
             process.cwd = Some(anchor);
             Ok(0)
         })()),
         abi::GETCWD => getcwd(process, args[0], args[1]),
-        abi::READLINKAT => match virtual_link(process, args) {
-            Some(result) => Outcome::Complete(result),
-            None => outcome(start(process, files, number, args)),
-        },
+        abi::READLINKAT if paths.first().is_some_and(|resolved| resolved.local) => {
+            Outcome::Complete((|| {
+                let resolved = paths.take()?;
+                let target = crate::vfs::local::link(process, &resolved.path).ok_or(EINVAL)?;
+                if args[3] as isize <= 0 {
+                    return Err(EINVAL);
+                }
+                let count = target.len().min(args[3]);
+                process
+                    .address_space
+                    .write(args[2], &target[..count])
+                    .map_err(|_| EFAULT)?;
+                Ok(count)
+            })())
+        }
+        abi::READLINKAT => outcome(start(process, files, number, args, paths)),
         abi::CHDIR
         | abi::MKDIRAT
         | abi::UNLINKAT
         | abi::SYMLINKAT
         | abi::LINKAT
         | abi::RENAMEAT
-        | abi::RENAMEAT2 => outcome(start(process, files, number, args)),
+        | abi::RENAMEAT2 => outcome(start(process, files, number, args, paths)),
         _ => return None,
     })
 }
@@ -125,6 +98,17 @@ fn read_link_fd<'a>(
         return Err(EINVAL);
     }
     let anchor = Rc::clone(&process.files.get(fd(directory)?).ok_or(EBADF)?.description);
+    if let OpenFileDescription::VirtualFile { data, metadata, .. } = anchor.as_ref() {
+        if metadata.mode & 0o170000 != 0o120000 || !anchor.path_only() {
+            return Err(EINVAL);
+        }
+        let count = data.len().min(length);
+        process
+            .address_space
+            .write(address, &data[..count])
+            .map_err(|_| EFAULT)?;
+        return Ok(Pending::Completed(Ok(count)));
+    }
     let OpenFileDescription::Regular { file, .. } = anchor.as_ref() else {
         return Err(EINVAL);
     };
@@ -142,10 +126,11 @@ fn read_link_fd<'a>(
 }
 
 fn start<'a>(
-    process: &Process<'a>,
+    process: &mut Process<'a>,
     files: &fs::Client<'a>,
     number: usize,
     args: [usize; 6],
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Result<Pending<'a>, Errno> {
     let (directory, name) = match number {
         abi::CHDIR => (crate::syscall::AT_FDCWD, args[0]),
@@ -155,7 +140,39 @@ fn start<'a>(
     if number == abi::READLINKAT && open::path_bytes(process, name)?.is_empty() {
         return read_link_fd(process, directory, args[2], args[3]);
     }
-    let lookup = Lookup::new(process, directory, name)?;
+    let resolved = paths.take()?;
+    if matches!(number, abi::MKDIRAT | abi::SYMLINKAT) && resolved.info.is_some() {
+        return Err(abi::EEXIST);
+    }
+    if matches!(number, abi::UNLINKAT | abi::RENAMEAT | abi::RENAMEAT2)
+        && crate::vfs::mount::MOUNTS
+            .iter()
+            .any(|mount| mount.path == resolved.path)
+    {
+        return Err(abi::EBUSY);
+    }
+    if resolved.local {
+        if number == abi::CHDIR {
+            let info = resolved.info.ok_or(abi::ENOENT)?;
+            if info.mode & 0o170000 != 0o040000 {
+                return Err(ENOTDIR);
+            }
+            process.cwd =
+                Some(Descriptor::local_directory(resolved.path, info.inode, 0, false).description);
+            return Ok(Pending::Completed(Ok(0)));
+        }
+        if number == abi::UNLINKAT
+            && let Some(result) =
+                crate::syscall::mqueue::unlink_path(process, &resolved.path, args[2])
+        {
+            return result.map(|value| Pending::Completed(Ok(value)));
+        }
+        if number == abi::LINKAT {
+            return Err(abi::EXDEV);
+        }
+        return Err(abi::EROFS);
+    }
+    let lookup = resolved.lookup;
     if number == abi::UNLINKAT {
         check_remove(&lookup.name, args[2])?;
     }
@@ -211,7 +228,7 @@ fn start<'a>(
             )
         }
         abi::RENAMEAT | abi::RENAMEAT2 | abi::LINKAT => {
-            let (pending, anchor) = pair(process, files, number, args, &lookup)?;
+            let (pending, anchor) = pair(process, files, number, args, &lookup, paths)?;
             anchors.extend(anchor);
             Request::Mutation(pending)
         }
@@ -224,27 +241,6 @@ fn start<'a>(
     }))
 }
 
-/// Handle `readlinkat` for the virtual `/proc/<pid>/exe` links.
-fn virtual_link(process: &Process<'_>, args: [usize; 6]) -> Option<SyscallResult> {
-    let name = open::path_bytes(process, args[1]).ok()?;
-    let Some(target) = virtual_file::link(process, &name) else {
-        // A virtual regular file is not a symbolic link.
-        return virtual_file::resolve(process, &name).map(|_| Err(EINVAL));
-    };
-    let length = args[3];
-    if length as isize <= 0 {
-        return Some(Err(EINVAL));
-    }
-    let count = target.len().min(length);
-    Some(
-        process
-            .address_space
-            .write(args[2], &target[..count])
-            .map(|()| count)
-            .map_err(|_| EFAULT),
-    )
-}
-
 fn getcwd<'a>(process: &Process<'a>, address: usize, length: usize) -> Outcome<'a> {
     if length == 0 {
         return Outcome::Complete(Err(EINVAL));
@@ -252,6 +248,9 @@ fn getcwd<'a>(process: &Process<'a>, address: usize, length: usize) -> Outcome<'
     let Some(anchor) = process.cwd.as_ref() else {
         return Outcome::Complete(write_cwd(process, address, length, b"/"));
     };
+    if let OpenFileDescription::VirtualDirectory { path, .. } = anchor.as_ref() {
+        return Outcome::Complete(write_cwd(process, address, length, path));
+    }
     let OpenFileDescription::Directory { session, .. } = anchor.as_ref() else {
         unreachable!()
     };
@@ -321,13 +320,15 @@ impl<'a> PathOperation<'a> {
     }
 }
 
-pub(super) fn directory_descriptor(
+pub(crate) fn directory_descriptor(
     session: fs::Directory<'_>,
     flags: u32,
     close_on_exec: bool,
 ) -> Descriptor<'_> {
     Descriptor {
+        node: None,
         description: Rc::new(OpenFileDescription::Directory {
+            entries: RefCell::new(None),
             session,
             flags: Cell::new(flags),
             offset: Cell::new(0),
@@ -351,11 +352,12 @@ fn write_cwd(process: &Process<'_>, address: usize, length: usize, name: &[u8]) 
 }
 
 fn pair<'a>(
-    process: &Process<'a>,
+    _process: &Process<'a>,
     files: &fs::Client<'a>,
     number: usize,
     args: [usize; 6],
     lookup: &Lookup<'a>,
+    paths: &mut super::resolve::Prepared<'a>,
 ) -> Result<(fs::client::Pending<()>, Option<Rc<OpenFileDescription<'a>>>), Errno> {
     let flags = if number == abi::RENAMEAT {
         0
@@ -365,7 +367,11 @@ fn pair<'a>(
     if flags & !(if number == abi::LINKAT { 0x400 } else { 0 }) != 0 {
         return Err(EOPNOTSUPP);
     }
-    let target = Lookup::new(process, args[2], args[3])?;
+    let resolved = paths.take()?;
+    if resolved.local {
+        return Err(abi::EXDEV);
+    }
+    let target = resolved.lookup;
     let source_path = (lookup.directory(), lookup.name.as_slice());
     let target_path = (target.directory(), target.name.as_slice());
     let pending = if number == abi::LINKAT {

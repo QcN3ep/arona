@@ -8,14 +8,14 @@ pub(crate) mod abi;
 
 /// Linux `AT_FDCWD`, the directory descriptor value used for relative paths.
 pub(crate) const AT_FDCWD: usize = (-100i32) as usize;
-mod file;
+pub(crate) mod file;
 mod memory;
-mod mqueue;
+pub(crate) mod mqueue;
 mod process;
 mod rusage;
 mod shm;
 mod signal;
-mod socket;
+pub(crate) mod socket;
 mod system;
 mod wait;
 
@@ -101,13 +101,14 @@ impl<'a> Operation<'a> {
         process: &mut Process<'a>,
         index: usize,
         files: &fs::Client<'a>,
+        services: &crate::Services<'a>,
     ) -> Option<SyscallResult> {
         match self {
             Self::Exec(_) => unreachable!(),
             Self::WaitChild(operation) => operation.poll(process),
             Self::Signal(operation) => operation.poll(process, index),
             Self::Futex(operation) => operation.poll(process),
-            Self::File(operation) => operation.poll(process, index, files),
+            Self::File(operation) => operation.poll(process, index, files, services),
             Self::Socket(operation) => operation.poll(process),
             Self::System(operation) => operation.poll(process),
             Self::Mqueue(operation) => operation.poll(process),
@@ -275,7 +276,7 @@ pub(crate) fn poll<'a>(
         }
         return Ok(true);
     }
-    let Some(result) = pending.operation.poll(process, index, files) else {
+    let Some(result) = pending.operation.poll(process, index, files, services) else {
         let mut progress =
             selected.is_none() && crate::process::signal::delivery::next(process, index).is_some();
         if let Operation::Socket(socket) = &mut pending.operation {

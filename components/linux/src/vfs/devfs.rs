@@ -3,7 +3,7 @@
 //! Character device paths exposed by the Linux compatibility layer.
 
 /// Returns the metadata of a device node served without a filesystem entry.
-pub(super) fn metadata(path: &[u8]) -> Option<fs::Metadata> {
+pub(crate) fn metadata(path: &[u8]) -> Option<fs::Metadata> {
     // REFERENCE: https://www.kernel.org/doc/html/latest/admin-guide/devices.html
     let (mode, inode) = match path {
         b"/dev/null" => (0o020666, 3),

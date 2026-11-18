@@ -58,6 +58,7 @@ pub(super) fn create(process: &mut Process<'_>, args: [usize; 6]) -> SyscallResu
     }
     let (first, second) = SocketPair::pair(kind).map_err(|()| ENOMEM)?;
     let descriptor = |state: SocketPair| Descriptor {
+        node: None,
         description: Rc::new(OpenFileDescription::SocketPair {
             state,
             flags: Cell::new(2 | raw & O_NONBLOCK),

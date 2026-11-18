@@ -13,6 +13,24 @@ pub(super) fn append(
     target_directory: &Path,
     bytes: &mut Vec<u8>,
 ) -> Result<(), String> {
+    let isa = match options.target {
+        Target::Riscv64 => "riscv64",
+        Target::LoongArch64 => "loongarch64",
+    };
+    append_entry(
+        bytes,
+        "bin/linux-vfs",
+        0o100755,
+        &compile_guest(
+            options,
+            root,
+            target_directory,
+            "vfs",
+            "linux-vfs",
+            &["path.c"],
+            isa,
+        )?,
+    )?;
     append_entry(
         bytes,
         "bin/linux-block",

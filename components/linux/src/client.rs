@@ -36,6 +36,13 @@ pub struct Services<'a> {
 pub struct BlockDevices {
     control: Handle<Channel>,
     disks: Vec<u32>,
+    nodes: Vec<BlockNode>,
+}
+
+pub(crate) struct BlockNode {
+    pub name: Vec<u8>,
+    pub disk: usize,
+    pub partition: u32,
 }
 
 impl BlockDevices {
@@ -77,11 +84,44 @@ impl BlockDevices {
                 Err(error) => return Err(error.into()),
             }
         }
-        Ok(Self { control, disks })
+        let mut nodes = Vec::new();
+        for (disk, id) in disks.iter().enumerate() {
+            let name = crate::file::block::disk_name(disk);
+            nodes.push(BlockNode {
+                name: name.clone(),
+                disk,
+                partition: 0,
+            });
+            for partition in 1..=4 {
+                match devmgr::block::Session::open_partition(task, &control, *id, partition) {
+                    Ok(session) => {
+                        session.info()?;
+                        let mut name = name.clone();
+                        name.push(b'0' + partition as u8);
+                        nodes.push(BlockNode {
+                            name,
+                            disk,
+                            partition,
+                        });
+                    }
+                    Err(devmgr::Error::NotFound) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        Ok(Self {
+            control,
+            disks,
+            nodes,
+        })
     }
 
     pub(crate) fn control(&self) -> &Handle<Channel> {
         &self.control
+    }
+
+    pub(crate) fn nodes(&self) -> &[BlockNode] {
+        &self.nodes
     }
 
     pub(crate) fn disks(&self) -> &[u32] {

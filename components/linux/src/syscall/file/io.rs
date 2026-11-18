@@ -482,17 +482,26 @@ pub(in crate::syscall) fn seek<'a>(
             return Outcome::Complete(Ok(position as usize));
         }
         OpenFileDescription::VirtualDirectory {
-            offset: current, ..
+            offset: current,
+            entries,
+            ..
         } => {
             if whence as u32 >= 2 {
                 return Outcome::Complete(Err(EINVAL));
             }
-            let position = current.get() as i128 + i128::from(offset as i64);
+            let position = if whence as u32 == 0 {
+                0
+            } else {
+                current.get() as i128
+            } + i128::from(offset as i64);
             if position < 0 {
                 return Outcome::Complete(Err(EINVAL));
             }
             if position > i128::from(i64::MAX) {
                 return Outcome::Complete(Err(EOVERFLOW));
+            }
+            if position == 0 {
+                *entries.borrow_mut() = None;
             }
             current.set(position as usize);
             return Outcome::Complete(Ok(position as usize));
