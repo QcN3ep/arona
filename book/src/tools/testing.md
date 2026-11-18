@@ -99,7 +99,8 @@ Attach the image to QEMU with a VirtIO block device:
 -device virtio-blk-pci,drive=hd
 ```
 
-The default transitional device and the `disable-legacy=on` non-transitional device are both detected and driven through the modern VirtIO interface.
+PCI block devices use the modern interface, including transitional devices.
+The RISC-V block scenario also exercises the default legacy MMIO transport.
 
 ## VirtIO Net Frames
 

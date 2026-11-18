@@ -71,12 +71,7 @@ fn collect(
     let mut command = qemu_command(target, root);
     command.arg("-kernel").arg(kernel);
     if matches!(target, Target::Riscv64) {
-        command.args([
-            "-bios",
-            "default",
-            "-global",
-            "virtio-mmio.force-legacy=false",
-        ]);
+        command.args(["-bios", "default"]);
     }
     // LS7A writes calculate their time offset against the host clock.
     // REFERENCE: https://github.com/qemu/qemu/blob/v11.1.2/system/rtc.c

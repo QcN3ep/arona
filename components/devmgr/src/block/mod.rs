@@ -616,14 +616,14 @@ fn configuration_info(
     let deadline = thread::now_ns()?.saturating_add(1_000_000_000);
     loop {
         let generation = transport.generation()?;
-        let sectors =
-            u64::from(transport.config_word(0)?) | u64::from(transport.config_word(4)?) << 32;
-        let block_size = if features & BLOCK_SIZE != 0 {
-            transport.config_word(20)?
+        let (sectors, block_size) = configuration_values(transport, features)?;
+        // Legacy transports lack a configuration generation counter.
+        let stable = if transport.legacy() {
+            (sectors, block_size) == configuration_values(transport, features)?
         } else {
-            512
+            generation == transport.generation()?
         };
-        if generation == transport.generation()? {
+        if stable {
             let capacity = sectors
                 .checked_mul(512)
                 .ok_or(Error::InvalidConfiguration)?;
@@ -649,4 +649,14 @@ fn configuration_info(
         }
         thread::yield_now()?;
     }
+}
+
+fn configuration_values(transport: &mut Transport<'_>, features: u64) -> Result<(u64, u32), Error> {
+    let sectors = u64::from(transport.config_word(0)?) | u64::from(transport.config_word(4)?) << 32;
+    let block_size = if features & BLOCK_SIZE != 0 {
+        transport.config_word(20)?
+    } else {
+        512
+    };
+    Ok((sectors, block_size))
 }

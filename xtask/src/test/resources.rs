@@ -63,7 +63,7 @@ impl Resources {
             "device" | "pci_firmware" | "pci_exhausted" | "pci_rollback" => {
                 resources.pci(build.target, suite)
             }
-            "block" => resources.block(directory)?,
+            "block" => resources.block(directory, build.target)?,
             "fs" => {
                 build.fixture("prepare", directory)?;
                 resources.filesystem = true;
@@ -221,7 +221,7 @@ impl Resources {
         self.device(&format!("virtio-blk-pci,disable-legacy=on,drive={name}"));
     }
 
-    fn block(&mut self, directory: &Path) -> Result<(), String> {
+    fn block(&mut self, directory: &Path, target: Target) -> Result<(), String> {
         for (name, size, byte) in [("rw", 8, 0), ("ro", 4, 0x39), ("error", 2, 0)] {
             fs::write(
                 directory.join(format!("{name}.raw")),
@@ -230,7 +230,18 @@ impl Resources {
             .map_err(|error| error.to_string())?;
         }
         fs::write(directory.join("error.conf"), "[inject-error]\nevent = \"read_aio\"\nerrno = \"5\"\nimmediately = \"on\"\nonce = \"off\"\n").map_err(|error| error.to_string())?;
-        self.drive("rw", &directory.join("rw.raw"), "");
+        if matches!(target, Target::Riscv64) {
+            self.arguments.extend([
+                "-drive".to_owned(),
+                format!(
+                    "if=none,id=rw,format=raw,file={}",
+                    directory.join("rw.raw").display()
+                ),
+            ]);
+            self.device("virtio-blk-device,drive=rw,bus=virtio-mmio-bus.0");
+        } else {
+            self.drive("rw", &directory.join("rw.raw"), "");
+        }
         self.arguments.extend([
             "-drive".to_owned(),
             format!(
@@ -277,6 +288,10 @@ impl Resources {
             self.device(device);
         }
         if matches!(target, Target::Riscv64) {
+            self.arguments.extend([
+                "-global".to_owned(),
+                "virtio-mmio.force-legacy=false".to_owned(),
+            ]);
             self.device("virtio-rng-device");
         }
     }

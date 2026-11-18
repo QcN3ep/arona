@@ -65,6 +65,22 @@ impl Handle<DmaDomain> {
         })
     }
 
+    /// Allocate a physically contiguous DMA buffer aligned to a page boundary.
+    /// The page count must be a power of two.
+    pub fn allocate_contiguous<'a>(
+        &'a self,
+        task: &Handle<Task>,
+        count: u64,
+        direction: DmaDirection,
+    ) -> Result<DmaBuffer<'a>, Error> {
+        let frames =
+            task.allocate_contiguous(count, 4096, Rights::READ_WRITE.union(Rights::DMA_MAP))?;
+        Ok(DmaBuffer {
+            range: self.map_range(&frames, 0, count, direction)?,
+            frames,
+        })
+    }
+
     fn map_range(
         &self,
         frames: &Handle<FrameAllocation>,

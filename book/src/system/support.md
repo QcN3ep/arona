@@ -39,7 +39,7 @@ init starts applications according to `/etc/init.toml` and enforces restart poli
 | Category | Implementation |
 |---|---|
 | UART | NS16550-family MMIO UART, configuration, transmit/receive, and interrupt sessions |
-| Block devices | Modern VirtIO MMIO and PCI block, MBR primary partitions, reads and writes, completion confirmation, and flush |
+| Block devices | Legacy and modern VirtIO MMIO, modern PCI block, MBR primary partitions, reads and writes, completion confirmation, and flush |
 | Native sockets | IPv4 TCP/UDP loopback, readiness subscriptions, recoverable requests, and asynchronous close |
 | Ethernet frames | Modern VirtIO PCI net, copied RX/TX, MTU, MAC, and link change waits |
 | Random numbers | Firmware-seeded ChaCha20 and modern VirtIO PCI RNG |

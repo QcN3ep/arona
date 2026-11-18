@@ -58,11 +58,12 @@ On exit, it unbinds, disables UART interrupts, and reclaims the MMIO.
 
 ## VirtIO Queues and DMA
 
-The modern VirtIO transport handles reset, feature negotiation, queue configuration, notification, and device state checks.
+The VirtIO transport handles reset, feature negotiation, queue configuration, notification, and device state checks.
 The PCI transport accepts devices by their modern VirtIO ID or by a transitional legacy ID whose subsystem device ID names the VirtIO device type, and drives both through the modern interface.
-Legacy-only devices without modern capability regions are rejected.
+Legacy-only PCI devices without modern capability regions are rejected.
 The PCI transport reads configuration capabilities and BARs, while the MMIO transport uses the register regions published by the firmware.
-The driver negotiates `VIRTIO_F_VERSION_1` and the corresponding device features.
+Modern transports negotiate `VIRTIO_F_VERSION_1` and the corresponding device features.
+MMIO also supports the legacy interface, which uses contiguous queues and page-frame numbers.
 PCI probing validates the common, notification, and ISR regions independently of the device type.
 The device configuration region can be absent when the driver does not need configuration fields.
 Each configuration read checks the field's range and alignment.

@@ -16,9 +16,9 @@ const PAGE_SIZE: usize = 4096;
 
 pub(crate) struct Queue<'a> {
     notification: Notification,
-    descriptors: DmaBuffer<'a>,
-    available: DmaBuffer<'a>,
-    used: DmaBuffer<'a>,
+    memory: DmaBuffer<'a>,
+    available: u64,
+    used: u64,
     size: u16,
     next_available: u16,
     next_used: u16,
@@ -52,22 +52,29 @@ impl<'a> Queue<'a> {
             return Err(Error::InvalidConfiguration);
         }
         let maximum = maximum.min(MAX_SIZE as u16);
-        let mut descriptors = domain.allocate(task, 1, DmaDirection::Bidirectional)?;
-        let mut available = domain.allocate(task, 1, DmaDirection::Bidirectional)?;
-        let mut used = domain.allocate(task, 1, DmaDirection::Bidirectional)?;
-        for buffer in [&mut descriptors, &mut available, &mut used] {
-            buffer.write(0, &[0; PAGE_SIZE])?;
+        // Legacy MMIO requires descriptors and the available ring to be adjacent,
+        // followed by a page-aligned used ring in the same physical allocation.
+        // REFERENCE: https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html#x1-1500002.7.2
+        let available = u64::from(maximum) * 16;
+        let used = (available + 6 + u64::from(maximum) * 2).next_multiple_of(PAGE_SIZE as u64);
+        let pages = (used + 6 + u64::from(maximum) * 8)
+            .div_ceil(PAGE_SIZE as u64)
+            .next_power_of_two();
+        let mut memory = domain.allocate_contiguous(task, pages, DmaDirection::Bidirectional)?;
+        for page in 0..pages {
+            memory.write(page * PAGE_SIZE as u64, &[0; PAGE_SIZE])?;
         }
+        let address = memory.bus_address().unwrap();
         let notification = transport.configure_queue(
             index,
             maximum,
-            descriptors.bus_address().unwrap(),
-            available.bus_address().unwrap(),
-            used.bus_address().unwrap(),
+            address,
+            address + available,
+            address + used,
         )?;
         Ok(Self {
             notification,
-            descriptors,
+            memory,
             available,
             used,
             size: maximum,
@@ -118,11 +125,10 @@ impl<'a> Queue<'a> {
             let flags = u16::from(next) | (u16::from(entry.writable) << 1);
             bytes[12..14].copy_from_slice(&flags.to_le_bytes());
             bytes[14..].copy_from_slice(&(head + index as u16 + 1).to_le_bytes());
-            self.descriptors
-                .write(((first + index) * 16) as u64, &bytes)?;
+            self.memory.write(((first + index) * 16) as u64, &bytes)?;
         }
-        self.available.write(
-            4 + u64::from(self.next_available % self.size) * 2,
+        self.memory.write(
+            self.available + 4 + u64::from(self.next_available % self.size) * 2,
             &head.to_le_bytes(),
         )?;
         dma::synchronize();
@@ -133,8 +139,8 @@ impl<'a> Queue<'a> {
         self.occupied[first..end].fill(true);
         self.in_flight += 1;
         self.next_available = self.next_available.wrapping_add(1);
-        self.available
-            .write(2, &self.next_available.to_le_bytes())?;
+        self.memory
+            .write(self.available + 2, &self.next_available.to_le_bytes())?;
         Ok(())
     }
 
@@ -143,7 +149,7 @@ impl<'a> Queue<'a> {
     /// nonzero length within their writable capacity, then driver validation.
     pub(crate) fn complete(&mut self) -> Result<Option<(u16, u32)>, Error> {
         let mut index = [0; 2];
-        self.used.read(2, &mut index)?;
+        self.memory.read(self.used + 2, &mut index)?;
         let count = u16::from_le_bytes(index).wrapping_sub(self.next_used);
         if count > self.in_flight {
             return Err(Error::DeviceFault);
@@ -153,8 +159,10 @@ impl<'a> Queue<'a> {
         }
         dma::synchronize();
         let mut bytes = [0; 8];
-        self.used
-            .read(4 + u64::from(self.next_used % self.size) * 8, &mut bytes)?;
+        self.memory.read(
+            self.used + 4 + u64::from(self.next_used % self.size) * 8,
+            &mut bytes,
+        )?;
         let head = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
         let length = u32::from_le_bytes(bytes[4..].try_into().unwrap());
         let pending = self

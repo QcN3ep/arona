@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Negotiation, queue configuration, and reset for the VirtIO modern transport.
+//! Negotiation, queue configuration, and reset for VirtIO transports.
 
 mod mmio;
 mod pci;
@@ -93,25 +93,32 @@ impl<'a> Transport<'a> {
         }
     }
 
+    pub(crate) fn legacy(&self) -> bool {
+        matches!(self, Self::Mmio(registers) if registers.legacy())
+    }
+
     pub(crate) fn negotiate(&mut self, supported: u64) -> Result<u64, Error> {
         self.reset()?;
         self.set_status(ACKNOWLEDGE)?;
         self.set_status(ACKNOWLEDGE | DRIVER)?;
         let offered = self.features()?;
-        if offered & VERSION_1 == 0 {
+        if !self.legacy() && offered & VERSION_1 == 0 {
             return Err(Error::Unsupported);
         }
-        let accepted = offered & supported | VERSION_1;
+        let accepted = offered & supported | if self.legacy() { 0 } else { VERSION_1 };
         self.accept_features(accepted)?;
-        self.set_status(ACKNOWLEDGE | DRIVER | FEATURES_OK)?;
-        if self.status()? != ACKNOWLEDGE | DRIVER | FEATURES_OK {
-            return Err(Error::Unsupported);
+        if !self.legacy() {
+            self.set_status(ACKNOWLEDGE | DRIVER | FEATURES_OK)?;
+            if self.status()? != ACKNOWLEDGE | DRIVER | FEATURES_OK {
+                return Err(Error::Unsupported);
+            }
         }
         Ok(accepted)
     }
 
     pub(crate) fn start(&mut self) -> Result<(), Error> {
-        self.set_status(ACKNOWLEDGE | DRIVER | FEATURES_OK | DRIVER_OK)?;
+        let features_ok = if self.legacy() { 0 } else { FEATURES_OK };
+        self.set_status(ACKNOWLEDGE | DRIVER | features_ok | DRIVER_OK)?;
         self.check()
     }
 
