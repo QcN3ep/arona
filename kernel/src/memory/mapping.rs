@@ -323,33 +323,49 @@ impl MappingIndex {
     }
 
     pub fn remove(&mut self, start: usize) -> MappingRecord {
-        let (mut address, _) = self.find(start).expect("missing mapping record");
-        let mut node = MappingNode::read(address);
+        let (address, _) = self.find(start).expect("missing mapping record");
+        let node = MappingNode::read(address);
         assert_eq!(node.range.start, start, "partial reservation removal");
         let record = MappingRecord::read(address, node.range);
-        if node.left != NIL && node.right != NIL {
+        let rebalance = if node.left != NIL && node.right != NIL {
             let mut successor = node.right;
             let mut replacement = MappingNode::read(successor);
             while replacement.left != NIL {
                 successor = replacement.left;
                 replacement = MappingNode::read(successor);
             }
-            node.range = replacement.range;
-            node.write(address);
-            MappingRecord::read(successor, replacement.range).write(address);
-            address = successor;
-            node = replacement;
-        }
-        let child = if node.left != NIL {
-            node.left
+            // Relink the successor so surviving records retain their backing pages.
+            let rebalance = if replacement.parent == address {
+                successor
+            } else {
+                let parent = replacement.parent;
+                self.replace_child(parent, successor, replacement.right);
+                if replacement.right != NIL {
+                    write(replacement.right + 4 * size_of::<u64>() as u64, &[parent]);
+                }
+                replacement.right = node.right;
+                write(node.right + 4 * size_of::<u64>() as u64, &[successor]);
+                parent
+            };
+            replacement.left = node.left;
+            replacement.parent = node.parent;
+            replacement.write(successor);
+            write(node.left + 4 * size_of::<u64>() as u64, &[successor]);
+            self.replace_child(node.parent, address, successor);
+            rebalance
         } else {
-            node.right
+            let child = if node.left != NIL {
+                node.left
+            } else {
+                node.right
+            };
+            self.replace_child(node.parent, address, child);
+            if child != NIL {
+                write(child + 4 * size_of::<u64>() as u64, &[node.parent]);
+            }
+            node.parent
         };
-        self.replace_child(node.parent, address, child);
-        if child != NIL {
-            write(child + 4 * size_of::<u64>() as u64, &[node.parent]);
-        }
-        self.rebalance(node.parent);
+        self.rebalance(rebalance);
         if self.root == NIL {
             self.free = NIL;
             self.backing = None;

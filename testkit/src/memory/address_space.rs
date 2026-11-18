@@ -378,6 +378,35 @@ fn reservation_reuse(space: &AddressSpace) {
     assert_eq!(space.query(last.start).unwrap().unwrap().range, last);
     assert_eq!(manager.stats(), occupied);
     space.unreserve(last).unwrap();
+    for reserved in ranges.iter().step_by(4) {
+        space.reserve_at(*reserved).unwrap();
+    }
+    let occupied = manager.stats();
+    for reserved in ranges
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| (i % 4 != 0).then_some(r))
+    {
+        space.reserve_at(*reserved).unwrap();
+    }
+    for reserved in ranges
+        .iter()
+        .enumerate()
+        .rev()
+        .filter_map(|(i, r)| (i % 4 != 0).then_some(r))
+    {
+        space.unreserve(*reserved).unwrap();
+    }
+    for reserved in ranges.iter().step_by(4) {
+        assert_eq!(
+            space.query(reserved.start).unwrap().unwrap().range,
+            *reserved
+        );
+    }
+    assert_eq!(manager.stats(), occupied);
+    for reserved in ranges.iter().step_by(4) {
+        space.unreserve(*reserved).unwrap();
+    }
 }
 
 fn shared_kernel() {
