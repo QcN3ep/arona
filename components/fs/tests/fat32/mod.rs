@@ -443,6 +443,20 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
         client.metadata(b"/var/link", deadline()),
         Err(Error::NotFound)
     );
+    let short = client.open("/var/data/Short.bin", deadline()).unwrap();
+    let mut attributes = short.metadata(deadline()).unwrap().attributes();
+    assert_eq!(attributes.modified, fs::Timestamp::default());
+    assert_eq!(attributes.accessed, fs::Timestamp::default());
+    attributes.permissions = 0o444;
+    short.set_attributes(attributes, deadline()).unwrap();
+    assert_eq!(short.write_at(0, b"x", deadline()), Err(Error::ReadOnly));
+    assert_eq!(
+        short.metadata(deadline()).unwrap().modified,
+        fs::Timestamp::default()
+    );
+    attributes.permissions = 0o644;
+    short.set_attributes(attributes, deadline()).unwrap();
+    drop(short);
     client.mkdir("/var/service", deadline()).unwrap();
     let directory = client.open_directory(b"/var/service", deadline()).unwrap();
     client

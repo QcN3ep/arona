@@ -61,11 +61,15 @@ impl Volume {
         {
             return Err(Error::Unsupported);
         }
-        let (date, time) = encode(attributes.modified)?;
-        let (access, _) = encode(attributes.accessed)?;
-        entry.raw[18..20].copy_from_slice(&access.to_le_bytes());
-        entry.raw[22..24].copy_from_slice(&time.to_le_bytes());
-        entry.raw[24..26].copy_from_slice(&date.to_le_bytes());
+        if attributes.modified != current.modified {
+            let (date, time) = encode(attributes.modified)?;
+            entry.raw[22..24].copy_from_slice(&time.to_le_bytes());
+            entry.raw[24..26].copy_from_slice(&date.to_le_bytes());
+        }
+        if attributes.accessed != current.accessed {
+            let (access, _) = encode(attributes.accessed)?;
+            entry.raw[18..20].copy_from_slice(&access.to_le_bytes());
+        }
         entry.raw[11] = (entry.raw[11] & !1) | u8::from(attributes.permissions & 0o222 == 0);
         if node.borrow().linked {
             self.transaction(|volume| volume.store_entry(&entry))?;

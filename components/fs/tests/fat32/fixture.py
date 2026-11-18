@@ -24,6 +24,7 @@ def prepare(directory):
     subprocess.run(["mmd", "-i", str(image), "::/data"], check=True)
     for name in ["Short.bin", "Long filename café.txt"]:
         subprocess.run(["mcopy", "-i", str(image), str(message), "::/data/" + name], check=True)
+    clear_dates(image)
     shutil.copyfile(image, directory / "readonly.raw")
     good = image.read_bytes()
     invalid = bytearray(good)
@@ -64,6 +65,28 @@ def prepare(directory):
         output.write(active)
         with wide.open("rb") as source:
             shutil.copyfileobj(source, output)
+
+
+def clear_dates(image):
+    with image.open("r+b") as output:
+        boot = output.read(512)
+        size = boot[13] * 512
+        data = (int.from_bytes(boot[14:16], "little") + boot[16] * int.from_bytes(boot[36:40], "little")) * 512
+        root = int.from_bytes(boot[44:48], "little")
+        output.seek(data + (root - 2) * size)
+        rows = output.read(size)
+        entry = next(rows[index:index + 32] for index in range(0, size, 32) if rows[index:index + 11] == b"DATA       ")
+        first = int.from_bytes(entry[20:22], "little") << 16 | int.from_bytes(entry[26:28], "little")
+        directory = data + (first - 2) * size
+        output.seek(directory)
+        rows = output.read(size)
+        index = next(index for index in range(0, size, 32) if rows[index:index + 11] == b"SHORT   BIN")
+        entry = bytearray(rows[index:index + 32])
+        entry[13] = 0
+        for offset in [14, 16, 18, 22, 24]:
+            entry[offset:offset + 2] = b"\0\0"
+        output.seek(directory + index)
+        output.write(entry)
 
 
 def check(directory):
