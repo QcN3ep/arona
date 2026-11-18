@@ -116,14 +116,12 @@ use crate::{
 };
 
 pub(super) fn exit<'a>(
-    process: &Process<'a>,
+    process: &mut Process<'a>,
     index: usize,
     code: usize,
 ) -> Result<Outcome<'a>, Error> {
-    if process.threads.len() == 1 {
-        process.release_vfork();
-    }
-    process.threads[index].native.terminate(
+    process.terminate_thread(
+        index,
         ExitStatus {
             code: code as u8,
             signal: 0,
@@ -133,15 +131,12 @@ pub(super) fn exit<'a>(
     Ok(Outcome::Terminated)
 }
 
-pub(super) fn exit_group<'a>(process: &Process<'a>, code: usize) -> Result<Outcome<'a>, Error> {
-    process.release_vfork();
+pub(super) fn exit_group<'a>(process: &mut Process<'a>, code: usize) -> Result<Outcome<'a>, Error> {
     let status = ExitStatus {
         code: code as u8,
         signal: 0,
     }
     .encode();
-    for thread in &process.threads {
-        thread.native.terminate(status)?;
-    }
+    process.terminate_threads(status)?;
     Ok(Outcome::Terminated)
 }

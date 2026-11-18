@@ -57,14 +57,8 @@ fn take(process: &Process<'_>, index: usize, number: u8) {
     }
 }
 
-pub fn terminate(process: &Process<'_>, signal: u8) -> Result<(), Error> {
-    process.release_vfork();
-    for thread in &process.threads {
-        thread
-            .native
-            .terminate(ExitStatus { code: 0, signal }.encode())?;
-    }
-    Ok(())
+pub fn terminate(process: &mut Process<'_>, signal: u8) -> Result<(), Error> {
+    process.terminate_threads(ExitStatus { code: 0, signal }.encode())
 }
 
 fn stop(process: &Process<'_>, signal: u8) {

@@ -395,6 +395,8 @@ The peak resident set size is reported in KiB.
 The remaining resource counters are zero.
 
 A thread stores the clear-tid address, its futex wait state, and the address of an optional robust list head.
+Process clones also support child TID registration and exit clearing. `CLONE_CHILD_SETTID` writes the identifier in the child's address space, and `CLONE_CHILD_CLEARTID` clears it and wakes a futex waiter on exit.
+`CLONE_DETACHED` is accepted and ignored for both process and thread creation.
 futex combines user word validation, wait registration, wakeup, and timeout into compatibility layer operations.
 `set_robust_list` records the 24-byte `struct robust_list_head`, and `get_robust_list` reports that head and length for the calling thread or another thread of the same process.
 When a thread exits, the whole thread group exits, or exec replaces the image, the service walks the registered list, marks each futex word still owned by the thread with `FUTEX_OWNER_DIED`, and wakes one waiter.

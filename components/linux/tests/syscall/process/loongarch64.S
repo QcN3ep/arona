@@ -35,7 +35,7 @@ threads:
     add.d $s1, $s1, $t0
     la.pcrel $s2, thread_data
     st.d $s0, $s2, 16
-    li.d $a0, 0x13d0f00
+    li.d $a0, 0x17d0f00
     move $a1, $s1
     move $a2, $s2
     addi.d $a3, $s2, 4

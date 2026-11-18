@@ -1283,6 +1283,25 @@ impl AddressSpace {
         };
         Ok((key, Rc::clone(&page.frames)))
     }
+
+    pub fn prepare_clear_tid(
+        &self,
+        pid: usize,
+        address: usize,
+    ) -> Option<crate::process::futex::ClearTid> {
+        let info = self.native.task().query(address).ok()??;
+        if !info.permissions?.writable() {
+            return None;
+        }
+        let (key, frames) = self.futex_key(pid, address, false).ok()?;
+        let pages = self.pages.borrow();
+        let page = pages.get(&(address & !(PAGE_SIZE - 1)))?;
+        Some(crate::process::futex::ClearTid {
+            key,
+            frames,
+            offset: page.offset as usize * PAGE_SIZE + address % PAGE_SIZE,
+        })
+    }
 }
 
 impl AddressSpace {

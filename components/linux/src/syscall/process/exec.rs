@@ -13,7 +13,7 @@ use crate::{
     protocol::Arguments,
     syscall::{
         Operation, Outcome,
-        abi::{EFAULT, ELOOP, ENOEXEC, ENOMEM, Errno},
+        abi::{EFAULT, EIO, ELOOP, ENOEXEC, ENOMEM, Errno},
         file::{filesystem_error, path::Lookup},
     },
 };
@@ -223,9 +223,7 @@ fn replace(
     let thread_signals = Rc::clone(&process.threads[index].signals);
     // Stop old user threads before releasing their robust locks. The old
     // address space stays alive until all owner-death updates finish.
-    for thread in &process.threads {
-        thread.native.terminate(0).map_err(super::error)?;
-    }
+    process.terminate_threads(0).map_err(|_| EIO)?;
     for index in 0..process.threads.len() {
         process.robust_list_cleanup(index);
     }

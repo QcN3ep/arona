@@ -222,7 +222,14 @@ impl Handle<FrameAllocation> {
         Ok(())
     }
     pub fn write(&mut self, offset: usize, input: &[u8]) -> Result<(), Error> {
-        self.borrow().invoke(
+        self.borrow().write(offset, input)
+    }
+}
+
+impl BorrowedHandle<'_, FrameAllocation> {
+    /// Copies bytes into the allocation without taking ownership of its handle.
+    pub fn write(&mut self, offset: usize, input: &[u8]) -> Result<(), Error> {
+        self.invoke(
             memory::WRITE,
             [
                 offset as u64,

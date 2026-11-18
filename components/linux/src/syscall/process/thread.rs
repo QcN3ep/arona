@@ -19,8 +19,9 @@ const THREAD: usize = 0x10000;
 const SYSVSEM: usize = 0x40000;
 const SETTLS: usize = 0x80000;
 const PARENT_SETTID: usize = 0x100000;
-const CHILD_CLEARTID: usize = 0x200000;
-const CHILD_SETTID: usize = 0x1000000;
+pub(super) const CHILD_CLEARTID: usize = 0x200000;
+pub(super) const DETACHED: usize = 0x400000;
+pub(super) const CHILD_SETTID: usize = 0x1000000;
 
 // REFERENCE: https://man7.org/linux/man-pages/man2/clone.2.html
 pub(super) fn clone(
@@ -31,7 +32,9 @@ pub(super) fn clone(
 ) -> SyscallResult {
     let [flags, stack, parent_tid, tls, child_tid] = arguments(process.machine, args);
     let required = VM | FS | FILES | SIGHAND | THREAD;
-    let supported = required | SYSVSEM | SETTLS | PARENT_SETTID | CHILD_CLEARTID | CHILD_SETTID;
+    // CLONE_DETACHED is ignored by Linux and does not change join or exit handling.
+    let supported =
+        required | SYSVSEM | SETTLS | PARENT_SETTID | CHILD_CLEARTID | CHILD_SETTID | DETACHED;
     if flags & required != required || flags & !supported != 0 {
         return Err(EOPNOTSUPP);
     }
@@ -135,7 +138,7 @@ fn tid_writes(
     Ok(writes)
 }
 
-fn arguments(machine: crate::elf::Machine, args: [usize; 6]) -> [usize; 5] {
+pub(super) fn arguments(machine: crate::elf::Machine, args: [usize; 6]) -> [usize; 5] {
     // REFERENCE: https://git.musl-libc.org/cgit/musl/tree/src/thread/loongarch64/clone.s
     let [flags, stack, parent_tid, fourth, fifth, _] = args;
     let (tls, child_tid) = match machine {

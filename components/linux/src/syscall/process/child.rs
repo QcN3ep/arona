@@ -2,6 +2,7 @@
 
 //! Process image copying, vfork sharing, and child process registration.
 
+use super::thread::{CHILD_CLEARTID, CHILD_SETTID, DETACHED};
 use crate::{
     process::{Process, Thread, Vfork},
     syscall::{
@@ -38,7 +39,7 @@ fn spawn<'a>(
     context: &Context,
     args: [usize; 6],
 ) -> Result<(usize, Option<Rc<Vfork>>), Errno> {
-    let [flags, stack, parent_tid, _, _, _] = args;
+    let [flags, stack, parent_tid, _, child_tid] = super::thread::arguments(process.machine, args);
     let vfork = validate(flags, stack)?;
     let (group, session) = process.namespace.identity(process.pid)?;
     process.children.try_reserve(1).map_err(|_| ENOMEM)?;
@@ -75,9 +76,13 @@ fn spawn<'a>(
     let native_id = native.id().map_err(super::error)?;
     start(
         process,
+        &address_space,
         &native,
         pid,
-        (flags & PARENT_SETTID != 0).then_some(parent_tid),
+        [
+            (flags & PARENT_SETTID != 0).then_some(parent_tid),
+            (flags & CHILD_SETTID != 0).then_some(child_tid),
+        ],
     )?;
     let signals = Rc::new(core::cell::RefCell::new(process.signals.borrow().fork()));
     let thread_signals = Rc::new(core::cell::RefCell::new(
@@ -113,7 +118,11 @@ fn spawn<'a>(
             native_id,
             tid: pid,
             policy,
-            clear_tid: 0,
+            clear_tid: if flags & CHILD_CLEARTID != 0 {
+                child_tid
+            } else {
+                0
+            },
             robust_list: 0,
             pending: None,
             signals: thread_signals,
@@ -175,7 +184,12 @@ fn validate(flags: usize, stack: usize) -> Result<bool, Errno> {
         // A shared address space without vfork needs its own clone semantics.
         return Err(EOPNOTSUPP);
     }
-    let supported = PARENT_SETTID | 0xff | if vfork { VM | VFORK } else { 0 };
+    let supported = PARENT_SETTID
+        | CHILD_SETTID
+        | CHILD_CLEARTID
+        | DETACHED
+        | 0xff
+        | if vfork { VM | VFORK } else { 0 };
     if flags & !supported != 0 || !matches!(flags & 255, 0 | SIGCHLD) || stack != 0 {
         // TODO: Support the remaining clone flags.
         return Err(EOPNOTSUPP);
@@ -197,10 +211,18 @@ fn entry(machine: crate::elf::Machine, state: &runtime::trap::UserState) -> User
 
 fn start(
     process: &Process<'_>,
+    child: &crate::memory::AddressSpace,
     native: &runtime::Handle<runtime::Thread>,
     pid: usize,
-    parent_tid: Option<usize>,
+    [parent_tid, child_tid]: [Option<usize>; 2],
 ) -> Result<(), Errno> {
+    let child_previous = child_tid.and_then(|address| {
+        let mut bytes = [0; 4];
+        child
+            .read(address, &mut bytes)
+            .ok()
+            .map(|()| (address, bytes))
+    });
     let previous = if let Some(address) = parent_tid {
         let mut bytes = [0; 4];
         process
@@ -215,7 +237,16 @@ fn start(
     } else {
         None
     };
+    // Linux writes the TID in the child before returning from clone. A failed
+    // child write does not turn successful process creation into an error.
+    // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/kernel/sched/core.c?h=v6.12
+    if let Some(address) = child_tid {
+        let _ = child.write(address, &(pid as u32).to_le_bytes());
+    }
     if let Err(error) = native.start() {
+        if let Some((address, bytes)) = child_previous {
+            let _ = child.write(address, &bytes);
+        }
         if let Some((address, bytes)) = previous {
             let _ = process.address_space.write(address, &bytes);
         }

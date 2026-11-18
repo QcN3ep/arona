@@ -330,13 +330,7 @@ impl<'a> Process<'a> {
                     .saturating_add(self.threads[index].native.cpu_time_ns().unwrap_or(0));
                 self.robust_list_cleanup(index);
                 let status = self.threads[index].native.wait(0)?;
-                let clear_tid = self.threads[index].clear_tid;
-                if clear_tid != 0
-                    && self.address_space.write(clear_tid, &[0; 4]).is_ok()
-                    && let Ok((key, _)) = self.address_space.futex_key(self.pid, clear_tid, false)
-                {
-                    self.namespace.futexes.wake(key, 1, u32::MAX);
-                }
+                self.clear_tid_cleanup(index);
                 self.status = if status == usize::MAX {
                     ExitStatus { code: 0, signal: 9 }
                 } else {
@@ -435,6 +429,46 @@ impl<'a> Process<'a> {
         if let Some(vfork) = &self.vfork {
             vfork.release();
         }
+    }
+
+    /// Clear the exiting thread's TID word and wake one process-shared waiter.
+    pub(crate) fn clear_tid_cleanup(&mut self, index: usize) {
+        let address = core::mem::take(&mut self.threads[index].clear_tid);
+        if let Some(clear) = self.address_space.prepare_clear_tid(self.pid, address) {
+            clear.complete(&self.namespace.futexes);
+        }
+    }
+
+    pub(crate) fn terminate_thread(&mut self, index: usize, status: usize) -> Result<(), Error> {
+        let address = self.threads[index].clear_tid;
+        let clear = self.address_space.prepare_clear_tid(self.pid, address);
+        self.threads[index].native.terminate(status)?;
+        self.threads[index].clear_tid = 0;
+        if let Some(clear) = clear {
+            clear.complete(&self.namespace.futexes);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn terminate_threads(&mut self, status: usize) -> Result<(), Error> {
+        let targets: Vec<_> = self
+            .threads
+            .iter()
+            .map(|thread| {
+                self.address_space
+                    .prepare_clear_tid(self.pid, thread.clear_tid)
+            })
+            .collect();
+        for thread in &self.threads {
+            thread.native.terminate(status)?;
+        }
+        for thread in &mut self.threads {
+            thread.clear_tid = 0;
+        }
+        for clear in targets.into_iter().flatten() {
+            clear.complete(&self.namespace.futexes);
+        }
+        Ok(())
     }
 
     /// Release the robust futexes owned by an exiting thread.

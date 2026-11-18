@@ -34,15 +34,37 @@ fork_process:
     sd t0, 0(s3)
     la s4, private_word
     sd t0, 0(s4)
-    li a0, 17
+    li t0, 91
+    sw t0, 8(s3)
+    li a0, 0x1704111
     li a1, 0
-    li a2, 0
+    li a2, 1
     li a3, 0
-    li a4, 0
+    addi a4, s3, 8
+    invoke 220
+    expect -14
+    lw t0, 8(s3)
+    li t1, 91
+    bne t0, t1, child_failure
+    li a0, -1
+    li a1, 0
+    li a2, 1
+    li a3, 0
+    invoke 260
+    expect -10
+    sw zero, 8(s3)
+    sw zero, 128(sp)
+    li a0, 0x1700011
+    li a1, 0
+    addi a2, sp, 128
+    li a3, 0
+    addi a4, s3, 8
     invoke 220
     beqz a0, child
     bltz a0, child_failure
     mv s5, a0
+    lw t0, 128(sp)
+    bne t0, s5, child_failure
     mv a0, s2
     invoke 57
     expect 0
@@ -54,6 +76,20 @@ fork_process:
     lbu t0, 16(sp)
     li t1, 67
     bne t0, t1, child_failure
+wait_child_tid:
+    lw t0, 8(s3)
+    beqz t0, child_tid_cleared
+    addi a0, s3, 8
+    li a1, 0
+    mv a2, t0
+    li a3, 0
+    li a4, 0
+    li a5, 0
+    invoke 98
+    beqz a0, wait_child_tid
+    expect -11
+    j wait_child_tid
+child_tid_cleared:
     mv a0, s5
     li a1, 1
     li a2, 0
@@ -81,15 +117,20 @@ fork_process:
     li a3, 0
     invoke 260
     expect -10
-    li a0, 17
+    li t0, 91
+    sw t0, 132(sp)
+    li a0, 0x1600011
     li a1, 0
     li a2, 0
     li a3, 0
-    li a4, 0
+    addi a4, sp, 132
     invoke 220
     beqz a0, busy_child
     bltz a0, child_failure
     mv s1, a0
+    lw t0, 132(sp)
+    li t1, 91
+    bne t0, t1, child_failure
     mv a0, s1
     li a1, 0
     li a2, 0
@@ -108,6 +149,9 @@ fork_process:
     beqz t0, child_failure
     j busy_done
 busy_child:
+    invoke 172
+    lw t0, 132(sp)
+    bne a0, t0, child_failure
     li t0, 200000
 1:
     addi t0, t0, -1
@@ -120,6 +164,8 @@ busy_done:
 child:
     invoke 172
     beq a0, s0, child_failure
+    lw t0, 8(s3)
+    bne a0, t0, child_failure
     invoke 173
     bne a0, s0, child_failure
     li t0, 2
@@ -148,15 +194,17 @@ vfork_process:
     la s4, private_word
     li t0, 1
     sd t0, 0(s4)
-    li a0, 0x4111
+    li a0, 0x1604111
     li a1, 0
     li a2, 0
     li a3, 0
-    li a4, 0
+    addi a4, s4, 8
     invoke 220
     beqz a0, vfork_shared_child
     bltz a0, child_failure
     mv s5, a0
+    lw t0, 8(s4)
+    bnez t0, child_failure
     ld t0, 0(s4)
     li t1, 2
     bne t0, t1, child_failure
@@ -169,15 +217,17 @@ vfork_process:
     lw t0, 24(sp)
     li t1, 5888
     bne t0, t1, child_failure
-    li a0, 0x4111
+    li a0, 0x1604111
     li a1, 0
     li a2, 0
     li a3, 0
-    li a4, 0
+    addi a4, s4, 8
     invoke 220
     beqz a0, vfork_exec_child
     bltz a0, child_failure
     mv s6, a0
+    lw t0, 8(s4)
+    bnez t0, child_failure
     ld t0, 0(s4)
     li t1, 2
     bne t0, t1, child_failure
@@ -220,7 +270,7 @@ vfork_mode: .asciz "O"
 vfork_environment: .asciz "ARONA_TEST=yes"
 .section .bss
 .balign 8
-private_word: .skip 8
+private_word: .skip 16
 vfork_argv: .skip 24
 vfork_envp: .skip 16
 .section .note.GNU-stack,"",@progbits

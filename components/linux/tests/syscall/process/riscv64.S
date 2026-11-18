@@ -35,7 +35,7 @@ threads:
     add s1, s1, t0
     la s2, thread_data
     sd s0, 16(s2)
-    li a0, 0x13d0f00
+    li a0, 0x17d0f00
     mv a1, s1
     mv a2, s2
     addi a3, s2, 32

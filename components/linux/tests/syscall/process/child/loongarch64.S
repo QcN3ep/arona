@@ -34,15 +34,37 @@ fork_process:
     st.d $t0, $s3, 0
     la.pcrel $s4, private_word
     st.d $t0, $s4, 0
-    li.d $a0, 17
+    li.d $t0, 91
+    st.w $t0, $s3, 8
+    li.d $a0, 0x1704111
     li.d $a1, 0
-    li.d $a2, 0
+    li.d $a2, 1
+    addi.d $a3, $s3, 8
+    li.d $a4, 0
+    invoke 220
+    expect -14
+    ld.w $t0, $s3, 8
+    li.d $t1, 91
+    bne $t0, $t1, child_failure
+    li.d $a0, -1
+    li.d $a1, 0
+    li.d $a2, 1
     li.d $a3, 0
+    invoke 260
+    expect -10
+    st.w $zero, $s3, 8
+    st.w $zero, $sp, 128
+    li.d $a0, 0x1700011
+    li.d $a1, 0
+    addi.d $a2, $sp, 128
+    addi.d $a3, $s3, 8
     li.d $a4, 0
     invoke 220
     beqz $a0, child
     bltz $a0, child_failure
     move $s5, $a0
+    ld.w $t0, $sp, 128
+    bne $t0, $s5, child_failure
     move $a0, $s2
     invoke 57
     expect 0
@@ -54,6 +76,20 @@ fork_process:
     ld.bu $t0, $sp, 16
     li.d $t1, 67
     bne $t0, $t1, child_failure
+wait_child_tid:
+    ld.w $t0, $s3, 8
+    beqz $t0, child_tid_cleared
+    addi.d $a0, $s3, 8
+    li.d $a1, 0
+    move $a2, $t0
+    li.d $a3, 0
+    li.d $a4, 0
+    li.d $a5, 0
+    invoke 98
+    beqz $a0, wait_child_tid
+    expect -11
+    b wait_child_tid
+child_tid_cleared:
     move $a0, $s5
     li.d $a1, 1
     li.d $a2, 0
@@ -81,15 +117,20 @@ fork_process:
     li.d $a3, 0
     invoke 260
     expect -10
-    li.d $a0, 17
+    li.d $t0, 91
+    st.w $t0, $sp, 132
+    li.d $a0, 0x1600011
     li.d $a1, 0
     li.d $a2, 0
-    li.d $a3, 0
+    addi.d $a3, $sp, 132
     li.d $a4, 0
     invoke 220
     beqz $a0, busy_child
     bltz $a0, child_failure
     move $s1, $a0
+    ld.w $t0, $sp, 132
+    li.d $t1, 91
+    bne $t0, $t1, child_failure
     move $a0, $s1
     li.d $a1, 0
     li.d $a2, 0
@@ -108,6 +149,9 @@ fork_process:
     beqz $t0, child_failure
     b busy_done
 busy_child:
+    invoke 172
+    ld.w $t0, $sp, 132
+    bne $a0, $t0, child_failure
     li.d $t0, 200000
 1:
     addi.d $t0, $t0, -1
@@ -120,6 +164,8 @@ busy_done:
 child:
     invoke 172
     beq $a0, $s0, child_failure
+    ld.w $t0, $s3, 8
+    bne $a0, $t0, child_failure
     invoke 173
     bne $a0, $s0, child_failure
     li.d $t0, 2
@@ -148,15 +194,17 @@ vfork_process:
     la.pcrel $s4, private_word
     li.d $t0, 1
     st.d $t0, $s4, 0
-    li.d $a0, 0x4111
+    li.d $a0, 0x1604111
     li.d $a1, 0
     li.d $a2, 0
-    li.d $a3, 0
+    addi.d $a3, $s4, 8
     li.d $a4, 0
     invoke 220
     beqz $a0, vfork_shared_child
     bltz $a0, child_failure
     move $s5, $a0
+    ld.w $t0, $s4, 8
+    bnez $t0, child_failure
     ld.d $t0, $s4, 0
     li.d $t1, 2
     bne $t0, $t1, child_failure
@@ -169,15 +217,17 @@ vfork_process:
     ld.w $t0, $sp, 24
     li.d $t1, 5888
     bne $t0, $t1, child_failure
-    li.d $a0, 0x4111
+    li.d $a0, 0x1604111
     li.d $a1, 0
     li.d $a2, 0
-    li.d $a3, 0
+    addi.d $a3, $s4, 8
     li.d $a4, 0
     invoke 220
     beqz $a0, vfork_exec_child
     bltz $a0, child_failure
     move $s6, $a0
+    ld.w $t0, $s4, 8
+    bnez $t0, child_failure
     ld.d $t0, $s4, 0
     li.d $t1, 2
     bne $t0, $t1, child_failure
@@ -220,7 +270,7 @@ vfork_mode: .asciz "O"
 vfork_environment: .asciz "ARONA_TEST=yes"
 .section .bss
 .balign 8
-private_word: .skip 8
+private_word: .skip 16
 vfork_argv: .skip 24
 vfork_envp: .skip 16
 .section .note.GNU-stack,"",@progbits

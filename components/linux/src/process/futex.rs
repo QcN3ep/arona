@@ -46,6 +46,21 @@ pub(crate) struct Registration {
     waiter: Rc<Waiter>,
 }
 
+/// Retains the writable TID word while the exiting native Task is reclaimed.
+pub(crate) struct ClearTid {
+    pub key: Key,
+    pub frames: Rc<Handle<FrameAllocation>>,
+    pub offset: usize,
+}
+
+impl ClearTid {
+    pub fn complete(self, futexes: &Futexes) {
+        if self.frames.borrow().write(self.offset, &[0; 4]).is_ok() {
+            futexes.wake(self.key, 1, u32::MAX);
+        }
+    }
+}
+
 impl Futexes {
     pub fn register(
         self: &Rc<Self>,
