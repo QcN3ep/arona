@@ -66,7 +66,11 @@ fn main() {
         let session = Session::open(process::task(), &control, id).unwrap();
         let disk = Rc::new(Disk::new(process::task(), session).unwrap());
         exercise(&disk);
+        let service = !disk.read_only() && disk.capacity() > 2 * SIZE;
         drop(disk);
+        if service {
+            mount_service(&control, id);
+        }
         drop(control);
         worker.join().unwrap();
         tested += 1;
@@ -378,4 +382,105 @@ fn failure(disk: &Rc<Disk>) {
         assert_eq!(filesystem.open_bytes(b"/flush").unwrap().len(), 12);
     }
     filesystem.unmount().unwrap();
+}
+
+fn deadline() -> u64 {
+    thread::now_ns().unwrap() + 30_000_000_000
+}
+
+fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
+    let (channel, server) = process::task()
+        .channel(
+            Rights::READ_WRITE | Rights::WAIT,
+            Rights::READ | Rights::WAIT,
+        )
+        .unwrap();
+    let worker = thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || fs::service::run(process::task(), server).unwrap())
+        .unwrap();
+    let mut archive = [b'0'; 124];
+    archive[..6].copy_from_slice(b"070701");
+    archive[94..102].copy_from_slice(b"0000000b");
+    archive[110..121].copy_from_slice(b"TRAILER!!!\0");
+    archive[121..].fill(0);
+    let mut frames = process::task()
+        .allocate(1, Rights::READ_WRITE | Rights::TRANSFER)
+        .unwrap();
+    frames.write(0, &archive).unwrap();
+    let control =
+        fs::Control::start(process::task(), channel, frames, archive.len(), deadline()).unwrap();
+    let client = control.connect(deadline()).unwrap();
+    control
+        .mount(
+            b"/var",
+            Session::open(process::task(), device, id).unwrap(),
+            0,
+            SIZE,
+            deadline(),
+        )
+        .unwrap();
+    assert_eq!(client.statfs(b"/var", deadline()).unwrap().kind, 0x4d44);
+    let file = client.open("/var/persist.bin", deadline()).unwrap();
+    let mut bytes = [0; 33];
+    assert_eq!(file.read_at(11983, &mut bytes, deadline()).unwrap(), 17);
+    assert!(
+        bytes[..17]
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| *byte == ((11983 + index) % 251) as u8)
+    );
+    assert_eq!(control.unmount(b"/var", deadline()), Err(Error::Busy));
+    assert_eq!(
+        client.hard_link(b"/var/persist.bin", b"/var/link", deadline()),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(
+        client.symlink(b"persist.bin", b"/var/link", deadline()),
+        Err(Error::Unsupported)
+    );
+    assert_eq!(
+        client.metadata(b"/var/link", deadline()),
+        Err(Error::NotFound)
+    );
+    client.mkdir("/var/service", deadline()).unwrap();
+    let directory = client.open_directory(b"/var/service", deadline()).unwrap();
+    client
+        .rename("/var/service", "/var/moved", deadline())
+        .unwrap();
+    assert_eq!(
+        directory
+            .start_path()
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap(),
+        b"/var/moved"
+    );
+    let created = client.create("/var/moved/item", deadline()).unwrap();
+    created
+        .write_at(511, b"service boundary", deadline())
+        .unwrap();
+    created.append(b"append", deadline()).unwrap();
+    created.truncate(520, deadline()).unwrap();
+    created.fsync(deadline()).unwrap();
+    client.unlink("/var/moved/item", deadline()).unwrap();
+    assert_eq!(created.metadata(deadline()).unwrap().links, 0);
+    drop(created);
+    drop(directory);
+    client.unlink("/var/moved", deadline()).unwrap();
+    let unicode = client.create("/var/service λ𐐀.txt", deadline()).unwrap();
+    unicode.write_at(0, b"unicode", deadline()).unwrap();
+    unicode.fsync(deadline()).unwrap();
+    drop(unicode);
+    let unicode = client.open("/var/service λ𐐀.txt", deadline()).unwrap();
+    let mut data = [0; 7];
+    unicode.read_at(0, &mut data, deadline()).unwrap();
+    assert_eq!(&data, b"unicode");
+    drop(unicode);
+    drop(file);
+    client.sync(deadline()).unwrap();
+    control.unmount(b"/var", deadline()).unwrap();
+    drop(client);
+    drop(control);
+    worker.join().unwrap();
 }

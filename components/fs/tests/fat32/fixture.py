@@ -69,6 +69,7 @@ def prepare(directory):
 def check(directory):
     image = directory / "fat32.raw"
     result = directory / "persisted"
+    result.unlink(missing_ok=True)
     subprocess.run(["mcopy", "-i", str(image), "::/persist.bin", str(result)], check=True)
     assert result.read_bytes() == bytes(index % 251 for index in range(12000))
     with image.open("rb") as source:
@@ -81,6 +82,32 @@ def check(directory):
     result.unlink()
     subprocess.run(["mcopy", "-i", f"{image}@@{5 * SIZE}", "::/wide-write.bin", str(result)], check=True)
     assert result.read_bytes() == b"wide sectors"
+    result.unlink()
+    subprocess.run(["mcopy", "-i", str(image), "::/SERVIC~1.TXT", str(result)], check=True)
+    assert result.read_bytes() == b"unicode"
+    # mtools substitutes surrogate pairs. Check the disk name with Python's UTF-16 decoder.
+    with image.open("rb") as source:
+        sector = int.from_bytes(boot[11:13], "little")
+        cluster_size = boot[13] * sector
+        root = int.from_bytes(boot[44:48], "little")
+        data = first + boot[16] * size + (root - 2) * cluster_size
+        source.seek(data)
+        names = {}
+        found = False
+        for _ in range(cluster_size // 32):
+            raw = source.read(32)
+            if raw[0] == 0:
+                raise AssertionError("Unicode directory entry not found")
+            if raw[11] == 15:
+                names[raw[0] & 31] = b"".join(raw[at:at + 2] for at in [1,3,5,7,9,14,16,18,20,22,24,28,30])
+            elif raw[:11] == b"SERVIC~1TXT":
+                text = b"".join(names[index] for index in sorted(names)).decode("utf-16-le").split("\0")[0]
+                assert text == "service λ𐐀.txt"
+                found = True
+                break
+            else:
+                names.clear()
+        assert found, "Unicode directory entry not found"
 
 
 if __name__ == "__main__":

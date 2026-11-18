@@ -7,6 +7,7 @@ use crate::{
     archive::{self, Archive},
     block::Disk,
     ext4::Ext4,
+    fat32::Fat32,
     path::normalize,
     tmpfs::Tmpfs,
 };
@@ -22,6 +23,7 @@ pub struct Namespace {
 /// A filesystem mounted at a path in the namespace.
 enum Mounted {
     Ext4(Ext4),
+    Fat32(Fat32),
     Tmpfs(Tmpfs),
 }
 
@@ -29,6 +31,7 @@ impl Mounted {
     fn statistics(&self) -> Result<crate::Statistics, Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.statistics(),
+            Self::Fat32(filesystem) => filesystem.statistics(),
             Self::Tmpfs(filesystem) => filesystem.statistics(),
         }
     }
@@ -36,6 +39,7 @@ impl Mounted {
     fn unmount(&self) -> Result<(), Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.unmount(),
+            Self::Fat32(filesystem) => filesystem.unmount(),
             Self::Tmpfs(filesystem) => filesystem.unmount(),
         }
     }
@@ -43,6 +47,7 @@ impl Mounted {
     fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.metadata(path),
+            Self::Fat32(filesystem) => filesystem.metadata(path),
             Self::Tmpfs(filesystem) => filesystem.metadata(path),
         }
     }
@@ -50,6 +55,7 @@ impl Mounted {
     fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.read_dir(path),
+            Self::Fat32(filesystem) => filesystem.read_dir(path),
             Self::Tmpfs(filesystem) => filesystem.read_dir(path),
         }
     }
@@ -57,6 +63,7 @@ impl Mounted {
     fn rename(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.rename(source, target),
+            Self::Fat32(filesystem) => filesystem.rename(source, target),
             Self::Tmpfs(filesystem) => filesystem.rename(source, target),
         }
     }
@@ -64,6 +71,7 @@ impl Mounted {
     fn hard_link(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.hard_link(source, target),
+            Self::Fat32(_) => Err(Error::Unsupported),
             Self::Tmpfs(filesystem) => filesystem.hard_link(source, target),
         }
     }
@@ -71,6 +79,7 @@ impl Mounted {
     fn symlink(&self, target: &[u8], path: &[u8]) -> Result<(), Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.symlink(target, path),
+            Self::Fat32(_) => Err(Error::Unsupported),
             Self::Tmpfs(filesystem) => filesystem.symlink(target, path),
         }
     }
@@ -78,6 +87,7 @@ impl Mounted {
     fn read_link(&self, path: &[u8]) -> Result<Vec<u8>, Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.read_link(path),
+            Self::Fat32(_) => Err(Error::InvalidRequest),
             Self::Tmpfs(filesystem) => filesystem.read_link(path),
         }
     }
@@ -85,6 +95,7 @@ impl Mounted {
     fn open_path(&self, path: &[u8]) -> Result<File, Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.open_path(path).map(File::Ext4),
+            Self::Fat32(filesystem) => filesystem.open_path(path).map(File::Fat32),
             Self::Tmpfs(filesystem) => filesystem.open_path(path).map(File::Tmpfs),
         }
     }
@@ -92,6 +103,7 @@ impl Mounted {
     fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.open_bytes(path).map(File::Ext4),
+            Self::Fat32(filesystem) => filesystem.open_bytes(path).map(File::Fat32),
             Self::Tmpfs(filesystem) => filesystem.open_bytes(path).map(File::Tmpfs),
         }
     }
@@ -99,6 +111,7 @@ impl Mounted {
     fn open_directory(&self, path: &[u8]) -> Result<DirectoryNode, Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.open_directory(path).map(DirectoryNode::Ext4),
+            Self::Fat32(filesystem) => filesystem.open_directory(path).map(DirectoryNode::Fat32),
             Self::Tmpfs(filesystem) => filesystem.open_directory(path).map(DirectoryNode::Tmpfs),
         }
     }
@@ -106,6 +119,7 @@ impl Mounted {
     fn create(&self, path: &[u8]) -> Result<File, Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.create(path).map(File::Ext4),
+            Self::Fat32(filesystem) => filesystem.create(path).map(File::Fat32),
             Self::Tmpfs(filesystem) => filesystem.create(path).map(File::Tmpfs),
         }
     }
@@ -115,6 +129,9 @@ impl Mounted {
             Self::Ext4(filesystem) => filesystem
                 .create_with_permissions(path, permissions)
                 .map(File::Ext4),
+            Self::Fat32(filesystem) => filesystem
+                .create_with_permissions(path, permissions)
+                .map(File::Fat32),
             Self::Tmpfs(filesystem) => filesystem
                 .create_with_permissions(path, permissions)
                 .map(File::Tmpfs),
@@ -124,6 +141,7 @@ impl Mounted {
     fn mkdir_with_permissions(&self, path: &[u8], permissions: u16) -> Result<(), Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.mkdir_with_permissions(path, permissions),
+            Self::Fat32(filesystem) => filesystem.mkdir_with_permissions(path, permissions),
             Self::Tmpfs(filesystem) => filesystem.mkdir_with_permissions(path, permissions),
         }
     }
@@ -131,6 +149,7 @@ impl Mounted {
     fn unlink(&self, path: &[u8]) -> Result<(), Error> {
         match self {
             Self::Ext4(filesystem) => filesystem.unlink(path),
+            Self::Fat32(filesystem) => filesystem.unlink(path),
             Self::Tmpfs(filesystem) => filesystem.unlink(path),
         }
     }
@@ -139,6 +158,7 @@ impl Mounted {
 pub enum File {
     Archive(archive::File),
     Ext4(crate::ext4::File),
+    Fat32(crate::fat32::File),
     Tmpfs(crate::tmpfs::File),
 }
 
@@ -152,6 +172,7 @@ pub struct Directory {
 enum DirectoryNode {
     Archive(archive::Directory),
     Ext4(crate::ext4::File),
+    Fat32(crate::fat32::File),
     Tmpfs(crate::tmpfs::File),
 }
 
@@ -160,6 +181,7 @@ impl Directory {
         match &self.node {
             DirectoryNode::Archive(directory) => directory.statistics(),
             DirectoryNode::Ext4(directory) => directory.statistics(),
+            DirectoryNode::Fat32(directory) => directory.statistics(),
             DirectoryNode::Tmpfs(directory) => directory.statistics(),
         }
     }
@@ -169,6 +191,7 @@ impl Directory {
         let relative = match &self.node {
             DirectoryNode::Archive(_) => Vec::new(),
             DirectoryNode::Ext4(directory) => directory.path()?,
+            DirectoryNode::Fat32(directory) => directory.path()?,
             DirectoryNode::Tmpfs(directory) => directory.path()?,
         };
         if !relative.is_empty() {
@@ -183,6 +206,7 @@ impl Directory {
         match &self.node {
             DirectoryNode::Archive(_) => Ok(()),
             DirectoryNode::Ext4(directory) => directory.fsync(),
+            DirectoryNode::Fat32(directory) => directory.fsync(),
             DirectoryNode::Tmpfs(directory) => directory.fsync(),
         }
     }
@@ -191,6 +215,7 @@ impl Directory {
         match &self.node {
             DirectoryNode::Archive(directory) => Ok(directory.metadata()),
             DirectoryNode::Ext4(directory) => directory.metadata(),
+            DirectoryNode::Fat32(directory) => directory.metadata(),
             DirectoryNode::Tmpfs(directory) => directory.metadata(),
         }
     }
@@ -198,12 +223,14 @@ impl Directory {
         match &self.node {
             DirectoryNode::Archive(directory) => Ok(directory.read_dir()),
             DirectoryNode::Ext4(directory) => directory.read_dir(),
+            DirectoryNode::Fat32(directory) => directory.read_dir(),
             DirectoryNode::Tmpfs(directory) => directory.read_dir(),
         }
     }
     pub fn read_dir_all(&self) -> Result<Vec<crate::DirEntry>, Error> {
         let parent = match &self.node {
             DirectoryNode::Ext4(directory) => directory.parent_metadata()?.unwrap_or(self.parent),
+            DirectoryNode::Fat32(directory) => directory.parent_metadata()?.unwrap_or(self.parent),
             DirectoryNode::Tmpfs(directory) => directory.parent_metadata()?.unwrap_or(self.parent),
             DirectoryNode::Archive(_) => self.parent,
         };
@@ -226,6 +253,7 @@ impl Directory {
         match &self.node {
             DirectoryNode::Archive(_) => Err(Error::ReadOnly),
             DirectoryNode::Ext4(directory) => directory.set_attributes(attributes),
+            DirectoryNode::Fat32(directory) => directory.set_attributes(attributes),
             DirectoryNode::Tmpfs(directory) => directory.set_attributes(attributes),
         }
     }
@@ -260,8 +288,21 @@ impl Namespace {
         {
             return Err(Error::Busy);
         }
-        let filesystem = Ext4::mount(disk, start, length)?;
-        mounts.insert(path, Mounted::Ext4(filesystem));
+        if length < 4096
+            || start
+                .checked_add(length)
+                .is_none_or(|end| end > disk.capacity())
+        {
+            return Err(Error::InvalidData);
+        }
+        let mut header = [0; 4096];
+        disk.read(start, &mut header)?;
+        let filesystem = if header[1080..1082] == [0x53, 0xef] {
+            Mounted::Ext4(Ext4::mount(disk, start, length)?)
+        } else {
+            Mounted::Fat32(Fat32::mount(disk, start, length)?)
+        };
+        mounts.insert(path, filesystem);
         Ok(())
     }
 
@@ -493,8 +534,10 @@ impl Namespace {
     /// Flushes every mounted filesystem; the read-only archive needs no flush.
     pub fn sync(&self) -> Result<(), Error> {
         for filesystem in self.mounts.borrow().values() {
-            if let Mounted::Ext4(filesystem) = filesystem {
-                filesystem.sync()?;
+            match filesystem {
+                Mounted::Ext4(filesystem) => filesystem.sync()?,
+                Mounted::Fat32(filesystem) => filesystem.sync()?,
+                Mounted::Tmpfs(_) => (),
             }
         }
         Ok(())
@@ -548,6 +591,7 @@ impl ReadAt for File {
         match self {
             Self::Archive(file) => file.len(),
             Self::Ext4(file) => file.len(),
+            Self::Fat32(file) => file.len(),
             Self::Tmpfs(file) => file.len(),
         }
     }
@@ -555,6 +599,7 @@ impl ReadAt for File {
         match self {
             Self::Archive(file) => file.read_at(offset, output),
             Self::Ext4(file) => file.read_at(offset, output),
+            Self::Fat32(file) => file.read_at(offset, output),
             Self::Tmpfs(file) => file.read_at(offset, output),
         }
     }
@@ -578,6 +623,7 @@ impl File {
         match self {
             Self::Archive(file) => file.statistics(),
             Self::Ext4(file) => file.statistics(),
+            Self::Fat32(file) => file.statistics(),
             Self::Tmpfs(file) => file.statistics(),
         }
     }
@@ -586,6 +632,7 @@ impl File {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Ext4(file) => file.check_writable(),
+            Self::Fat32(file) => file.check_writable(),
             Self::Tmpfs(file) => file.check_writable(),
         }
     }
@@ -594,6 +641,7 @@ impl File {
         match self {
             Self::Archive(file) => Ok(file.metadata()),
             Self::Ext4(file) => file.metadata(),
+            Self::Fat32(file) => file.metadata(),
             Self::Tmpfs(file) => file.metadata(),
         }
     }
@@ -601,6 +649,7 @@ impl File {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Ext4(file) => file.set_attributes(attributes),
+            Self::Fat32(file) => file.set_attributes(attributes),
             Self::Tmpfs(file) => file.set_attributes(attributes),
         }
     }
@@ -608,6 +657,7 @@ impl File {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Ext4(file) => file.append(bytes),
+            Self::Fat32(file) => file.append(bytes),
             Self::Tmpfs(file) => file.append(bytes),
         }
     }
@@ -616,6 +666,7 @@ impl File {
         match self {
             Self::Archive(_) => Ok(()),
             Self::Ext4(file) => file.fsync(),
+            Self::Fat32(file) => file.fsync(),
             Self::Tmpfs(file) => file.fsync(),
         }
     }
@@ -623,6 +674,7 @@ impl File {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Ext4(file) => file.write_at(offset, bytes),
+            Self::Fat32(file) => file.write_at(offset, bytes),
             Self::Tmpfs(file) => file.write_at(offset, bytes),
         }
     }
@@ -630,6 +682,7 @@ impl File {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Ext4(file) => file.truncate(size),
+            Self::Fat32(file) => file.truncate(size),
             Self::Tmpfs(file) => file.truncate(size),
         }
     }

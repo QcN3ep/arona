@@ -51,6 +51,7 @@ pub const IO: u64 = 12;
 pub const FILE_TOO_LARGE: u64 = 13;
 pub const TOO_MANY_LINKS: u64 = 14;
 pub const NAME_TOO_LONG: u64 = 15;
+pub const UNSUPPORTED: u64 = 16;
 
 pub const CHANNEL_RIGHTS: Rights = Rights::READ_WRITE.union(Rights::WAIT);
 
@@ -105,6 +106,7 @@ pub(crate) fn response_result(response: ReceivedMessage) -> Result<ReceivedMessa
         NOT_DIRECTORY => Error::NotDirectory,
         TOO_MANY_LINKS => Error::TooManyLinks,
         NAME_TOO_LONG => Error::NameTooLong,
+        UNSUPPORTED => Error::Unsupported,
         _ => Error::InvalidData,
     })
 }
@@ -128,6 +130,7 @@ pub fn respond(reply: Handle<Reply>, result: Result<Message, Error>) -> Result<(
                 Error::NotDirectory => NOT_DIRECTORY,
                 Error::TooManyLinks => TOO_MANY_LINKS,
                 Error::NameTooLong => NAME_TOO_LONG,
+                Error::Unsupported => UNSUPPORTED,
                 _ => UNAVAILABLE,
             },
             &[],
