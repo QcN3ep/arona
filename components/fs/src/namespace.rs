@@ -390,8 +390,7 @@ impl Namespace {
         Ok(())
     }
 
-    /// Unmounts a service mount, first dropping user mounts nested below it so a
-    /// leftover client mount cannot keep the target busy during shutdown.
+    /// Unmounts a service volume after every nested mount has been removed.
     pub fn unmount(&self, path: &[u8]) -> Result<(), Error> {
         self.remove_mount(path, None)
     }
@@ -412,21 +411,6 @@ impl Namespace {
             .iter()
             .filter(|(_, entry)| entry.owner == MountOwner::User(channel))
             .map(|(path, _)| path.clone())
-            .collect();
-        self.release_paths(paths);
-    }
-
-    /// Drops user mounts nested below an administrative unmount target so a
-    /// leftover tmpfs cannot keep a service mount busy during shutdown.
-    fn release_user_mounts_under(&self, path: &[u8]) {
-        let paths: Vec<Vec<u8>> = self
-            .mounts
-            .borrow()
-            .iter()
-            .filter(|(other, entry)| {
-                *other != path && beneath(other, path) && matches!(entry.owner, MountOwner::User(_))
-            })
-            .map(|(other, _)| other.clone())
             .collect();
         self.release_paths(paths);
     }
@@ -452,11 +436,6 @@ impl Namespace {
             if owner.is_some_and(|owner| entry.owner != owner) {
                 return Err(Error::InvalidRequest);
             }
-        }
-        // The administrative unmount owns the subtree, so its nested user mounts
-        // go first. Validate the target above so a failed probe changes nothing.
-        if owner.is_none() {
-            self.release_user_mounts_under(&path);
         }
         {
             let mounts = self.mounts.borrow();

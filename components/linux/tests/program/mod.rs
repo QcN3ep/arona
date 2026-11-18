@@ -45,7 +45,7 @@ fn main() {
     mounts
         .mount_tmpfs(b"/tmp", 64 * 1024, service::deadline())
         .unwrap();
-    mount_target_bounds(&mounts);
+    mount_target_bounds(&mounts, &files);
     let (_linux, channel) = service::launch(&native, machine, linux::service::REQUIRED_RIGHTS);
     let mut services = service::resources(&device_service, &kernel_log);
     let (_net, net_channel) = service::launch(
@@ -151,8 +151,38 @@ fn tmpfs(files: &fs::Client<'_>, mounts: &fs::Control<'_>) {
     mounts.unmount(b"/allocation", until).unwrap();
 }
 
-fn mount_target_bounds(mounts: &fs::Control<'_>) {
+fn mount_target_bounds(mounts: &fs::Control<'_>, files: &fs::Client<'_>) {
     let control = mounts.mount_control(service::deadline()).unwrap();
+    let until = service::deadline();
+    mounts.mount_tmpfs(b"/mount-atomic", 8192, until).unwrap();
+    files.mkdir_bytes(b"/mount-atomic/child", until).unwrap();
+    control
+        .start_mount_tmpfs(b"/mount-atomic/child")
+        .unwrap()
+        .wait(WaitMode::Until(until))
+        .unwrap();
+    let file = files
+        .create_bytes(b"/mount-atomic/child/alive", until)
+        .unwrap();
+    file.write_at(0, b"alive", until).unwrap();
+    assert_eq!(
+        mounts.unmount(b"/mount-atomic", until),
+        Err(fs::Error::Busy)
+    );
+    assert_eq!(
+        files
+            .metadata(b"/mount-atomic/child/alive", until)
+            .unwrap()
+            .size,
+        5
+    );
+    drop(file);
+    control
+        .start_unmount_tmpfs(b"/mount-atomic/child")
+        .unwrap()
+        .wait(WaitMode::Until(until))
+        .unwrap();
+    mounts.unmount(b"/mount-atomic", until).unwrap();
     for path in [b"/bin".as_slice(), b"/etc", b"/"] {
         let mut denied = control.start_mount_tmpfs(path).unwrap();
         assert_eq!(
