@@ -94,6 +94,22 @@ pub(crate) trait File: crate::ReadAt {
 
     fn truncate(&self, size: usize) -> Result<(), Error>;
 
+    fn mapping_state(
+        &self,
+        _task: &'static runtime::Handle<runtime::Task>,
+    ) -> Result<Handle<FrameAllocation>, Error> {
+        Err(Error::Unsupported)
+    }
+
+    fn map_page(
+        &self,
+        _task: &'static runtime::Handle<runtime::Task>,
+        _offset: usize,
+        _writable: bool,
+    ) -> Result<Handle<FrameAllocation>, Error> {
+        Err(Error::Unsupported)
+    }
+
     /// Huge page size exposed by this file, or zero for ordinary files.
     fn hugepage_size(&self) -> u64 {
         0

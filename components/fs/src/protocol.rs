@@ -40,6 +40,8 @@ pub const UNMOUNT_MEMORY: u64 = 30;
 pub const MOUNT_HUGEPAGES: u64 = 31;
 pub const HUGEPAGE_INFO: u64 = 32;
 pub const MAP_HUGEPAGE: u64 = 33;
+pub const MAPPING_INFO: u64 = 34;
+pub const MAP_PAGE: u64 = 35;
 
 pub const SUCCESS: u64 = 0;
 pub const INVALID_REQUEST: u64 = 1;

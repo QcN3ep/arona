@@ -22,6 +22,7 @@ pub type PendingMetadata = Pending<Metadata, Handle<FrameAllocation>>;
 pub type PendingStatistics = Pending<crate::Statistics, Handle<FrameAllocation>>;
 pub type PendingHugepageInfo = Pending<usize>;
 pub type PendingHugeMap = Pending<Handle<FrameAllocation>>;
+pub type PendingMapping = Pending<super::MappingSource, Handle<Channel>>;
 pub type PendingWrite = Pending<usize, (Arc<AtomicUsize>, usize)>;
 pub type PendingAppend = Pending<(usize, usize), (Arc<AtomicUsize>, usize)>;
 pub type PendingSize = Pending<usize, Arc<AtomicUsize>>;
@@ -131,7 +132,7 @@ impl<'a> Client<'a> {
         words: &[u64],
     ) -> Result<(Handle<runtime::Call>, Handle<Channel>), Error> {
         let (channel, server) = self.task.channel(
-            CHANNEL_RIGHTS | Rights::TRANSFER,
+            CHANNEL_RIGHTS | Rights::TRANSFER | Rights::DUPLICATE,
             Rights::READ | Rights::WAIT | Rights::TRANSFER,
         )?;
         let mut request = Message::new(method, words)?;
@@ -285,6 +286,37 @@ impl File<'_> {
 
     pub fn start_fsync(&self) -> Result<Pending<()>, Error> {
         empty_call(&self.channel, Message::new(protocol::FSYNC, &[])?)
+    }
+
+    pub fn start_mapping_source(&self) -> Result<PendingMapping, Error> {
+        Ok(Pending::new(
+            self.channel
+                .start_call(&mut Message::new(protocol::MAPPING_INFO, &[])?)?,
+            self.channel.try_clone(CHANNEL_RIGHTS)?,
+            |channel, mut response| {
+                if response.tag != protocol::SUCCESS {
+                    return Err(protocol::tag_error(response.tag));
+                }
+                let [granule, device, inode] = *response.words() else {
+                    return Err(Error::InvalidData);
+                };
+                if response.handles().len() != 1 || !matches!(granule, 0 | 2097152) {
+                    return Err(Error::InvalidData);
+                }
+                let state = response
+                    .take_handle(0)
+                    .unwrap()
+                    .downcast()
+                    .map_err(|_| Error::InvalidData)?;
+                Ok(super::MappingSource {
+                    channel,
+                    state,
+                    granule: granule as usize,
+                    device,
+                    inode,
+                })
+            },
+        ))
     }
 
     /// Probes the huge page size exposed by the file without blocking the caller.

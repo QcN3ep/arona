@@ -74,7 +74,7 @@ pub(crate) fn serve(
     let mut next_mount = 0;
     let mut files = Vec::new();
     loop {
-        poll_files(namespace, &mut files)?;
+        poll_files(task, namespace, &mut files)?;
         match control.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
@@ -163,7 +163,11 @@ fn poll_mounts(
     Ok(())
 }
 
-fn poll_files(namespace: &Namespace, files: &mut Vec<FileSession>) -> Result<(), Error> {
+fn poll_files(
+    task: &'static Handle<runtime::Task>,
+    namespace: &Namespace,
+    files: &mut Vec<FileSession>,
+) -> Result<(), Error> {
     let mut index = 0;
     while index < files.len() {
         match files[index].channel.receive(WaitMode::Poll) {
@@ -171,9 +175,9 @@ fn poll_files(namespace: &Namespace, files: &mut Vec<FileSession>) -> Result<(),
                 if let Some(reply) = request.take_reply() {
                     let response = if let Node::Directory(directory) = &files[index].node {
                         let directory = Rc::clone(directory);
-                        path::directory(namespace, &directory, request)
+                        path::directory(task, namespace, &directory, request)
                     } else {
-                        node_request(&files[index].node, request)
+                        node_request(task, &files[index].node, request)
                     };
                     protocol::respond(reply, response)?;
                 }
@@ -182,6 +186,7 @@ fn poll_files(namespace: &Namespace, files: &mut Vec<FileSession>) -> Result<(),
             Err(runtime::Error::Kernel(KernelError::WouldBlock)) => index += 1,
             Err(runtime::Error::Kernel(KernelError::EndOfStream)) => {
                 files.swap_remove(index);
+                namespace.reclaim_files()?;
             }
             Err(error) => return Err(error.into()),
         }
@@ -363,7 +368,11 @@ fn list(
     Ok(Message::new(protocol::SUCCESS, &[count, done as u64])?)
 }
 
-fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Error> {
+fn node_request(
+    task: &'static Handle<runtime::Task>,
+    node: &Node,
+    mut request: ReceivedMessage,
+) -> Result<Message, Error> {
     if matches!(node, Node::Path(_))
         && !matches!(
             request.tag,
@@ -435,13 +444,17 @@ fn node_request(node: &Node, mut request: ReceivedMessage) -> Result<Message, Er
             list(directory.read_dir()?, start, &mut output)
         }
         _ => match node {
-            Node::File(file) | Node::Path(file) => file_request(file, request),
+            Node::File(file) | Node::Path(file) => file_request(task, file, request),
             Node::Directory(_) => Err(Error::IsDirectory),
         },
     }
 }
 
-fn file_request(file: &File, mut request: ReceivedMessage) -> Result<Message, Error> {
+fn file_request(
+    task: &'static Handle<runtime::Task>,
+    file: &File,
+    mut request: ReceivedMessage,
+) -> Result<Message, Error> {
     match (request.tag, request.words()) {
         (protocol::READ, _) => read(file, request),
         (protocol::WRITE | protocol::APPEND, [offset, length]) if request.handles().len() == 1 => {
@@ -480,6 +493,34 @@ fn file_request(file: &File, mut request: ReceivedMessage) -> Result<Message, Er
         }
         (protocol::FILE_INFO, []) if request.handles().is_empty() => {
             Ok(Message::new(protocol::SUCCESS, &[file.len() as u64])?)
+        }
+        (protocol::MAPPING_INFO, []) if request.handles().is_empty() => {
+            let metadata = file.metadata()?;
+            let mut response = Message::new(
+                protocol::SUCCESS,
+                &[file.hugepage_size(), metadata.device, metadata.inode],
+            )?;
+            protocol::transfer(&mut response, file.mapping_state(task)?, Rights::READ)?;
+            Ok(response)
+        }
+        (protocol::MAP_PAGE, [offset, writable])
+            if request.handles().is_empty() && *writable <= 1 =>
+        {
+            let offset = usize::try_from(*offset).map_err(|_| Error::InvalidRequest)?;
+            let frames = if file.hugepage_size() != 0 {
+                file.map_huge(offset)?
+            } else {
+                file.map_page(task, offset, *writable != 0)?
+            };
+            let rights = (if *writable != 0 {
+                Rights::READ_WRITE
+            } else {
+                Rights::READ
+            }) | Rights::MAP
+                | Rights::EXECUTE;
+            let mut response = Message::new(protocol::SUCCESS, &[])?;
+            protocol::transfer(&mut response, frames, rights)?;
+            Ok(response)
         }
         (protocol::HUGEPAGE_INFO, []) if request.handles().is_empty() => {
             Ok(Message::new(protocol::SUCCESS, &[file.hugepage_size()])?)

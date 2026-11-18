@@ -10,6 +10,7 @@ extern crate alloc;
 pub mod archive;
 mod backend;
 pub mod block;
+mod cache;
 pub mod client;
 mod control;
 pub mod ext4;

@@ -24,6 +24,7 @@ const MAX_MEMORY_MOUNT_BYTES: usize = 256 * 1024 * 1024;
 
 pub(crate) struct Namespace {
     archive: Archive,
+    cache: crate::cache::Cache,
     next_directory: Cell<u64>,
     mounts: RefCell<BTreeMap<Vec<u8>, MountEntry>>,
     memory_mount_bytes: Cell<usize>,
@@ -137,6 +138,7 @@ impl Directory {
 
 impl Namespace {
     pub(crate) fn statistics(&self, path: &[u8]) -> Result<crate::Statistics, Error> {
+        self.cache.reclaim()?;
         let path = normalize(&self.resolve(b"/", path, true, false)?)?;
         let mounts = self.mounts.borrow();
         match mounted_at(&mounts, &path) {
@@ -148,6 +150,7 @@ impl Namespace {
     pub(crate) fn new(archive: Archive) -> Result<Self, Error> {
         Ok(Self {
             archive,
+            cache: crate::cache::Cache::default(),
             next_directory: Cell::new(1),
             mounts: RefCell::new(BTreeMap::new()),
             memory_mount_bytes: Cell::new(0),
@@ -285,6 +288,7 @@ impl Namespace {
     }
 
     fn remove_mount(&self, path: &[u8], owner: Option<MountOwner>) -> Result<(), Error> {
+        self.cache.reclaim()?;
         let path = normalize(path)?;
         {
             let mounts = self.mounts.borrow();
@@ -333,7 +337,12 @@ impl Namespace {
         self.open_path(path)?.set_attributes(attributes)
     }
 
+    pub(crate) fn reclaim_files(&self) -> Result<(), Error> {
+        self.cache.reclaim()
+    }
+
     pub(crate) fn sync(&self) -> Result<(), Error> {
+        self.cache.sync()?;
         for entry in self.mounts.borrow().values() {
             entry.filesystem.sync()?;
         }
@@ -342,7 +351,9 @@ impl Namespace {
 
     pub(crate) fn create(&self, path: &[u8]) -> Result<File, Error> {
         self.mounted(path, |filesystem, path| {
-            filesystem.create(path).map(File::Mounted)
+            filesystem
+                .create(path)
+                .and_then(|file| self.cache.wrap(file).map(File::Mounted))
         })
     }
 
@@ -365,7 +376,7 @@ impl Namespace {
             Err(Error::NotFound) if options.create => self.mounted(path, |filesystem, path| {
                 filesystem
                     .create_with_permissions(path, options.permissions)
-                    .map(File::Mounted)
+                    .and_then(|file| self.cache.wrap(file).map(File::Mounted))
             })?,
             Err(error) => return Err(error),
         };
@@ -528,6 +539,7 @@ impl Namespace {
     }
 
     pub(crate) fn shutdown(&self) -> Result<(), Error> {
+        self.cache.sync()?;
         let mut mounts = self.mounts.borrow_mut();
         while let Some(entry) = mounts.first_entry() {
             entry.get().filesystem.unmount()?;
@@ -540,7 +552,9 @@ impl Namespace {
         let path = normalize(path)?;
         let mounts = self.mounts.borrow();
         if let Some((prefix, fs)) = mounted_at(&mounts, &path) {
-            return fs.open_path(relative(&path, prefix)).map(File::Mounted);
+            return fs
+                .open_path(relative(&path, prefix))
+                .and_then(|file| self.cache.wrap(file).map(File::Mounted));
         }
         self.archive.open_path(&path).map(File::Archive)
     }
@@ -551,7 +565,7 @@ impl Namespace {
         if let Some((prefix, filesystem)) = mounted_at(&mounts, &path) {
             return filesystem
                 .open_bytes(relative(&path, prefix))
-                .map(File::Mounted);
+                .and_then(|file| self.cache.wrap(file).map(File::Mounted));
         }
         self.archive.open_bytes(&path).map(File::Archive)
     }
@@ -654,6 +668,26 @@ impl File {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Mounted(file) => file.truncate(size),
+        }
+    }
+    pub(crate) fn mapping_state(
+        &self,
+        task: &'static Handle<runtime::Task>,
+    ) -> Result<Handle<runtime::FrameAllocation>, Error> {
+        match self {
+            Self::Archive(_) => Err(Error::Unsupported),
+            Self::Mounted(file) => file.mapping_state(task),
+        }
+    }
+    pub(crate) fn map_page(
+        &self,
+        task: &'static Handle<runtime::Task>,
+        offset: usize,
+        writable: bool,
+    ) -> Result<Handle<runtime::FrameAllocation>, Error> {
+        match self {
+            Self::Archive(_) => Err(Error::Unsupported),
+            Self::Mounted(file) => file.map_page(task, offset, writable),
         }
     }
     pub(crate) fn hugepage_size(&self) -> u64 {

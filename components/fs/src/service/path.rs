@@ -39,12 +39,13 @@ fn resolve(
 }
 
 pub(super) fn directory(
+    task: &'static runtime::Handle<runtime::Task>,
     _namespace: &Namespace,
     directory: &Rc<Directory>,
     mut request: ReceivedMessage,
 ) -> Result<Message, Error> {
     if request.tag != protocol::DIRECTORY_PATH {
-        return node_request(&Node::Directory(Rc::clone(directory)), request);
+        return node_request(task, &Node::Directory(Rc::clone(directory)), request);
     }
     if !request.words().is_empty() || request.handles().len() != 1 {
         return Err(Error::InvalidRequest);

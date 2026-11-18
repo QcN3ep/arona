@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Shared in-memory volume used by tmpfs and huge page files.
+//! Inode and capacity management for huge page files.
 //!
 //! The volume owns the inode map, directory entries, metadata, link and session
 //! accounting. A backend supplies file contents through [`FileData`], which also decides

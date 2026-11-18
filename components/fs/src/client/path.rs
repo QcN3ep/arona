@@ -46,7 +46,7 @@ impl<'a> Client<'a> {
     ) -> Result<PendingNode<'a>, Error> {
         options.validate()?;
         let (channel, server) = self.task.channel(
-            CHANNEL_RIGHTS | Rights::TRANSFER,
+            CHANNEL_RIGHTS | Rights::TRANSFER | Rights::DUPLICATE,
             Rights::READ | Rights::WAIT | Rights::TRANSFER,
         )?;
         let [flags, permissions] = options.encode();

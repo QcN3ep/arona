@@ -8,14 +8,14 @@ pub use path::{OpenedNode, PendingNode};
 pub use pending::PendingStatistics;
 pub use pending::{
     Pending, PendingAppend, PendingDirectory, PendingDirectoryPage, PendingHugeMap,
-    PendingHugepageInfo, PendingMetadata, PendingOpen, PendingRead, PendingSize, PendingTruncate,
-    PendingWrite,
+    PendingHugepageInfo, PendingMapping, PendingMetadata, PendingOpen, PendingRead, PendingSize,
+    PendingTruncate, PendingWrite,
 };
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use runtime::{
-    Channel, Handle, Rights, Task,
+    Channel, FrameAllocation, Handle, Rights, Task,
     ipc::{Message, WaitMode},
 };
 
@@ -504,5 +504,58 @@ impl Directory<'_> {
             }
             result.extend(page);
         }
+    }
+}
+
+/// An open file identity and the state shared with its mapped views.
+pub struct MappingSource {
+    channel: Handle<Channel>,
+    state: Handle<FrameAllocation>,
+    pub granule: usize,
+    pub device: u64,
+    pub inode: u64,
+}
+
+impl MappingSource {
+    /// Returns the byte length and truncation generation of the file.
+    pub fn state(&self) -> Result<(usize, u64), Error> {
+        let mut bytes = [0; 16];
+        self.state.read(0, &mut bytes)?;
+        Ok((
+            usize::try_from(u64::from_le_bytes(bytes[..8].try_into().unwrap()))
+                .map_err(|_| Error::FileTooLarge)?,
+            u64::from_le_bytes(bytes[8..].try_into().unwrap()),
+        ))
+    }
+
+    pub fn start_map(
+        &self,
+        offset: usize,
+        writable: bool,
+    ) -> Result<pending::PendingHugeMap, Error> {
+        Ok(pending::Pending::new(
+            self.channel.start_call(&mut Message::new(
+                protocol::MAP_PAGE,
+                &[offset as u64, u64::from(writable)],
+            )?)?,
+            (),
+            |(), response| pending::complete_map_huge(response),
+        ))
+    }
+
+    pub fn map(&self, offset: usize, writable: bool) -> Result<Handle<FrameAllocation>, Error> {
+        let deadline = runtime::thread::now_ns()?
+            .checked_add(10_000_000_000)
+            .ok_or(Error::Unavailable)?;
+        self.start_map(offset, writable)?
+            .wait(runtime::ipc::WaitMode::Until(deadline))
+    }
+
+    pub fn sync(&self) -> Result<(), Error> {
+        let deadline = runtime::thread::now_ns()?
+            .checked_add(10_000_000_000)
+            .ok_or(Error::Unavailable)?;
+        pending::empty_call(&self.channel, Message::new(protocol::FSYNC, &[])?)?
+            .wait(runtime::ipc::WaitMode::Until(deadline))
     }
 }
