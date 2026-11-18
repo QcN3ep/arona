@@ -108,10 +108,16 @@ fn get_priority(process: &Process<'_>, index: usize, args: [usize; 6]) -> Syscal
 // REFERENCE: https://man7.org/linux/man-pages/man2/sched_setaffinity.2.html
 fn set_affinity(process: &Process<'_>, index: usize, args: [usize; 6]) -> SyscallResult {
     sched_target(process, index, args[0])?;
-    if args[1] < CPU_MASK_BYTES || !args[1].is_multiple_of(CPU_MASK_BYTES) {
+    if args[1] == 0 {
         return Err(EINVAL);
     }
-    let mask = read_mask(process, args[2])?;
+    let mut bytes = [0; CPU_MASK_BYTES];
+    let count = args[1].min(CPU_MASK_BYTES);
+    process
+        .address_space
+        .read(args[2], &mut bytes[..count])
+        .map_err(|_| EFAULT)?;
+    let mask = u64::from_le_bytes(bytes);
     // Arona currently has one processor, so CPU 0 is the only valid member.
     if mask & 1 == 0 {
         return Err(EINVAL);
@@ -171,15 +177,6 @@ fn write_param(process: &Process<'_>, address: usize, value: i32) -> Result<(), 
         .address_space
         .write(address, &value.to_le_bytes())
         .map_err(|_| EFAULT)
-}
-
-fn read_mask(process: &Process<'_>, address: usize) -> Result<u64, Errno> {
-    let mut bytes = [0; CPU_MASK_BYTES];
-    process
-        .address_space
-        .read(address, &mut bytes)
-        .map_err(|_| EFAULT)?;
-    Ok(u64::from_le_bytes(bytes))
 }
 
 fn error(error: runtime::Error) -> Errno {

@@ -310,17 +310,19 @@ scheduler:
     addi.d $a2, $sp, 8
     invoke 122
     expect -22
-    # The mask length must cover the 8-byte processor set.
+    # The setter accepts short masks; the getter needs the full kernel set.
+    li.d $t0, 1
+    st.d $t0, $sp, 8
     li.d $a0, 0
-    li.d $a1, 7
+    li.d $a1, 1
     addi.d $a2, $sp, 8
     invoke 122
-    expect -22
+    expect 0
     li.d $a0, 0
     li.d $a1, 4
     addi.d $a2, $sp, 8
     invoke 122
-    expect -22
+    expect 0
     li.d $a0, 0
     li.d $a1, 0
     addi.d $a2, $sp, 8
