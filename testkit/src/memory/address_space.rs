@@ -649,10 +649,19 @@ fn huge_mappings() {
         info.mapping.unwrap().attributes.permissions,
         PagePermissions::ReadWrite
     );
+    space.protect(mapped, PagePermissions::ReadOnly).unwrap();
     assert_eq!(
-        space.protect(mapped, PagePermissions::ReadOnly),
-        Err(MemoryError::Unsupported)
+        space
+            .query(mapped.start)
+            .unwrap()
+            .unwrap()
+            .mapping
+            .unwrap()
+            .attributes
+            .permissions,
+        PagePermissions::ReadOnly
     );
+    space.protect(mapped, PagePermissions::ReadWrite).unwrap();
     assert_eq!(
         space.unmap(range(mapped.start + PAGE_SIZE, 1)),
         Err(MemoryError::InUse)

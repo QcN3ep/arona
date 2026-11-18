@@ -114,6 +114,7 @@ pub(super) enum PageBacking {
     Shared,
     SystemV(usize),
     File,
+    ReadOnlyFile,
     BeyondEof(Permissions),
 }
 
@@ -848,8 +849,23 @@ impl AddressSpace {
                 .get(&cursor)
                 .cloned()
                 .ok_or(runtime::Error::Protocol)?;
+            if matches!(page.backing, PageBacking::ReadOnlyFile)
+                && permissions == Permissions::ReadWrite
+            {
+                return Err(runtime::Error::Kernel(runtime::KernelError::Denied));
+            }
+            if page.huge && (cursor != info.range.start || info.range.end > range.end) {
+                return Err(runtime::Error::Kernel(
+                    runtime::KernelError::InvalidArgument,
+                ));
+            }
+            let end = if page.huge {
+                info.range.end
+            } else {
+                cursor + PAGE_SIZE
+            };
             changes.push((
-                cursor,
+                cursor..end,
                 previous,
                 if matches!(page.backing, PageBacking::BeyondEof(_)) {
                     Permissions::NoAccess
@@ -857,13 +873,12 @@ impl AddressSpace {
                     permissions
                 },
             ));
-            cursor += PAGE_SIZE;
+            cursor = end;
         }
         for (index, (address, _, next)) in changes.iter().enumerate() {
-            if let Err(error) = self.native.protect(*address..*address + PAGE_SIZE, *next) {
+            if let Err(error) = self.native.protect(address.clone(), *next) {
                 for (address, previous, _) in changes[..index].iter().rev() {
-                    self.native
-                        .protect(*address..*address + PAGE_SIZE, *previous)?;
+                    self.native.protect(address.clone(), *previous)?;
                 }
                 return Err(error);
             }
@@ -896,7 +911,10 @@ impl AddressSpace {
             if page.huge {
                 return Err(runtime::Error::Kernel(runtime::KernelError::Unsupported));
             }
-            if matches!(page.backing, PageBacking::File | PageBacking::BeyondEof(_)) {
+            if matches!(
+                page.backing,
+                PageBacking::File | PageBacking::ReadOnlyFile | PageBacking::BeyondEof(_)
+            ) {
                 return Err(runtime::Error::Kernel(runtime::KernelError::Unsupported));
             }
             if matches!(page.backing, PageBacking::Anonymous) {

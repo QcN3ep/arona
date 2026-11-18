@@ -108,8 +108,7 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
     if !offset.is_multiple_of(PAGE_SIZE) {
         return Err(EINVAL);
     }
-    // Keep the requested length for the huge page path: rounding it first would
-    // accept a huge file mapping that is not a whole 2 MiB multiple.
+    // The file probe determines the leaf size before rounding its request.
     let requested_length = length;
     let length = length
         .checked_next_multiple_of(PAGE_SIZE)
@@ -208,6 +207,17 @@ pub(super) struct HugeRequest {
     replace: bool,
 }
 
+pub(super) fn normalize_huge_request(mut request: HugeRequest) -> Result<HugeRequest, Errno> {
+    request.length = request
+        .length
+        .checked_next_multiple_of(HUGE_PAGE_SIZE)
+        .ok_or(ENOMEM)?;
+    if !request.exact {
+        request.address &= !(HUGE_PAGE_SIZE - 1);
+    }
+    Ok(request)
+}
+
 /// Validates the flags and offsets shared by anonymous and file-backed huge mappings.
 pub(super) fn validate_huge_request(request: &HugeRequest) -> Result<(), Errno> {
     if !request.length.is_multiple_of(HUGE_PAGE_SIZE)
@@ -240,7 +250,17 @@ pub(super) fn validate_huge_request(request: &HugeRequest) -> Result<(), Errno> 
 }
 
 fn anonymous_huge_mapping(process: &Process<'_>, request: HugeRequest) -> SyscallResult {
+    let request = normalize_huge_request(request)?;
     validate_huge_request(&request)?;
+    if process.limits.address_space().is_some_and(|limit| {
+        process
+            .address_space
+            .mapped()
+            .saturating_add(request.length)
+            > limit
+    }) {
+        return Err(ENOMEM);
+    }
     let start = reserve_huge_start(process, &request)?;
     let count = request.length / HUGE_PAGE_SIZE;
     let backing = if request.flags & 3 == MAP_SHARED {
@@ -487,7 +507,7 @@ fn extension(pages: &[MappedPage]) -> Result<(Permissions, bool), Errno> {
     let first = pages.first().ok_or(EINVAL)?;
     if matches!(
         first.page.backing,
-        PageBacking::File | PageBacking::BeyondEof(_)
+        PageBacking::File | PageBacking::ReadOnlyFile | PageBacking::BeyondEof(_)
     ) {
         return Err(ENOMEM);
     }
@@ -496,7 +516,7 @@ fn extension(pages: &[MappedPage]) -> Result<(Permissions, bool), Errno> {
         if mapped.permissions != first.permissions
             || matches!(
                 mapped.page.backing,
-                PageBacking::File | PageBacking::BeyondEof(_)
+                PageBacking::File | PageBacking::ReadOnlyFile | PageBacking::BeyondEof(_)
             )
             || matches!(mapped.page.backing, PageBacking::Shared) != shared
         {

@@ -10,8 +10,7 @@ use crate::{
     Error,
     memory::{self, Context, FileData},
 };
-use alloc::{rc::Rc, vec::Vec};
-use core::cell::RefCell;
+use alloc::vec::Vec;
 use runtime::{FrameAllocation, Handle, Rights, Task};
 
 pub(crate) type Hugepages = memory::MemoryVolume<HugeFile>;
@@ -31,8 +30,6 @@ const MAP_RIGHTS: Rights = Rights::READ_WRITE
     .union(Rights::MAP)
     .union(Rights::EXECUTE)
     .union(Rights::TRANSFER);
-
-type PageRef = Rc<RefCell<Page>>;
 
 /// A materialized 2 MiB block and whether a client ever received its frames for mapping.
 struct Page {
@@ -54,7 +51,7 @@ impl Page {
 
 pub(crate) struct HugeFile {
     size: u64,
-    pages: Vec<Option<PageRef>>,
+    pages: Vec<Option<Page>>,
     task: &'static Handle<Task>,
 }
 
@@ -109,7 +106,7 @@ impl FileData for HugeFile {
             let blocks =
                 usize::try_from(self.size / HUGE_PAGE_SIZE).map_err(|_| Error::FileTooLarge)?;
             if self.pages.len() < blocks {
-                self.pages.resize(blocks, None);
+                self.pages.resize_with(blocks, || None);
             }
             let mut written = 0;
             while written < input.len() {
@@ -124,11 +121,10 @@ impl FileData for HugeFile {
                 );
                 let page = self
                     .pages
-                    .get(index)
-                    .and_then(Option::as_ref)
+                    .get_mut(index)
+                    .and_then(Option::as_mut)
                     .ok_or(Error::InvalidData)?;
-                page.borrow_mut()
-                    .write_at(inside, &input[written..written + count])?;
+                page.write_at(inside, &input[written..written + count])?;
                 written += count;
             }
             Ok(written)
@@ -156,7 +152,7 @@ impl FileData for HugeFile {
         let start = blocks.min(self.pages.len());
         self.retire(context, start);
         if self.pages.len() < blocks {
-            self.pages.resize(blocks, None);
+            self.pages.resize_with(blocks, || None);
         }
         self.size = size;
         Ok(())
@@ -181,9 +177,7 @@ impl FileData for HugeFile {
                 .min(limit - done)
                 .min(HUGE_PAGE_SIZE as usize - inside);
             match self.pages.get(index).and_then(Option::as_ref) {
-                Some(page) => page
-                    .borrow()
-                    .read(inside, &mut output[done..done + count])?,
+                Some(page) => page.read(inside, &mut output[done..done + count])?,
                 None => output[done..done + count].fill(0),
             }
             done += count;
@@ -203,10 +197,9 @@ impl FileData for HugeFile {
         self.materialize(context, index)?;
         let page = self
             .pages
-            .get(index)
-            .and_then(Option::as_ref)
+            .get_mut(index)
+            .and_then(Option::as_mut)
             .ok_or(Error::InvalidData)?;
-        let mut page = page.borrow_mut();
         let frames = page.frames.try_clone(MAP_RIGHTS)?;
         page.mapped = true;
         Ok(frames)
@@ -225,11 +218,6 @@ impl HugeFile {
             let Some(page) = page else {
                 continue;
             };
-            // The file owns each block record; mapping only shares its frame handle, so
-            // moving the record into the retired list cannot panic.
-            let page = Rc::into_inner(page)
-                .expect("huge page record is owned by its file")
-                .into_inner();
             if page.mapped {
                 context.retire(page.frames, HUGE_PAGE_SIZE as usize);
             } else {
@@ -256,12 +244,12 @@ impl HugeFile {
             }
         };
         if self.pages.len() <= index {
-            self.pages.resize(index + 1, None);
+            self.pages.resize_with(index + 1, || None);
         }
-        self.pages[index] = Some(Rc::new(RefCell::new(Page {
+        self.pages[index] = Some(Page {
             frames,
             mapped: false,
-        })));
+        });
         Ok(())
     }
 }

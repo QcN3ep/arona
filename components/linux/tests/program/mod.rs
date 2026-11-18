@@ -45,6 +45,9 @@ fn main() {
     mounts
         .mount_tmpfs(b"/tmp", 64 * 1024, service::deadline())
         .unwrap();
+    mounts
+        .mount_hugepages(b"/dev/hugepages", service::deadline())
+        .unwrap();
     mount_target_bounds(&mounts, &files);
     let (_linux, channel) = service::launch(&native, machine, linux::service::REQUIRED_RIGHTS);
     let mut services = service::resources(&device_service, &kernel_log);

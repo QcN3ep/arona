@@ -251,7 +251,7 @@ impl MappingIndex {
         );
         let mapped = match words[1] >> 8 {
             0 | 7 => false,
-            1..=6 => true,
+            1..=6 | 8 => true,
             _ => panic!("invalid mapping kind"),
         };
         Some((

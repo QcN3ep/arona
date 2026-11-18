@@ -18,6 +18,10 @@ const DIRTY: u64 = 1 << 1;
 const USER: u64 = 3 << 2;
 const CACHED: u64 = 1 << 4;
 const HUGE: u64 = 1 << 6;
+// LDDIR retains only the physical address width. Carry huge leaf access bits
+// in software positions until refill reconstructs the TLB entry.
+const HUGE_NO_READ: u64 = 1 << 9;
+const HUGE_NO_EXECUTE: u64 = 1 << 10;
 const NO_READ: u64 = 1 << 61;
 const NO_EXECUTE: u64 = 1 << 62;
 const PHYSICAL: u64 = ((1 << 48) - 1) & !0xfff;
@@ -80,6 +84,11 @@ impl Format for LoongArchMmu {
         if level > 1 {
             return Err(MmuError::Unsupported);
         }
+        let permissions = if level == 1 {
+            (permissions & !(NO_READ | NO_EXECUTE)) | ((permissions & (NO_READ | NO_EXECUTE)) >> 52)
+        } else {
+            permissions
+        };
         Ok(mapping.physical_address
             | VALID
             | permissions
@@ -91,13 +100,28 @@ impl Format for LoongArchMmu {
     fn decode_mapping(&self, entry: u64, level: usize) -> Result<PageMapping, MmuError> {
         if level > 1
             || entry & VALID == 0
-            || entry & !(PHYSICAL | VALID | DIRTY | USER | CACHED | HUGE | NO_READ | NO_EXECUTE)
+            || entry
+                & !(PHYSICAL
+                    | VALID
+                    | DIRTY
+                    | USER
+                    | CACHED
+                    | HUGE
+                    | HUGE_NO_READ
+                    | HUGE_NO_EXECUTE
+                    | NO_READ
+                    | NO_EXECUTE)
                 != 0
             || (level > 0) != (entry & HUGE != 0)
         {
             return Err(MmuError::InvalidTable);
         }
-        let permissions = match entry & (DIRTY | NO_READ | NO_EXECUTE) {
+        let access = if level == 1 {
+            (entry & DIRTY) | ((entry & (HUGE_NO_READ | HUGE_NO_EXECUTE)) << 52)
+        } else {
+            entry & (DIRTY | NO_READ | NO_EXECUTE)
+        };
+        let permissions = match access {
             flags if flags == NO_READ | NO_EXECUTE => PagePermissions::NoAccess,
             NO_EXECUTE => PagePermissions::ReadOnly,
             flags if flags == DIRTY | NO_EXECUTE => PagePermissions::ReadWrite,
@@ -380,6 +404,11 @@ pub(super) extern "C" fn refill() -> ! {
         "beqz $t0, 2f",
         "lddir $t0, $t0, 1",
         "beqz $t0, 2f",
+        "csrwr $t1, 0x8c",
+        "srli.d $t1, $t0, 9",
+        "bstrins.d $t0, $t1, 62, 61",
+        "bstrins.d $t0, $zero, 10, 9",
+        "csrrd $t1, 0x8c",
         "ldpte $t0, 0",
         "ldpte $t0, 1",
         "b 3f",

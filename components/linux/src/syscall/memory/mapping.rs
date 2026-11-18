@@ -186,7 +186,11 @@ impl FileMapping<'_> {
                     address,
                     frames: Rc::new(frames),
                     permissions,
-                    backing: PageBacking::File,
+                    backing: if self.description.flags() & 3 == super::O_RDONLY {
+                        PageBacking::ReadOnlyFile
+                    } else {
+                        PageBacking::File
+                    },
                 });
                 huge.next += 1;
                 self.request = Stage::Prepare;
@@ -268,7 +272,17 @@ impl FileMapping<'_> {
         if hugepage != HUGE_PAGE_SIZE {
             return Err(EINVAL);
         }
+        self.arguments = super::normalize_huge_request(self.arguments)?;
         let request = self.arguments;
+        if process.limits.address_space().is_some_and(|limit| {
+            process
+                .address_space
+                .mapped()
+                .saturating_add(request.length)
+                > limit
+        }) {
+            return Err(ENOMEM);
+        }
         validate_huge_request(&request)?;
         check_huge_file_mapping(request.flags, request.permissions, &self.description)?;
         let (start, reservation) = super::huge_start(process, &request)?;

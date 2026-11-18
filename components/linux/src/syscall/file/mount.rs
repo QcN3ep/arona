@@ -4,11 +4,7 @@
 
 use super::super::abi::{EINVAL, ENODEV, ENOENT, ENOTDIR, EOPNOTSUPP, EPERM, Errno, SyscallResult};
 use super::{Pending, completion, filesystem_error, open, outcome, path::Lookup};
-use crate::{
-    file::OpenFileDescription,
-    process::Process,
-    syscall::{AT_FDCWD, Outcome},
-};
+use crate::{file::OpenFileDescription, process::Process, syscall::Outcome};
 use alloc::{rc::Rc, vec::Vec};
 use runtime::{Call, Handle};
 
@@ -26,6 +22,8 @@ const MS_LAZYTIME: u32 = 1 << 25;
 const SUPPORTED_FLAGS: u32 =
     MS_SILENT | MS_NOATIME | MS_NODIRATIME | MS_RELATIME | MS_STRICTATIME | MS_LAZYTIME;
 
+const AT_FDCWD: usize = (-100i32) as usize;
+
 // A user mount is checked in two layers. The Linux layer restricts the canonical
 // target to a writable root and its mount call is gated by the process mount
 // capability. The file service independently requires the target to resolve
@@ -35,9 +33,31 @@ const SUPPORTED_FLAGS: u32 =
 const USER_MOUNT_ROOTS: &[&[u8]] = &[b"/tmp", b"/var"];
 
 #[derive(Clone, Copy)]
-enum Operation {
+enum Request {
     Mount,
     Unmount,
+}
+
+#[derive(Clone, Copy)]
+enum Operation {
+    Mount(MountKind),
+    Unmount,
+}
+
+#[derive(Clone, Copy)]
+enum MountKind {
+    Tmpfs,
+    Hugepages,
+}
+
+impl MountKind {
+    fn from_name(name: &[u8]) -> Option<Self> {
+        match name {
+            b"tmpfs" => Some(Self::Tmpfs),
+            b"hugetlbfs" => Some(Self::Hugepages),
+            _ => None,
+        }
+    }
 }
 
 pub(in crate::syscall) struct Mount<'a> {
@@ -60,7 +80,7 @@ pub(super) fn mount<'a>(
     services: &crate::Services<'a>,
     arguments: [usize; 6],
 ) -> Outcome<'a> {
-    start(process, files, services, arguments, Operation::Mount)
+    start(process, files, services, arguments, Request::Mount)
 }
 
 pub(super) fn umount2<'a>(
@@ -69,7 +89,7 @@ pub(super) fn umount2<'a>(
     services: &crate::Services<'a>,
     arguments: [usize; 6],
 ) -> Outcome<'a> {
-    start(process, files, services, arguments, Operation::Unmount)
+    start(process, files, services, arguments, Request::Unmount)
 }
 
 fn start<'a>(
@@ -77,22 +97,19 @@ fn start<'a>(
     files: &fs::Client<'a>,
     services: &crate::Services<'a>,
     arguments: [usize; 6],
-    operation: Operation,
+    request: Request,
 ) -> Outcome<'a> {
     let request = (|| {
         check_privileged(process)?;
-        let target = match operation {
-            Operation::Mount => {
-                // The source name is ignored, but its pointer is still validated so an
-                // unreadable source reports EFAULT like Linux.
-                optional_string(process, arguments[0])?;
+        let (target, operation) = match request {
+            Request::Mount => {
+                let _source = optional_string(process, arguments[0])?;
                 let target = open::path_bytes(process, arguments[1])?;
                 if target.is_empty() {
                     return Err(ENOENT);
                 }
-                if optional_string(process, arguments[2])? != b"tmpfs" {
-                    return Err(ENODEV);
-                }
+                let filesystem = optional_string(process, arguments[2])?;
+                let kind = MountKind::from_name(&filesystem).ok_or(ENODEV)?;
                 let flags = u32::try_from(arguments[3]).map_err(|_| EINVAL)?;
                 if flags & !SUPPORTED_FLAGS != 0 {
                     return Err(EINVAL);
@@ -100,9 +117,9 @@ fn start<'a>(
                 if !optional_string(process, arguments[4])?.is_empty() {
                     return Err(EINVAL);
                 }
-                target
+                (target, Operation::Mount(kind))
             }
-            Operation::Unmount => {
+            Request::Unmount => {
                 let target = open::path_bytes(process, arguments[0])?;
                 if target.is_empty() {
                     return Err(ENOENT);
@@ -113,7 +130,7 @@ fn start<'a>(
                 if arguments[1] != 0 {
                     return Err(EINVAL);
                 }
-                target
+                (target, Operation::Unmount)
             }
         };
         let mounts = services
@@ -185,15 +202,14 @@ impl<'a> Mount<'a> {
                     Ok(path) => path,
                     Err(error) => return Some(Err(filesystem_error(error))),
                 };
-                // The canonical path is enough for the mount-control request. The
-                // resolved directory session would keep the target filesystem busy
-                // and make its own unmount fail with EBUSY.
+                // Retaining the directory session would make its own unmount busy.
                 self._directory = None;
                 let request = match self.operation {
-                    Operation::Mount if mount_target_allowed(&path) => {
-                        self.mounts.start_mount_tmpfs(&path)
+                    Operation::Mount(_) if !mount_target_allowed(&path) => return Some(Err(EPERM)),
+                    Operation::Mount(MountKind::Tmpfs) => self.mounts.start_mount_tmpfs(&path),
+                    Operation::Mount(MountKind::Hugepages) => {
+                        self.mounts.start_mount_hugepages(&path)
                     }
-                    Operation::Mount => return Some(Err(EPERM)),
                     Operation::Unmount => self.mounts.start_unmount_memory(&path),
                 };
                 match request {
@@ -210,6 +226,12 @@ impl<'a> Mount<'a> {
     }
 }
 
+fn mount_target_allowed(path: &[u8]) -> bool {
+    USER_MOUNT_ROOTS
+        .iter()
+        .any(|root| path == *root || path.starts_with(root) && path.get(root.len()) == Some(&b'/'))
+}
+
 fn check_privileged(process: &Process<'_>) -> Result<(), Errno> {
     // Every guest starts as uid 0, so root credentials alone cannot distinguish an
     // ordinary program from one that init or a test granted mount permission.
@@ -218,12 +240,6 @@ fn check_privileged(process: &Process<'_>) -> Result<(), Errno> {
     } else {
         Err(EPERM)
     }
-}
-
-fn mount_target_allowed(path: &[u8]) -> bool {
-    USER_MOUNT_ROOTS
-        .iter()
-        .any(|root| path == *root || path.starts_with(root) && path.get(root.len()) == Some(&b'/'))
 }
 
 fn optional_string(process: &Process<'_>, address: usize) -> Result<Vec<u8>, Errno> {

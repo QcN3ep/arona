@@ -228,10 +228,16 @@ static void hugepages(void) {
 
     // Address, length, offset, and flag encodings are validated.
     CHECK(SC(222, 0, HUGE, 3, MAP_SHARED, fd, 4096) == -EINVAL);
-    CHECK(SC(222, 0, HUGE + 4096, 3, MAP_SHARED, fd, 0) == -EINVAL);
+    long rounded_file = SC(222, 4096, 4096, 3, MAP_SHARED, fd, 0);
+    CHECK(rounded_file > 0 && rounded_file % HUGE == 0);
+    CHECK(SC(215, rounded_file, HUGE) == 0);
     CHECK(SC(222, 4096, HUGE, 3, MAP_FIXED | MAP_SHARED, fd, 0) == -EINVAL);
     CHECK(SC(222, 0, HUGE, 3, MAP_SHARED | (22 << 26), fd, 0) == -EINVAL);
-    CHECK(SC(222, 0, HUGE + 4096, 3, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0) == -EINVAL);
+    long rounded_anon = SC(222, 4096, HUGE + 4096, 3, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+    CHECK(rounded_anon > 0 && rounded_anon % HUGE == 0);
+    CHECK(SC(226, rounded_anon, 2 * HUGE, 1) == 0);
+    CHECK(SC(226, rounded_anon, 2 * HUGE, 3) == 0);
+    CHECK(SC(215, rounded_anon, 2 * HUGE) == 0);
     CHECK(SC(222, 4096, HUGE, 3, MAP_FIXED | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0) == -EINVAL);
 
     // An attacker-controlled length cannot reach the block vector: the mapping
@@ -294,6 +300,7 @@ static void hugepages(void) {
     CHECK(SC(222, 0, HUGE, 3, MAP_SHARED, readable, 0) == -EACCES);
     long read_only = SC(222, 0, HUGE, 1, MAP_SHARED, readable, 0);
     CHECK(read_only > 0 && read_only % HUGE == 0);
+    CHECK(SC(226, read_only, HUGE, 3) == -EACCES);
     CHECK(SC(215, read_only, HUGE) == 0);
     CHECK(SC(57, readable) == 0);
     long writable = open_file(name, O_WRONLY, 0);
@@ -460,10 +467,6 @@ static void hugepages(void) {
     CHECK(SC(57, mounted) == 0);
     CHECK(SC(39, P("/tmp/arona-huge-mnt"), 0) == 0);
     CHECK(SC(35, AT_FDCWD, P("/tmp/arona-huge-mnt"), AT_REMOVEDIR) == 0);
-    CHECK(SC(34, AT_FDCWD, P("/tmp/arona-huge-alias"), 0755) == 0);
-    CHECK(SC(40, P("none"), P("/tmp/arona-huge-alias"), P("hugepages"), 0, 0) == 0);
-    CHECK(SC(39, P("/tmp/arona-huge-alias"), 0) == 0);
-    CHECK(SC(35, AT_FDCWD, P("/tmp/arona-huge-alias"), AT_REMOVEDIR) == 0);
     // The startup /dev/hugepages mount belongs to the service, not to mount(2).
     CHECK(SC(39, P("/dev/hugepages"), 0) == -EINVAL);
 
