@@ -197,6 +197,11 @@ pub trait Mmu: Sync {
     ///
     /// Returns `Ok(None)` when the current word differs from `expected`; the
     /// full normal memory page must remain writable during the access.
+    ///
+    /// # Safety
+    ///
+    /// Retain the normal-memory mapping and exclude conflicting non-atomic
+    /// accesses to the word for the duration of this operation.
     fn compare_exchange_u32(
         &self,
         address: usize,

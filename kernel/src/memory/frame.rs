@@ -253,7 +253,7 @@ impl FrameAccessReference {
         if self.access != FrameAccess::Write {
             return Err(MemoryError::AccessConflict);
         }
-        if !byte_offset.is_multiple_of(4) || byte_offset + 4 > PAGE_SIZE {
+        if !byte_offset.is_multiple_of(4) || byte_offset > PAGE_SIZE - 4 {
             return Err(MemoryError::InvalidRequest);
         }
         let address = self.virtual_address().ok_or(MemoryError::InvalidRequest)?;

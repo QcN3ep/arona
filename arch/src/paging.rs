@@ -219,7 +219,7 @@ pub(crate) fn compare_exchange_u32(
     expected: u32,
     new: u32,
 ) -> Result<Option<u32>, MmuError> {
-    if !byte_offset.is_multiple_of(4) || byte_offset + 4 > PAGE_SIZE {
+    if !byte_offset.is_multiple_of(4) || byte_offset > PAGE_SIZE - 4 {
         return Err(MmuError::InvalidAlignment);
     }
     validate_mapped_frame(mmu, address, byte_offset / size_of::<u64>(), 1)?;
