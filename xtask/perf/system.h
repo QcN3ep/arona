@@ -182,7 +182,6 @@ static struct context *system_context(uint64_t pc, size_t size)
     }
     if (!candidate) { return &unknown_context; }
     if (!current_context) {
-        if (mapping_observations->len >= MAX_CONTEXTS) { fail("mapping observation capacity exhausted"); return &unknown_context; }
         struct context *context = g_new0(struct context, 1);
         context->root = current_root;
         context->epoch = mapping_epoch; context->image = -1;
