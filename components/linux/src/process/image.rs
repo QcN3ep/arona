@@ -49,6 +49,8 @@ pub(crate) struct Chain<'a> {
     executable: Executable<'a>,
     main: Option<Loaded>,
     interpreter: Option<Executable<'a>>,
+    interpreter_path: Option<crate::vfs::Walk<'a>>,
+    interpreter_anchor: Option<alloc::rc::Rc<crate::file::OpenFileDescription<'a>>>,
 }
 
 struct Reading<'a> {
@@ -63,6 +65,8 @@ impl<'a> Chain<'a> {
             executable,
             main: None,
             interpreter: None,
+            interpreter_path: None,
+            interpreter_anchor: None,
         }
     }
 
@@ -71,6 +75,7 @@ impl<'a> Chain<'a> {
         files: &fs::Client<'a>,
         machine: Machine,
         services: &Services<'_>,
+        process: Option<&super::Process<'a>>,
     ) -> Result<Option<Images>, Error> {
         if self.main.is_none() {
             let Some(loaded) = self.executable.poll(services)? else {
@@ -84,9 +89,43 @@ impl<'a> Chain<'a> {
             }
             let image = Image::parse(&loaded.bytes, machine)?;
             if let Some(path) = image.interpreter {
-                self.interpreter = Some(Executable::interpreter(files, path)?);
+                if let Some(process) = process {
+                    let lookup = crate::vfs::Lookup::from_name(
+                        process,
+                        crate::syscall::AT_FDCWD,
+                        path.to_vec(),
+                    )
+                    .map_err(|_| Error::InvalidExecutable)?;
+                    self.interpreter_path = Some(
+                        crate::vfs::Walk::new(lookup, true, false)
+                            .map_err(|_| Error::InvalidExecutable)?,
+                    );
+                } else {
+                    self.interpreter = Some(Executable::interpreter(files, path)?);
+                }
             }
             self.main = Some(loaded);
+        }
+        if let Some(walk) = self.interpreter_path.as_mut() {
+            let Some(resolved) = walk.poll(process.ok_or(Error::InvalidRequest)?, files, services)
+            else {
+                return Ok(None);
+            };
+            let resolved = resolved.map_err(|error| match error {
+                crate::syscall::abi::ENOENT => Error::Filesystem(fs::Error::NotFound),
+                _ => Error::InvalidExecutable,
+            })?;
+            if resolved.local {
+                return Err(Error::PermissionDenied);
+            }
+            self.interpreter = Some(Executable::open(
+                files,
+                resolved.lookup.directory(),
+                &resolved.lookup.name,
+                false,
+            )?);
+            self.interpreter_anchor = resolved.lookup.anchor;
+            self.interpreter_path = None;
         }
         let interpreter = match &mut self.interpreter {
             Some(executable) => match executable.poll(services)? {
@@ -102,10 +141,15 @@ impl<'a> Chain<'a> {
     }
 
     pub fn call(&self) -> Option<&Handle<Call>> {
-        self.interpreter
+        self.interpreter_path
             .as_ref()
-            .and_then(Executable::call)
-            .or_else(|| self.executable.call())
+            .and_then(crate::vfs::Walk::call)
+            .or_else(|| {
+                self.interpreter
+                    .as_ref()
+                    .and_then(Executable::call)
+                    .or_else(|| self.executable.call())
+            })
     }
 }
 

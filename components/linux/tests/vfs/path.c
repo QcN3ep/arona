@@ -190,7 +190,26 @@ static void mounts(void) {
     CHECK(!contains((char *)buffer, count, " /tmp/vfs-mount tmpfs ")); close(fd);
     CHECK(SC(35, AT_FDCWD, P("/tmp/vfs-mount"), 0x200) == 0);
 }
-int vfs_main(void) { directories(); links(); directory_state(); native_handles(); mounts(); return 42; }
+static void execution(void) {
+    long child = SC(220, 17, 0, 0, 0, 0); CHECK(child >= 0);
+    if (child == 0) {
+        const char *args[] = {"linux-vfs", "again", 0};
+        SC(221, P("bin/linux-vfs"), P(args), 0);
+        fail(__LINE__);
+    }
+    int status = -1;
+    CHECK(SC(260, child, P(&status), 0, 0) == child && status == (42 << 8));
+}
+int vfs_main(const char *mode) {
+    if (mode && equal(mode, "done")) return 42;
+    if (mode && equal(mode, "again")) {
+        const char *args[] = {"linux-vfs", "done", 0};
+        SC(221, P("/proc/self/exe"), P(args), 0);
+        fail(__LINE__);
+    }
+    directories(); links(); directory_state(); native_handles(); mounts(); execution();
+    return 42;
+}
 void *memcpy(void *output, const void *input, unsigned long length) {
     unsigned char *to = output; const unsigned char *from = input;
     for (unsigned long i = 0; i < length; i++) to[i] = from[i];

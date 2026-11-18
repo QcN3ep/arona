@@ -100,7 +100,7 @@ impl<'a> Loading<'a> {
         services: &Services<'_>,
         shared: &Shared,
     ) -> Result<Option<Process<'a>>, Error> {
-        if let Some(loaded) = self.executable.poll(files, machine, services)? {
+        if let Some(loaded) = self.executable.poll(files, machine, services, None)? {
             if loaded.main.bytes.starts_with(b"#!") {
                 if self.interpreters >= MAX_INTERPRETERS {
                     return Err(Error::InvalidExecutable);

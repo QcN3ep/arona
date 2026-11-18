@@ -21,7 +21,8 @@ use alloc::{boxed::Box, rc::Rc, vec::Vec};
 use runtime::{Call, Handle, Rights, thread::UserEntry};
 
 pub(in crate::syscall) struct Pending<'a> {
-    executable: Chain<'a>,
+    executable: Option<Chain<'a>>,
+    walk: Option<crate::vfs::Walk<'a>>,
     arguments: Arguments,
     depth: usize,
     _anchor: Option<Rc<crate::file::OpenFileDescription<'a>>>,
@@ -29,7 +30,7 @@ pub(in crate::syscall) struct Pending<'a> {
 
 pub(in crate::syscall) fn start<'a>(
     process: &Process<'a>,
-    files: &fs::Client<'a>,
+    _files: &fs::Client<'a>,
     args: [usize; 6],
 ) -> Outcome<'a> {
     let result = (|| {
@@ -46,12 +47,11 @@ pub(in crate::syscall) fn start<'a>(
             envp,
         };
         Ok(Pending {
-            executable: Chain::new(
-                Executable::new(files, lookup.directory(), &lookup.name).map_err(error)?,
-            ),
+            executable: None,
+            walk: Some(crate::vfs::Walk::new(lookup, true, false)?),
             arguments,
             depth: 0,
-            _anchor: lookup.anchor,
+            _anchor: None,
         })
     })();
     match result {
@@ -103,7 +103,7 @@ impl<'a> Pending<'a> {
     fn start_interpreter(
         &mut self,
         process: &Process<'a>,
-        files: &fs::Client<'a>,
+        _files: &fs::Client<'a>,
         interpreter: &[u8],
         argument: &[u8],
     ) -> Result<(), Errno> {
@@ -111,16 +111,20 @@ impl<'a> Pending<'a> {
             return Err(ELOOP);
         }
         let lookup = Lookup::from_name(process, crate::syscall::AT_FDCWD, interpreter.to_vec())?;
-        let executable = Executable::new(files, lookup.directory(), interpreter).map_err(error)?;
+        let walk = crate::vfs::Walk::new(lookup, true, false)?;
         self.depth += 1;
         script_arguments(&mut self.arguments, interpreter, argument);
-        self.executable = Chain::new(executable);
-        self._anchor = lookup.anchor;
+        self.executable = None;
+        self.walk = Some(walk);
+        self._anchor = None;
         Ok(())
     }
 
     pub fn call(&self) -> Option<&Handle<Call>> {
-        self.executable.call()
+        self.walk
+            .as_ref()
+            .and_then(crate::vfs::Walk::call)
+            .or_else(|| self.executable.as_ref().and_then(Chain::call))
     }
 
     pub fn poll(
@@ -130,7 +134,30 @@ impl<'a> Pending<'a> {
         files: &fs::Client<'a>,
         services: &Services<'_>,
     ) -> Option<Result<(), Errno>> {
-        let loaded = match self.executable.poll(files, process.machine, services) {
+        if let Some(walk) = self.walk.as_mut() {
+            let resolved = match walk.poll(process, files, services)? {
+                Ok(resolved) => resolved,
+                Err(error) => return Some(Err(error)),
+            };
+            if resolved.local {
+                return Some(Err(crate::syscall::abi::EACCES));
+            }
+            self.arguments.path = resolved.path;
+            let executable =
+                match Executable::new(files, resolved.lookup.directory(), &resolved.lookup.name) {
+                    Ok(executable) => executable,
+                    Err(err) => return Some(Err(error(err))),
+                };
+            self._anchor = resolved.lookup.anchor;
+            self.walk = None;
+            self.executable = Some(Chain::new(executable));
+        }
+        let loaded = match self.executable.as_mut().unwrap().poll(
+            files,
+            process.machine,
+            services,
+            Some(process),
+        ) {
             Ok(Some(loaded)) => loaded,
             Ok(None) => return None,
             Err(err) => return Some(Err(error(err))),
@@ -141,7 +168,7 @@ impl<'a> Pending<'a> {
                     self.start_interpreter(process, files, interpreter, argument)
                 },
             ) {
-                Ok(()) => None,
+                Ok(()) => self.poll(process, index, files, services),
                 Err(error) => Some(Err(error)),
             };
         }
