@@ -242,6 +242,8 @@ Use `--mode profile` to generate instruction hotspots from the same inputs.
 The report resolves the shared kernel mapping and supplied fixed-address ET_EXEC programs.
 Low-address kernel entries, such as LoongArch TLB refill, require matching ELF physical addresses and instruction bytes in guest memory.
 Supply component symbols explicitly with `--image bin/fs=PATH/TO/fs`, repeated for other archive entries as needed.
+Pass each raw block image with `--disk PATH`.
+The collector saves the input image and runs QEMU with a separate copy, so writes leave the saved input unchanged.
 Each supplied ELF must contain debug information and match the load segments of that archive entry.
 The collector compares all file-backed executable bytes with the active mappings.
 Only a unique match among the supplied images receives attribution.

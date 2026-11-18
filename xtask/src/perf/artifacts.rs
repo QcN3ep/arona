@@ -17,7 +17,7 @@ const INPUTS: &[&str] = &[
     "arch",
     "kernel",
     "testkit",
-    "components/runtime",
+    "components",
     "xtask",
 ];
 
@@ -34,7 +34,10 @@ pub(super) fn prepare(options: &Options, root: &Path, run: &Path) -> Result<Valu
             verify_file(&source, name, &manifest)?;
             fs::copy(source.join(name), directory.join(name)).map_err(|error| error.to_string())?;
         }
-        for name in system::image_files(&manifest)? {
+        for name in system::image_files(&manifest)?
+            .into_iter()
+            .chain(system::disk_files(&manifest)?)
+        {
             verify_file(&source, &name, &manifest)?;
             let destination = directory.join(&name);
             fs::create_dir_all(destination.parent().ok_or("invalid saved image path")?)
@@ -49,7 +52,10 @@ pub(super) fn prepare(options: &Options, root: &Path, run: &Path) -> Result<Valu
         verify_file(&directory, name, &manifest)?;
     }
     validate_images(options.target, &directory, options.case)?;
-    for name in system::image_files(&manifest)? {
+    for name in system::image_files(&manifest)?
+        .into_iter()
+        .chain(system::disk_files(&manifest)?)
+    {
         verify_file(&directory, &name, &manifest)?;
     }
     if options.case == "system" {
@@ -94,7 +100,9 @@ fn validate_manifest(manifest: &Value, options: &Options, root: &Path) -> Result
     }
     if manifest["files"].as_object().map(|files| files.len())
         != Some(
-            filenames(options.target, options.case).len() + system::image_files(manifest)?.len(),
+            filenames(options.target, options.case).len()
+                + system::image_files(manifest)?.len()
+                + system::disk_files(manifest)?.len(),
         )
     {
         return Err("unexpected performance artifact files".to_owned());
@@ -157,7 +165,7 @@ fn create(options: &Options, root: &Path, directory: &Path) -> Result<Value, Str
         files.insert(name, digest(&directory.join(name))?);
     }
     let mut manifest = json!({
-        "target": options.target.triple(), "case": options.case, "images": [],
+        "target": options.target.triple(), "case": options.case, "images": [], "disks": [],
         "machine_arguments": machine_arguments(options.target, root),
         "release": options.release.unwrap_or(false), "files": files, "build": build,
     });
@@ -205,6 +213,7 @@ fn create_system(options: &Options, root: &Path, directory: &Path) -> Result<Val
     let measurement = options.input.measurement()?;
     options.input.preserve(directory)?;
     let images = system::preserve_images(&options.input, directory)?;
+    let disks = system::preserve_disks(&options.input, directory)?;
     let mut strip = Command::new("llvm-objcopy");
     strip
         .arg("--strip-all")
@@ -219,14 +228,17 @@ fn create_system(options: &Options, root: &Path, directory: &Path) -> Result<Val
         files.insert(name.to_owned(), digest(&directory.join(name))?);
     }
     let image_manifest = json!({"images":images});
-    for name in system::image_files(&image_manifest)? {
+    for name in system::image_files(&image_manifest)?
+        .into_iter()
+        .chain(disks.iter().cloned())
+    {
         files.insert(name.clone(), digest(&directory.join(name))?);
     }
     Ok(json!({
-        "target": options.target.triple(), "case": "system", "measurement": measurement, "images":images,
+        "target": options.target.triple(), "case": "system", "measurement": measurement, "images":images, "disks":disks,
         "machine_arguments": machine_arguments(options.target, root),
         "release": options.release.unwrap_or(false), "files": files,
-        "input_kernel": options.input.kernel, "input_initramfs": options.input.initramfs,
+        "input_kernel": options.input.kernel, "input_initramfs": options.input.initramfs, "input_disks": options.input.disks,
     }))
 }
 

@@ -16,6 +16,7 @@ pub(super) struct Input {
     pub workload: Option<String>,
     pub units: Option<u64>,
     pub images: Vec<String>,
+    pub disks: Vec<PathBuf>,
 }
 
 impl Input {
@@ -29,6 +30,7 @@ impl Input {
             "--workload" => self.workload = Some(value),
             "--units" => self.units = Some(value.parse().map_err(|_| "invalid work units")?),
             "--image" => self.images.push(value),
+            "--disk" => self.disks.push(value.into()),
             _ => return Err(format!("unknown system option: {argument}")),
         }
         Ok(())
@@ -43,6 +45,7 @@ impl Input {
             && self.workload.is_none()
             && self.units.is_none()
             && self.images.is_empty()
+            && self.disks.is_empty()
     }
 
     pub(super) fn measurement(&self) -> Result<Value, String> {
@@ -75,6 +78,60 @@ impl Input {
         }
         Ok(())
     }
+}
+
+pub(super) fn preserve_disks(
+    input: &Input,
+    directory: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    for (index, source) in input.disks.iter().enumerate() {
+        let name = format!("disks/{index}.raw");
+        let destination = directory.join(&name);
+        fs::create_dir_all(destination.parent().ok_or("invalid disk path")?)
+            .map_err(|error| error.to_string())?;
+        fs::copy(source, destination).map_err(|error| format!("{}: {error}", source.display()))?;
+        files.push(name);
+    }
+    Ok(files)
+}
+
+pub(super) fn disk_files(manifest: &Value) -> Result<Vec<String>, String> {
+    manifest["disks"]
+        .as_array()
+        .ok_or("missing saved disk images")?
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let name = format!("disks/{index}.raw");
+            if value.as_str() != Some(name.as_str()) {
+                return Err("invalid saved disk image path".to_owned());
+            }
+            Ok(name)
+        })
+        .collect()
+}
+
+pub(super) fn attach_disks(
+    command: &mut std::process::Command,
+    directory: &std::path::Path,
+    manifest: &Value,
+) -> Result<(), String> {
+    for (index, name) in disk_files(manifest)?.iter().enumerate() {
+        let working = directory.join(format!("disk-{index}.raw"));
+        fs::copy(directory.join("artifacts").join(name), &working)
+            .map_err(|error| error.to_string())?;
+        command.args([
+            "-drive".to_owned(),
+            format!(
+                "if=none,id=perf-disk-{index},format=raw,file={}",
+                working.display().to_string().replace(',', ",,")
+            ),
+            "-device".to_owned(),
+            format!("virtio-blk-pci,disable-legacy=on,drive=perf-disk-{index}"),
+        ]);
+    }
+    Ok(())
 }
 
 pub(super) fn preserve_images(

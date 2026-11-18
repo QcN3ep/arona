@@ -95,7 +95,7 @@ impl Options {
                     };
                 }
                 "--kernel" | "--initramfs" | "--start" | "--end" | "--success" | "--workload"
-                | "--units" | "--image" => {
+                | "--units" | "--image" | "--disk" => {
                     let value = arguments
                         .next()
                         .transpose()?
@@ -225,6 +225,7 @@ fn collect(
     if options.case == "system" {
         command.arg("-initrd").arg(saved.join("initramfs.cpio"));
         command.args(["-device", "virtio-rng-pci,disable-legacy=on"]);
+        system::attach_disks(&mut command, directory, &manifest)?;
     }
     command
         .arg("-kernel")
