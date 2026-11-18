@@ -404,7 +404,7 @@ int socket_main(const char *mode) {
     else if (*mode == 'o') socket_options();
     else if (*mode == 'm') datagram_memory();
     else if (*mode == 'u') datagram_main();
-    else if (*mode == 'p') socketpair_main();
+    else if (*mode == 'p' && mode[1] == 'a') socketpair_main();
     else if (*mode == 'c') client();
     else if (*mode == 'r') refused();
     else if (*mode == 'f') fork_socket();
