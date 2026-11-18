@@ -46,6 +46,7 @@ impl Fat32 {
         }
         let mut volume = self.volume.borrow_mut();
         volume.sync()?;
+        volume.disk.release(volume.start);
         volume.closed = true;
         Ok(())
     }

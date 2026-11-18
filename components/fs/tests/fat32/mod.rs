@@ -146,7 +146,13 @@ fn exercise(disk: &Rc<Disk>) {
         write_volume(&filesystem);
     }
     filesystem.unmount().unwrap();
+    let remounted = Fat32::mount(Rc::clone(disk), 0, SIZE).unwrap();
     drop(filesystem);
+    let filesystem = remounted;
+    assert!(matches!(
+        Fat32::mount(Rc::clone(disk), 0, SIZE),
+        Err(Error::Busy)
+    ));
     if !disk.read_only() {
         for offset in [SIZE, 2 * SIZE] {
             assert!(matches!(
@@ -155,7 +161,6 @@ fn exercise(disk: &Rc<Disk>) {
             ));
         }
     }
-    let filesystem = Fat32::mount(Rc::clone(disk), 0, SIZE).unwrap();
     if disk.read_only() {
         assert_eq!(filesystem.read_dir(b"/").unwrap().len(), 1);
     } else {

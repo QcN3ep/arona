@@ -290,6 +290,8 @@ impl Volume {
 
 impl Drop for Volume {
     fn drop(&mut self) {
-        self.disk.release(self.start);
+        if !self.closed {
+            self.disk.release(self.start);
+        }
     }
 }
