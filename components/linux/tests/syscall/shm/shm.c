@@ -313,7 +313,7 @@ static void attachment_boundaries(void) {
     CHECK(SC(98, P(first), 0, 0, P(timeout)) == 0);
     CHECK(wait_child(child) == (42 << 8));
     CHECK(SC(215, P(first), PAGE) == 0);
-    char *other = (char *)SC(222, P(first), PAGE, 3, 0x100022, -1, 0);
+    char *other = (char *)SC(222, P(first), PAGE, 3, 0x22, -1, 0);
     CHECK(other == first);
     other[0] = 0x31;
     CHECK(SC(197, P(first)) == 0);
