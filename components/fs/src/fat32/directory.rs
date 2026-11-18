@@ -12,6 +12,8 @@ use core::cell::RefCell;
 #[derive(Clone)]
 pub(super) struct Entry {
     pub location: u64,
+    pub parent: u32,
+    pub long: Vec<u64>,
     pub name: Vec<u8>,
     pub raw: [u8; 32],
 }
@@ -20,6 +22,8 @@ impl Entry {
     pub fn root(cluster: u32) -> Self {
         let mut entry = Self {
             location: ROOT,
+            parent: cluster,
+            long: Vec::new(),
             name: Vec::new(),
             raw: [0; 32],
         };
@@ -33,6 +37,9 @@ impl Entry {
     pub fn set_first(&mut self, first: u32) {
         self.raw[20..22].copy_from_slice(&((first >> 16) as u16).to_le_bytes());
         self.raw[26..28].copy_from_slice(&(first as u16).to_le_bytes());
+    }
+    pub fn set_size(&mut self, size: usize) {
+        self.raw[28..32].copy_from_slice(&(size as u32).to_le_bytes());
     }
     pub fn size(&self) -> usize {
         word(&self.raw, 28) as usize
@@ -179,13 +186,15 @@ impl Volume {
                         long = LongName::new();
                         continue;
                     }
-                    let (name, _) = long
+                    let (name, slots) = long
                         .take(raw)
                         .unwrap_or_else(|| (short_name(raw), Vec::new()));
                     long = LongName::new();
                     if name != b"." && name != b".." {
                         entries.push(Entry {
                             location,
+                            parent: directory,
+                            long: slots,
                             name,
                             raw: raw.try_into().unwrap(),
                         });

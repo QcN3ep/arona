@@ -25,6 +25,8 @@ pub(super) struct Volume {
     pub fat_start: u32,
     pub fat_sectors: u32,
     pub active_fat: u8,
+    pub fats: u8,
+    pub mirrored: bool,
     pub data_start: u32,
     pub clusters: u32,
     pub root: u32,
@@ -33,6 +35,10 @@ pub(super) struct Volume {
     pub nodes: BTreeMap<u64, Rc<RefCell<Node>>>,
     pub next_inode: u64,
     pub closed: bool,
+    pub failed: bool,
+    pub pending: BTreeMap<u64, Vec<u8>>,
+    pub next_free: u32,
+    pub info: Vec<u32>,
 }
 
 impl Volume {
@@ -99,6 +105,8 @@ impl Volume {
             fat_start,
             fat_sectors,
             active_fat,
+            fats,
+            mirrored,
             data_start: data_start as u32,
             clusters: clusters as u32,
             root,
@@ -107,14 +115,45 @@ impl Volume {
             nodes: BTreeMap::new(),
             next_inode: 2,
             closed: false,
+            failed: false,
+            pending: BTreeMap::new(),
+            next_free: 2,
+            info: Vec::new(),
         };
         volume.node(Entry::root(volume.root))?;
         volume.chain(root)?;
+        volume.load_info(&boot)?;
         Ok(volume)
     }
 
+    fn load_info(&mut self, boot: &[u8]) -> Result<(), Error> {
+        let info = u32::from(half(boot, 48));
+        let backup = u32::from(half(boot, 50));
+        for sector in [info, backup.saturating_add(info)] {
+            if info == 0 || sector >= self.fat_start || self.info.contains(&sector) {
+                continue;
+            }
+            let mut bytes = [0; MAX_BLOCK_SIZE];
+            self.read_bytes(
+                u64::from(sector) * self.sector_size as u64,
+                &mut bytes[..self.sector_size],
+            )?;
+            if word(&bytes, 0) == 0x4161_5252
+                && word(&bytes, 484) == 0x6141_7272
+                && word(&bytes, 508) == 0xaa55_0000
+            {
+                self.info.push(sector);
+                let next = word(&bytes, 492);
+                if (2..self.clusters + 2).contains(&next) {
+                    self.next_free = next;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn check(&self) -> Result<(), Error> {
-        if self.closed {
+        if self.closed || self.failed {
             Err(Error::Unavailable)
         } else {
             Ok(())
@@ -145,7 +184,9 @@ impl Volume {
         while !output.is_empty() {
             let within = offset as usize % self.sector_size;
             let count = output.len().min(self.sector_size - within);
-            if within == 0 && count == self.sector_size {
+            if let Some(bytes) = self.pending.get(&(offset - within as u64)) {
+                output[..count].copy_from_slice(&bytes[within..within + count]);
+            } else if within == 0 && count == self.sector_size {
                 self.disk.read(self.start + offset, &mut output[..count])?;
             } else {
                 let mut sector = [0; MAX_BLOCK_SIZE];
@@ -207,7 +248,11 @@ impl Volume {
             self.next_inode = inode.checked_add(1).ok_or(Error::NoSpace)?;
             inode
         };
-        let node = Rc::new(RefCell::new(Node { inode, entry }));
+        let node = Rc::new(RefCell::new(Node {
+            inode,
+            entry,
+            linked: true,
+        }));
         self.nodes
             .insert(node.borrow().entry.location, Rc::clone(&node));
         Ok(node)

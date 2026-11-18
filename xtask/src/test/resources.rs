@@ -25,6 +25,7 @@ pub(super) struct Resources {
     peer: Option<Process>,
     monitor: Option<SocketPath>,
     filesystem: bool,
+    fat32: bool,
 }
 
 struct SocketPath(PathBuf);
@@ -69,12 +70,15 @@ impl Resources {
                 resources.ext4_drives(directory, false);
             }
             "fat32" => {
+                resources.fat32 = true;
                 let mut command = Command::new("python3");
                 command
                     .arg(build.root.join("components/fs/tests/fat32/fixture.py"))
                     .arg("prepare")
                     .arg(directory);
                 crate::execute(command)?;
+                resources.faulty_drive("faterror", directory);
+                resources.faulty_drive("fatflush", directory);
                 resources.drive("fat32", &directory.join("fat32.raw"), "");
                 resources.drive("readonly", &directory.join("readonly.raw"), ",readonly=on");
             }
@@ -159,6 +163,14 @@ impl Resources {
                 timeout,
             )?;
             build.fixture("check", directory)?;
+        }
+        if self.fat32 {
+            let mut command = Command::new("python3");
+            command
+                .arg(build.root.join("components/fs/tests/fat32/fixture.py"))
+                .arg("check")
+                .arg(directory);
+            crate::execute(command)?;
         }
         if let Some(mut peer) = self.peer.take() {
             let started = std::time::Instant::now();

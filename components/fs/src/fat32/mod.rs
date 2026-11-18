@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! FAT32 volume validation, directory lookup, and cluster-chain file reads.
+//! FAT32 volume access, file reads and writes, and directory operations.
 
 mod directory;
+mod edit;
+mod metadata;
 mod volume;
+mod write;
 
 use crate::{Error, FileSystem, ReadAt, block::Disk};
 use alloc::{rc::Rc, vec::Vec};
@@ -22,6 +25,7 @@ pub struct File {
 
 struct Node {
     inode: u64,
+    linked: bool,
     entry: Entry,
 }
 
@@ -40,7 +44,9 @@ impl Fat32 {
         if self.busy() {
             return Err(Error::Busy);
         }
-        self.volume.borrow_mut().closed = true;
+        let mut volume = self.volume.borrow_mut();
+        volume.sync()?;
+        volume.closed = true;
         Ok(())
     }
 
@@ -75,6 +81,51 @@ impl Fat32 {
         let mut volume = self.volume.borrow_mut();
         let node = volume.lookup(path)?;
         Ok(node.borrow().metadata(&volume))
+    }
+
+    pub fn create(&self, path: &[u8]) -> Result<File, Error> {
+        self.create_with_permissions(path, 0o644)
+    }
+
+    pub fn create_with_permissions(&self, path: &[u8], permissions: u16) -> Result<File, Error> {
+        let node = self.volume.borrow_mut().create(path, false, permissions)?;
+        Ok(File {
+            volume: Rc::clone(&self.volume),
+            node,
+        })
+    }
+
+    pub fn mkdir(&self, path: &[u8]) -> Result<(), Error> {
+        self.mkdir_with_permissions(path, 0o755)
+    }
+
+    pub fn mkdir_with_permissions(&self, path: &[u8], permissions: u16) -> Result<(), Error> {
+        self.volume
+            .borrow_mut()
+            .create(path, true, permissions)
+            .map(|_| ())
+    }
+
+    pub fn unlink(&self, path: &[u8]) -> Result<(), Error> {
+        self.volume.borrow_mut().unlink(path)
+    }
+
+    pub fn rename(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
+        self.volume.borrow_mut().rename(source, target)
+    }
+
+    pub fn sync(&self) -> Result<(), Error> {
+        self.volume.borrow_mut().sync()
+    }
+
+    pub fn open_path(&self, path: &[u8]) -> Result<File, Error> {
+        self.open_node(path, false)
+    }
+
+    pub fn set_attributes(&self, path: &[u8], attributes: crate::Attributes) -> Result<(), Error> {
+        let mut volume = self.volume.borrow_mut();
+        let node = volume.lookup(path)?;
+        volume.set_attributes(&node, attributes)
     }
 
     pub fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
@@ -124,6 +175,57 @@ impl ReadAt for File {
 }
 
 impl File {
+    pub fn path(&self) -> Result<Vec<u8>, Error> {
+        self.volume.borrow_mut().directory_path(&self.node)
+    }
+
+    pub fn parent_metadata(&self) -> Result<Option<crate::Metadata>, Error> {
+        let mut volume = self.volume.borrow_mut();
+        let node = self.node.borrow();
+        if node.entry.location == volume::ROOT {
+            return Ok(None);
+        }
+        if !node.linked {
+            return Err(Error::NotFound);
+        }
+        Ok(Some(
+            volume
+                .directory_node(node.entry.parent)?
+                .borrow()
+                .metadata(&volume),
+        ))
+    }
+
+    pub fn check_writable(&self) -> Result<(), Error> {
+        self.volume
+            .borrow()
+            .check_file_writable(&self.node.borrow())
+    }
+
+    pub fn write_at(&self, offset: usize, input: &[u8]) -> Result<usize, Error> {
+        self.volume.borrow_mut().write(&self.node, offset, input)
+    }
+
+    pub fn append(&self, input: &[u8]) -> Result<(usize, usize), Error> {
+        let offset = self.len();
+        let count = self.write_at(offset, input)?;
+        Ok((offset, count))
+    }
+
+    pub fn truncate(&self, size: usize) -> Result<(), Error> {
+        self.volume.borrow_mut().truncate(&self.node, size)
+    }
+
+    pub fn fsync(&self) -> Result<(), Error> {
+        self.volume.borrow_mut().sync()
+    }
+
+    pub fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
+        self.volume
+            .borrow_mut()
+            .set_attributes(&self.node, attributes)
+    }
+
     pub fn metadata(&self) -> Result<crate::Metadata, Error> {
         let volume = self.volume.borrow();
         volume.check()?;
@@ -157,26 +259,17 @@ impl File {
     }
 }
 
-impl Node {
-    fn metadata(&self, volume: &Volume) -> crate::Metadata {
-        let directory = self.entry.directory();
-        let size = self.entry.size() as u64;
-        crate::Metadata {
-            device: volume.device,
-            mount: volume.mount,
-            inode: self.inode,
-            size,
-            blocks: size.div_ceil(volume.cluster_size() as u64)
-                * (volume.cluster_size() as u64 / 512),
-            links: 1,
-            mode: if directory {
-                0o040755
-            } else if self.entry.read_only() {
-                0o100444
-            } else {
-                0o100644
-            },
-            ..crate::Metadata::default()
+impl Drop for File {
+    fn drop(&mut self) {
+        if !self.node.borrow().linked && Rc::strong_count(&self.node) == 1 {
+            let first = self.node.borrow().entry.first();
+            let mut volume = self.volume.borrow_mut();
+            if volume
+                .transaction(|volume| volume.free_chain(first))
+                .is_err()
+            {
+                volume.failed = true;
+            }
         }
     }
 }
