@@ -228,10 +228,22 @@ impl Volume {
 
 pub(super) fn equal_name(first: &[u8], second: &[u8]) -> bool {
     match (core::str::from_utf8(first), core::str::from_utf8(second)) {
-        (Ok(first), Ok(second)) => first
-            .chars()
-            .flat_map(char::to_uppercase)
-            .eq(second.chars().flat_map(char::to_uppercase)),
+        (Ok(first), Ok(second)) => {
+            // Expanding a character would merge distinct FAT names such as straße and strasse.
+            let uppercase = |character: char| {
+                let mut mapped = character.to_uppercase();
+                let first = mapped.next().unwrap();
+                if mapped.next().is_none() {
+                    first
+                } else {
+                    character
+                }
+            };
+            first
+                .chars()
+                .map(uppercase)
+                .eq(second.chars().map(uppercase))
+        }
         _ => false,
     }
 }

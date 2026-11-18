@@ -180,6 +180,36 @@ fn exercise(disk: &Rc<Disk>) {
 fn write_volume(filesystem: &Fat32) {
     let free = filesystem.statistics().unwrap().free_blocks;
     filesystem.mkdir(b"/work").unwrap();
+    let first = filesystem.create("/work/straße".as_bytes()).unwrap();
+    let second = filesystem.create(b"/work/strasse").unwrap();
+    first.write_at(0, b"first").unwrap();
+    second.write_at(0, b"second").unwrap();
+    assert_eq!(
+        filesystem
+            .open_bytes("/WORK/STRAßE".as_bytes())
+            .unwrap()
+            .metadata()
+            .unwrap()
+            .inode,
+        first.metadata().unwrap().inode
+    );
+    assert_eq!(
+        filesystem
+            .open_bytes(b"/WORK/STRASSE")
+            .unwrap()
+            .metadata()
+            .unwrap()
+            .inode,
+        second.metadata().unwrap().inode
+    );
+    assert_ne!(
+        first.metadata().unwrap().inode,
+        second.metadata().unwrap().inode
+    );
+    drop(first);
+    drop(second);
+    filesystem.unlink("/work/straße".as_bytes()).unwrap();
+    filesystem.unlink(b"/work/strasse").unwrap();
     let file = filesystem.create("/work/source α.txt".as_bytes()).unwrap();
     assert_eq!(
         filesystem.create("/WORK/SOURCE α.TXT".as_bytes()).err(),
