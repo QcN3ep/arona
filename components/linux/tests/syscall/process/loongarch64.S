@@ -25,7 +25,7 @@ threads:
     li.d $a0, 0
     li.d $a1, 8192
     li.d $a2, 3
-    li.d $a3, 0x22
+    li.d $a3, 0x20022
     li.d $a4, -1
     li.d $a5, 0
     invoke 222

@@ -25,7 +25,7 @@ threads:
     li a0, 0
     li a1, 8192
     li a2, 3
-    li a3, 0x22
+    li a3, 0x20022
     li a4, -1
     li a5, 0
     invoke 222

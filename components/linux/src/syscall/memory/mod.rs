@@ -31,6 +31,8 @@ const MAP_SHARED: usize = 1;
 const MAP_PRIVATE: usize = 2;
 const MAP_FIXED: usize = 0x10;
 const MAP_ANONYMOUS: usize = 0x20;
+// Linux accepts MAP_STACK without changing the mapping behavior.
+const MAP_STACK: usize = 0x20000;
 const MAP_FIXED_NOREPLACE: usize = 0x100000;
 // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/mman-common.h?h=v6.12
 const MAP_HUGETLB: usize = 0x40000;
@@ -74,7 +76,14 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
         return Err(EINVAL);
     }
     let permissions = permissions(protection)?;
-    if flags & !(3 | MAP_ANONYMOUS | MAP_FIXED | MAP_FIXED_NOREPLACE | MAP_HUGETLB | MAP_HUGE_MASK)
+    if flags
+        & !(3
+            | MAP_ANONYMOUS
+            | MAP_FIXED
+            | MAP_STACK
+            | MAP_FIXED_NOREPLACE
+            | MAP_HUGETLB
+            | MAP_HUGE_MASK)
         != 0
         || flags & MAP_FIXED != 0 && flags & MAP_FIXED_NOREPLACE != 0
     {
