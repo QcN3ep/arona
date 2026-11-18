@@ -126,6 +126,7 @@ pub(crate) struct Process<'a> {
     pub vfork: Option<Rc<Vfork>>,
     pub umask: u16,
     pub status: ExitStatus,
+    pub group_status: Option<ExitStatus>,
     pub credentials: Credentials,
     pub limits: crate::limits::Limits,
     pub cpu_limited: bool,
@@ -259,6 +260,7 @@ impl<'a> Process<'a> {
             attaches: BTreeMap::new(),
             membarrier: Membarrier::default(),
             status: ExitStatus { code: 0, signal: 0 },
+            group_status: None,
             limits,
             cpu_limited: false,
             mount: options.mount,
@@ -605,7 +607,7 @@ impl<'a> Process<'a> {
     }
 
     pub fn status(&self) -> ExitStatus {
-        self.status
+        self.group_status.unwrap_or(self.status)
     }
 
     /// Total CPU time of every thread that has run or is running in this process.

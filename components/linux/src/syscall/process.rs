@@ -138,5 +138,6 @@ pub(super) fn exit_group<'a>(process: &mut Process<'a>, code: usize) -> Result<O
     }
     .encode();
     process.terminate_threads(status)?;
+    process.group_status = Some(ExitStatus::decode(status));
     Ok(Outcome::Terminated)
 }

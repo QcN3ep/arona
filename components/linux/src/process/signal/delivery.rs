@@ -58,7 +58,10 @@ fn take(process: &Process<'_>, index: usize, number: u8) {
 }
 
 pub fn terminate(process: &mut Process<'_>, signal: u8) -> Result<(), Error> {
-    process.terminate_threads(ExitStatus { code: 0, signal }.encode())
+    let status = ExitStatus { code: 0, signal };
+    process.terminate_threads(status.encode())?;
+    process.group_status = Some(status);
+    Ok(())
 }
 
 fn stop(process: &Process<'_>, signal: u8) {

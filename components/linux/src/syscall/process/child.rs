@@ -133,6 +133,7 @@ fn spawn<'a>(
         files: process.files.fork(),
         terminal: Rc::clone(&process.terminal),
         cwd: process.cwd.clone(),
+        group_status: None,
         program: process.program.clone(),
         argv: process.argv.clone(),
         max_rss: 0,
