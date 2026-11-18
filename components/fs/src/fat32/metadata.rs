@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+// REFERENCE: https://elm-chan.org/docs/fat_e.html#time_fmt
+
 use super::{
     Node, half,
     volume::{ROOT, Volume},

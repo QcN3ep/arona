@@ -52,6 +52,7 @@ impl Entry {
     }
 }
 
+// REFERENCE: https://elm-chan.org/docs/fat_e.html#lfn
 struct LongName {
     words: [u16; 260],
     expected: u8,

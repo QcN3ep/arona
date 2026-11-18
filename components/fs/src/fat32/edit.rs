@@ -62,6 +62,7 @@ impl Volume {
         }
     }
 
+    // REFERENCE: https://elm-chan.org/docs/fat_e.html#lfn
     fn insert_entry(
         &mut self,
         parent: u32,

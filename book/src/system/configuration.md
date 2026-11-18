@@ -85,8 +85,8 @@ The file tree consists of the archive contents together with the mounts of the f
 
 The file service uses the boot archive to establish the root file system.
 If the device management service provides block devices, init currently selects the first block device enumerated and tries to mount it at `/var` using its full capacity.
-The mount reads the ext4 volume from the start of the device.
+The file service detects ext4 or FAT32 at the start of the device.
 
 After a successful mount, init creates or opens `/var/log/system.log` and hands it to the log service.
 The default `xtask run` uses the archive root file system and UART log output.
-With an ext4 disk attached, `/var` becomes a writable persistent area, and logger's file output is enabled as well.
+Mounting a writable ext4 or FAT32 disk makes `/var` persistent and enables file logging.

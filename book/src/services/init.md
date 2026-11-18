@@ -21,7 +21,7 @@ The archive page frame is then handed to the file service, and init reads the re
 | 1 | Load fs from the archive, hand over the archive, and establish the file client |
 | 2 | Mount a fresh tmpfs at `/tmp` |
 | 3 | Read devmgr from fs, hand over the DeviceSet, and wait for driver initialization to complete |
-| 4 | Query the first block device and, if present, mount its full range as ext4 at `/var` |
+| 4 | If a block device is present, detect ext4 or FAT32 on its full range and mount it at `/var` |
 | 5 | Open the UART output session, start logger, and hand over the KernelLog and the optional persistence file |
 | 6 | Establish the local log facade, start net with a separate RNG session, and wait for loopback readiness |
 | 7 | Start linux and hand over the file, RTC, random number, network, and kernel log sessions |

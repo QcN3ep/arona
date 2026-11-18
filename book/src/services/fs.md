@@ -1,7 +1,8 @@
 # File Service
 
 fs places the boot archive and disk volumes into the same file tree.
-When `/bin/init` is opened, the content comes from the cpio newc archive; after a persistent volume is mounted, opening `/var/log/system.log` enters ext4.
+Opening `/bin/init` reads from the cpio newc archive.
+Once a volume is mounted at `/var`, opening `/var/log/system.log` reads from that volume.
 Both paths return a File session, and clients read and write through the same IPC interface, with paths and file contents transferred via page frames.
 
 ## Interface and Sessions
