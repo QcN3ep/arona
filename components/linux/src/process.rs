@@ -42,6 +42,7 @@ impl Thread<'_> {
     ) -> Result<i32, runtime::Error> {
         let priority = self.native.priority()?;
         native.set_priority(priority)?;
+        native.set_scheduling(self.native.scheduling()?)?;
         Ok(self.policy)
     }
 }

@@ -3,7 +3,8 @@
 use crate::{BorrowedHandle, Error, Handle, Rights, Task, Thread};
 use abi::method::{task, thread};
 pub use abi::thread::{
-    PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, TaskState, ThreadState, UserEntry,
+    PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, SchedulingPolicy, TaskState, ThreadState,
+    UserEntry,
 };
 
 #[cfg(all(feature = "program", target_os = "none"))]
@@ -27,7 +28,7 @@ pub fn sleep_until(deadline_ns: u64) -> Result<(), Error> {
 pub fn now_ns() -> Result<u64, Error> {
     Ok(current().invoke(thread::NOW, [0; 5])?[0])
 }
-/// Returns the current thread scheduling priority; lower values run first.
+/// Returns the current thread's nice value.
 pub fn priority() -> Result<i32, Error> {
     current().priority()
 }
@@ -102,6 +103,16 @@ impl Handle<Task> {
     }
 }
 impl Handle<Thread> {
+    pub fn scheduling(&self) -> Result<abi::thread::SchedulingPolicy, Error> {
+        let value = self.borrow().invoke(thread::GET_SCHEDULING, [0; 5])?[0];
+        abi::thread::SchedulingPolicy::from_raw(value).ok_or(Error::Protocol)
+    }
+    pub fn set_scheduling(&self, policy: abi::thread::SchedulingPolicy) -> Result<(), Error> {
+        self.borrow()
+            .invoke(thread::SET_SCHEDULING, [policy as u64, 0, 0, 0, 0])
+            .map(|_| ())
+    }
+
     pub fn start(&self) -> Result<(), Error> {
         self.borrow().invoke(thread::START, [0; 5]).map(|_| ())
     }

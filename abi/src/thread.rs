@@ -2,7 +2,7 @@
 
 /// The most urgent scheduling priority.
 ///
-/// Priorities follow the nice convention: a lower value runs first.
+/// Nice values adjust relative CPU shares in the fair scheduler.
 pub const PRIORITY_MIN: i32 = -20;
 
 /// The least urgent scheduling priority.
@@ -10,6 +10,26 @@ pub const PRIORITY_MAX: i32 = 19;
 
 /// The priority of a thread that has not changed it, which matches Linux `nice` 0.
 pub const PRIORITY_DEFAULT: i32 = 0;
+
+/// Scheduling behavior within the fair scheduler.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u64)]
+pub enum SchedulingPolicy {
+    Normal = 0,
+    Batch = 3,
+    Idle = 5,
+}
+
+impl SchedulingPolicy {
+    pub fn from_raw(value: u64) -> Option<Self> {
+        match value {
+            0 => Some(Self::Normal),
+            3 => Some(Self::Batch),
+            5 => Some(Self::Idle),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UserEntry {

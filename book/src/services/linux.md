@@ -387,14 +387,15 @@ A Linux thread carries its scheduling policy and nice value in the compatibility
 Real-time `SCHED_FIFO` and `SCHED_RR` requests return `EINVAL` because the kernel does not provide static real-time priority bands yet, and the reset-on-fork policy flag is not supported.
 The policy calls validate the target thread and the `struct sched_param` pointer; non-real-time policies require a zero `sched_priority`.
 `sched_getparam` writes that zero priority, and `sched_setparam` accepts only a zero priority.
-`SCHED_BATCH` and `SCHED_IDLE` currently share the nice-based bands with `SCHED_OTHER`, so the stored policy describes intent rather than a distinct weight.
+`SCHED_BATCH` omits the normal wake-up credit.
+`SCHED_IDLE` uses a fixed minimal fair weight.
 
 `setpriority` and `getpriority` use `PRIO_PROCESS` targets and the Linux reporting convention `20 - nice`.
 Values below -20 or above 19 are clamped rather than rejected. Only `PRIO_PROCESS` is implemented; the `PRIO_PGRP` and `PRIO_USER` target kinds return `EINVAL`.
 The nice value belongs to one thread. A process clone and a thread clone inherit the calling thread's policy and nice value, and `execve` preserves both for the replaced thread.
 
-Arona runs on one processor, so CPU affinity accepts exactly the CPU 0 bit.
-`sched_setaffinity` requires a mask of at least eight bytes and inspects only the first eight; an empty mask or a bit naming another processor in that word returns `EINVAL`, while bits for CPUs 64 and above in a longer mask are ignored.
+Arona runs on one processor, so CPU affinity requests must include CPU 0.
+`sched_setaffinity` requires a mask of at least eight bytes and inspects only the first eight; a mask excluding CPU 0 returns `EINVAL`, while bits for CPUs 64 and above in a longer mask are ignored.
 `sched_getaffinity` requires at least eight bytes, writes only those eight bytes, returns that byte count, and reports CPU 0.
 The kernel itself keeps no per-thread CPU mask, so these calls report the real single-processor topology instead of pretending to support more CPUs.
 

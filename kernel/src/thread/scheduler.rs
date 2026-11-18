@@ -127,6 +127,17 @@ pub(super) fn set_nice(thread: &Thread, nice: i8) -> Result<(), ThreadError> {
     if !(-20..=19).contains(&nice) {
         return Err(ThreadError::InvalidPriority);
     }
+    change_fair(thread, |entity| entity.set_nice(nice))
+}
+
+pub(super) fn set_policy(
+    thread: &Thread,
+    policy: abi::thread::SchedulingPolicy,
+) -> Result<(), ThreadError> {
+    change_fair(thread, |entity| entity.set_policy(policy))
+}
+
+fn change_fair(thread: &Thread, change: impl FnOnce(&mut Entity)) -> Result<(), ThreadError> {
     with_scheduler(|scheduler| {
         let mut data = thread.0.data.lock();
         if matches!(data.state, ThreadState::Dying(_) | ThreadState::Dead(_)) {
@@ -138,7 +149,7 @@ pub(super) fn set_nice(thread: &Thread, nice: i8) -> Result<(), ThreadError> {
             scheduler.ready.remove(thread);
         }
         data = thread.0.data.lock();
-        data.fair.set_nice(nice);
+        change(&mut data.fair);
         drop(data);
         if queued {
             scheduler.ready.restore(thread.clone());

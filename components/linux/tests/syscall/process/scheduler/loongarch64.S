@@ -243,7 +243,7 @@ scheduler:
     invoke 141
     expect -3
 
-    # CPU affinity accepts only CPU 0 in the 8-byte mask.
+    # CPU affinity intersects the request with available CPU 0.
     li.d $t0, 1
     st.d $t0, $sp, 8
     li.d $a0, 0
@@ -281,7 +281,7 @@ scheduler:
     ld.d $t0, $sp, 8
     li.d $t1, 1
     bne $t0, $t1, scheduler_failure
-    # Empty masks and masks naming other processors are rejected.
+    # Empty masks and masks excluding CPU 0 are rejected.
     st.d $zero, $sp, 8
     li.d $a0, 0
     li.d $a1, 8
@@ -301,7 +301,7 @@ scheduler:
     li.d $a1, 8
     addi.d $a2, $sp, 8
     invoke 122
-    expect -22
+    expect 0
     li.d $t0, 1
     slli.d $t0, $t0, 63
     st.d $t0, $sp, 8
@@ -486,8 +486,7 @@ scheduler:
     invoke 220
     beqz $a0, high_thread
     bltz $a0, scheduler_setup_failure
-    # The parent waits at the lowest priority so the low-priority worker
-    # cannot be starved by a busy parent after the urgent worker exits.
+    # Both fair-scheduled workers must complete before the parent continues.
     li.d $a0, 0
     li.d $a1, 0
     li.d $a2, 19
@@ -586,8 +585,6 @@ low_thread:
     expect 0
     li.d $s1, 20
 low_loop:
-    ld.d $t0, $s4, 16
-    beqz $t0, scheduler_failure
     ld.d $t0, $s4, 8
     addi.d $t0, $t0, 1
     st.d $t0, $s4, 8

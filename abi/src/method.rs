@@ -62,6 +62,8 @@ methods!(thread {
     CPU_TIME = 28 => NONE;
     GET_PRIORITY = 29 => NONE;
     SET_PRIORITY = 30 => SET_STATE;
+    GET_SCHEDULING = 31 => NONE;
+    SET_SCHEDULING = 32 => SET_STATE;
 });
 
 methods!(trap_port { RECEIVE = 16 => READ; });

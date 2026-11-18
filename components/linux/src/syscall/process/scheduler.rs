@@ -46,7 +46,11 @@ fn set_scheduler(process: &mut Process<'_>, index: usize, args: [usize; 6]) -> S
         // TODO: Support SCHED_FIFO and SCHED_RR once the kernel provides static priority bands.
         return Err(EINVAL);
     }
-    // TODO: Give SCHED_BATCH and SCHED_IDLE distinct weights in the kernel scheduler.
+    let native = runtime::thread::SchedulingPolicy::from_raw(policy as u64).ok_or(EINVAL)?;
+    process.threads[target]
+        .native
+        .set_scheduling(native)
+        .map_err(error)?;
     process.threads[target].policy = policy;
     Ok(0)
 }
@@ -75,10 +79,15 @@ fn set_priority(process: &Process<'_>, index: usize, args: [usize; 6]) -> Syscal
     }
     let target = target(process, index, args[1])?;
     // Linux clamps a nice value outside the supported range instead of failing.
-    let nice = (args[2] as i64).clamp(
+    let nice = i64::from(args[2] as i32).clamp(
         i64::from(runtime::thread::PRIORITY_MIN),
         i64::from(runtime::thread::PRIORITY_MAX),
     );
+    if process.credentials.euid != 0
+        && nice < i64::from(process.threads[target].native.priority().map_err(error)?)
+    {
+        return Err(EPERM);
+    }
     process.threads[target]
         .native
         .set_priority(nice as i32)
@@ -104,7 +113,7 @@ fn set_affinity(process: &Process<'_>, index: usize, args: [usize; 6]) -> Syscal
     }
     let mask = read_mask(process, args[2])?;
     // Arona currently has one processor, so CPU 0 is the only valid member.
-    if mask != 1 {
+    if mask & 1 == 0 {
         return Err(EINVAL);
     }
     Ok(0)

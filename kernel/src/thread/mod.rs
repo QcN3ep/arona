@@ -244,6 +244,17 @@ impl Thread {
         scheduler::set_nice(self, nice)
     }
 
+    /// Returns the scheduling behavior used by the fair scheduler.
+    pub fn scheduling(&self) -> abi::thread::SchedulingPolicy {
+        let _interrupts = InterruptGuard::new();
+        self.0.data.lock().fair.policy
+    }
+
+    /// Changes fair scheduling behavior without discarding execution history.
+    pub fn set_scheduling(&self, policy: abi::thread::SchedulingPolicy) -> Result<(), ThreadError> {
+        scheduler::set_policy(self, policy)
+    }
+
     pub fn terminate(&self, status: usize) -> Result<(), ThreadError> {
         let _interrupts = InterruptGuard::new();
         if self.task().is_none() || current().as_ref().is_some_and(|current| current.same(self)) {

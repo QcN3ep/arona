@@ -3,6 +3,7 @@
 //! CFS execution accounting, placement, and preemption policy.
 
 use super::{Scheduler, Thread, ThreadKind};
+use abi::thread::SchedulingPolicy;
 
 const LATENCY_NS: u64 = 6_000_000;
 const MIN_GRANULARITY_NS: u64 = 750_000;
@@ -20,6 +21,7 @@ pub(in crate::thread) struct Entity {
     pub(in crate::thread) vruntime: i128,
     pub(in crate::thread) slice_start: u64,
     nice: i8,
+    pub(in crate::thread) policy: SchedulingPolicy,
     remainder: u32,
 }
 
@@ -29,6 +31,7 @@ impl Entity {
             vruntime: 0,
             slice_start: 0,
             nice: 0,
+            policy: SchedulingPolicy::Normal,
             remainder: 0,
         }
     }
@@ -38,11 +41,20 @@ impl Entity {
     }
 
     pub(in crate::thread) fn weight(&self) -> u32 {
-        WEIGHTS[(i16::from(self.nice) + 20) as usize]
+        if self.policy == SchedulingPolicy::Idle {
+            3
+        } else {
+            WEIGHTS[(i16::from(self.nice) + 20) as usize]
+        }
     }
 
     pub(super) fn set_nice(&mut self, nice: i8) {
         self.nice = nice;
+        self.remainder = 0;
+    }
+
+    pub(super) fn set_policy(&mut self, policy: SchedulingPolicy) {
+        self.policy = policy;
         self.remainder = 0;
     }
 
@@ -122,9 +134,12 @@ impl Scheduler {
                 };
                 data.fair.vruntime = self.min_vruntime.saturating_add(i128::from(debit));
             }
-            Placement::Wake => {
+            Placement::Wake if data.fair.policy == SchedulingPolicy::Normal => {
                 let floor = self.min_vruntime.saturating_sub(i128::from(LATENCY_NS / 2));
                 data.fair.vruntime = data.fair.vruntime.max(floor);
+            }
+            Placement::Wake => {
+                data.fair.vruntime = data.fair.vruntime.max(self.min_vruntime);
             }
             Placement::Requeue => {}
         }
