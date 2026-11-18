@@ -170,7 +170,7 @@ impl<'a> Block<'a> {
         domain.resume()?;
         block.state = DriverState::Running;
         block.transport.start()?;
-        block.probe_partitions(task)?;
+        block.probe_partitions(task, event)?;
         Ok(block)
     }
 
@@ -183,24 +183,23 @@ impl<'a> Block<'a> {
     }
 
     /// Reads the first sector once so sessions can expose MBR primary partitions.
-    fn probe_partitions(&mut self, task: &Handle<Task>) -> Result<(), Error> {
+    fn probe_partitions(
+        &mut self,
+        task: &Handle<Task>,
+        event: &Handle<Event>,
+    ) -> Result<(), Error> {
         let length = self.info.block_size as usize;
         let rights = Rights::READ_WRITE
             .union(Rights::DUPLICATE)
             .union(Rights::TRANSFER);
         let frames = task.allocate(1, rights)?;
-        if self
-            .read(0, 0, frames.try_clone(rights)?, 0, length)
-            .is_err()
-            || self.submit().is_err()
-        {
-            return Ok(());
-        }
-        let deadline = thread::now_ns()?.saturating_add(1_000_000_000);
+        self.read(0, 0, frames.try_clone(rights)?, 0, length)?;
+        self.submit()?;
+        let deadline = thread::now_ns()?
+            .checked_add(10_000_000_000)
+            .ok_or(Error::Unavailable)?;
         loop {
-            if self.poll().is_err() {
-                return Ok(());
-            }
+            self.poll()?;
             if let Ok(Some(completion)) = self.completion(0) {
                 if completion.status == Status::Success && completion.bytes >= 512 {
                     let mut sector = [0; 512];
@@ -223,12 +222,11 @@ impl<'a> Block<'a> {
                 let _ = self.acknowledge(0);
                 return Ok(());
             }
-            if thread::now_ns()? >= deadline {
-                let _ = self.cancel(0);
-                let _ = self.acknowledge(0);
-                return Ok(());
-            }
-            thread::sleep_until(thread::now_ns()?.saturating_add(100_000))?;
+            runtime::ipc::wait_many(
+                &[runtime::ipc::WaitItem::new(event, 1)],
+                runtime::ipc::WaitMode::Until(deadline),
+            )?;
+            self.acknowledge_interrupt()?;
         }
     }
 
