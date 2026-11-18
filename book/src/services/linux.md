@@ -331,7 +331,8 @@ exec and process exit release every attachment owned by the process.
 `IPC_STAT` writes the 112-byte Linux `shmid64_ds` layout, including the kernel `ipc64_perm` layout with a 16-bit sequence field.
 `IPC_SET` accepts a new mode and, for a privileged caller, new user and group owners.
 Owners and group members follow the segment mode; the root user bypasses the permission checks.
-Only the owner or root may change or remove a segment, and `IPC_SET` additionally requires write permission.
+The owner, creator, or root may change or remove a segment.
+Changing its ownership requires the corresponding credentials.
 
 `IPC_RMID` marks the segment deleted and removes its key immediately, so a new `shmget` with that key reports `ENOENT` unless it also passes `IPC_CREAT`, which creates a new segment.
 Attachments remain usable, and Linux permits another `shmat` while an attachment keeps the removed segment alive.

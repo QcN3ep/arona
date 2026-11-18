@@ -192,7 +192,6 @@ pub(super) const ENAMETOOLONG: Errno = Errno(36);
 pub(super) const ENOSYS: Errno = Errno(38);
 pub(super) const ENOTEMPTY: Errno = Errno(39);
 pub(super) const ELOOP: Errno = Errno(40);
-pub(super) const EIDRM: Errno = Errno(43);
 pub(crate) const EOVERFLOW: Errno = Errno(75);
 pub(super) const ENOTSOCK: Errno = Errno(88);
 pub(super) const EDESTADDRREQ: Errno = Errno(89);
