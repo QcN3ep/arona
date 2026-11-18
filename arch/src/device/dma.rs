@@ -2,7 +2,7 @@
 
 //! Trusted coherent DMA for the fixed QEMU platform.
 
-// TODO: Implement IOMMU isolation and determine the DMA address range from the actual RAM and device topology.
+// TODO: Implement IOMMU isolation.
 
 use kernel::{
     HardwareDeviceInfo, HardwareDeviceLocation,
@@ -49,13 +49,9 @@ impl Dma for QemuDma {
 
     fn bus_address(&self, device: &HardwareDeviceInfo, range: PhysRange) -> Option<u64> {
         self.address_bits(device)?;
-        let ram = if cfg!(target_arch = "riscv64") {
-            0x8000_0000..0x9000_0000
-        } else {
-            0..0x1000_0000
-        };
-        (range.start >= ram.start && range.start < range.end && range.end <= ram.end)
-            .then_some(range.start)
+        // The kernel pins owned RAM frames before requesting their bus addresses.
+        // QEMU VirtIO devices use the same physical addresses for DMA.
+        (range.start < range.end).then_some(range.start)
     }
 
     fn synchronize(&self) {

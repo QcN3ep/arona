@@ -279,6 +279,7 @@ impl Resources {
     }
 
     fn dma(&mut self, target: Target) {
+        self.arguments.extend(["-m".to_owned(), "1G".to_owned()]);
         for device in [
             "virtio-rng-pci,disable-legacy=on,addr=1",
             "pci-bridge,id=dma_bridge,chassis_nr=1,addr=2",
