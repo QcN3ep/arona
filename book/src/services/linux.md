@@ -433,7 +433,7 @@ Other resource kinds are recorded without enforcement.
 
 ## Scheduling, Affinity, and Memory Barriers
 
-A Linux thread's policy and nice value control its weight and wake-up behavior in the kernel's EEVDF scheduler.
+A Linux thread's policy and nice value control its weight and wake-up behavior in the kernel's CFS scheduler.
 `sched_setscheduler` accepts `SCHED_OTHER`, `SCHED_BATCH`, and `SCHED_IDLE`, and `sched_getscheduler` reports the stored policy.
 Real-time `SCHED_FIFO` and `SCHED_RR` requests return `EINVAL` because the kernel does not provide static real-time priority bands yet, and the reset-on-fork policy flag is not supported.
 The policy calls validate the target thread and the `struct sched_param` pointer; non-real-time policies require a zero `sched_priority`.
