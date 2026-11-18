@@ -131,7 +131,8 @@ impl FrameAllocation {
     }
 
     pub(super) fn detach(&mut self, frame: Frame) -> Self {
-        let head = manager().allocator().lock().detach(self.head, frame);
+        let (remaining, head) = manager().allocator().lock().detach(self.head, frame);
+        self.head = remaining;
         Self { head }
     }
 

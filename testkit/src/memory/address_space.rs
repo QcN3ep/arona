@@ -354,9 +354,30 @@ fn reservations() {
         assert!(space.query(range.start).unwrap().is_some());
         space.unreserve(range).unwrap();
     }
+    reservation_reuse(&space);
     drop((space, other));
     manager.reclaim_heap();
     assert_eq!(manager.stats(), initial);
+}
+
+fn reservation_reuse(space: &AddressSpace) {
+    let manager = memory::manager();
+    let first = range(ADDRESS, 1);
+    space.reserve_at(first).unwrap();
+    let occupied = manager.stats();
+    space.unreserve(first).unwrap();
+    let ranges =
+        core::array::from_fn::<_, 96, _>(|index| range(ADDRESS + index * 2 * PAGE_SIZE, 1));
+    for reserved in ranges {
+        space.reserve_at(reserved).unwrap();
+    }
+    for reserved in &ranges[..ranges.len() - 1] {
+        space.unreserve(*reserved).unwrap();
+    }
+    let last = *ranges.last().unwrap();
+    assert_eq!(space.query(last.start).unwrap().unwrap().range, last);
+    assert_eq!(manager.stats(), occupied);
+    space.unreserve(last).unwrap();
 }
 
 fn shared_kernel() {

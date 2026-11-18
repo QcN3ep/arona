@@ -565,7 +565,7 @@ impl MappingIndex {
         }
         write(page, &header);
         let backing = self.backing.as_ref().unwrap();
-        if header[0] == 0 && header[3] != backing.frames().next().unwrap().address() {
+        if header[0] == 0 && backing.info().frames > 1 {
             self.unlink(page);
             drop(
                 self.backing

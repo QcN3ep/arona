@@ -650,16 +650,20 @@ impl FrameAllocator {
         self.metadata.write(head, record);
     }
 
-    pub fn detach(&mut self, head: u64, frame: Frame) -> u64 {
+    pub fn detach(&mut self, head: u64, frame: Frame) -> (u64, u64) {
         let index = self
             .metadata
             .index(frame.address())
             .expect("unmanaged frame");
         let allocation = self.metadata.read(head);
         assert!(
-            head != index && !allocation.is_referenced(),
-            "cannot detach frame"
+            !allocation.is_referenced(),
+            "cannot detach a referenced frame"
         );
+        if head == index {
+            assert!(allocation.frames > 1, "cannot detach the only frame");
+            return (self.detach_head(head, allocation), head);
+        }
         let mut previous = head;
         let mut run = head;
         loop {
@@ -690,13 +694,34 @@ impl FrameAllocator {
                 detached.order = 0;
                 detached.previous = 1;
                 self.metadata.write(index, detached);
-                return index;
+                return (head, index);
             }
             if record.previous == 1 {
                 run = record.next;
             }
             previous = record.next;
         }
+    }
+
+    fn detach_head(&mut self, head: u64, mut allocation: FrameRecord) -> u64 {
+        let next = allocation.next;
+        let mut current = next;
+        while current != END {
+            let mut record = self.metadata.read(current);
+            record.allocation = next;
+            if current == next {
+                record.frames = allocation.frames - 1;
+                record.order = 0;
+            }
+            self.metadata.write(current, record);
+            current = record.next;
+        }
+        allocation.next = END;
+        allocation.previous = 1;
+        allocation.frames = 1;
+        allocation.order = 0;
+        self.metadata.write(head, allocation);
+        next
     }
 
     fn range_frames(range: PhysRange) -> Result<impl Iterator<Item = u64>, MemoryError> {
