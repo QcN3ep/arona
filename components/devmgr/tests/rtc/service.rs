@@ -88,7 +88,7 @@ pub fn exercise(configuration: rtc::Configuration, id: u32, grant: Handle<Device
 fn malformed_request(control: &Handle<runtime::Channel>, id: u32) {
     let rights = Rights::READ_WRITE | Rights::WAIT | Rights::TRANSFER;
     let (client, server) = process::task().channel(rights, rights).unwrap();
-    let mut message = Message::new(1, &[id.into()]).unwrap();
+    let mut message = Message::new(1, &[id.into(), 0]).unwrap();
     message
         .push(Transfer {
             handle: server.into(),

@@ -513,7 +513,7 @@ fn open_session(client: &Task, control: abi::Handle, id: u32) -> (u64, abi::Hand
         client,
         control,
         1,
-        &[u64::from(id)],
+        &[u64::from(id), 0],
         &[TransferRequest {
             handle: server,
             rights,
