@@ -45,7 +45,19 @@ pub fn run(devices: &Handle<DeviceSet>, id: u32, group: u32, configuration: Conf
     drop(session);
     session = reconnect(&control, id);
     assert_eq!(session.info().unwrap(), info);
-    session.read(1, 0, &output, 0, 512).unwrap();
+    // Closing a concurrent session cancels its requests asynchronously. The new
+    // session can open before those requests return their shared queue slots.
+    let until = deadline().unwrap();
+    loop {
+        match session.read(1, 0, &output, 0, 512) {
+            Ok(()) => break,
+            Err(Error::Busy) => {
+                assert!(thread::now_ns().unwrap() < until);
+                thread::yield_now().unwrap();
+            }
+            Err(error) => panic!("block read after reconnect failed: {error:?}"),
+        }
+    }
     assert_eq!(
         session.acknowledge(1, deadline()).unwrap(),
         super::success(512)
