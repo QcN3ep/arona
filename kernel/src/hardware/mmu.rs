@@ -88,7 +88,8 @@ pub struct PageTableLayout {
     pub window: TableWindow,
 }
 
-/// Page table levels start at 0 for the leaf level; physical read and write offsets are in units of u64.
+/// Page table levels start at 0 for the leaf level.
+/// `read_frame` and `write_frame` use offsets in `u64` words.
 ///
 /// # Safety
 ///
