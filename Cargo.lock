@@ -10,11 +10,11 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "arona-abi"
-version = "0.2.0"
+version = "1.0.0"
 
 [[package]]
 name = "arona-arch"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "arona-kernel",
  "arona-testkit",
@@ -26,14 +26,14 @@ dependencies = [
 
 [[package]]
 name = "arona-devmgr"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "arona-runtime",
 ]
 
 [[package]]
 name = "arona-fs"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "arona-devmgr",
  "arona-runtime",
@@ -41,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "arona-init"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "arona-devmgr",
  "arona-fs",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "arona-kernel"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "allocator-api2",
  "arona-abi",
@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "arona-linux"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "arona-devmgr",
  "arona-fs",
@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "arona-logger"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "arona-abi",
  "arona-devmgr",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "arona-lwip"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "arona-devmgr",
  "arona-runtime",
@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "arona-net"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "arona-devmgr",
  "arona-fs",
@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "arona-runtime"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "arona-abi",
  "arrayvec",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "arona-testkit"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "arona-abi",
  "arona-kernel",
@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "arona-testkit-macros"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "quote",
  "syn 2.0.119",
@@ -449,7 +449,7 @@ checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "1.0.0"
 dependencies = [
  "rustc-demangle",
  "serde_json",
