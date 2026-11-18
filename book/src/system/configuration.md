@@ -40,7 +40,8 @@ Each entry in `env` is encoded as `KEY=VALUE` and passed to the execution servic
 
 A program can mount and unmount in-memory volumes only when `mount = true` is set for it and it still has root credentials; without the grant both calls report `EPERM`.
 The grant is inherited by forks and retained across exec.
-File-service administration keeps its own limits: the target must resolve through an existing mount, and all tmpfs volumes, including the startup mount, share a 256 MiB budget.
+File-service administration requires the target to resolve through an existing mount.
+All in-memory volumes, including startup mounts, share a 256 MiB capacity budget.
 
 The configuration parser rejects unknown fields, duplicate or empty application names, non-absolute program paths, and NUL bytes in arguments and environment variables.
 Environment variable names are non-empty strings that do not contain `=`.

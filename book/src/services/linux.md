@@ -321,10 +321,11 @@ Anonymous shared mappings retain a shared backing relationship between the relev
 Mounted regular files support shared mappings through pages held by the file service.
 Ordinary reads and writes use the same pages, and `msync` writes them back to the backing filesystem.
 A mapping keeps its open file identity after closing the descriptor or unlinking the name.
-Truncation revokes access beyond the new end in every guest address space before resuming the caller.
+Truncation revokes access beyond the new end of shared and huge file mappings in every guest address space before resuming the caller.
 Access to that range raises `SIGBUS`, and growing the file makes it accessible again with fresh contents.
 Read-only shared mappings cannot gain write permission through `mprotect`.
 Private mappings copy file contents, while shared mappings retain the same backing across fork.
+Ordinary private file mappings do not yet follow later truncation.
 The boot archive supports private mappings.
 
 Huge mappings use `MAP_HUGETLB`, optionally with `MAP_HUGE_2MB`, or a file under `/dev/hugepages`.
@@ -422,7 +423,7 @@ Other resource kinds are recorded without enforcement.
 
 ## Scheduling, Affinity, and Memory Barriers
 
-A Linux thread carries its scheduling policy and nice value in the compatibility layer, while the kernel ready queue applies the nice value as the priority.
+A Linux thread's policy and nice value control its weight and wake-up behavior in the kernel's EEVDF scheduler.
 `sched_setscheduler` accepts `SCHED_OTHER`, `SCHED_BATCH`, and `SCHED_IDLE`, and `sched_getscheduler` reports the stored policy.
 Real-time `SCHED_FIFO` and `SCHED_RR` requests return `EINVAL` because the kernel does not provide static real-time priority bands yet, and the reset-on-fork policy flag is not supported.
 The policy calls validate the target thread and the `struct sched_param` pointer; non-real-time policies require a zero `sched_priority`.
@@ -435,7 +436,8 @@ Values below -20 or above 19 are clamped rather than rejected. Only `PRIO_PROCES
 The nice value belongs to one thread. A process clone and a thread clone inherit the calling thread's policy and nice value, and `execve` preserves both for the replaced thread.
 
 Arona runs on one processor, so CPU affinity requests must include CPU 0.
-`sched_setaffinity` requires a mask of at least eight bytes and inspects only the first eight; a mask excluding CPU 0 returns `EINVAL`, while bits for CPUs 64 and above in a longer mask are ignored.
+`sched_setaffinity` accepts a nonempty mask and inspects up to its first eight bytes.
+A mask excluding CPU 0 returns `EINVAL`, while additional CPU bits are ignored.
 `sched_getaffinity` requires at least eight bytes, writes only those eight bytes, returns that byte count, and reports CPU 0.
 The kernel itself keeps no per-thread CPU mask, so these calls report the real single-processor topology instead of pretending to support more CPUs.
 
@@ -446,7 +448,6 @@ Using `PRIVATE_EXPEDITED` without the private registration returns `EPERM`.
 Registration state belongs to the process, is inherited across fork, and is cleared by exec.
 A nonzero flags argument returns `EINVAL`; the core-serializing and rseq commands are outside the current scope and return `EOPNOTSUPP`, while unknown commands return `EINVAL`.
 The call never reports success without an ordering operation or a valid registration requirement.
-
 
 ## Terminals and Shell
 

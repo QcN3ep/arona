@@ -96,7 +96,8 @@ LoongArch64 keeps the entry present and the huge bit set, but requests both no-r
 Unmapping a no-access leaf releases its frame reference through the same path as an accessible mapping.
 
 A large mapping is represented as one mapping record per 2 MiB chunk instead of one record per base page.
-Mapping and unmapping account for every backing page frame, but `unmap` accepts a large mapping only as complete chunks; a partial unmap returns `InUse`, and `protect` on a large mapping returns `Unsupported`.
+Mapping and unmapping account for every backing page frame.
+`unmap` and `protect` require complete large leaves and validate the range before changing it.
 `query`, `translate`, and pinned user memory account for the offset inside a large leaf.
 Large leaves may be executable when the mapping options allow execute access and the architecture encoder supports it at that level.
 Large leaves are not created for kernel device or direct-map ranges.
