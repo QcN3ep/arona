@@ -237,6 +237,8 @@ static void hugepages(void) {
     CHECK(SC(222, 0, HUGE, 3, MAP_SHARED | (22 << 26), fd, 0) == -EINVAL);
     long rounded_anon = SC(222, 4096, HUGE + 4096, 3, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
     CHECK(rounded_anon > 0 && rounded_anon % HUGE == 0);
+    CHECK(SC(226, rounded_anon, 4096, 1) == -EINVAL);
+    *(volatile unsigned char *)rounded_anon = 'P';
     CHECK(SC(226, rounded_anon, 2 * HUGE, 1) == 0);
     CHECK(SC(226, rounded_anon, 2 * HUGE, 3) == 0);
     CHECK(SC(215, rounded_anon, 2 * HUGE) == 0);

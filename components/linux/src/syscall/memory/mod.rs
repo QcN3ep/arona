@@ -422,7 +422,12 @@ pub(super) fn mprotect(
     let permissions = permissions(protection)?;
     let range = range(address, length)?;
     if !range.is_empty() {
-        space.protect(range, permissions).map_err(mapping_error)?;
+        space
+            .protect(range, permissions)
+            .map_err(|error| match error {
+                runtime::Error::Kernel(runtime::KernelError::InvalidArgument) => EINVAL,
+                error => mapping_error(error),
+            })?;
     }
     Ok(0)
 }
