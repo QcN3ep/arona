@@ -53,7 +53,7 @@ impl From<ThreadError> for Error {
         match error {
             ThreadError::Memory(error) => error.into(),
             ThreadError::Capacity | ThreadError::GenerationExhausted => Self::NoMemory,
-            ThreadError::InvalidPriority => Self::InvalidArgument,
+            ThreadError::InvalidPriority | ThreadError::Execution(_) => Self::InvalidArgument,
             _ => Self::InvalidState,
         }
     }
