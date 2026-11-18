@@ -298,6 +298,9 @@ impl Volume {
         if self.disk.read_only() {
             return Ok(());
         }
+        if !self.disk.supports_flush() {
+            return Err(Error::Unsupported);
+        }
         if let Err(error) = self.disk.flush() {
             self.failed = true;
             return Err(error);
