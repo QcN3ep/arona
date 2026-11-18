@@ -143,7 +143,10 @@ impl Table {
         let start = self.next;
         loop {
             let id = self.next;
-            self.next = self.next.checked_add(1).unwrap_or(1);
+            self.next = self
+                .next
+                .checked_add(1)
+                .filter(|id| *id <= i32::MAX as usize)?;
             if !self.segments.contains_key(&id) {
                 return Some(id);
             }

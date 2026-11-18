@@ -293,6 +293,34 @@ static void read_only(void) {
     shm_fail(__LINE__);
 }
 
+static void attachment_boundaries(void) {
+    long id = SC(194, 0, 8192, 0600);
+    CHECK(id >= 0);
+    char *first = (char *)SC(196, id, 0, 0);
+    char *second = (char *)SC(196, id, 0, 0);
+    CHECK(first > 0 && second > 0);
+    long child = SC(220, 17, 0, 0, 0, 0);
+    CHECK(child >= 0);
+    if (!child) {
+        long delay[2] = {0, 1000000};
+        for (int attempt = 0; attempt < 1000; ++attempt) {
+            if (SC(98, P(second), 1, 1) == 1) SC(94, 42);
+            SC(101, P(delay), 0);
+        }
+        shm_fail(__LINE__);
+    }
+    long timeout[2] = {2, 0};
+    CHECK(SC(98, P(first), 0, 0, P(timeout)) == 0);
+    CHECK(wait_child(child) == (42 << 8));
+    CHECK(SC(215, P(first), PAGE) == 0);
+    CHECK(SC(197, P(first)) == 0);
+    CHECK(SC(215, P(second), 8191) == 0);
+    struct shmid_ds stat = {0};
+    CHECK(SC(195, id, IPC_STAT, P(&stat)) == 0);
+    CHECK(stat.nattch == 0);
+    CHECK(SC(195, id, IPC_RMID, 0) == 0);
+}
+
 static void mapping_changes(void) {
     long id = SC(194, 0, 4096, 0600);
     CHECK(id >= 0);
@@ -330,6 +358,7 @@ void shm_main(const char *mode) {
         read_only();
     } else if (*mode == 'm') {
         mapping_changes();
+        attachment_boundaries();
     } else {
         shm_fail(__LINE__);
     }

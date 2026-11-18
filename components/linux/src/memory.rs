@@ -53,6 +53,7 @@ pub(super) struct Region {
 pub(super) enum PageBacking {
     Anonymous,
     Shared,
+    SystemV(usize),
     File,
     BeyondEof(Permissions),
 }
@@ -843,6 +844,13 @@ fn same_origin(left: Option<&Rc<Origin>>, right: Option<&Rc<Origin>>) -> bool {
 }
 
 impl AddressSpace {
+    pub fn has_system_v(&self, range: Range<usize>, id: usize) -> bool {
+        self.pages
+            .borrow()
+            .range(range)
+            .any(|(_, page)| matches!(page.backing, PageBacking::SystemV(segment) if segment == id))
+    }
+
     pub fn futex_key(
         &self,
         pid: usize,
@@ -858,7 +866,13 @@ impl AddressSpace {
         self.read(address, &mut value).map_err(|_| EFAULT)?;
         let pages = self.pages.borrow();
         let page = pages.get(&(address & !(PAGE_SIZE - 1))).ok_or(EFAULT)?;
-        let key = if private {
+        let key = if !private && let PageBacking::SystemV(id) = page.backing {
+            (
+                0,
+                id,
+                page.offset as usize * PAGE_SIZE + address % PAGE_SIZE,
+            )
+        } else if private {
             (pid, address, 0)
         } else {
             (
@@ -923,17 +937,18 @@ impl AddressSpace {
                 .query(address)?
                 .and_then(|info| info.permissions)
                 .ok_or(runtime::Error::Protocol)?;
-            let (frames, offset) = if share || matches!(page.backing, PageBacking::Shared) {
-                (Rc::clone(&page.frames), page.offset)
-            } else {
-                let mut bytes = [0; PAGE_SIZE];
-                page.frames
-                    .read(page.offset as usize * PAGE_SIZE, &mut bytes)?;
-                let mut frames =
-                    parent.allocate(1, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
-                frames.write(0, &bytes)?;
-                (Rc::new(frames), 0)
-            };
+            let (frames, offset) =
+                if share || matches!(page.backing, PageBacking::Shared | PageBacking::SystemV(_)) {
+                    (Rc::clone(&page.frames), page.offset)
+                } else {
+                    let mut bytes = [0; PAGE_SIZE];
+                    page.frames
+                        .read(page.offset as usize * PAGE_SIZE, &mut bytes)?;
+                    let mut frames =
+                        parent.allocate(1, Rights::READ_WRITE | Rights::MAP | Rights::EXECUTE)?;
+                    frames.write(0, &bytes)?;
+                    (Rc::new(frames), 0)
+                };
             child.map_frames(
                 frames,
                 offset,

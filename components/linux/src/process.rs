@@ -392,26 +392,21 @@ impl<'a> Process<'a> {
 
     /// Release attachments fully covered by an address range the process
     /// unmapped or moved without `shmdt`.
-    pub fn detach_shared_range(&mut self, start: usize, end: usize) {
+    pub fn detach_shared_range(&mut self, _start: usize, _end: usize) {
         let stale: Vec<usize> = self
             .attaches
             .iter()
-            .filter(|(address, attach)| {
-                **address >= start && address.saturating_add(attach.mapped_length) <= end
+            .filter_map(|(address, attach)| {
+                let end = address.saturating_add(attach.mapped_length);
+                (!self.address_space.has_system_v(*address..end, attach.id)).then_some(*address)
             })
-            .map(|(address, _)| *address)
             .collect();
-        if stale.is_empty() {
-            return;
-        }
-        let shm = Rc::clone(&self.shm);
-        let mut table = shm.borrow_mut();
         let now = runtime::thread::now_ns().unwrap_or(0);
         for address in stale {
             if let Some(attach) = self.attaches.remove(&address)
                 && attach.counted
             {
-                table.detach(attach.id, self.pid, now);
+                self.shm.borrow_mut().detach(attach.id, self.pid, now);
             }
         }
     }

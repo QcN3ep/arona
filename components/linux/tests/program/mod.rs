@@ -620,6 +620,7 @@ fn shared_memory(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Sessio
                     path: b"/bin/linux-shm",
                     arguments: &[b"/bin/linux-shm", mode],
                     environment: &[],
+                    mount: false,
                 },
                 output(),
             )

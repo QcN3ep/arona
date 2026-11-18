@@ -16,8 +16,8 @@ use core::cell::{Cell, RefCell};
 
 /// Total capacity of all tmpfs volumes mounted in the namespace.
 ///
-/// Each volume has its own 64 MiB limit; the global limit keeps a client from
-/// bypassing that boundary by mounting many small volumes.
+/// Client volumes use the 64 MiB default; administrative mounts choose a capacity.
+/// The namespace sums their configured limits to bound many small mounts.
 const MAX_MEMORY_MOUNT_BYTES: usize = 256 * 1024 * 1024;
 
 pub struct Namespace {

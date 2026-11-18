@@ -129,6 +129,13 @@ pub(super) fn shmat(process: &mut Process<'_>, arguments: [usize; 6]) -> Syscall
         return Err(EACCES);
     }
     let length = segment.mapped_length;
+    if process
+        .limits
+        .address_space()
+        .is_some_and(|limit| process.address_space.mapped().saturating_add(length) > limit)
+    {
+        return Err(ENOMEM);
+    }
     let count = (length / PAGE_SIZE) as u64;
     let frames = attach_frames(process, segment)?;
     let permissions = if readonly {
@@ -153,7 +160,7 @@ pub(super) fn shmat(process: &mut Process<'_>, arguments: [usize; 6]) -> Syscall
             count,
             address,
             permissions,
-            PageBacking::Shared,
+            PageBacking::SystemV(id),
             None,
             0,
         )
@@ -240,11 +247,6 @@ pub(super) fn shmdt(process: &mut Process<'_>, address: usize) -> SyscallResult 
         return Err(EINVAL);
     };
     let end = address.saturating_add(attach.mapped_length);
-    // munmap or mremap may have moved the mapping; the recorded attachment then
-    // no longer describes the address the guest asked to detach.
-    if process.address_space.snapshot(&(address..end)).is_err() {
-        return Err(EINVAL);
-    }
     let attach = process.attaches.remove(&address).unwrap();
     if process.address_space.unmap(address..end).is_err() {
         process.attaches.insert(address, attach);
