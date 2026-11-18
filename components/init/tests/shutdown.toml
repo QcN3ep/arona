@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
+
+[power]
+action = "shutdown"
+when = "programs-finished"
+
+[[program]]
+name = "missing"
+executor = "linux"
+path = "/bin/not-installed"
+
+[[program]]
+name = "once"
+executor = "linux"
+path = "/bin/entry"
+args = ["Once"]
+env = { ARONA_TEST = "yes" }
+restart = "on-failure"

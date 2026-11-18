@@ -58,6 +58,9 @@ action = "shutdown"
 
 The action runs after init reports `System services ready` and before application supervision starts.
 `shutdown` and `reboot` are the accepted values.
+To wait until every configured application finishes, add `when = "programs-finished"` to `[power]`.
+Applications waiting to restart remain unfinished, so `restart = "always"` prevents this action.
+An empty application list triggers the action immediately.
 init queries the device management service for a platform power controller and reports an error when the platform does not provide the requested action.
 Before the action, init stops the Linux compatibility service, then flushes and stops the log service.
 It then flushes and unmounts the mounted filesystems before stopping the file service.

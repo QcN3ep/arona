@@ -42,6 +42,12 @@ pub fn run_init(image: &'static [u8], archive: &'static [u8], devices: DeviceSet
     run_cases(image, &[9, 10, 11, 12, 13], true, true);
 }
 
+pub fn run_init_shutdown(image: &'static [u8], archive: &'static [u8], devices: DeviceSet) {
+    DEVICES.call_once(|| devices);
+    ARCHIVE.call_once(|| archive);
+    run_cases(image, &[15], true, false);
+}
+
 pub fn run_service(image: &'static [u8], archive: &'static [u8], devices: DeviceSet) {
     DEVICES.call_once(|| devices);
     ARCHIVE.call_once(|| archive);
@@ -312,6 +318,10 @@ fn scenario(_: usize) -> usize {
         drop(held);
         drop(DEVICES.get().unwrap().claim_group(console_group()).unwrap());
         return 0;
+    }
+    if mode == 15 {
+        let status = user.wait().unwrap();
+        panic!("init exited without powering off: {status}");
     }
     let status = usize::from(matches!(mode, 1..=3));
     assert_eq!(user.wait().unwrap(), status, "runtime test scenario {mode}");
@@ -702,7 +712,7 @@ fn word(bytes: &[u8], offset: usize) -> u64 {
 }
 
 fn bootstrap(receiver: &Channel, mode: u64) {
-    if let Some(devices) = DEVICES.get().filter(|_| matches!(mode, 5 | 6 | 9..=14)) {
+    if let Some(devices) = DEVICES.get().filter(|_| matches!(mode, 5 | 6 | 9..=15)) {
         let source = Task::new().unwrap();
         let channel = source
             .insert(Object::Channel(receiver.clone()), Rights::WRITE)

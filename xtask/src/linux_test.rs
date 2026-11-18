@@ -167,7 +167,7 @@ pub(super) fn build_runner(mut command: Command, name: &str) -> Result<PathBuf, 
     executable.ok_or_else(|| format!("missing {name} test executable"))
 }
 
-fn build_guest(
+pub(super) fn build_guest(
     options: &BuildOptions,
     root: &Path,
     target: &Path,

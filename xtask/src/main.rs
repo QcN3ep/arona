@@ -169,7 +169,7 @@ fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, S
         ));
     let mut bytes = Vec::new();
     for component in ["init", "devmgr", "logger", "fs", "linux", "net"] {
-        if test.is_some() && component == "init" {
+        if matches!(test, Some("linux" | "net")) && component == "init" {
             continue;
         }
         build_component(options.target, options.release, component)?;
@@ -180,6 +180,17 @@ fn package_init(options: &BuildOptions, test: Option<&str>) -> Result<PathBuf, S
         let image = fs::read(&executable)
             .map_err(|error| format!("failed to read {}: {error}", executable.display()))?;
         append_entry(&mut bytes, &format!("bin/{component}"), 0o100755, &image)?;
+    }
+    if test == Some("shutdown") {
+        let (guest, _) = linux_test::build_guest(options, &root, &target_directory)?;
+        let image = fs::read(guest).map_err(|error| error.to_string())?;
+        append_entry(&mut bytes, "bin/entry", 0o100755, &image)?;
+        append_entry(
+            &mut bytes,
+            "etc/init.toml",
+            0o100644,
+            include_bytes!("../../components/init/tests/shutdown.toml"),
+        )?;
     }
     // The huge page volume is mounted at /dev/hugepages, so path lookup requires the directory.
     append_entry(&mut bytes, "dev", 0o040755, &[])?;

@@ -165,10 +165,15 @@ fn observe(
                 if resources.shutdown
                     && selected
                     && status.success()
-                    && contains(
-                        &output,
-                        format!("KTEST RUN {}\n", case.unwrap().name).as_bytes(),
-                    )
+                    && case.is_some_and(|case| {
+                        find(&output, format!("KTEST RUN {}\n", case.name).as_bytes()).is_some_and(
+                            |start| {
+                                case.expected
+                                    .iter()
+                                    .all(|marker| contains(&output[start..], marker.as_bytes()))
+                            },
+                        )
+                    })
                 {
                     return Ok(cases);
                 }
@@ -212,7 +217,8 @@ fn observe(
                     }
                     return Ok(cases);
                 }
-                if !case.expected.is_empty()
+                if !resources.shutdown
+                    && !case.expected.is_empty()
                     && case
                         .expected
                         .iter()

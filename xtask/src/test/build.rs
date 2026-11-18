@@ -121,6 +121,7 @@ impl Build {
             },
             match suite {
                 "linux" => Some("linux"),
+                "init_shutdown" => Some("shutdown"),
                 "net_service" => Some("net"),
                 _ => None,
             },

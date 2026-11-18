@@ -187,6 +187,12 @@ fn init() {
 }
 
 #[cfg(feature = "runtime-tests")]
+#[testkit::ktest("Program once exited: 0 signal 0", "Shutting down")]
+fn init_shutdown() {
+    run_environment("init-shutdown");
+}
+
+#[cfg(feature = "runtime-tests")]
 #[testkit::ktest]
 fn linux() {
     run_environment("linux");
@@ -335,17 +341,17 @@ fn run_program(
         data.read(0, &mut bytes).unwrap();
         bytes
     });
-    if matches!(suite, "init" | "linux" | "net-service") {
+    if matches!(suite, "init" | "init-shutdown" | "linux" | "net-service") {
         let init = arch::boot::initramfs::find_init(
             arch::boot::initramfs::Image::from_bytes(bytes, 0).unwrap(),
         )
         .unwrap()
         .data()
         .physical;
-        let run = if suite == "init" {
-            testkit::run_init_program
-        } else {
-            testkit::run_service_program
+        let run = match suite {
+            "init" => testkit::run_init_program,
+            "init-shutdown" => testkit::run_init_shutdown_program,
+            _ => testkit::run_service_program,
         };
         run(
             &bytes[init.start as usize..init.end as usize],

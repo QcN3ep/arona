@@ -39,7 +39,10 @@ pub use ipc::run as run_ipc;
 pub use memory::concurrent as run_concurrent_memory;
 pub use memory::{run as run_memory, validate_regions as validate_memory_regions};
 pub use syscall::run as run_syscalls;
-pub use syscall::{handle_program, run_device_program, run_init_program, run_service_program};
+pub use syscall::{
+    handle_program, run_device_program, run_init_program, run_init_shutdown_program,
+    run_service_program,
+};
 pub use task::run as run_tasks;
 pub use thread::{run as run_threads, run_user as run_user_threads};
 pub use trap::run as run_traps;

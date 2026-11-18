@@ -144,7 +144,9 @@ fn main() -> Result<usize, InitError> {
         console,
         mounted,
     };
-    if let Some(action) = config.power.action {
+    if let Some(action) = config.power.action
+        && matches!(config.power.when, config::PowerWhen::Ready)
+    {
         return supervisor::shutdown(system, action);
     }
     supervisor::run(system, config)

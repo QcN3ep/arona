@@ -25,6 +25,16 @@ pub struct Config {
 pub struct Power {
     #[serde(default)]
     pub action: Option<PowerAction>,
+    #[serde(default)]
+    pub when: PowerWhen,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PowerWhen {
+    #[default]
+    Ready,
+    ProgramsFinished,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]

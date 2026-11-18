@@ -44,7 +44,7 @@ impl Resources {
         };
         resources.initrd = match suite {
             "controller" => None,
-            "init" | "linux" | "net_service" => Some(build.archive(suite)?),
+            "init" | "init_shutdown" | "linux" | "net_service" => Some(build.archive(suite)?),
             "service" => Some(build.binary("devmgr")?),
             "dma" | "dma_drop" | "dma_revoke" => Some(build.program("runtime", "dma")?),
             "uart_driver" => Some(build.program("devmgr", "uart")?),
@@ -119,7 +119,7 @@ impl Resources {
                 }
             }
             "service" | "lwip" => resources.device("virtio-rng-pci,disable-legacy=on"),
-            "power" => resources.shutdown = true,
+            "power" | "init_shutdown" => resources.shutdown = true,
             _ => (),
         }
         Ok(resources)

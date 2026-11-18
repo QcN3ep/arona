@@ -76,6 +76,13 @@ pub fn run(system: System<'_>, config: Config) -> Result<usize, InitError> {
         for state in &mut programs {
             state.poll(&system.linux_control, &system.devices, system.console, now)?;
         }
+        if let Some(action) = config.power.action
+            && programs
+                .iter()
+                .all(|state| matches!(state.phase, Phase::Finished))
+        {
+            return shutdown(system, action);
+        }
         let mut items: Vec<_> = services.iter().map(|service| service.wait_item()).collect();
         for state in &programs {
             if let Some(call) = state.phase.call() {
