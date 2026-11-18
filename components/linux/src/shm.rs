@@ -43,7 +43,7 @@ pub(crate) struct Segment {
 pub(crate) struct Attach {
     pub(crate) id: usize,
     pub(crate) mapped_length: usize,
-    /// Inherited fork mappings share the page frames but are not counted separately.
+    /// Whether this address space owns a separate attachment count.
     pub(crate) counted: bool,
 }
 
@@ -53,12 +53,13 @@ impl Segment {
         if uid == 0 {
             return true;
         }
-        let (granted, requested) = if uid == self.uid {
-            ((self.mode >> 6) & 7, (requested >> 6) & 7)
+        let requested = (requested | requested >> 3 | requested >> 6) & 7;
+        let granted = if uid == self.uid {
+            self.mode >> 6 & 7
         } else if gid == self.gid {
-            ((self.mode >> 3) & 7, (requested >> 3) & 7)
+            self.mode >> 3 & 7
         } else {
-            (self.mode & 7, requested & 7)
+            self.mode & 7
         };
         requested & !granted == 0
     }
@@ -126,6 +127,14 @@ impl Table {
         self.segments
             .values()
             .map(|segment| segment.mapped_length)
+            .sum()
+    }
+
+    pub(crate) fn resident_pages(&self) -> usize {
+        self.segments
+            .values()
+            .filter(|s| s.frames.is_some())
+            .map(|s| s.mapped_length / crate::elf::PAGE_SIZE)
             .sum()
     }
 

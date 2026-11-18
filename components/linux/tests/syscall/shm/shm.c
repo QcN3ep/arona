@@ -60,7 +60,7 @@ struct shmid_ds {
 };
 
 struct shminfo {
-    int max, min, mni, seg, all;
+    unsigned long max, min, mni, seg, all, unused[4];
 };
 
 struct shm_info {
@@ -178,7 +178,8 @@ static void basic(void) {
     struct shm_info summary = {0};
     CHECK(SC(195, 0, SHM_INFO, P(&summary)) >= 0);
     CHECK(summary.used_ids >= 1);
-    CHECK(summary.total >= 8192);
+    CHECK(summary.total >= 2);
+    CHECK(summary.resident <= summary.total);
 
     CHECK(SC(195, id, IPC_RMID, 0) == 0);
     CHECK(SC(194, KEY1, 4096, 0600) == -2);
@@ -192,7 +193,9 @@ static void lifecycle(void) {
     CHECK(mapping > 0);
     mapping[0] = 0x4c;
     CHECK(SC(195, id, IPC_RMID, 0) == 0);
-    CHECK(SC(196, id, 0, 0) == -43);
+    char *removed = (char *)SC(196, id, 0, 0);
+    CHECK(removed > 0);
+    CHECK(SC(197, P(removed)) == 0);
     CHECK(SC(194, KEY2, 4096, 0600) == -2);
     CHECK(mapping[0] == 0x4c);
     mapping[0] = 0x4d;
@@ -265,10 +268,11 @@ static void permissions(void) {
         CHECK(mapping > 0);
         CHECK(SC(197, P(mapping)) == 0);
         struct shmid_ds set = {0};
+        set.perm.uid = 1000;
         set.perm.mode = 0600;
-        CHECK(SC(195, own, IPC_SET, P(&set)) == -13);
+        CHECK(SC(195, own, IPC_SET, P(&set)) == 0);
         CHECK(SC(195, own, IPC_STAT, P(&stat)) == 0);
-        CHECK(stat.perm.mode == 0400);
+        CHECK(stat.perm.mode == 0600);
         CHECK(SC(195, own, IPC_RMID, 0) == 0);
         SC(94, 42);
     }

@@ -334,8 +334,10 @@ Owners and group members follow the segment mode; the root user bypasses the per
 Only the owner or root may change or remove a segment, and `IPC_SET` additionally requires write permission.
 
 `IPC_RMID` marks the segment deleted and removes its key immediately, so a new `shmget` with that key reports `ENOENT` unless it also passes `IPC_CREAT`, which creates a new segment.
-Existing attachments remain usable, while a new `shmat` reports `EIDRM` until the last attachment detaches; later control operations on the identifier report `EINVAL` once the segment is released.
-`IPC_INFO` reports the size and count limits in a 20-byte `shminfo`, and `SHM_INFO` reports the used identifier count and allocated bytes in a 48-byte `shm_info`.
+Attachments remain usable, and Linux permits another `shmat` while an attachment keeps the removed segment alive.
+The identifier becomes invalid when the last attachment detaches.
+`IPC_INFO` reports size and count limits in the 64-bit `shminfo` layout.
+`SHM_INFO` reports total and resident page counts.
 Invalid control commands return `EINVAL`.
 `SHM_LOCK`, `SHM_UNLOCK`, `SHM_STAT`, and `SHM_STAT_ANY` remain future work.
 

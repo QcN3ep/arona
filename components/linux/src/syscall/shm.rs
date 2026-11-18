@@ -3,7 +3,7 @@
 //! System V shared memory: `shmget`, `shmat`, `shmdt`, and `shmctl`.
 
 use super::abi::{
-    EACCES, EEXIST, EFAULT, EIDRM, EINVAL, EIO, ENOENT, ENOMEM, EPERM, Errno, SyscallResult,
+    EACCES, EEXIST, EFAULT, EINVAL, EIO, ENOENT, ENOMEM, EPERM, Errno, SyscallResult,
 };
 use crate::{
     elf::PAGE_SIZE,
@@ -26,7 +26,6 @@ const SHM_INFO: i32 = 14;
 // REFERENCE: https://man7.org/linux/man-pages/man2/shmat.2.html
 const SHM_RDONLY: u32 = 0x1000;
 const SHM_RND: u32 = 0x2000;
-const SHM_REMAP: u32 = 0x4000;
 
 // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/uapi/linux/shm.h
 // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/include/uapi/linux/ipc.h
@@ -35,8 +34,8 @@ const STAT_SIZE: usize = 112;
 /// `struct ipc64_perm` prefix accepted by `IPC_SET`.
 const SET_SIZE: usize = 48;
 /// `struct shminfo`; `shmall` is expressed in pages.
-const INFO_SIZE: usize = 20;
-/// `struct shm_info`; the segment and resident sizes are bytes.
+const INFO_SIZE: usize = 72;
+/// `struct shm_info`; segment and resident sizes are measured in pages.
 const SHM_INFO_SIZE: usize = 48;
 
 pub(super) fn shmget(process: &Process<'_>, arguments: [usize; 6]) -> SyscallResult {
@@ -105,7 +104,7 @@ pub(super) fn shmat(process: &mut Process<'_>, arguments: [usize; 6]) -> Syscall
     let id = arguments[0] as u32 as usize;
     let address = arguments[1];
     let flags = arguments[2] as u32;
-    if flags & SHM_REMAP != 0 {
+    if flags & !(SHM_RDONLY | SHM_RND) != 0 {
         return Err(EINVAL);
     }
     let readonly = flags & SHM_RDONLY != 0;
@@ -125,9 +124,6 @@ pub(super) fn shmat(process: &mut Process<'_>, arguments: [usize; 6]) -> Syscall
     let Some(segment) = table.get_mut(id) else {
         return Err(EINVAL);
     };
-    if segment.removed {
-        return Err(EIDRM);
-    }
     let requested = if readonly { 0o444 } else { 0o666 };
     if !segment.permits(uid, gid, requested) {
         return Err(EACCES);
@@ -282,7 +278,10 @@ fn rmid(process: &Process<'_>, id: usize) -> SyscallResult {
     let Some(segment) = table.get(id) else {
         return Err(EINVAL);
     };
-    if process.credentials.euid != 0 && process.credentials.euid != segment.uid {
+    if process.credentials.euid != 0
+        && process.credentials.euid != segment.uid
+        && process.credentials.euid != segment.cuid
+    {
         return Err(EPERM);
     }
     let now = now().unwrap_or(0);
@@ -321,11 +320,11 @@ fn set(process: &Process<'_>, id: usize, address: usize) -> SyscallResult {
         let Some(segment) = table.get(id) else {
             return Err(EINVAL);
         };
-        if process.credentials.euid != 0 && process.credentials.euid != segment.uid {
+        if process.credentials.euid != 0
+            && process.credentials.euid != segment.uid
+            && process.credentials.euid != segment.cuid
+        {
             return Err(EPERM);
-        }
-        if !segment.permits(process.credentials.euid, process.credentials.egid, 0o222) {
-            return Err(EACCES);
         }
     }
     let mut bytes = [0; SET_SIZE];
@@ -340,11 +339,15 @@ fn set(process: &Process<'_>, id: usize, address: usize) -> SyscallResult {
     let Some(segment) = table.get_mut(id) else {
         return Err(EINVAL);
     };
-    segment.mode = mode;
-    if process.credentials.euid == 0 {
-        segment.uid = uid;
-        segment.gid = gid;
+    if process.credentials.euid != 0
+        && (uid != segment.uid && uid != process.credentials.euid
+            || gid != segment.gid && gid != process.credentials.egid)
+    {
+        return Err(EPERM);
     }
+    segment.mode = mode;
+    segment.uid = uid;
+    segment.gid = gid;
     segment.ctime = now().unwrap_or(0);
     Ok(0)
 }
@@ -358,11 +361,11 @@ fn info(process: &Process<'_>, address: usize) -> SyscallResult {
     let mut bytes = [0; INFO_SIZE];
     // `shminfo`: maximum segment and minimum size in bytes, segment limits,
     // then the system-wide limit in pages.
-    write_u32(&mut bytes, 0, MAX_SIZE as u32);
-    write_u32(&mut bytes, 4, 1);
-    write_u32(&mut bytes, 8, MAX_SEGMENTS as u32);
-    write_u32(&mut bytes, 12, MAX_SEGMENTS as u32);
-    write_u32(&mut bytes, 16, (MAX_SIZE / PAGE_SIZE) as u32);
+    write_u64(&mut bytes, 0, MAX_SIZE as u64);
+    write_u64(&mut bytes, 8, 1);
+    write_u64(&mut bytes, 16, MAX_SEGMENTS as u64);
+    write_u64(&mut bytes, 24, MAX_SEGMENTS as u64);
+    write_u64(&mut bytes, 32, (MAX_SIZE / PAGE_SIZE) as u64);
     let id = table.max_id();
     drop(table);
     process
@@ -379,10 +382,10 @@ fn shm_info(process: &Process<'_>, address: usize) -> SyscallResult {
     let shm = Rc::clone(&process.shm);
     let table = shm.borrow();
     let mut bytes = [0; SHM_INFO_SIZE];
-    // `shm_info`: used identifiers, then total and resident bytes.
+    // `shm_info`: used identifiers, then total and resident page counts.
     write_u32(&mut bytes, 0, table.len() as u32);
-    write_u64(&mut bytes, 8, table.total_size() as u64);
-    write_u64(&mut bytes, 16, table.total_size() as u64);
+    write_u64(&mut bytes, 8, (table.total_size() / PAGE_SIZE) as u64);
+    write_u64(&mut bytes, 16, table.resident_pages() as u64);
     let id = table.max_id();
     drop(table);
     process
@@ -401,7 +404,11 @@ fn encode(segment: &Segment) -> [u8; STAT_SIZE] {
     write_u32(&mut bytes, 8, segment.gid);
     write_u32(&mut bytes, 12, segment.cuid);
     write_u32(&mut bytes, 16, segment.cgid);
-    write_u32(&mut bytes, 20, u32::from(segment.mode));
+    write_u32(
+        &mut bytes,
+        20,
+        u32::from(segment.mode) | if segment.removed { 0o1000 } else { 0 },
+    );
     // `segsz` is the requested byte count; the timestamps are seconds.
     write_u64(&mut bytes, 48, segment.size as u64);
     write_u64(&mut bytes, 56, seconds(segment.atime));
