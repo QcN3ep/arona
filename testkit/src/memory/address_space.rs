@@ -669,7 +669,7 @@ fn huge_mappings() {
     space.unmap(mapped).unwrap();
     assert_eq!(allocation.info().mappings, 0);
     assert_eq!(space.translate(mapped.start).unwrap(), None);
-    drop((allocation, space));
+    drop((frames, allocation, space));
     manager.reclaim_heap();
     assert_eq!(manager.stats(), initial);
 }
