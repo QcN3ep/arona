@@ -90,8 +90,9 @@ impl Context {
 
     /// # Safety
     ///
-    /// The context must always be used on the same processor; its stack, entry, and user address space must stay alive until execution stops,
-    /// The user stack and privileged stack must be exclusive, and the stack and context storage must remain mapped in the page table used for switching.
+    /// The context must always be used on the same processor.
+    /// Its privileged stack, kernel entry, and user address space must stay alive until execution stops.
+    /// The privileged stack must be exclusive and remain mapped with the context storage in the page table used for switching.
     pub fn new(start: ContextStart) -> Result<Self, ExecutionError> {
         check_interrupts()?;
         let provider = execution();

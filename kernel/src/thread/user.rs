@@ -212,13 +212,12 @@ impl Thread {
         generation: u64,
         state: &UserState,
     ) -> Result<(), ForwardError> {
-        self.task()
-            .ok_or(ForwardError::InvalidState)?
-            .validate_user_state(state)?;
         let mut data = self.0.data.lock();
         if data.trapped != Some(generation) || data.state != ThreadState::Blocked {
             return Err(ForwardError::InvalidState);
         }
+        // A continuation can outlive its user stack or TLS mapping. The
+        // architecture validates the saved registers before restoring them.
         data.resources
             .as_ref()
             .ok_or(ForwardError::InvalidState)?

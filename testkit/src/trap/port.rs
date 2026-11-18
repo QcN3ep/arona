@@ -3,11 +3,14 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::{
     hardware::{
+        self,
         execution::UserEntry,
         mmu::{PAGE_SIZE, PagePermissions},
     },
     ipc::WaitItem,
-    memory::{self, FrameAccess, FrameOwner, FramePurpose, MappingOptions, ReferenceKind},
+    memory::{
+        self, FrameAccess, FrameOwner, FramePurpose, MappingOptions, ReferenceKind, VirtRange,
+    },
     task::{Handle, HandleError, Object, Rights, Task, TaskError, TaskState},
     thread::{self, ThreadState},
     trap::port::{ForwardError, TrapPort},
@@ -55,16 +58,23 @@ fn scenario(_: usize) -> usize {
     let continuation = interrupted.commit();
     let initial = continuation.reference().user_state().unwrap();
     assert_eq!(initial.pc, pc);
+    let stack = hardware::execution()
+        .user_entry(&initial)
+        .unwrap()
+        .stack_pointer;
     continuation.reference().resume(&initial).unwrap();
     drop(continuation);
-    forward_syscalls(&owner, &user, &port, handle);
+    forward_syscalls(&owner, &child, &user, &port, handle);
     owner
         .wait_many(&[WaitItem {
             handle,
             condition_mask: 1,
         }])
         .unwrap();
-    drop(port.try_receive().unwrap().commit());
+    let fault = port.try_receive().unwrap();
+    assert_eq!(fault.info().kind, abi::trap::TrapInfo::PAGE_FAULT);
+    assert_eq!(fault.info().address, (stack - 8) as u64);
+    drop(fault.commit());
     assert_eq!(user.wait().unwrap(), usize::MAX);
     assert_eq!(child.state(), TaskState::Dead(usize::MAX));
     owner.close(handle).unwrap();
@@ -120,7 +130,13 @@ fn create_user(child: &Task) -> (kernel::thread::Thread, usize) {
     (user, text.start)
 }
 
-fn forward_syscalls(owner: &Task, user: &kernel::thread::Thread, port: &TrapPort, handle: Handle) {
+fn forward_syscalls(
+    owner: &Task,
+    child: &Task,
+    user: &kernel::thread::Thread,
+    port: &TrapPort,
+    handle: Handle,
+) {
     for remaining in [2, 1] {
         let ready = owner
             .wait_many(&[WaitItem {
@@ -144,6 +160,15 @@ fn forward_syscalls(owner: &Task, user: &kernel::thread::Thread, port: &TrapPort
         assert_eq!(reference.user_state().unwrap(), state);
         state.pc = info.successor as usize;
         RETURN.get().unwrap()(&mut state, [0, 73, remaining]);
+        if remaining == 1 {
+            let entry = hardware::execution().user_entry(&state).unwrap();
+            child
+                .unmap(VirtRange {
+                    start: entry.thread_pointer,
+                    end: entry.stack_pointer,
+                })
+                .unwrap();
+        }
         reference.resume(&state).unwrap();
         assert_eq!(reference.resume(&state), Err(ForwardError::InvalidState));
         drop(continuation);
