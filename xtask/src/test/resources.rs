@@ -49,6 +49,7 @@ impl Resources {
             "uart_driver" => Some(build.program("devmgr", "uart")?),
             "block" | "rng" | "rtc" | "power" | "net" => Some(build.program("devmgr", suite)?),
             "fs" => Some(build.program("fs", "ext4")?),
+            "fat32" => Some(build.program("fs", "fat32")?),
             "logger" => Some(build.program("logger", "service")?),
             "lwip" => Some(build.program("lwip", "loopback")?),
             "device" | "pci_firmware" | "pci_exhausted" | "pci_rollback" => {
@@ -66,6 +67,16 @@ impl Resources {
                 build.fixture("prepare", directory)?;
                 resources.filesystem = true;
                 resources.ext4_drives(directory, false);
+            }
+            "fat32" => {
+                let mut command = Command::new("python3");
+                command
+                    .arg(build.root.join("components/fs/tests/fat32/fixture.py"))
+                    .arg("prepare")
+                    .arg(directory);
+                crate::execute(command)?;
+                resources.drive("fat32", &directory.join("fat32.raw"), "");
+                resources.drive("readonly", &directory.join("readonly.raw"), ",readonly=on");
             }
             "linux" | "logger" => {
                 build.fixture("volume", directory)?;

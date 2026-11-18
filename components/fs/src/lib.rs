@@ -7,13 +7,12 @@
 
 extern crate alloc;
 
-// TODO: Integrate a FAT32 filesystem.
-
 pub mod archive;
 pub mod block;
 pub mod client;
 mod control;
 pub mod ext4;
+pub mod fat32;
 mod metadata;
 pub mod namespace;
 mod open;

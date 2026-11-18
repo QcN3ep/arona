@@ -37,6 +37,12 @@ harness = false
 required-features = ["baremetal"]
 
 [[test]]
+name = "fat32"
+path = "tests/fat32/mod.rs"
+harness = false
+required-features = ["baremetal"]
+
+[[test]]
 name = "tmpfs"
 path = "tests/tmpfs/mod.rs"
 required-features = ["host-tests"]

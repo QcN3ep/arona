@@ -259,6 +259,12 @@ fn fs() {
 
 #[cfg(feature = "runtime-tests")]
 #[testkit::ktest]
+fn fat32() {
+    run_environment("fs");
+}
+
+#[cfg(feature = "runtime-tests")]
+#[testkit::ktest]
 fn pci_firmware() {
     run_environment("pci-firmware");
 }

@@ -26,7 +26,7 @@ LABEL org.opencontainers.image.source="https://github.com/QcN3ep/arona"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        build-essential ca-certificates clang curl e2fsprogs git ipxe-qemu lld llvm \
+        build-essential ca-certificates clang curl e2fsprogs git ipxe-qemu lld llvm mtools \
         opensbi python3 qemu-system-misc qemu-system-riscv \
     && rm -rf /var/lib/apt/lists/*
 
