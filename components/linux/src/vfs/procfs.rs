@@ -58,16 +58,15 @@ impl File {
             Self::ProcSelfSmaps => maps(process, true)?,
             Self::ProcMeminfo => meminfo(process)?,
             Self::ProcUptime => uptime()?,
-            Self::ProcVersion => alloc::format!(
-                "Linux version {} (arona) #1 SMP\n",
-                env!("CARGO_PKG_VERSION")
-            )
-            .into_bytes(),
+            Self::ProcVersion => {
+                alloc::format!("Linux version {} (arona) #1 SMP\n", crate::KERNEL_RELEASE)
+                    .into_bytes()
+            }
             Self::ProcMounts => unreachable!(),
             Self::ProcCmdline(pid) => cmdline(process, pid)?,
             Self::ProcStat(pid) => stat(process, pid)?,
             Self::CpuOnline => b"0\n".to_vec(),
-            Self::OsRelease => alloc::format!("{}\n", env!("CARGO_PKG_VERSION")).into_bytes(),
+            Self::OsRelease => alloc::format!("{}\n", crate::KERNEL_RELEASE).into_bytes(),
             Self::Net(file) => return net::content(file, services),
         })
     }

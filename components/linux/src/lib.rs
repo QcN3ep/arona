@@ -26,6 +26,8 @@ mod vfs;
 pub use client::{Control, Program, Services};
 pub use log::Log;
 
+pub(crate) const KERNEL_RELEASE: &str = "6.12.0";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     InvalidRequest,
