@@ -18,7 +18,7 @@ pub mod fat32;
 mod hugepages;
 mod memory;
 mod metadata;
-mod namespace;
+pub mod namespace;
 mod open;
 mod path;
 mod protocol;

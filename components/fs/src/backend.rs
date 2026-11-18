@@ -71,7 +71,7 @@ pub(crate) trait Backend {
     }
 }
 
-pub(crate) trait File: crate::ReadAt {
+pub trait File: crate::ReadAt {
     fn statistics(&self) -> Result<Statistics, Error>;
 
     fn path(&self) -> Result<Vec<u8>, Error>;

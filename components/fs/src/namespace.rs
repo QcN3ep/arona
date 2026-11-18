@@ -22,7 +22,7 @@ use runtime::Handle;
 /// Client mounts use a 64 MiB default. The total includes administrative capacities.
 const MAX_MEMORY_MOUNT_BYTES: usize = 256 * 1024 * 1024;
 
-pub(crate) struct Namespace {
+pub struct Namespace {
     archive: Archive,
     cache: crate::cache::Cache,
     next_directory: Cell<u64>,
@@ -49,12 +49,12 @@ type Mounted = Box<dyn backend::Backend>;
 
 type MountedFile = Box<dyn backend::File>;
 
-pub(crate) enum File {
+pub enum File {
     Archive(archive::File),
     Mounted(MountedFile),
 }
 
-pub(crate) struct Directory {
+pub struct Directory {
     pub(crate) id: u64,
     node: DirectoryNode,
     parent: crate::Metadata,
@@ -67,14 +67,14 @@ enum DirectoryNode {
 }
 
 impl Directory {
-    pub(crate) fn statistics(&self) -> Result<crate::Statistics, Error> {
+    pub fn statistics(&self) -> Result<crate::Statistics, Error> {
         match &self.node {
             DirectoryNode::Archive(directory) => directory.statistics(),
             DirectoryNode::Mounted(directory) => directory.statistics(),
         }
     }
 
-    pub(crate) fn path(&self) -> Result<Vec<u8>, Error> {
+    pub fn path(&self) -> Result<Vec<u8>, Error> {
         let mut path = self.path.clone();
         if let DirectoryNode::Mounted(directory) = &self.node {
             let relative = directory.path()?;
@@ -87,26 +87,26 @@ impl Directory {
         Ok(path)
     }
 
-    pub(crate) fn fsync(&self) -> Result<(), Error> {
+    pub fn fsync(&self) -> Result<(), Error> {
         match &self.node {
             DirectoryNode::Archive(_) => Ok(()),
             DirectoryNode::Mounted(directory) => directory.fsync(),
         }
     }
 
-    pub(crate) fn metadata(&self) -> Result<crate::Metadata, Error> {
+    pub fn metadata(&self) -> Result<crate::Metadata, Error> {
         match &self.node {
             DirectoryNode::Archive(directory) => Ok(directory.metadata()),
             DirectoryNode::Mounted(directory) => directory.metadata(),
         }
     }
-    pub(crate) fn read_dir(&self) -> Result<Vec<crate::DirEntry>, Error> {
+    pub fn read_dir(&self) -> Result<Vec<crate::DirEntry>, Error> {
         match &self.node {
             DirectoryNode::Archive(directory) => Ok(directory.read_dir()),
             DirectoryNode::Mounted(directory) => directory.read_dir(),
         }
     }
-    pub(crate) fn read_dir_all(&self) -> Result<Vec<crate::DirEntry>, Error> {
+    pub fn read_dir_all(&self) -> Result<Vec<crate::DirEntry>, Error> {
         let parent = match &self.node {
             DirectoryNode::Mounted(directory) => {
                 directory.parent_metadata()?.unwrap_or(self.parent)
@@ -128,7 +128,7 @@ impl Directory {
         entries.extend(self.read_dir()?);
         Ok(entries)
     }
-    pub(crate) fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
+    pub fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
         match &self.node {
             DirectoryNode::Archive(_) => Err(Error::ReadOnly),
             DirectoryNode::Mounted(directory) => directory.set_attributes(attributes),
@@ -137,7 +137,7 @@ impl Directory {
 }
 
 impl Namespace {
-    pub(crate) fn statistics(&self, path: &[u8]) -> Result<crate::Statistics, Error> {
+    pub fn statistics(&self, path: &[u8]) -> Result<crate::Statistics, Error> {
         self.cache.reclaim()?;
         let path = normalize(&self.resolve(b"/", path, true, false)?)?;
         let mounts = self.mounts.borrow();
@@ -147,23 +147,17 @@ impl Namespace {
         }
     }
 
-    pub(crate) fn new(archive: Archive) -> Result<Self, Error> {
-        Ok(Self {
+    pub fn new(archive: Archive) -> Self {
+        Self {
             archive,
             cache: crate::cache::Cache::default(),
             next_directory: Cell::new(1),
             mounts: RefCell::new(BTreeMap::new()),
             memory_mount_bytes: Cell::new(0),
-        })
+        }
     }
 
-    pub(crate) fn mount(
-        &self,
-        path: &[u8],
-        disk: Rc<Disk>,
-        start: u64,
-        length: u64,
-    ) -> Result<(), Error> {
+    pub fn mount(&self, path: &[u8], disk: Rc<Disk>, start: u64, length: u64) -> Result<(), Error> {
         let path = normalize(path)?;
         self.check_install(&path)?;
         if length < 4096
@@ -183,7 +177,7 @@ impl Namespace {
         self.install(&path, filesystem, MountOwner::Service)
     }
 
-    pub(crate) fn mount_tmpfs(&self, path: &[u8], capacity: usize) -> Result<(), Error> {
+    pub fn mount_tmpfs(&self, path: &[u8], capacity: usize) -> Result<(), Error> {
         let volume = if capacity == 0 {
             Tmpfs::new()?
         } else {
@@ -260,7 +254,7 @@ impl Namespace {
         Ok(())
     }
 
-    pub(crate) fn unmount(&self, path: &[u8]) -> Result<(), Error> {
+    pub fn unmount(&self, path: &[u8]) -> Result<(), Error> {
         self.remove_mount(path, None)
     }
 
@@ -329,11 +323,7 @@ impl Namespace {
         operation(filesystem, relative(&path, prefix))
     }
 
-    pub(crate) fn set_attributes(
-        &self,
-        path: &[u8],
-        attributes: crate::Attributes,
-    ) -> Result<(), Error> {
+    pub fn set_attributes(&self, path: &[u8], attributes: crate::Attributes) -> Result<(), Error> {
         self.open_path(path)?.set_attributes(attributes)
     }
 
@@ -341,7 +331,7 @@ impl Namespace {
         self.cache.reclaim()
     }
 
-    pub(crate) fn sync(&self) -> Result<(), Error> {
+    pub fn sync(&self) -> Result<(), Error> {
         self.cache.sync()?;
         for entry in self.mounts.borrow().values() {
             entry.filesystem.sync()?;
@@ -349,7 +339,7 @@ impl Namespace {
         Ok(())
     }
 
-    pub(crate) fn create(&self, path: &[u8]) -> Result<File, Error> {
+    pub fn create(&self, path: &[u8]) -> Result<File, Error> {
         self.mounted(path, |filesystem, path| {
             filesystem
                 .create(path)
@@ -357,11 +347,7 @@ impl Namespace {
         })
     }
 
-    pub(crate) fn open_with(
-        &self,
-        path: &[u8],
-        options: crate::OpenOptions,
-    ) -> Result<File, Error> {
+    pub fn open_with(&self, path: &[u8], options: crate::OpenOptions) -> Result<File, Error> {
         options.validate()?;
         let file = match if options.path_only {
             self.open_path(path)
@@ -388,26 +374,22 @@ impl Namespace {
         }
         Ok(file)
     }
-    pub(crate) fn mkdir(&self, path: &[u8]) -> Result<(), Error> {
+    pub fn mkdir(&self, path: &[u8]) -> Result<(), Error> {
         self.mkdir_with_permissions(path, 0o755)
     }
-    pub(crate) fn mkdir_with_permissions(
-        &self,
-        path: &[u8],
-        permissions: u16,
-    ) -> Result<(), Error> {
+    pub fn mkdir_with_permissions(&self, path: &[u8], permissions: u16) -> Result<(), Error> {
         self.mounted(path, |filesystem, path| {
             filesystem.mkdir_with_permissions(path, permissions)
         })
     }
-    pub(crate) fn unlink(&self, path: &[u8]) -> Result<(), Error> {
+    pub fn unlink(&self, path: &[u8]) -> Result<(), Error> {
         let normalized = normalize(path)?;
         if normalized.is_empty() || self.mounts.borrow().contains_key(&normalized) {
             return Err(Error::Busy);
         }
         self.mounted(path, |filesystem, path| filesystem.unlink(path))
     }
-    pub(crate) fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
+    pub fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
         let path = crate::path::normalize(path)?;
         let mounts = self.mounts.borrow();
         if let Some((prefix, filesystem)) = mounted_at(&mounts, &path) {
@@ -446,7 +428,7 @@ impl Namespace {
         entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         Ok(entries)
     }
-    pub(crate) fn rename(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
+    pub fn rename(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
         let source = crate::path::normalize(source)?;
         let target = crate::path::normalize(target)?;
         if source.is_empty()
@@ -472,7 +454,7 @@ impl Namespace {
         filesystem.rename(relative(&source, prefix), relative(&target, prefix))
     }
 
-    pub(crate) fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
+    pub fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
         let path = normalize(path)?;
         let mounts = self.mounts.borrow();
         if let Some((prefix, filesystem)) = mounted_at(&mounts, &path) {
@@ -481,7 +463,7 @@ impl Namespace {
         self.archive
             .metadata(if path.is_empty() { b"/" } else { &path })
     }
-    pub(crate) fn open_directory(&self, path: &[u8]) -> Result<Directory, Error> {
+    pub fn open_directory(&self, path: &[u8]) -> Result<Directory, Error> {
         let id = self.next_directory.get();
         self.next_directory
             .set(id.checked_add(1).ok_or(Error::NoSpace)?);
@@ -514,7 +496,7 @@ impl Namespace {
             path,
         })
     }
-    pub(crate) fn hard_link(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
+    pub fn hard_link(&self, source: &[u8], target: &[u8]) -> Result<(), Error> {
         let source = normalize(source)?;
         let target = normalize(target)?;
         let mounts = self.mounts.borrow();
@@ -526,10 +508,10 @@ impl Namespace {
         }
         filesystem.hard_link(relative(&source, prefix), relative(&target, prefix))
     }
-    pub(crate) fn symlink(&self, target: &[u8], path: &[u8]) -> Result<(), Error> {
+    pub fn symlink(&self, target: &[u8], path: &[u8]) -> Result<(), Error> {
         self.mounted(path, |filesystem, path| filesystem.symlink(target, path))
     }
-    pub(crate) fn read_link(&self, path: &[u8]) -> Result<Vec<u8>, Error> {
+    pub fn read_link(&self, path: &[u8]) -> Result<Vec<u8>, Error> {
         let path = normalize(path)?;
         let mounts = self.mounts.borrow();
         if let Some((prefix, filesystem)) = mounted_at(&mounts, &path) {
@@ -538,7 +520,7 @@ impl Namespace {
         self.archive.read_link(&path)
     }
 
-    pub(crate) fn shutdown(&self) -> Result<(), Error> {
+    pub fn shutdown(&self) -> Result<(), Error> {
         self.cache.sync()?;
         let mut mounts = self.mounts.borrow_mut();
         while let Some(entry) = mounts.first_entry() {
@@ -548,7 +530,7 @@ impl Namespace {
         Ok(())
     }
 
-    pub(crate) fn open_path(&self, path: &[u8]) -> Result<File, Error> {
+    pub fn open_path(&self, path: &[u8]) -> Result<File, Error> {
         let path = normalize(path)?;
         let mounts = self.mounts.borrow();
         if let Some((prefix, fs)) = mounted_at(&mounts, &path) {
@@ -559,7 +541,7 @@ impl Namespace {
         self.archive.open_path(&path).map(File::Archive)
     }
 
-    pub(crate) fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
+    pub fn open_bytes(&self, path: &[u8]) -> Result<File, Error> {
         let path = normalize(path)?;
         let mounts = self.mounts.borrow();
         if let Some((prefix, filesystem)) = mounted_at(&mounts, &path) {
@@ -606,7 +588,7 @@ impl ReadAt for File {
 }
 
 impl File {
-    pub(crate) fn read_link(&self) -> Result<Vec<u8>, Error> {
+    pub fn read_link(&self) -> Result<Vec<u8>, Error> {
         let info = self.metadata()?;
         if info.mode & 0o170000 != 0o120000 {
             return Err(Error::InvalidRequest);
@@ -619,52 +601,52 @@ impl File {
         Ok(bytes)
     }
 
-    pub(crate) fn statistics(&self) -> Result<crate::Statistics, Error> {
+    pub fn statistics(&self) -> Result<crate::Statistics, Error> {
         match self {
             Self::Archive(file) => file.statistics(),
             Self::Mounted(file) => file.statistics(),
         }
     }
 
-    pub(crate) fn check_writable(&self) -> Result<(), Error> {
+    pub fn check_writable(&self) -> Result<(), Error> {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Mounted(file) => file.check_writable(),
         }
     }
 
-    pub(crate) fn metadata(&self) -> Result<crate::Metadata, Error> {
+    pub fn metadata(&self) -> Result<crate::Metadata, Error> {
         match self {
             Self::Archive(file) => Ok(file.metadata()),
             Self::Mounted(file) => file.metadata(),
         }
     }
-    pub(crate) fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
+    pub fn set_attributes(&self, attributes: crate::Attributes) -> Result<(), Error> {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Mounted(file) => file.set_attributes(attributes),
         }
     }
-    pub(crate) fn append(&self, bytes: &[u8]) -> Result<(usize, usize), Error> {
+    pub fn append(&self, bytes: &[u8]) -> Result<(usize, usize), Error> {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Mounted(file) => file.append(bytes),
         }
     }
 
-    pub(crate) fn fsync(&self) -> Result<(), Error> {
+    pub fn fsync(&self) -> Result<(), Error> {
         match self {
             Self::Archive(_) => Ok(()),
             Self::Mounted(file) => file.fsync(),
         }
     }
-    pub(crate) fn write_at(&self, offset: usize, bytes: &[u8]) -> Result<usize, Error> {
+    pub fn write_at(&self, offset: usize, bytes: &[u8]) -> Result<usize, Error> {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Mounted(file) => file.write_at(offset, bytes),
         }
     }
-    pub(crate) fn truncate(&self, size: usize) -> Result<(), Error> {
+    pub fn truncate(&self, size: usize) -> Result<(), Error> {
         match self {
             Self::Archive(_) => Err(Error::ReadOnly),
             Self::Mounted(file) => file.truncate(size),
@@ -704,5 +686,15 @@ impl File {
             Self::Archive(_) => Err(Error::Unsupported),
             Self::Mounted(file) => file.map_huge(offset),
         }
+    }
+}
+
+impl crate::FileSystem for Namespace {
+    type File<'a>
+        = File
+    where
+        Self: 'a;
+    fn open(&self, path: &str) -> Result<File, Error> {
+        self.open_bytes(path.as_bytes())
     }
 }

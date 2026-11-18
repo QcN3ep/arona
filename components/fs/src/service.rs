@@ -41,7 +41,7 @@ pub fn run(task: &'static Handle<runtime::Task>, control: Handle<Channel>) -> Re
         }
     };
     protocol::respond(reply, Ok(Message::new(protocol::SUCCESS, &[])?))?;
-    let namespace = Namespace::new(archive)?;
+    let namespace = Namespace::new(archive);
     serve(task, control, &namespace)
 }
 
