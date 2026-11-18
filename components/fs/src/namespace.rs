@@ -17,7 +17,6 @@ use alloc::{boxed::Box, collections::BTreeMap, rc::Rc, vec::Vec};
 use core::cell::{Cell, RefCell};
 use runtime::Handle;
 
-/// Default in-memory mount that provides a writable temporary directory.
 /// Total capacity of all tmpfs and huge page volumes mounted in the namespace.
 ///
 /// Client mounts use a 64 MiB default. The total includes administrative capacities.
@@ -450,11 +449,7 @@ impl Namespace {
         let Some((prefix, filesystem)) = mounted_at(&mounts, &source) else {
             return Err(Error::ReadOnly);
         };
-        if !beneath(&target, prefix)
-            || mounts
-                .keys()
-                .any(|other| other != prefix && beneath(&target, other))
-        {
+        if mounted_at(&mounts, &target).is_none_or(|(target_prefix, _)| target_prefix != prefix) {
             return Err(Error::CrossDevice);
         }
         if mounts
@@ -515,11 +510,7 @@ impl Namespace {
         let Some((prefix, filesystem)) = mounted_at(&mounts, &source) else {
             return Err(Error::ReadOnly);
         };
-        if !beneath(&target, prefix)
-            || mounts
-                .keys()
-                .any(|other| other != prefix && beneath(&target, other))
-        {
+        if mounted_at(&mounts, &target).is_none_or(|(target_prefix, _)| target_prefix != prefix) {
             return Err(Error::CrossDevice);
         }
         filesystem.hard_link(relative(&source, prefix), relative(&target, prefix))
