@@ -220,8 +220,11 @@ fn replace(
     let native_id = native.id().map_err(super::error)?;
     native.start().map_err(super::error)?;
     let thread_signals = Rc::clone(&process.threads[index].signals);
-    // exec discards every thread's user context, so release their robust lists
-    // while the old address space is still installed.
+    // Stop old user threads before releasing their robust locks. The old
+    // address space stays alive until all owner-death updates finish.
+    for thread in &process.threads {
+        thread.native.terminate(0).map_err(super::error)?;
+    }
     for index in 0..process.threads.len() {
         process.robust_list_cleanup(index);
     }
