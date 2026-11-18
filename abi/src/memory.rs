@@ -14,8 +14,20 @@ pub enum Permissions {
     ReadWrite = 3,
     ExecuteOnly = 4,
     ReadExecute = 5,
+    ReadWriteExecute = 7,
 }
 impl Permissions {
+    pub const fn writable(self) -> bool {
+        matches!(self, Self::ReadWrite | Self::ReadWriteExecute)
+    }
+
+    pub const fn executable(self) -> bool {
+        matches!(
+            self,
+            Self::ExecuteOnly | Self::ReadExecute | Self::ReadWriteExecute
+        )
+    }
+
     pub const fn from_raw(raw: u64) -> Option<Self> {
         match raw {
             8 => Some(Self::NoAccess),
@@ -23,6 +35,7 @@ impl Permissions {
             3 => Some(Self::ReadWrite),
             4 => Some(Self::ExecuteOnly),
             5 => Some(Self::ReadExecute),
+            7 => Some(Self::ReadWriteExecute),
             _ => None,
         }
     }

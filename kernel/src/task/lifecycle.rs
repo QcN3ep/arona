@@ -1043,7 +1043,11 @@ impl TaskResources {
         };
         if !matches!(
             permissions(entry.pc)?,
-            Some(PagePermissions::ReadExecute | PagePermissions::ExecuteOnly)
+            Some(
+                PagePermissions::ReadExecute
+                    | PagePermissions::ReadWriteExecute
+                    | PagePermissions::ExecuteOnly
+            )
         ) {
             return Err(ExecutionError::InvalidEntry.into());
         }
@@ -1052,14 +1056,18 @@ impl TaskResources {
             .checked_sub(1)
             .ok_or(ExecutionError::InvalidStack)?;
         if !entry.stack_pointer.is_multiple_of(16)
-            || permissions(stack)? != Some(PagePermissions::ReadWrite)
+            || !permissions(stack)?.is_some_and(PagePermissions::writable)
         {
             return Err(ExecutionError::InvalidStack.into());
         }
         if entry.thread_pointer != 0
             && !matches!(
                 permissions(entry.thread_pointer)?,
-                Some(PagePermissions::ReadOnly | PagePermissions::ReadWrite)
+                Some(
+                    PagePermissions::ReadOnly
+                        | PagePermissions::ReadWrite
+                        | PagePermissions::ReadWriteExecute
+                )
             )
         {
             return Err(ExecutionError::InvalidEntry.into());

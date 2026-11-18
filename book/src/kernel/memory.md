@@ -105,8 +105,10 @@ Large leaves are not created for kernel device or direct-map ranges.
 ## Permissions and Aliases
 
 The same physical page frame may appear in both a user mapping and the kernel direct map.
-Permission checks therefore consider these aliases together: mappings have read-only, read-write, read-execute, execute-only, and no-access permissions, and page frame access records check for conflicts between writing and execution.
-When a physical page frame is used for an executable mapping, the memory manager also adjusts the direct map's write permission for that page frame and synchronizes instruction access.
+Mappings support read-only, read-write, read-execute, read-write-execute, execute-only, and no-access permissions.
+User data frames may have writable and executable aliases. Kernel frames retain exclusive write or execute access, and DMA writers cannot share executable frames.
+The memory manager prepares direct-map write permissions when acquiring a write or execute reference.
+It synchronizes instruction access when enabling execution or writing executable frames through the kernel.
 
 `protect` establishes a modification record for the entire mapping, then commits the page table and access reference changes.
 Mapping establishment and permission modification save intermediate state and roll back on failure, returning a `MemoryError`.

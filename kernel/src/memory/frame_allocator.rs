@@ -338,22 +338,46 @@ impl FrameAllocator {
         if !matches!(state, FrameState::Owned | FrameState::Referenced) || fields[0] != head {
             return Err(MemoryError::InvalidFrame);
         }
-        let (offset, count) = match access {
-            FrameAccess::Read => return Ok(()),
-            FrameAccess::Write if fields[4] == 0 => {
-                (WRITERS_WORD + kind as usize, fields[1 + kind as usize])
-            }
-            FrameAccess::Execute
-                if kind == ReferenceKind::Mapping
-                    && FramePurpose::Data as u64 == (flags >> 16) & 0xff
-                    && fields[1..4] == [0; 3] =>
-            {
-                (EXECUTORS_WORD, fields[4])
-            }
-            _ => return Err(MemoryError::AccessConflict),
-        };
-        let count = count.checked_add(1).ok_or(MemoryError::ReferenceOverflow)?;
-        self.metadata.write_words(index, offset, &[count]);
+        if access == FrameAccess::Read {
+            return Ok(());
+        }
+        let data = FramePurpose::Data as u64 == (flags >> 16) & 0xff;
+        let user_data = data && FramePool::User as u64 == (flags >> 8) & 0xff;
+        // User data can contain instructions and mutable data in the same page.
+        // Kernel frames retain exclusive write/execute access, and DMA writers
+        // cannot share an executable frame.
+        if access.writable() && fields[4] != 0 && (!user_data || kind == ReferenceKind::Dma)
+            || access.executable()
+                && (kind != ReferenceKind::Mapping
+                    || !data
+                    || fields[1 + ReferenceKind::Dma as usize] != 0
+                    || !user_data && (access.writable() || fields[1..4] != [0; 3]))
+        {
+            return Err(MemoryError::AccessConflict);
+        }
+        let writer = access
+            .writable()
+            .then(|| {
+                fields[1 + kind as usize]
+                    .checked_add(1)
+                    .ok_or(MemoryError::ReferenceOverflow)
+            })
+            .transpose()?;
+        let executor = access
+            .executable()
+            .then(|| {
+                fields[4]
+                    .checked_add(1)
+                    .ok_or(MemoryError::ReferenceOverflow)
+            })
+            .transpose()?;
+        if let Some(count) = writer {
+            self.metadata
+                .write_words(index, WRITERS_WORD + kind as usize, &[count]);
+        }
+        if let Some(count) = executor {
+            self.metadata.write_words(index, EXECUTORS_WORD, &[count]);
+        }
         Ok(())
     }
 
@@ -377,15 +401,18 @@ impl FrameAllocator {
             .metadata
             .index(frame.address())
             .expect("unmanaged frame access");
-        let offset = match access {
-            FrameAccess::Read => return,
-            FrameAccess::Write => WRITERS_WORD + kind as usize,
-            FrameAccess::Execute => EXECUTORS_WORD,
-        };
-        let count = self.metadata.read_words::<1>(index, offset)[0]
-            .checked_sub(1)
-            .expect("frame access count underflow");
-        self.metadata.write_words(index, offset, &[count]);
+        for offset in [
+            access.writable().then_some(WRITERS_WORD + kind as usize),
+            access.executable().then_some(EXECUTORS_WORD),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let count = self.metadata.read_words::<1>(index, offset)[0]
+                .checked_sub(1)
+                .expect("frame access count underflow");
+            self.metadata.write_words(index, offset, &[count]);
+        }
     }
 
     pub fn release_owner(&mut self, head: u64) {

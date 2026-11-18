@@ -311,7 +311,7 @@ impl FileMapping<'_> {
         }
         if self.arguments.flags & 3 != MAP_PRIVATE {
             if self.description.flags() & 3 == super::O_RDONLY
-                && self.arguments.permissions == Permissions::ReadWrite
+                && self.arguments.permissions.writable()
             {
                 return Some(Err(EACCES));
             }

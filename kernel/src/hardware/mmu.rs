@@ -38,7 +38,21 @@ pub enum PagePermissions {
     ReadOnly,
     ReadWrite,
     ReadExecute,
+    ReadWriteExecute,
     ExecuteOnly,
+}
+
+impl PagePermissions {
+    pub const fn writable(self) -> bool {
+        matches!(self, Self::ReadWrite | Self::ReadWriteExecute)
+    }
+
+    pub const fn executable(self) -> bool {
+        matches!(
+            self,
+            Self::ReadExecute | Self::ReadWriteExecute | Self::ExecuteOnly
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

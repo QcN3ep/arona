@@ -974,6 +974,7 @@ fn execution(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
 fn layouts(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
     for path in [
         b"/bin/linux-compact".as_slice(),
+        b"/bin/linux-writable-code",
         b"/bin/linux-separate-headers",
     ] {
         assert_eq!(
@@ -1020,7 +1021,6 @@ fn malformed(linux: &Control<'_>, output: &impl Fn() -> devmgr::uart::Session) {
     let paths: &[&[u8]] = &[
         b"/bin/linux-truncated",
         b"/bin/linux-foreign",
-        b"/bin/linux-writable-code",
         b"/bin/linux-empty-script",
         b"/bin/linux-script-loop",
     ];

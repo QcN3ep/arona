@@ -407,5 +407,6 @@ fn permissions(permissions: Permissions) -> &'static str {
         Permissions::ReadWrite => "rw-p",
         Permissions::ExecuteOnly => "--xp",
         Permissions::ReadExecute => "r-xp",
+        Permissions::ReadWriteExecute => "rwxp",
     }
 }

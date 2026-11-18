@@ -342,7 +342,7 @@ pub(super) fn check_huge_file_mapping(
         // mapping needs write access.
         return Err(EACCES);
     }
-    if flags & 3 == MAP_SHARED && mode == O_RDONLY && permissions == Permissions::ReadWrite {
+    if flags & 3 == MAP_SHARED && mode == O_RDONLY && permissions.writable() {
         return Err(EACCES);
     }
     Ok(())
@@ -602,7 +602,7 @@ fn permissions(protection: usize) -> Result<Permissions, Errno> {
         2 | 3 => Ok(Permissions::ReadWrite),
         4 => Ok(Permissions::ExecuteOnly),
         5 => Ok(Permissions::ReadExecute),
-        6 | 7 => Err(EACCES),
+        6 | 7 => Ok(Permissions::ReadWriteExecute),
         _ => Err(EINVAL),
     }
 }

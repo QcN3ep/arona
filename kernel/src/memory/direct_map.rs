@@ -161,7 +161,7 @@ impl DirectMap {
                     let writable = {
                         let allocator = manager().allocator().lock();
                         if state == MemoryRegionState::Available {
-                            !allocator.has_executors(frame)
+                            allocator.has_writers(frame) || !allocator.has_executors(frame)
                         } else {
                             allocator.has_writers(frame)
                         }

@@ -77,19 +77,6 @@ pub(super) fn append(
     let mut foreign = image.clone();
     foreign[18..20].copy_from_slice(&0u16.to_le_bytes());
     append_entry(bytes, "bin/linux-foreign", 0o100755, &foreign)?;
-    let mut writable = image;
-    let headers = u64::from_le_bytes(writable[32..40].try_into().unwrap()) as usize;
-    let count = u16::from_le_bytes(writable[56..58].try_into().unwrap()) as usize;
-    for header in writable[headers..headers + count * 56]
-        .as_chunks_mut::<56>()
-        .0
-    {
-        if u32::from_le_bytes(header[..4].try_into().unwrap()) == 1 {
-            header[4..8].copy_from_slice(&7u32.to_le_bytes());
-            break;
-        }
-    }
-    append_entry(bytes, "bin/linux-writable-code", 0o100755, &writable)?;
     for (name, image) in fixtures(options, root, target_directory)? {
         append_entry(bytes, name, 0o100755, &image)?;
     }
@@ -451,14 +438,18 @@ fn fixtures(
     options: &BuildOptions,
     root: &Path,
     target: &Path,
-) -> Result<[(&'static str, Vec<u8>); 3], String> {
+) -> Result<[(&'static str, Vec<u8>); 4], String> {
     let (isa, triple, machine) = match options.target {
         Target::Riscv64 => ("riscv64", "riscv64-unknown-linux-gnu", 243),
         Target::LoongArch64 => ("loongarch64", "loongarch64-unknown-linux-gnu", 258),
     };
     let pie = assemble_fixture(options, root, target, isa, triple, "program/pie")?;
     let interpreter = assemble_fixture(options, root, target, isa, triple, "program/interp")?;
+    let code = assemble_fixture(options, root, target, isa, triple, "program/rwx")?;
+    let mut writable = image(machine, &code, None);
+    writable[68..72].copy_from_slice(&7u32.to_le_bytes());
     Ok([
+        ("bin/linux-writable-code", writable),
         ("bin/linux-pie", image(machine, &pie, None)),
         ("bin/linux-interp", image(machine, &interpreter, None)),
         (

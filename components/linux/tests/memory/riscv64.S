@@ -103,7 +103,7 @@ mappings:
     li a1, 4096
     li a2, 7
     memcall 226
-    result -13
+    result 0
     sb zero, 0(s0)
 
     mv a0, s1
@@ -154,6 +154,17 @@ mappings:
     la t0, .Lcode
     ld t0, 0(t0)
     sd t0, 0(s0)
+    mv a0, s0
+    li a1, 12288
+    li a2, 6
+    memcall 226
+    result 0
+    li a0, 1
+    addi a1, s0, 16
+    memcall 113
+    result 0
+    jalr ra, s0, 0
+    result 77
     mv a0, s0
     li a1, 12288
     li a2, 5

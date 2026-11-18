@@ -19,6 +19,7 @@ pub(super) fn permissions(raw: u64) -> Result<PagePermissions, Error> {
         abi::memory::Permissions::ReadOnly => Ok(PagePermissions::ReadOnly),
         abi::memory::Permissions::ReadWrite => Ok(PagePermissions::ReadWrite),
         abi::memory::Permissions::ReadExecute => Ok(PagePermissions::ReadExecute),
+        abi::memory::Permissions::ReadWriteExecute => Ok(PagePermissions::ReadWriteExecute),
         abi::memory::Permissions::ExecuteOnly => Ok(PagePermissions::ExecuteOnly),
     }
 }
@@ -83,6 +84,7 @@ pub(super) fn task(
                         PagePermissions::ReadWrite => 3,
                         PagePermissions::ExecuteOnly => 4,
                         PagePermissions::ReadExecute => 5,
+                        PagePermissions::ReadWriteExecute => 7,
                     });
             Ok([info.range.start as u64, info.range.end as u64 | permission])
         }
@@ -202,6 +204,9 @@ fn mapping_reference(
         PagePermissions::ReadOnly => required = required | Rights::READ,
         PagePermissions::ReadWrite => required = required | Rights::READ | Rights::WRITE,
         PagePermissions::ReadExecute => required = required | Rights::READ | Rights::EXECUTE,
+        PagePermissions::ReadWriteExecute => {
+            required = required | Rights::READ | Rights::WRITE | Rights::EXECUTE;
+        }
         PagePermissions::ExecuteOnly => required = required | Rights::EXECUTE,
     }
     let ObjectReference::FrameAllocation(allocation) = caller.get(handle, kind, required)? else {

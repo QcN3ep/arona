@@ -60,6 +60,7 @@ impl Format for Sv39 {
             PagePermissions::ReadOnly => READ,
             PagePermissions::ReadWrite => READ | WRITE | DIRTY,
             PagePermissions::ReadExecute => READ | EXECUTE,
+            PagePermissions::ReadWriteExecute => READ | WRITE | EXECUTE | DIRTY,
             PagePermissions::ExecuteOnly => EXECUTE,
         };
         if attributes.memory_type == MemoryType::Device {
@@ -100,6 +101,7 @@ impl Format for Sv39 {
                 READ => PagePermissions::ReadOnly,
                 flags if flags == READ | WRITE => PagePermissions::ReadWrite,
                 flags if flags == READ | EXECUTE => PagePermissions::ReadExecute,
+                flags if flags == READ | WRITE | EXECUTE => PagePermissions::ReadWriteExecute,
                 EXECUTE => PagePermissions::ExecuteOnly,
                 _ => return Err(MmuError::InvalidAttributes),
             }

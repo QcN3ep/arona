@@ -18,7 +18,8 @@ pub(super) fn run() {
     mapping_conflict();
     reservations();
     shared_kernel();
-    permissions();
+    kernel_permissions();
+    user_permissions();
     invalid_requests();
     exhaustion();
     huge_mappings();
@@ -275,7 +276,7 @@ fn mapping_conflict() {
         .unwrap();
     let last = allocation.frames().last().unwrap();
     let writer = allocation
-        .access(last, ReferenceKind::Temporary, FrameAccess::Write)
+        .access(last, ReferenceKind::Dma, FrameAccess::Write)
         .unwrap();
     let info = allocation.info();
     let before = manager.stats();
@@ -448,67 +449,119 @@ fn shared_kernel() {
     assert!(lookup(&second, mapped.start).is_none());
 }
 
-fn permissions() {
+fn kernel_permissions() {
     let manager = memory::manager();
-    let space = AddressSpace::new().unwrap();
-    let other = AddressSpace::new().unwrap();
+    let space = manager.kernel_address_space();
     let allocation = manager
-        .allocate(FrameOwner::User(1), FramePurpose::Data, 2)
+        .allocate(FrameOwner::Kernel, FramePurpose::Data, 1)
         .unwrap();
     let frame = first_frame(&allocation);
-    space
-        .map_at(ADDRESS, &allocation, 0..1, mutable_code())
-        .unwrap();
-    space
-        .map_at(ADDRESS + PAGE_SIZE, &allocation, 0..1, mutable_code())
-        .unwrap();
-    other
-        .map_at(ADDRESS, &allocation, 0..1, mutable_code())
-        .unwrap();
-    let aliases = range(ADDRESS, 2);
-    let before = space.query(ADDRESS).unwrap();
+    let first = space.map(&allocation, 0..1, mutable_code()).unwrap();
+    let second = space.map(&allocation, 0..1, mutable_code()).unwrap();
+    let before = space.query(first.start).unwrap();
     assert_eq!(
-        space.protect(aliases, PagePermissions::ReadExecute),
+        space.protect(first, PagePermissions::ReadExecute),
         Err(MemoryError::AccessConflict)
     );
-    assert_eq!(space.query(ADDRESS).unwrap(), before);
-    other
-        .protect(range(ADDRESS, 1), PagePermissions::ReadOnly)
-        .unwrap();
-    space
-        .protect(aliases, PagePermissions::ReadExecute)
-        .unwrap();
+    assert_eq!(space.query(first.start).unwrap(), before);
+    space.protect(second, PagePermissions::ReadOnly).unwrap();
+    space.protect(first, PagePermissions::ReadExecute).unwrap();
     assert!(matches!(
         allocation.access(frame, ReferenceKind::Dma, FrameAccess::Write),
         Err(MemoryError::AccessConflict)
     ));
     assert_eq!(
-        other.protect(range(ADDRESS, 1), PagePermissions::ReadWrite),
+        space.protect(second, PagePermissions::ReadWrite),
         Err(MemoryError::AccessConflict)
     );
-    for address in [ADDRESS, ADDRESS + PAGE_SIZE] {
+    assert_eq!(
+        lookup(space, first.start).unwrap().attributes.permissions,
+        PagePermissions::ReadExecute
+    );
+    assert_eq!(
+        space.protect(first, PagePermissions::ReadWriteExecute),
+        Err(MemoryError::AccessConflict)
+    );
+    space.unmap(first).unwrap();
+    space.protect(second, PagePermissions::ReadWrite).unwrap();
+    space.unmap(second).unwrap();
+    assert_eq!(allocation.info().mappings, 0);
+}
+
+fn user_permissions() {
+    let manager = memory::manager();
+    manager.reclaim_heap();
+    let initial = manager.stats();
+    let space = AddressSpace::new().unwrap();
+    let other = AddressSpace::new().unwrap();
+    let allocation = manager
+        .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
+        .unwrap();
+    let frame = first_frame(&allocation);
+    let maximum = MappingRights::READ | MappingRights::WRITE | MappingRights::EXECUTE;
+    for (index, permissions) in [
+        PagePermissions::ReadWrite,
+        PagePermissions::ReadExecute,
+        PagePermissions::ReadWriteExecute,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        space
+            .map_at(
+                ADDRESS + index * PAGE_SIZE,
+                &allocation,
+                0..1,
+                MappingOptions {
+                    maximum,
+                    ..MappingOptions::new(permissions)
+                },
+            )
+            .unwrap();
         assert_eq!(
-            space
-                .query(address)
-                .unwrap()
-                .unwrap()
-                .mapping
+            lookup(&space, ADDRESS + index * PAGE_SIZE)
                 .unwrap()
                 .attributes
                 .permissions,
-            PagePermissions::ReadExecute
+            permissions
         );
     }
-    space.unmap(aliases).unwrap();
-    other
-        .protect(range(ADDRESS, 1), PagePermissions::ReadWrite)
+    let writer = allocation
+        .access(frame, ReferenceKind::Temporary, FrameAccess::Write)
         .unwrap();
-    let reference = allocation.reference(ReferenceKind::Temporary).unwrap();
-    drop(allocation);
-    let mapping = space
-        .map_reference(reference, 1..2, mutable_code())
+    writer.write(0, &[73]).unwrap();
+    drop(writer);
+    let before = allocation.info();
+    assert!(matches!(
+        allocation.access(frame, ReferenceKind::Dma, FrameAccess::Write),
+        Err(MemoryError::AccessConflict)
+    ));
+    assert_eq!(allocation.info(), before);
+    let alias = other
+        .map(
+            &allocation,
+            0..1,
+            MappingOptions::new(PagePermissions::ReadExecute),
+        )
         .unwrap();
-    space.unmap(mapping).unwrap();
+    for permissions in [
+        PagePermissions::ReadOnly,
+        PagePermissions::ReadWriteExecute,
+        PagePermissions::ReadExecute,
+        PagePermissions::ReadWrite,
+    ] {
+        space.protect(range(ADDRESS, 3), permissions).unwrap();
+        assert_eq!(
+            lookup(&space, ADDRESS).unwrap().attributes.permissions,
+            permissions
+        );
+    }
+    space.unmap(range(ADDRESS, 3)).unwrap();
+    other.unmap(alias).unwrap();
+    assert_eq!(allocation.info().mappings, 0);
+    drop((allocation, space, other));
+    manager.reclaim_heap();
+    assert_eq!(manager.stats(), initial);
 }
 
 fn invalid_requests() {
@@ -626,7 +679,7 @@ fn huge_mappings() {
     assert_eq!(frames.len(), HUGE_PAGE_FRAMES as usize);
     let options = MappingOptions {
         permissions: PagePermissions::ReadWrite,
-        maximum: MappingRights::READ | MappingRights::WRITE,
+        maximum: MappingRights::READ | MappingRights::WRITE | MappingRights::EXECUTE,
         alignment: PAGE_SIZE,
     };
     let mapped = space
@@ -648,6 +701,16 @@ fn huge_mappings() {
     assert_eq!(
         info.mapping.unwrap().attributes.permissions,
         PagePermissions::ReadWrite
+    );
+    space
+        .protect(mapped, PagePermissions::ReadWriteExecute)
+        .unwrap();
+    assert_eq!(
+        lookup(&space, mapped.end - PAGE_SIZE)
+            .unwrap()
+            .attributes
+            .permissions,
+        PagePermissions::ReadWriteExecute
     );
     space.protect(mapped, PagePermissions::ReadOnly).unwrap();
     assert_eq!(

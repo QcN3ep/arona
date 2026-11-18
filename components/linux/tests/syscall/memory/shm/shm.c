@@ -18,6 +18,7 @@
 #define O_DIRECTORY 0x10000
 #define PROT_READ 1
 #define PROT_WRITE 2
+#define PROT_EXEC 4
 #define MAP_SHARED 1
 #define MAP_PRIVATE 2
 #define MS_SYNC 4
@@ -212,9 +213,12 @@ static void errors(void) {
     long read_only = open_file("/dev/shm/arona-shm-errors", O_RDONLY, 0);
     CHECK(SC(222, 0, PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, read_only, 0) == -EACCES);
     CHECK(SC(222, 0, PAGE, PROT_WRITE, MAP_SHARED, read_only, 0) == -EACCES);
+    CHECK(SC(222, 0, PAGE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_SHARED, read_only, 0) == -EACCES);
     long readonly_mapping = SC(222, 0, PAGE, PROT_READ, MAP_SHARED, read_only, 0);
     CHECK(readonly_mapping > 0);
     CHECK(SC(226, readonly_mapping, PAGE, PROT_READ | PROT_WRITE) == -EACCES);
+    CHECK(SC(226, readonly_mapping, PAGE, PROT_READ | PROT_WRITE | PROT_EXEC) == -EACCES);
+    CHECK(((volatile unsigned char *)readonly_mapping)[0] == 0);
     unmap((void *)readonly_mapping, PAGE);
     // Private writable mappings copy pages, so read access to the descriptor is enough.
     long private = SC(222, 0, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE, read_only, 0);

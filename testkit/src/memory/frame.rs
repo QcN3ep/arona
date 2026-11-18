@@ -175,7 +175,7 @@ pub(super) fn concurrent() {
     let heap = manager.heap_stats();
     *SHARED.lock() = Some(HeapArc::new(
         manager
-            .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
+            .allocate(FrameOwner::Kernel, FramePurpose::Data, 1)
             .unwrap(),
     ));
     let workers: [_; 4] = core::array::from_fn(|index| Thread::new(worker, index).unwrap());

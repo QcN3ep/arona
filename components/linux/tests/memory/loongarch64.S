@@ -101,7 +101,7 @@ mappings:
     li.d $a1, 4096
     li.d $a2, 7
     memcall 226
-    result -13
+    result 0
     st.b $zero, $s0, 0
 
     move $a0, $s1
@@ -152,6 +152,17 @@ mappings:
     la.local $t0, .Lcode
     ld.d $t0, $t0, 0
     st.d $t0, $s0, 0
+    move $a0, $s0
+    li.d $a1, 12288
+    li.d $a2, 6
+    memcall 226
+    result 0
+    li.d $a0, 1
+    addi.d $a1, $s0, 16
+    memcall 113
+    result 0
+    jirl $ra, $s0, 0
+    result 77
     move $a0, $s0
     li.d $a1, 12288
     li.d $a2, 5

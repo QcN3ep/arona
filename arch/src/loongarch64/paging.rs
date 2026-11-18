@@ -72,6 +72,7 @@ impl Format for LoongArchMmu {
             PagePermissions::ReadOnly => NO_EXECUTE,
             PagePermissions::ReadWrite => DIRTY | NO_EXECUTE,
             PagePermissions::ReadExecute => 0,
+            PagePermissions::ReadWriteExecute => DIRTY,
             PagePermissions::ExecuteOnly => NO_READ,
         };
         let memory_type = match attributes.memory_type {
@@ -126,6 +127,7 @@ impl Format for LoongArchMmu {
             NO_EXECUTE => PagePermissions::ReadOnly,
             flags if flags == DIRTY | NO_EXECUTE => PagePermissions::ReadWrite,
             0 => PagePermissions::ReadExecute,
+            DIRTY => PagePermissions::ReadWriteExecute,
             NO_READ => PagePermissions::ExecuteOnly,
             _ => return Err(MmuError::InvalidAttributes),
         };

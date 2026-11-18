@@ -776,9 +776,7 @@ impl AddressSpace {
             for address in pages(range) {
                 let record = state.record(address);
                 let mut mapping = record.journal.mapping.unwrap();
-                if FrameAccess::from(permissions) == FrameAccess::Execute
-                    && FrameAccess::from(mapping.attributes.permissions) != FrameAccess::Execute
-                {
+                if permissions.executable() && !mapping.attributes.permissions.executable() {
                     hardware::mmu().synchronize_frame(record.journal.frame())?;
                 }
                 mapping.attributes.permissions = permissions;
@@ -859,9 +857,7 @@ impl AddressSpace {
                     permissions.into(),
                 )?;
                 acquired += 1;
-                if FrameAccess::from(permissions) == FrameAccess::Execute
-                    && FrameAccess::from(*old) != FrameAccess::Execute
-                {
+                if permissions.executable() && !old.executable() {
                     hardware::mmu().synchronize_frame(*frame)?;
                 }
             }
@@ -968,7 +964,7 @@ impl AddressSpace {
                 let permissions = mapping.attributes.permissions;
                 if !mapping.attributes.user_accessible
                     || mapping.attributes.memory_type != MemoryType::Normal
-                    || (write && permissions != PagePermissions::ReadWrite)
+                    || (write && !permissions.writable())
                     || (!write
                         && matches!(
                             permissions,

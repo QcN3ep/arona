@@ -66,6 +66,17 @@ pub enum FrameAccess {
     Read,
     Write,
     Execute,
+    WriteExecute,
+}
+
+impl FrameAccess {
+    pub const fn writable(self) -> bool {
+        matches!(self, Self::Write | Self::WriteExecute)
+    }
+
+    pub const fn executable(self) -> bool {
+        matches!(self, Self::Execute | Self::WriteExecute)
+    }
 }
 
 impl From<PagePermissions> for FrameAccess {
@@ -73,6 +84,7 @@ impl From<PagePermissions> for FrameAccess {
         match permissions {
             PagePermissions::NoAccess | PagePermissions::ReadOnly => Self::Read,
             PagePermissions::ReadWrite => Self::Write,
+            PagePermissions::ReadWriteExecute => Self::WriteExecute,
             PagePermissions::ReadExecute | PagePermissions::ExecuteOnly => Self::Execute,
         }
     }
@@ -193,7 +205,7 @@ impl FrameAllocationReference {
         let mut allocator = manager().allocator().lock();
         let direct_was_writable =
             manager().reserve_access(&mut allocator, self.head, frame, self.kind, access)?;
-        if access == FrameAccess::Execute
+        if access.executable()
             && let Err(error) = hardware::mmu().synchronize_frame(frame)
         {
             allocator.release_access(frame, self.kind, access);
@@ -229,7 +241,7 @@ impl FrameAccessReference {
     }
 
     pub fn write(&self, word_offset: usize, words: &[u64]) -> Result<(), MemoryError> {
-        if self.access != FrameAccess::Write {
+        if !self.access.writable() {
             return Err(MemoryError::AccessConflict);
         }
         if let Some(address) = self.virtual_address() {
@@ -237,7 +249,7 @@ impl FrameAccessReference {
         } else {
             hardware::mmu().write_frame(self.frame.address(), word_offset, words)?;
         }
-        Ok(())
+        self.synchronize_written_code()
     }
 
     /// Atomically compares and exchanges one aligned 32-bit word in this frame.
@@ -250,14 +262,25 @@ impl FrameAccessReference {
         expected: u32,
         new: u32,
     ) -> Result<Option<u32>, MemoryError> {
-        if self.access != FrameAccess::Write {
+        if !self.access.writable() {
             return Err(MemoryError::AccessConflict);
         }
         if !byte_offset.is_multiple_of(4) || byte_offset > PAGE_SIZE - 4 {
             return Err(MemoryError::InvalidRequest);
         }
         let address = self.virtual_address().ok_or(MemoryError::InvalidRequest)?;
-        Ok(hardware::mmu().compare_exchange_u32(address, byte_offset, expected, new)?)
+        let previous = hardware::mmu().compare_exchange_u32(address, byte_offset, expected, new)?;
+        if previous.is_some() {
+            self.synchronize_written_code()?;
+        }
+        Ok(previous)
+    }
+
+    fn synchronize_written_code(&self) -> Result<(), MemoryError> {
+        if manager().allocator().lock().has_executors(self.frame) {
+            hardware::mmu().synchronize_frame(self.frame)?;
+        }
+        Ok(())
     }
 }
 

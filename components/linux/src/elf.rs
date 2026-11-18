@@ -107,7 +107,7 @@ impl<'a> Image<'a> {
             .ok_or(Error::InvalidExecutable)?;
         let layout = layout(bytes, headers, offset, end, base)?;
         if !layout.segments.iter().any(|segment| {
-            segment.permissions == Permissions::ReadExecute
+            segment.permissions.executable()
                 && (segment.memory.start..segment.memory.start + segment.data.len())
                     .contains(&entry)
         }) {
@@ -271,6 +271,7 @@ impl<'a> Segment<'a> {
             4 => Permissions::ReadOnly,
             5 => Permissions::ReadExecute,
             6 => Permissions::ReadWrite,
+            7 => Permissions::ReadWriteExecute,
             _ => return Err(Error::InvalidExecutable),
         };
         Ok(Some(Self {

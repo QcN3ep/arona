@@ -71,6 +71,7 @@ impl From<PagePermissions> for MappingRights {
             PagePermissions::ReadOnly => 1,
             PagePermissions::ReadWrite => 3,
             PagePermissions::ReadExecute => 5,
+            PagePermissions::ReadWriteExecute => 7,
             PagePermissions::ExecuteOnly => 4,
         })
     }
@@ -707,6 +708,7 @@ impl MappingRecord {
                     1 => PagePermissions::ReadWrite,
                     2 => PagePermissions::ReadExecute,
                     16 => PagePermissions::NoAccess,
+                    17 => PagePermissions::ReadWriteExecute,
                     _ => PagePermissions::ExecuteOnly,
                 },
                 memory_type: if words[7] & 4 != 0 {
@@ -760,6 +762,7 @@ impl MappingRecord {
                 mapping.physical_address,
                 match attributes.permissions {
                     PagePermissions::NoAccess => 16,
+                    PagePermissions::ReadWriteExecute => 17,
                     PagePermissions::ReadOnly => 0,
                     PagePermissions::ReadWrite => 1,
                     PagePermissions::ReadExecute => 2,

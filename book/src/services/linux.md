@@ -317,6 +317,7 @@ The compatibility layer's AddressSpace records program mappings and their backin
 `brk` manages the heap range after the data segment.
 `mmap` establishes anonymous and file-backed mappings and handles address hints, page alignment, `MAP_FIXED` replacement, and `MAP_FIXED_NOREPLACE`.
 Anonymous shared mappings retain a shared backing relationship between the relevant processes.
+ELF segments and memory mappings may be writable and executable, including code and mutable data stored in the same page.
 
 Mounted regular files support shared mappings through pages held by the file service.
 Ordinary reads and writes use the same pages, and `msync` writes them back to the backing filesystem.

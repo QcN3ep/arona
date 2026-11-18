@@ -266,7 +266,7 @@ impl MemoryManager {
         }
         match self
             .direct_map
-            .set_writable(frame, access == FrameAccess::Write)
+            .set_writable(frame, access.writable() || allocator.has_writers(frame))
         {
             Ok(previous) => Ok(previous),
             Err(error) => {
@@ -277,8 +277,7 @@ impl MemoryManager {
     }
 
     fn restore_direct_access(&self, allocator: &FrameAllocator, frame: Frame, writable: bool) {
-        let writable =
-            !allocator.has_executors(frame) && (writable || allocator.has_writers(frame));
+        let writable = allocator.has_writers(frame) || writable && !allocator.has_executors(frame);
         self.direct_map
             .set_writable(frame, writable)
             .expect("failed to restore direct map permissions");

@@ -887,7 +887,7 @@ impl AddressSpace {
                     .file
                     .as_ref()
                     .is_some_and(|view| view.file.shared && !view.file.writable))
-                && permissions == Permissions::ReadWrite
+                && permissions.writable()
             {
                 return Err(runtime::Error::Kernel(runtime::KernelError::Denied));
             }
