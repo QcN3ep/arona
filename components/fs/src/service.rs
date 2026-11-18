@@ -273,6 +273,23 @@ fn client(
     files: &mut Vec<FileSession>,
     request: ReceivedMessage,
 ) -> Result<Message, Error> {
+    if request.tag == protocol::VOLUME_INFO {
+        let mut request = request;
+        let [index] = *request.words() else {
+            return Err(Error::InvalidRequest);
+        };
+        if request.handles().len() != 1 {
+            return Err(Error::InvalidRequest);
+        }
+        let index = usize::try_from(index).map_err(|_| Error::InvalidRequest)?;
+        let mut output = take_frames(&mut request, Rights::WRITE)?;
+        let Some(volume) = namespace.volume(index)? else {
+            return Ok(Message::new(protocol::SUCCESS, &[0])?);
+        };
+        let bytes = volume.encode();
+        output.write(0, &bytes)?;
+        return Ok(Message::new(protocol::SUCCESS, &[bytes.len() as u64])?);
+    }
     if request.tag == protocol::SYNC {
         if !request.words().is_empty() || !request.handles().is_empty() {
             return Err(Error::InvalidRequest);

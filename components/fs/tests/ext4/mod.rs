@@ -275,6 +275,35 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
         .unwrap()
         .wait(WaitMode::Until(deadline()))
         .unwrap();
+    let root = client
+        .start_volume(0)
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(root.path, b"/");
+    assert_eq!(root.root, client.metadata(b"/", deadline()).unwrap());
+    assert_eq!(root.statistics, client.statfs(b"/", deadline()).unwrap());
+    let mounted = client
+        .start_volume(1)
+        .unwrap()
+        .wait(WaitMode::Until(deadline()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(mounted.path, b"/var");
+    assert_eq!(mounted.root, client.metadata(b"/var", deadline()).unwrap());
+    assert_eq!(
+        mounted.statistics,
+        client.statfs(b"/var", deadline()).unwrap()
+    );
+    assert!(
+        client
+            .start_volume(usize::MAX)
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap()
+            .is_none()
+    );
     service_reads(&file);
     let statistics = client.statfs(b"/var/data/message", deadline()).unwrap();
     assert_eq!(statistics.kind, 0xef53);
@@ -310,6 +339,14 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
     drop(raw);
     drop(file);
     control.unmount(b"/var", deadline()).unwrap();
+    assert!(
+        client
+            .start_volume(1)
+            .unwrap()
+            .wait(WaitMode::Until(deadline()))
+            .unwrap()
+            .is_none()
+    );
     assert!(matches!(
         client.open("/var/data/message", deadline()),
         Err(Error::NotFound)

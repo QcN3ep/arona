@@ -5,12 +5,12 @@ mod pending;
 
 pub use path::{OpenedNode, PendingNode};
 
-pub use pending::PendingStatistics;
 pub use pending::{
     Pending, PendingAppend, PendingDirectory, PendingDirectoryPage, PendingHugeMap,
     PendingHugepageInfo, PendingMapping, PendingMetadata, PendingOpen, PendingRead, PendingSize,
     PendingTruncate, PendingWrite,
 };
+pub use pending::{PendingStatistics, PendingVolume};
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};

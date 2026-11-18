@@ -137,6 +137,27 @@ impl Directory {
 }
 
 impl Namespace {
+    pub fn volume(&self, index: usize) -> Result<Option<crate::Volume>, Error> {
+        if index == 0 {
+            return Ok(Some(crate::Volume {
+                path: b"/".to_vec(),
+                root: self.archive.metadata(b"/")?,
+                statistics: self.archive.statistics()?,
+            }));
+        }
+        let mounts = self.mounts.borrow();
+        let Some((path, entry)) = mounts.iter().nth(index - 1) else {
+            return Ok(None);
+        };
+        let mut absolute = b"/".to_vec();
+        absolute.extend_from_slice(path);
+        Ok(Some(crate::Volume {
+            path: absolute,
+            root: entry.filesystem.metadata(b"/")?,
+            statistics: entry.filesystem.statistics()?,
+        }))
+    }
+
     pub fn statistics(&self, path: &[u8]) -> Result<crate::Statistics, Error> {
         self.cache.reclaim()?;
         let path = normalize(&self.resolve(b"/", path, true, false)?)?;

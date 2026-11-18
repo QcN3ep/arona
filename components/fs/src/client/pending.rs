@@ -27,9 +27,40 @@ pub type PendingWrite = Pending<usize, (Arc<AtomicUsize>, usize)>;
 pub type PendingAppend = Pending<(usize, usize), (Arc<AtomicUsize>, usize)>;
 pub type PendingSize = Pending<usize, Arc<AtomicUsize>>;
 pub type PendingTruncate = Pending<(), (Arc<AtomicUsize>, usize)>;
+pub type PendingVolume = Pending<Option<crate::Volume>, Handle<FrameAllocation>>;
 pub type PendingDirectoryPage = Pending<Vec<crate::DirEntry>, Handle<FrameAllocation>>;
 
 impl<'a> Client<'a> {
+    pub fn start_volume(&self, index: usize) -> Result<PendingVolume, Error> {
+        let output = output_buffer(self.task, crate::Volume::MAX_BYTES)?;
+        let mut request = Message::new(protocol::VOLUME_INFO, &[index as u64])?;
+        transfer(
+            &mut request,
+            output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
+            Rights::WRITE,
+        )?;
+        Ok(Pending::new(
+            self.channel.start_call(&mut request)?,
+            output,
+            |output, response| {
+                let response = response_result(response)?;
+                let [length] = *response.words() else {
+                    return Err(Error::InvalidData);
+                };
+                if length == 0 {
+                    return Ok(None);
+                }
+                let length = usize::try_from(length).map_err(|_| Error::InvalidData)?;
+                if length >= crate::Volume::MAX_BYTES {
+                    return Err(Error::InvalidData);
+                }
+                let mut bytes = alloc::vec![0; length];
+                output.read(0, &mut bytes)?;
+                crate::Volume::decode(&bytes).map(Some)
+            },
+        ))
+    }
+
     pub fn start_open(&self, path: &[u8]) -> Result<PendingOpen<'a>, Error> {
         let (call, channel) = self.open_call(protocol::OPEN, path)?;
         Ok(Pending::new(call, (self.task, channel), complete_open))

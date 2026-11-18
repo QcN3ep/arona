@@ -24,6 +24,8 @@ mod path;
 mod protocol;
 pub mod service;
 mod statistics;
+mod volume;
+pub use volume::Volume;
 pub mod tmpfs;
 
 pub use client::{Client, Directory, File};

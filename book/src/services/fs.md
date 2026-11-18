@@ -43,6 +43,7 @@ System programs are located in `/bin`, application boot configuration is located
 ## Path Resolution and Mounting
 
 The Namespace combines the archive and the mount table.
+Clients can enumerate mounted volumes and query each volume's path, root metadata, and capacity.
 For example, after ext4 is mounted at `/var`, resolving `/var/log/system.log` switches to that volume; `/bin/init` is still looked up from the archive.
 When listing a directory, mount points are merged into the parent directory's entries.
 A tmpfs mount creates an empty directory hierarchy in memory, while an ext4 mount also checks the disk range occupancy.
