@@ -8,9 +8,9 @@ This version provides loopback networking without requiring a network interface.
 ## Native Socket Requests
 
 Init starts `/bin/net` after the device and log services.
-It supplies a separate devmgr RNG session, and net obtains its startup seed before reporting readiness.
-The default QEMU command includes a modern VirtIO RNG even when `--net` is absent.
-A missing or failed entropy source causes startup to fail.
+It supplies a devmgr RNG session when one is available.
+Otherwise, net obtains random bytes from the kernel, whose ChaCha20 generator is seeded by the firmware DTB `rng-seed` property.
+Startup fails if neither source is available.
 Init supervises net with the other base services and stops it after Linux during ordered shutdown.
 
 `Control::connect` returns a native client capability.
@@ -226,7 +226,7 @@ cargo xtask package-net-test riscv64 --release
 ```
 
 Use `loongarch64` for LoongArch, or omit `--release` for a debug build.
-Boot the archive at `target/<triple>/<profile>/initramfs-net-test.cpio` with the architecture test image, attach the VirtIO RNG, and select `net-service` at `Test suite:`.
+Boot the archive at `target/<triple>/<profile>/initramfs-net-test.cpio` with the architecture test image, select `net-service` at `Test suite:`.
 The scenarios cover IPv4 and IPv6 TCP streams between separate Tasks, complete UDP datagrams, request recovery, cancellation, half-close, session failure, and receive allocation failure.
 The architecture harness checks resource reclamation after the test Tasks exit.
 

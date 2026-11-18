@@ -65,7 +65,7 @@ fn main() {
     let net = net::Control::start(
         process::task(),
         net_channel,
-        services.entropy.take().unwrap(),
+        services.entropy.take(),
         service::deadline(),
     )
     .unwrap();

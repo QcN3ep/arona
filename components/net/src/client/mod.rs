@@ -21,11 +21,13 @@ impl<'a> Control<'a> {
     pub fn start(
         task: &'a Handle<Task>,
         channel: Handle<Channel>,
-        entropy: devmgr::rng::Session<'_>,
+        entropy: Option<devmgr::rng::Session<'_>>,
         deadline: u64,
     ) -> Result<Self, Error> {
         let mut request = Message::new(p::START, &[])?;
-        p::push(&mut request, entropy.into_channel(), p::CHANNEL)?;
+        if let Some(entropy) = entropy {
+            p::push(&mut request, entropy.into_channel(), p::CHANNEL)?;
+        }
         empty(call(&channel, &mut request, deadline)?)?;
         Ok(Self(Client::from_channel(task, channel)?))
     }

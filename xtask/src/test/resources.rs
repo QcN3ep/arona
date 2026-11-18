@@ -85,7 +85,9 @@ impl Resources {
             "linux" | "logger" => {
                 build.fixture("volume", directory)?;
                 resources.drive("disk", &directory.join("volume.ext4"), "");
-                resources.device("virtio-rng-pci,disable-legacy=on");
+                if suite == "logger" {
+                    resources.device("virtio-rng-pci,disable-legacy=on");
+                }
                 resources.inputs = if suite == "linux" {
                     let partitioned = directory.join("partitions.raw");
                     fs::write(&partitioned, partition_disk()).map_err(|error| error.to_string())?;
@@ -116,9 +118,7 @@ impl Resources {
                     resources.device("virtio-rng-device");
                 }
             }
-            "init" | "service" | "lwip" | "net_service" => {
-                resources.device("virtio-rng-pci,disable-legacy=on")
-            }
+            "service" | "lwip" => resources.device("virtio-rng-pci,disable-legacy=on"),
             "power" => resources.shutdown = true,
             _ => (),
         }

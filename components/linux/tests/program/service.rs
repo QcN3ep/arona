@@ -167,15 +167,9 @@ pub fn resources(
             )
             .unwrap(),
         ),
-        entropy: Some(
-            devmgr::rng::Session::open(
-                process::task(),
-                service,
-                device(devmgr::device::DriverKind::Rng),
-                until,
-            )
-            .unwrap(),
-        ),
+        entropy: devmgr::device::next(service, devmgr::device::DriverKind::Rng, 0, until)
+            .unwrap()
+            .map(|id| devmgr::rng::Session::open(process::task(), service, id, until).unwrap()),
         log: linux::Log::new(Some(
             kernel_log
                 .try_clone(Rights::READ | Rights::TRANSFER)

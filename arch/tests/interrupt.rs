@@ -112,6 +112,7 @@ fn run_environment(_suite: &str) {
             .unwrap();
     }
     initialize_memory(hardware);
+    kernel::random::initialize(hardware.random_seed.as_ref());
     let device = hardware
         .devices
         .iter()

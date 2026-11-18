@@ -163,20 +163,15 @@ fn start_network(
     net_channel: runtime::Handle<runtime::Channel>,
     channel: &runtime::Handle<runtime::Channel>,
 ) -> Control<'static> {
-    let rng = loop {
-        if let Some(id) = devmgr::device::next(
-            channel,
-            devmgr::device::DriverKind::Rng,
-            0,
-            launch::deadline(),
-        )
-        .unwrap()
-        {
-            break id;
-        }
-        runtime::thread::yield_now().unwrap();
-    };
-    let entropy =
-        devmgr::rng::Session::open(process::task(), channel, rng, launch::deadline()).unwrap();
+    let entropy = devmgr::device::next(
+        channel,
+        devmgr::device::DriverKind::Rng,
+        0,
+        launch::deadline(),
+    )
+    .unwrap()
+    .map(|rng| {
+        devmgr::rng::Session::open(process::task(), channel, rng, launch::deadline()).unwrap()
+    });
     Control::start(process::task(), net_channel, entropy, launch::deadline()).unwrap()
 }

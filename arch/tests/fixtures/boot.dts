@@ -8,7 +8,11 @@
     #size-cells = <2>;
 
     aliases { serial0 = "/soc@10000000/serial@0"; };
-    chosen { stdout-path = "serial0:115200n8r"; };
+    chosen {
+        stdout-path = "serial0:115200n8r";
+        rng-seed = <0x01020304 0x05060708 0x090a0b0c 0x0d0e0f10
+                    0x11451414 0x15161718 0x191a1b1c 0x1d1e1f20>;
+    };
     uart_clock: clock { compatible = "fixed-clock"; #clock-cells = <0>; clock-frequency = <3686400>; };
     cpus {
         #address-cells = <2>;

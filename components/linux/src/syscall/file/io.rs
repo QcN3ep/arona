@@ -237,13 +237,21 @@ fn virtual_read<'a>(
                 buffers.scatter(process, &mut zeros)?
             }
             crate::file::Virtual::Random => {
-                // Entropy reads complete synchronously with a one-second deadline.
-                let entropy = services.entropy.as_ref().ok_or(EOPNOTSUPP)?;
                 let mut bytes = alloc::vec![0; buffers.length()];
-                let deadline = runtime::thread::now_ns()
-                    .map_err(|_| EIO)?
-                    .saturating_add(1_000_000_000);
-                entropy.fill(&mut bytes, deadline).map_err(|_| EIO)?;
+                if let Some(entropy) = &services.entropy {
+                    let deadline = runtime::thread::now_ns()
+                        .map_err(|_| EIO)?
+                        .saturating_add(1_000_000_000);
+                    entropy.fill(&mut bytes, deadline).map_err(|_| EIO)?;
+                } else {
+                    process
+                        .supervisor
+                        .random(&mut bytes)
+                        .map_err(|error| match error {
+                            runtime::Error::Kernel(runtime::KernelError::Unsupported) => EOPNOTSUPP,
+                            _ => EIO,
+                        })?;
+                }
                 buffers.scatter(process, &mut bytes)?
             }
         })

@@ -42,6 +42,15 @@ pub(super) fn invoke(
             })?;
             Ok([handle.raw(), 0])
         }
+        task::RANDOM => {
+            let length = usize::try_from(args[1]).map_err(|_| Error::InvalidArgument)?;
+            let mut bytes = [0; 256];
+            let output = bytes.get_mut(..length).ok_or(Error::InvalidArgument)?;
+            let memory = caller.pin_user_memory(args[0] as usize, length, true)?;
+            crate::random::fill(output)?;
+            memory.write(0, output)?;
+            Ok([0; 2])
+        }
         task::CREATE_THREAD => create_thread(caller, target, args),
         task::TRAP_PORT | task::SET_TRAP => super::trap::task(caller, target, method, args),
         task::INSTALL => Ok([

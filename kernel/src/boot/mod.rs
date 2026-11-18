@@ -33,6 +33,7 @@ pub fn boot_kernel(info: BootInfo<'_>) -> ! {
     memory::initialize(&info)
         .unwrap_or_else(|error| panic!("failed to initialize memory: {error:?}"));
     log::info!("Memory initialized");
+    crate::random::initialize(info.hardware.random_seed.as_ref());
     let image = info.kernel_image;
     let stack = crate::memory::VirtRange {
         start: image.data.virtual_start

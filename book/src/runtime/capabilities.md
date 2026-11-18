@@ -86,6 +86,12 @@ The continuation reads, modifies, and restores user register state; on restore f
 KernelLog's `read` accepts a cursor and an output slice and returns an optional borrowed record.
 The record text borrows the output slice; after the reader has processed this record, it reuses this storage and obtains the next record with a new cursor.
 
+## Random Bytes
+
+`Handle<Task>::random` fills a buffer from the kernel ChaCha20 generator.
+The firmware must supply at least 32 seed bytes through DTB `rng-seed`.
+Without that seed, the call returns `Unsupported`, and services can use a devmgr RNG session.
+
 ## Error Handling
 
 `runtime::Error::Kernel` preserves ABI error codes, while `Error::Protocol` indicates that handoff or kernel-returned data does not conform to the wrapper's conventions.

@@ -112,7 +112,7 @@ When any external build or run command fails, xtask returns a non-zero status.
 `cargo xtask package-net-test riscv64 --release` packages the network service with separate native client Tasks.
 The resulting archive is `target/riscv64gc-unknown-none-elf/release/initramfs-net-test.cpio`.
 Use `loongarch64` for the other architecture and omit `--release` for debug builds.
-`cargo xtask test riscv64 --release --filter interrupt::net_service` builds the archive and runs it with a modern VirtIO RNG.
+`cargo xtask test riscv64 --release --filter interrupt::net_service` builds the archive and runs it without an RNG device.
 These loopback scenarios do not require `--net` or an Ethernet device.
 
 ## Performance Cases

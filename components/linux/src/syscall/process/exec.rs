@@ -155,6 +155,7 @@ impl<'a> Pending<'a> {
         let loaded = match self.executable.as_mut().unwrap().poll(
             files,
             process.machine,
+            process.supervisor,
             services,
             Some(process),
         ) {

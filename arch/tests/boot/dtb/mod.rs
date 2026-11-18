@@ -100,6 +100,10 @@ fn dtb_produces_complete_boot_data() {
     let hardware = parse_hardware(&blob);
     drop(blob);
     assert_eq!(
+        hardware.random_seed.as_ref().unwrap().0,
+        core::array::from_fn(|i| (i + 1) as u8)
+    );
+    assert_eq!(
         hardware.cpus.as_slice(),
         &[CpuInfo { hardware_id: 0 }, CpuInfo { hardware_id: 7 }]
     );

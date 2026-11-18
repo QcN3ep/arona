@@ -23,6 +23,7 @@ pub struct HardwareInfo {
     pub devices: ArrayVec<HardwareDeviceInfo, MAX_DEVICES>,
     pub device_properties: ArrayVec<DeviceProperty, MAX_DEVICE_PROPERTIES>,
     pub timebase_frequency_hz: Option<u64>,
+    pub random_seed: Option<RandomSeed>,
     pub console: Option<ConsoleInfo>,
     pub cpu_interrupts: ArrayVec<CpuInterruptRoute, MAX_CPU_INTERRUPT_ROUTES>,
     pub pci: PciInfo,
@@ -54,6 +55,7 @@ impl HardwareInfo {
             devices: ArrayVec::new_const(),
             device_properties: ArrayVec::new_const(),
             timebase_frequency_hz: None,
+            random_seed: None,
             console: None,
             cpu_interrupts: ArrayVec::new_const(),
             pci: PciInfo::new(),
@@ -65,4 +67,14 @@ impl HardwareInfo {
 pub struct CpuInfo {
     /// Hardware ID provided by the firmware.
     pub hardware_id: u64,
+}
+
+/// At least 256 bits of entropy supplied by trusted firmware.
+#[derive(Clone, Eq, PartialEq)]
+pub struct RandomSeed(pub [u8; 32]);
+
+impl core::fmt::Debug for RandomSeed {
+    fn fmt(&self, output: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        output.write_str("RandomSeed { .. }")
+    }
 }

@@ -40,6 +40,7 @@ methods!(task {
     LOAD_AVERAGE = 39 => NONE;
     ATOMIC_COMPARE_EXCHANGE = 40 => WRITE_MEMORY;
     MAP_HUGE = 41 => MAP_MEMORY;
+    RANDOM = 42 => NONE;
 });
 methods!(memory {
     SIZE = 16 => NONE;

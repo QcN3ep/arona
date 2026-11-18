@@ -15,22 +15,27 @@ use session::Session;
 pub fn run(control: Handle<Channel>) -> Result<(), Error> {
     let mut startup = control.receive(WaitMode::Forever)?;
     let reply = startup.take_reply().ok_or(Error::InvalidRequest)?;
-    if startup.tag != p::START || !startup.words().is_empty() || startup.handles().len() != 1 {
+    if startup.tag != p::START || !startup.words().is_empty() || startup.handles().len() > 1 {
         return Err(Error::InvalidRequest);
     }
-    let entropy =
-        devmgr::rng::Session::from_channel(process::task(), p::take(&mut startup, p::CHANNEL)?)
-            .map_err(|_| Error::InvalidRequest)?;
     let mut seed = [0; 32];
-    entropy
-        .fill(
-            &mut seed,
-            thread::now_ns()?
-                .checked_add(10_000_000_000)
-                .ok_or(Error::InvalidRequest)?,
-        )
-        .map_err(|_| Error::Unavailable)?;
-    drop(entropy);
+    if startup.handles().is_empty() {
+        process::task()
+            .random(&mut seed)
+            .map_err(|_| Error::Unavailable)?;
+    } else {
+        let entropy =
+            devmgr::rng::Session::from_channel(process::task(), p::take(&mut startup, p::CHANNEL)?)
+                .map_err(|_| Error::InvalidRequest)?;
+        entropy
+            .fill(
+                &mut seed,
+                thread::now_ns()?
+                    .checked_add(10_000_000_000)
+                    .ok_or(Error::InvalidRequest)?,
+            )
+            .map_err(|_| Error::Unavailable)?;
+    }
     let stack = lwip::Stack::initialize(seed).map_err(error)?;
     // TODO: Attach Ethernet frame sessions and configure external interfaces.
     reply.send(&mut Message::new(0, &[])?)?;

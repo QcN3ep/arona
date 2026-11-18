@@ -12,6 +12,7 @@ pub mod hardware;
 pub mod ipc;
 pub mod logger;
 pub mod memory;
+pub mod random;
 mod syscall;
 pub mod task;
 pub mod thread;

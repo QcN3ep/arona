@@ -106,17 +106,9 @@ pub fn start_net(
             | Rights::CREATE_THREAD,
     )?;
     let until = deadline()?;
-    let id = loop {
-        if let Some(id) = devmgr::device::next(devices, devmgr::device::DriverKind::Rng, 0, until)?
-        {
-            break id;
-        }
-        if thread::now_ns()? >= until {
-            return Err(net::Error::Unavailable.into());
-        }
-        thread::yield_now()?;
-    };
-    let entropy = devmgr::rng::Session::open(process::task(), devices, id, until)?;
+    let entropy = devmgr::device::next(devices, devmgr::device::DriverKind::Rng, 0, until)?
+        .map(|id| devmgr::rng::Session::open(process::task(), devices, id, until))
+        .transpose()?;
     let control = net::Control::start(process::task(), channel, entropy, until)?;
     Ok((service, control))
 }

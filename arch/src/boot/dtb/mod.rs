@@ -130,6 +130,14 @@ impl<'a> Dtb<'a> {
 
     /// Convert the DTB into a hardware description; the result is unusable on failure.
     pub fn dump(self, hardware: &mut HardwareInfo) -> Result<()> {
+        if let Some(chosen) = self.root.child("chosen")?
+            && let Some(seed) = chosen.raw_property("rng-seed")?
+        {
+            hardware.random_seed = seed
+                .value
+                .get(..32)
+                .map(|bytes| kernel::RandomSeed(bytes.try_into().unwrap()));
+        }
         hardware.timebase_frequency_hz = cpus::parse(&self, &mut hardware.cpus)?;
         memory::parse(&self, &mut hardware.memory)?;
         devices::parse(&self, hardware)

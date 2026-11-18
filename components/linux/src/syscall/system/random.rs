@@ -20,7 +20,7 @@ pub(in crate::syscall) struct Pending {
 
 // REFERENCE: https://man7.org/linux/man-pages/man2/getrandom.2.html
 pub(super) fn start<'a>(
-    _process: &Process<'a>,
+    process: &Process<'a>,
     services: &Services<'_>,
     args: [usize; 6],
 ) -> Outcome<'a> {
@@ -33,6 +33,23 @@ pub(super) fn start<'a>(
     }
     if length > isize::MAX as usize {
         return Outcome::Complete(Err(EINVAL));
+    }
+    if services.entropy.is_none() {
+        return Outcome::Complete((|| {
+            let mut bytes = alloc::vec![0; length.min(devmgr::rng::MAX_BYTES)];
+            process
+                .supervisor
+                .random(&mut bytes)
+                .map_err(|error| match error {
+                    runtime::Error::Kernel(runtime::KernelError::Unsupported) => EOPNOTSUPP,
+                    _ => EIO,
+                })?;
+            process
+                .address_space
+                .write(address, &bytes)
+                .map_err(|_| EFAULT)?;
+            Ok(bytes.len())
+        })());
     }
     outcome((|| {
         let entropy = services.entropy.as_ref().ok_or(EOPNOTSUPP)?;
