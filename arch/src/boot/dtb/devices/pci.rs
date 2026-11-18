@@ -119,7 +119,13 @@ pub(super) fn routes(
     }
     if let Some(map) = property::<U32List<'_>>(node, "interrupt-map")? {
         // REFERENCE: https://www.devicetree.org/open-firmware/bindings/pci/pci2_1.pdf
-        if property::<u32>(node, "#interrupt-cells")? != Some(1) {
+        let interrupt_cells = property::<u32>(node, "#interrupt-cells")?;
+        // QEMU's LoongArch table can omit the host cell count and encode only
+        // the PCH PIC line. Those PCI inputs are active-high level interrupts.
+        // REFERENCE: https://gitlab.com/qemu-project/qemu/-/blob/v9.2.1/hw/loongarch/virt.c
+        let bare_line =
+            interrupt_cells.is_none() && super::matches(dtb.root, "linux,dummy-loongson3")?;
+        if interrupt_cells != Some(1) && !bare_line {
             return Err("unsupported PCI interrupt cells".into());
         }
         let mask = property::<U32List<'_>>(node, "interrupt-map-mask")?
@@ -152,7 +158,14 @@ pub(super) fn routes(
             if property::<u32>(parent, "#address-cells")?.unwrap_or(0) != 0 {
                 return Err("PCI interrupt parent address cells are unsupported".into());
             }
-            let interrupt = interrupts::interrupt(dtb, nodes, phandle, &mut cells)?;
+            let interrupt = if bare_line {
+                if !super::matches(parent, "loongson,pch-pic-1.0")? {
+                    return Err("unsupported LoongArch PCI interrupt parent".into());
+                }
+                interrupts::interrupt(dtb, nodes, phandle, &mut [cell(&mut cells)?, 4].into_iter())?
+            } else {
+                interrupts::interrupt(dtb, nodes, phandle, &mut cells)?
+            };
             let route = PciInterruptRoute {
                 host: instance_id(index),
                 requester_id: ((address[0] & mask[0]) >> 8) as u16,

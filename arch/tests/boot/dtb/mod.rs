@@ -361,6 +361,19 @@ fn dtb_conversion_does_not_allocate() {
 #[test]
 fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
     // dtc -I dts -O dtb -o arch/tests/fixtures/loongarch.dtb arch/tests/fixtures/loongarch.dts
+    let compact = parse_hardware(include_bytes!("../../fixtures/loongarch-pci.dtb"));
+    assert_eq!(compact.pci.interrupts.len(), 16);
+    for route in &compact.pci.interrupts {
+        assert_eq!(
+            route.interrupt.line,
+            16 + (u32::from(route.requester_id / 8) + u32::from(route.pin) - 1) % 4
+        );
+        assert_eq!(route.interrupt.trigger, Some(InterruptTrigger::Level));
+        assert_eq!(
+            route.interrupt.polarity,
+            Some(InterruptPolarity::ActiveHigh)
+        );
+    }
     let hardware = parse_hardware(LOONGARCH_DTB);
     assert_eq!(hardware.cpus.as_slice(), &[CpuInfo { hardware_id: 0 }]);
     let device = |identity| {
