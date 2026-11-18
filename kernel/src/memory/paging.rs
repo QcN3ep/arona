@@ -241,10 +241,10 @@ impl PageTableState {
                 walk.level,
                 PageTableEntry::Table(*frames.last().unwrap()),
             )?;
-            for (slot, frame) in walk.tables.iter_mut().zip(frames) {
+            for (slot, frame) in walk.tables.iter_mut().skip(leaf_level).zip(frames) {
                 *slot = Some(frame);
             }
-            walk.level = 0;
+            walk.level = leaf_level;
             self.backing.merge(allocation);
         }
         Ok(walk)
