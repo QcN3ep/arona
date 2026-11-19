@@ -198,6 +198,11 @@ fn write_message(
             rights,
         });
     }
+    if response.has_reply()
+        && wire.handles[0].is_none_or(|handle| handle.kind != ObjectType::Reply)
+    {
+        return Err(crate::ipc::ChannelError::InvalidMessage.into());
+    }
     let bytes = wire
         .encode()
         .map_err(|_| crate::ipc::ChannelError::InvalidMessage)?;

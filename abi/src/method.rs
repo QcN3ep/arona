@@ -6,7 +6,10 @@ macro_rules! methods {
     ($name:ident { $($method:ident = $number:literal => $right:ident;)* }) => {
         pub mod $name {
             use crate::Rights;
-            $(pub const $method: u64 = $number;)*
+            $(
+                #[doc = concat!("Required handle rights: `", stringify!($right), "`.")]
+                pub const $method: u64 = $number;
+            )*
             pub(super) const fn required(method: u64) -> Option<Rights> {
                 match method { $($method => Some(Rights::$right),)* _ => None }
             }

@@ -28,7 +28,12 @@ macro_rules! define_types {
     ($($kind:ident = $id:literal => [$($right:ident),*];)*) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         #[repr(u64)]
-        pub enum ObjectType { $($kind = $id,)* }
+        pub enum ObjectType {
+            $(
+                #[doc = concat!("Allowed rights: ", $("`", stringify!($right), "` ",)* ".")]
+                $kind = $id,
+            )*
+        }
 
         impl ObjectType {
             pub const fn from_raw(raw: u64) -> Option<Self> {

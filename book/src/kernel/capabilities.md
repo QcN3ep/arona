@@ -42,7 +42,9 @@ When handing a handle across Tasks, the kernel installs the object in the target
 ## Permission Checks
 
 `Rights` is a set of permission bits.
+Its declaration assigns each bit explicitly and generates the accepted mask with compile-time checks for duplicate and out-of-range bits.
 The object declaration gives the acceptable permissions, and the method table gives the permissions required by each operation.
+These declarations remain in `abi` and generate the permission entries in the API documentation.
 For example, sending on a Channel requires `WRITE`, receiving requires `READ`, and calling requires `READ_WRITE`; mapping operations on a Task require `MAP_MEMORY`.
 
 The system call dispatcher first obtains the object type and handle permissions, then looks up the method table and checks permissions, and only then enters the handler for the type.

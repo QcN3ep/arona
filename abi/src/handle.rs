@@ -21,47 +21,66 @@ impl Handle {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Rights(u64);
 
+macro_rules! rights {
+    ($($name:ident = $bit:literal;)*) => {
+        impl Rights {
+            $(pub const $name: Self = Self(1 << $bit);)*
+            const VALID_BITS: u64 = 0 $(| Self::$name.0)*;
+        }
+
+        const _: () = {
+            let mut used = 0u64;
+            $(
+                assert!($bit < 64);
+                assert!(used & (1u64 << $bit) == 0);
+                used |= 1u64 << $bit;
+            )*
+            assert!(used == Rights::VALID_BITS);
+        };
+    };
+}
+
+rights! {
+    DUPLICATE = 0;
+    TRANSFER = 1;
+    WAIT = 2;
+    SIGNAL = 3;
+    READ = 4;
+    WRITE = 5;
+    MAP = 6;
+    EXECUTE = 7;
+    CREATE_THREAD = 8;
+    TERMINATE = 9;
+    MAP_MEMORY = 10;
+    RESOURCE_SPLIT = 11;
+    DEVICE_CONTROL = 12;
+    IRQ_ACK = 13;
+    DMA_MAP = 14;
+    REVOKE = 16;
+    START = 17;
+    FRAME_ALLOCATE = 18;
+    INSTALL_HANDLE = 19;
+    SET_TRAP = 20;
+    INTERRUPT = 21;
+    READ_MEMORY = 23;
+    WRITE_MEMORY = 24;
+    SET_STATE = 25;
+    CREATE_TASK = 26;
+    CREATE_CHANNEL = 27;
+    CREATE_EVENT = 28;
+    CREATE_TIMER = 29;
+}
+
 impl Rights {
     pub const NONE: Self = Self(0);
-    pub const DUPLICATE: Self = Self(1 << 0);
-    pub const TRANSFER: Self = Self(1 << 1);
-    pub const WAIT: Self = Self(1 << 2);
-    pub const SIGNAL: Self = Self(1 << 3);
-    pub const READ: Self = Self(1 << 4);
-    pub const WRITE: Self = Self(1 << 5);
-    pub const MAP: Self = Self(1 << 6);
     pub const READ_WRITE: Self = Self::READ.union(Self::WRITE);
-    pub const EXECUTE: Self = Self(1 << 7);
-    pub const CREATE_THREAD: Self = Self(1 << 8);
-    pub const TERMINATE: Self = Self(1 << 9);
-    pub const MAP_MEMORY: Self = Self(1 << 10);
-    pub const RESOURCE_SPLIT: Self = Self(1 << 11);
-    pub const DEVICE_CONTROL: Self = Self(1 << 12);
-    pub const IRQ_ACK: Self = Self(1 << 13);
-    pub const DMA_MAP: Self = Self(1 << 14);
-    pub const REVOKE: Self = Self(1 << 16);
-    pub const START: Self = Self(1 << 17);
-    pub const FRAME_ALLOCATE: Self = Self(1 << 18);
-    pub const INSTALL_HANDLE: Self = Self(1 << 19);
-    pub const SET_TRAP: Self = Self(1 << 20);
-    pub const INTERRUPT: Self = Self(1 << 21);
-    pub const BIND_TRAP: Self = Self(1 << 22);
-    pub const READ_MEMORY: Self = Self(1 << 23);
-    pub const WRITE_MEMORY: Self = Self(1 << 24);
-    pub const SET_STATE: Self = Self(1 << 25);
-
-    pub const CREATE_TASK: Self = Self(1 << 26);
-
-    pub const CREATE_CHANNEL: Self = Self(1 << 27);
-    pub const CREATE_EVENT: Self = Self(1 << 28);
-    pub const CREATE_TIMER: Self = Self(1 << 29);
 
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
     pub const fn from_bits(bits: u64) -> Option<Self> {
-        if bits & !0x3fff_7fff == 0 {
+        if bits & !Self::VALID_BITS == 0 {
             Some(Self(bits))
         } else {
             None

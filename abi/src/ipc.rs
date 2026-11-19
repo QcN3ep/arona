@@ -37,10 +37,7 @@ impl Message {
         }
     }
     pub fn encode(&self) -> Result<[u8; Self::SIZE], Error> {
-        if self.word_count > MESSAGE_WORDS
-            || self.handle_count > MESSAGE_HANDLES
-            || (self.has_reply && self.handle_count == 0)
-        {
+        if self.word_count > MESSAGE_WORDS || self.handle_count > MESSAGE_HANDLES {
             return Err(Error::InvalidArgument);
         }
         let mut words = [0_u64; Self::SIZE / 8];
@@ -68,11 +65,7 @@ impl Message {
     pub fn decode(bytes: &[u8; Self::SIZE]) -> Result<Self, Error> {
         let words: [u64; Self::SIZE / 8] =
             core::array::from_fn(|index| u64::from_le_bytes(bytes.as_chunks::<8>().0[index]));
-        if words[1] > MESSAGE_WORDS as u64
-            || words[2] > MESSAGE_HANDLES as u64
-            || words[3] > 1
-            || (words[3] == 1 && words[2] == 0)
-        {
+        if words[1] > MESSAGE_WORDS as u64 || words[2] > MESSAGE_HANDLES as u64 || words[3] > 1 {
             return Err(Error::InvalidArgument);
         }
         let mut message = Self::new(words[0]);
@@ -87,9 +80,6 @@ impl Message {
                 kind: ObjectType::from_raw(words[first + 1]).ok_or(Error::InvalidArgument)?,
                 rights: Rights::from_bits(words[first + 2]).ok_or(Error::InvalidArgument)?,
             });
-        }
-        if message.has_reply && message.handles[0].unwrap().kind != ObjectType::Reply {
-            return Err(Error::InvalidArgument);
         }
         Ok(message)
     }

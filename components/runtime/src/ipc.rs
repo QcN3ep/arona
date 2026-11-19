@@ -120,12 +120,21 @@ impl ReceivedMessage {
             .flatten()
             .map(AnyHandle::received)
             .collect();
-        Ok(Self {
+        let message = Self {
             tag: wire.tag,
             words: wire.words.into_iter().take(wire.word_count).collect(),
             handles,
             has_reply: wire.has_reply,
-        })
+        };
+        if message.has_reply
+            && message
+                .handles
+                .first()
+                .is_none_or(|handle| handle.kind() != abi::ObjectType::Reply)
+        {
+            return Err(Error::Protocol);
+        }
+        Ok(message)
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
