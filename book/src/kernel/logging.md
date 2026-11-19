@@ -17,21 +17,16 @@ Text is truncated at UTF-8 character boundaries, and the truncation state is rec
 Logging can occur in interrupt context or while other logging is in progress, so the write path tries to take the lock; if the lock is held, this record is not stored and execution continues.
 This leaves a gap in the sequence numbers, which lets readers detect that content is missing between two records.
 
-## Sink Registration and Replacement
+## Early Console Sink
 
-The Logger registers at most 8 Sinks.
-`add_sink` returns a `SinkHandle`, and the handle records a slot and a generation.
-Once the slot is reused, the old handle returns `Detached`.
+The Logger holds one early console Sink.
+`set_sink` registers it and rejects a second registration while it is present.
+`remove_sink` flushes pending output before detaching it.
+A failed flush leaves the Sink registered so the caller can retry.
+Registration and removal return `Busy` while output is in progress.
 
-| Operation | Behavior |
-|---|---|
-| `replace` | Flush the original Sink first, then replace it on success |
-| `remove` | Flush first, then remove on success |
-| `discard` | Remove directly |
-
-Dropping a `SinkHandle` keeps the registration in place.
-Dispatch errors from writes and flushes are counted per Sink in `failures()`.
-Sinks run in the control flow that produces the log, and the early serial Sink outputs by polling registers directly.
+The Sink runs in the control flow that produces the log.
+The early serial Sink polls the UART registers directly.
 
 ## From Early Output to the User Service
 

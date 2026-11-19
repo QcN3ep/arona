@@ -11,11 +11,9 @@ use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use log::{LevelFilter, Log, Metadata, Record, SetLoggerError};
-use spin::{Once, RwLock, RwLockWriteGuard};
+use spin::{Once, RwLock};
 
 use buffer::Buffer;
-
-pub const MAX_SINKS: usize = 8;
 
 /// Both output and flush must be bounded and must not wait for other writers when reentrant or in interrupt context.
 pub trait Sink: Sync {
@@ -31,7 +29,6 @@ pub trait Sink: Sync {
 pub enum SinkError {
     Busy,
     Full,
-    Detached,
     Flush,
 }
 
@@ -40,57 +37,14 @@ impl fmt::Display for SinkError {
         output.write_str(match self {
             Self::Busy => "sink is busy",
             Self::Full => "sink capacity exhausted",
-            Self::Detached => "sink is detached",
             Self::Flush => "failed to flush sink",
         })
     }
 }
 
-struct Slot {
-    generation: usize,
-    sink: Option<&'static dyn Sink>,
-}
-
-/// An invalidated handle must not affect a new registration reusing the slot; dropping the handle does not remove the Sink.
-pub struct SinkHandle<'logger> {
-    slot: &'logger RwLock<Slot>,
-    generation: usize,
-}
-
-impl SinkHandle<'_> {
-    pub fn replace(&self, sink: &'static dyn Sink) -> Result<&'static dyn Sink, SinkError> {
-        let mut slot = self.lock()?;
-        let old = slot.sink.ok_or(SinkError::Detached)?;
-        old.flush().map_err(|_| SinkError::Flush)?;
-        slot.sink = Some(sink);
-        Ok(old)
-    }
-
-    pub fn remove(&self) -> Result<&'static dyn Sink, SinkError> {
-        let mut slot = self.lock()?;
-        let old = slot.sink.ok_or(SinkError::Detached)?;
-        old.flush().map_err(|_| SinkError::Flush)?;
-        slot.sink = None;
-        Ok(old)
-    }
-
-    pub fn discard(&self) -> Result<&'static dyn Sink, SinkError> {
-        self.lock()?.sink.take().ok_or(SinkError::Detached)
-    }
-
-    fn lock(&self) -> Result<RwLockWriteGuard<'_, Slot>, SinkError> {
-        let slot = self.slot.try_write().ok_or(SinkError::Busy)?;
-        if slot.generation != self.generation {
-            return Err(SinkError::Detached);
-        }
-        Ok(slot)
-    }
-}
-
 pub struct Logger {
     max_level: AtomicUsize,
-    slots: [RwLock<Slot>; MAX_SINKS],
-    failures: AtomicUsize,
+    sink: RwLock<Option<&'static dyn Sink>>,
     buffer: Buffer,
     clock: Once<fn() -> Option<u64>>,
 }
@@ -111,48 +65,28 @@ impl Logger {
     pub const fn new(max_level: LevelFilter) -> Self {
         Self {
             max_level: AtomicUsize::new(max_level as usize),
-            slots: [const {
-                RwLock::new(Slot {
-                    generation: 0,
-                    sink: None,
-                })
-            }; MAX_SINKS],
-            failures: AtomicUsize::new(0),
+            sink: RwLock::new(None),
             buffer: Buffer::new(),
             clock: Once::new(),
         }
     }
 
-    pub fn add_sink(&self, sink: &'static dyn Sink) -> Result<SinkHandle<'_>, SinkError> {
-        let mut busy = false;
-        for slot in &self.slots {
-            let Some(entry) = slot.try_read() else {
-                busy = true;
-                continue;
-            };
-            if entry.sink.is_some() {
-                continue;
-            }
-            drop(entry);
-            let Some(mut entry) = slot.try_write() else {
-                busy = true;
-                continue;
-            };
-            if entry.sink.is_some() {
-                continue;
-            }
-            let Some(generation) = entry.generation.checked_add(1) else {
-                continue;
-            };
-            entry.generation = generation;
-            entry.sink = Some(sink);
-            return Ok(SinkHandle { slot, generation });
+    pub fn set_sink(&self, sink: &'static dyn Sink) -> Result<(), SinkError> {
+        let mut current = self.sink.try_write().ok_or(SinkError::Busy)?;
+        if current.is_some() {
+            return Err(SinkError::Full);
         }
-        Err(if busy {
-            SinkError::Busy
-        } else {
-            SinkError::Full
-        })
+        *current = Some(sink);
+        Ok(())
+    }
+
+    pub fn remove_sink(&self) -> Result<(), SinkError> {
+        let mut current = self.sink.try_write().ok_or(SinkError::Busy)?;
+        if let Some(sink) = *current {
+            sink.flush().map_err(|_| SinkError::Flush)?;
+            *current = None;
+        }
+        Ok(())
     }
 
     pub fn set_max_level(&self, max_level: LevelFilter) {
@@ -167,20 +101,11 @@ impl Logger {
         self.clock.call_once(|| clock);
     }
 
-    /// Number of failed write and flush dispatches, counted per Sink.
-    pub fn failures(&self) -> usize {
-        self.failures.load(Ordering::Relaxed)
-    }
-
     fn dispatch(&self, mut output: impl FnMut(&dyn Sink) -> fmt::Result) {
-        for slot in &self.slots {
-            let result = match slot.try_read() {
-                Some(entry) => entry.sink.map_or(Ok(()), &mut output),
-                None => Err(fmt::Error),
-            };
-            if result.is_err() {
-                self.failures.fetch_add(1, Ordering::Relaxed);
-            }
+        if let Some(current) = self.sink.try_read()
+            && let Some(sink) = *current
+        {
+            let _ = output(sink);
         }
     }
 }

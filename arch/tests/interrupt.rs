@@ -321,12 +321,12 @@ fn run_program(
             | "lwip"
     ) {
         kernel::logger::init(kernel::log::LevelFilter::Info).unwrap();
-        kernel::logger::LOGGER.add_sink(&TestLog).unwrap();
+        kernel::logger::LOGGER.set_sink(&TestLog).unwrap();
     }
     if suite == "linux" {
         // Keep kernel logs available to the compatibility suite's syslog tests.
         kernel::logger::init(kernel::log::LevelFilter::Debug).unwrap();
-        kernel::logger::LOGGER.add_sink(&TestLog).unwrap();
+        kernel::logger::LOGGER.set_sink(&TestLog).unwrap();
         kernel::logger::LOGGER.enable_timestamps(|| hardware::timer().now_ns().ok());
         kernel::log::info!(target: "kernel::test", "Kernel compatibility test log");
     }
