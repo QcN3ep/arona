@@ -5,7 +5,7 @@
 use crate::{
     process::Process,
     syscall::{
-        abi::{EFAULT, EIO, Errno, SyscallResult},
+        abi::{EFAULT, EIO, SyscallResult},
         rusage,
     },
 };
@@ -33,7 +33,7 @@ pub(super) fn sysinfo(
         .ok_or(EIO)?
         .memory_stats()
         .map_err(|_| EIO)?;
-    let loads = load_average(process)?;
+    let loads = services.loads.get();
     let processes = process.namespace.processes.borrow().len();
     let mut bytes = [0; SYSINFO_SIZE];
     bytes[..8].copy_from_slice(&((now / 1_000_000_000) as i64).to_le_bytes());
@@ -88,8 +88,4 @@ pub(super) fn getrusage(process: &Process<'_>, who: usize, address: usize) -> Sy
 
 fn ticks(nanoseconds: u64) -> u64 {
     nanoseconds / NANOS_PER_TICK
-}
-
-fn load_average(process: &Process<'_>) -> Result<[u32; 3], Errno> {
-    process.supervisor.load_average().map_err(|_| EIO)
 }

@@ -2,21 +2,31 @@
 
 //! System-wide memory and scheduler statistics.
 
-use crate::{Error, Handle, SystemInfo, Task};
-use abi::method::task;
-
-impl Handle<Task> {
-    /// Runnable-thread averages over 1, 5, and 15 minutes in 16.16 fixed point.
-    pub fn load_average(&self) -> Result<[u32; 3], Error> {
-        let [packed, fifteen] = self.borrow().invoke(task::LOAD_AVERAGE, [0; 5])?;
-        Ok([(packed >> 32) as u32, packed as u32, fifteen as u32])
-    }
-}
+use crate::{Error, Handle, SystemInfo};
+pub use abi::system::RunnableIntegral;
 
 impl Handle<SystemInfo> {
     /// Total and free physical page-frame bytes.
     pub fn memory_stats(&self) -> Result<(u64, u64), Error> {
         let [total, free] = self.borrow().query(abi::info::system::MEMORY)?;
         Ok((total, free))
+    }
+
+    pub fn runnable_integral(&self) -> Result<RunnableIntegral, Error> {
+        let mut bytes = [0; RunnableIntegral::SIZE];
+        let [written, _] = self.borrow().invoke(
+            abi::method::INFO,
+            [
+                abi::info::system::RUNNABLE_INTEGRAL,
+                0,
+                0,
+                bytes.as_mut_ptr() as u64,
+                bytes.len() as u64,
+            ],
+        )?;
+        if written != bytes.len() as u64 {
+            return Err(Error::Protocol);
+        }
+        Ok(RunnableIntegral::decode(&bytes))
     }
 }

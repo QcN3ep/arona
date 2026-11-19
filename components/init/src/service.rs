@@ -171,6 +171,7 @@ pub fn start_linux(
         channel,
         filesystem.connect(deadline()?)?,
         linux::Services {
+            loads: Default::default(),
             system: Some(system.try_clone(Rights::READ | Rights::TRANSFER)?),
             generator: Some(generator.try_clone(Rights::READ | Rights::TRANSFER)?),
             clock,

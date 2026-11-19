@@ -27,6 +27,12 @@ pub fn run(mut startup: ReceivedMessage) {
         .unwrap()
         .downcast::<runtime::Entropy>()
         .unwrap();
+    let sample = system.runnable_integral().unwrap();
+    assert!(sample.runnable_count > 0);
+    assert!(sample.integral > 0);
+    let next = system.runnable_integral().unwrap();
+    assert!(next.sample_ns >= sample.sample_ns);
+    assert!(next.integral >= sample.integral);
     let (total, free) = system.memory_stats().unwrap();
     assert!(total > free && free > 0);
     assert_eq!(

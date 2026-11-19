@@ -58,11 +58,6 @@ pub(super) fn invoke(
         task::CHANNEL | task::EVENT | task::TIMER => {
             super::ipc::create(caller, target, method, args)
         }
-        // Pack the 16.16 fixed-point 1-minute and 5-minute averages into one value.
-        task::LOAD_AVERAGE => {
-            let [one, five, fifteen] = crate::thread::scheduler::load_average();
-            Ok([(u64::from(one) << 32) | u64::from(five), u64::from(fifteen)])
-        }
         _ => super::memory::task(caller, target, method, args),
     }
 }

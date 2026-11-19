@@ -96,3 +96,7 @@ Notification, timeout, and object exit race for this round's result through the 
 
 When a thread or Task exits, it notifies the exit waiters.
 Multi-object waiting further combines these sources with channels, events, and asynchronous calls; see [IPC and Waiting](ipc.md).
+
+SystemInfo exposes a cumulative integral of ready and running non-idle threads.
+The scheduler accounts for the previous count before each change and returns the timestamp, integral, and count in one snapshot.
+Load average calculation belongs to the user-space service.

@@ -16,6 +16,7 @@ pub mod method;
 mod object;
 pub mod process;
 mod status;
+pub mod system;
 pub mod thread;
 pub mod trap;
 

@@ -20,6 +20,15 @@ pub(super) fn invoke(
     {
         return address_space(caller, target, args);
     }
+    if matches!(target, ObjectReference::SystemInfo(_))
+        && args[0] == info::system::RUNNABLE_INTEGRAL
+    {
+        if args[1..3] != [0; 2] {
+            return Err(Error::InvalidArgument.into());
+        }
+        let snapshot = crate::thread::scheduler::runnable_integral()?;
+        return output(caller, args[3], args[4], &snapshot.encode());
+    }
     if args[1..] != [0; 4] {
         return Err(Error::InvalidArgument.into());
     }

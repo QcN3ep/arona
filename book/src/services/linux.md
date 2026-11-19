@@ -8,6 +8,7 @@ The kernel hands the program's calls and exceptions to it through a TrapPort.
 
 init provides the service with file and network clients, a read-only kernel log, optional RTC and random number sessions, and the mount-control channel.
 A preceding startup message grants SystemInfo and Entropy handles because the service session message already fills the IPC handle capacity.
+The service samples the runnable-thread integral every five seconds and computes the load averages reported by `sysinfo`.
 The execution request contains the program path, argv, envp, terminal session, and the mount grant.
 `Control::start_run` returns an asynchronous call, and the request completes with an exit status after the program ends.
 

@@ -66,6 +66,8 @@ topics!(clock {
 topics!(system {
     /// Returns `[total_physical_bytes, free_physical_bytes]`.
     MEMORY = 16 => READ;
+    /// Writes a RunnableIntegral snapshot without query parameters.
+    RUNNABLE_INTEGRAL = 17 => READ;
 });
 
 pub const fn required_rights(kind: ObjectType, topic: u64) -> Option<Rights> {

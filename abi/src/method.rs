@@ -46,7 +46,6 @@ methods!(task {
     WRITE_MEMORY = 33 => WRITE_MEMORY;
     TRAP_PORT = 34 => SET_TRAP;
     SET_TRAP = 35 => SET_TRAP;
-    LOAD_AVERAGE = 39 => NONE;
     ATOMIC_COMPARE_EXCHANGE = 40 => WRITE_MEMORY;
 });
 methods!(memory {

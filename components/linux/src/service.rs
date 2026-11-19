@@ -2,6 +2,7 @@
 
 //! Startup and asynchronous event handling for the Linux service.
 
+mod load;
 mod loading;
 
 use alloc::{rc::Rc, vec::Vec};
@@ -48,6 +49,11 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
     services.system = native.system;
     services.generator = native.generator;
     services.initialize(task)?;
+    let mut sampler = services
+        .system
+        .as_ref()
+        .map(|system| load::Sampler::new(task, system))
+        .transpose()?;
     let shared = crate::process::Shared {
         namespace: Rc::new(crate::process::namespace::PidNamespace::new()),
         shm: Rc::new(RefCell::new(crate::shm::Table::new())),
@@ -60,6 +66,9 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
         running: Vec::new(),
     };
     loop {
+        if let Some(sampler) = &mut sampler {
+            sampler.poll(services.system.as_ref().unwrap(), &services.loads)?;
+        }
         let mut progress = poll_loading(
             &mut guests,
             task,
@@ -103,7 +112,13 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
             Err(error) => return Err(error.into()),
         }
         if !progress {
-            wait(&control, &port, &guests.loading, &guests.running)?;
+            wait(
+                &control,
+                &port,
+                &guests.loading,
+                &guests.running,
+                sampler.as_ref().map(load::Sampler::event),
+            )?;
         }
     }
 }
@@ -286,6 +301,7 @@ fn wait(
     port: &Handle<runtime::TrapPort>,
     loading: &[Loading<'_>],
     running: &[Running<'_>],
+    load_event: Option<&Handle<runtime::Event>>,
 ) -> Result<(), Error> {
     let mut items = alloc::vec![
         WaitItem::new(control, READABLE | PEER_CLOSED),
@@ -298,6 +314,9 @@ fn wait(
             (alloc::rc::Rc::as_ptr(terminal), terminal)
         })
         .collect();
+    if let Some(event) = load_event {
+        items.push(WaitItem::new(event, 1));
+    }
     let inputs: Vec<_> = terminals
         .values()
         .filter_map(|terminal| terminal.input())

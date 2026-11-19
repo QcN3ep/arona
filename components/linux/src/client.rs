@@ -21,6 +21,7 @@ pub struct Program<'a> {
 
 #[derive(Default)]
 pub struct Services<'a> {
+    pub loads: core::cell::Cell<[u32; 3]>,
     pub system: Option<Handle<runtime::SystemInfo>>,
     pub generator: Option<Handle<runtime::Entropy>>,
     pub clock: Option<devmgr::rtc::Session>,

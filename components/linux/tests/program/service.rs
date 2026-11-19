@@ -154,6 +154,7 @@ pub fn resources(
         }
     };
     linux::Services {
+        loads: Default::default(),
         system: Some(system.try_clone(Rights::READ | Rights::TRANSFER).unwrap()),
         generator: Some(
             generator

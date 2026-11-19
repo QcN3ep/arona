@@ -24,11 +24,10 @@ use crate::hardware::{
 static DISPATCHER: Once<Context> = Once::new();
 static STATE: Mutex<Scheduler> = Mutex::new(Scheduler {
     ready: ReadyQueue::new(),
-    load: LoadAverage {
-        one: 0,
-        five: 0,
-        fifteen: 0,
-        updated_ns: 0,
+    runnable: abi::system::RunnableIntegral {
+        sample_ns: 0,
+        integral: 0,
+        runnable_count: 0,
     },
     live: None,
     reap: None,
@@ -54,17 +53,9 @@ pub(super) struct Scheduler {
     quantum_deadline: Option<u64>,
     timer_target: Option<u64>,
     pub deadlines: DeadlineQueue,
-    load: LoadAverage,
+    runnable: abi::system::RunnableIntegral,
     min_vruntime: i128,
     yielded: Option<u64>,
-}
-
-/// Fixed-point (16 fractional bits) runnable-thread averages updated by timer interrupts.
-struct LoadAverage {
-    one: u32,
-    five: u32,
-    fifteen: u32,
-    updated_ns: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -110,6 +101,7 @@ pub(crate) fn start(thread: &Thread) -> Result<(), ThreadError> {
     data.live_next = scheduler.live.take();
     drop(data);
     scheduler.live = Some(thread.clone());
+    scheduler.change_runnable(true);
     scheduler.enqueue(thread.clone(), Placement::New);
     Ok(())
 }
@@ -280,11 +272,6 @@ pub(crate) fn timer_interrupt() -> Result<(), ThreadError> {
         let generation = thread.0.data.lock().wait.as_ref().unwrap().generation;
         scheduler.finish_wait(&thread, generation, WaitOutcome::TimedOut);
     }
-    let active = scheduler
-        .ready
-        .count
-        .saturating_add(usize::from(scheduler.current.is_some()));
-    scheduler.load.sample(now, active);
     if scheduler
         .preemption_deadline
         .is_some_and(|deadline| deadline <= now)
@@ -306,15 +293,12 @@ pub(crate) fn refresh_timer() -> Result<(), ThreadError> {
     with_scheduler(|scheduler| scheduler.arm_timer())
 }
 
-/// Current 1, 5, and 15 minute runnable-thread averages in 16.16 fixed point.
-pub fn load_average() -> [u32; 3] {
-    let _interrupts = InterruptGuard::new();
-    let scheduler = STATE.lock();
-    [
-        scheduler.load.one,
-        scheduler.load.five,
-        scheduler.load.fifteen,
-    ]
+/// Takes one snapshot of runnable time and count under the scheduler lock.
+pub fn runnable_integral() -> Result<abi::system::RunnableIntegral, ThreadError> {
+    with_scheduler(|scheduler| {
+        scheduler.account_runnable(hardware::timer().now_ns()?);
+        Ok(scheduler.runnable)
+    })
 }
 
 pub fn run() -> ! {
@@ -417,6 +401,7 @@ fn complete(thread: Thread, resources: ThreadResources) {
     scheduler.preemption_deadline = None;
     scheduler.quantum_deadline = None;
     let mut data = thread.0.data.lock();
+    let was_runnable = data.state == ThreadState::Running;
     if let ThreadState::Dying(status) = data.state {
         reason = SuspendReason::Exit(status);
     }
@@ -424,6 +409,9 @@ fn complete(thread: Thread, resources: ThreadResources) {
         data.state = ThreadState::Dying(status);
         data.wait = None;
         drop(data);
+        if was_runnable {
+            scheduler.change_runnable(false);
+        }
         scheduler.remove_live(&thread);
         drop(scheduler);
         drop(resources);
@@ -449,6 +437,9 @@ fn complete(thread: Thread, resources: ThreadResources) {
         ThreadState::Blocked
     };
     drop(data);
+    if !ready && was_runnable {
+        scheduler.change_runnable(false);
+    }
     if ready {
         if matches!(reason, SuspendReason::Yield) {
             scheduler.yielded = Some(thread.id());
@@ -491,6 +482,9 @@ pub(crate) fn terminate(thread: &Thread, status: usize) {
             .is_some_and(|resources| !resources.executed);
         data.state = ThreadState::Dying(status);
         drop(data);
+        if matches!(previous, ThreadState::Ready | ThreadState::Running) {
+            scheduler.change_runnable(false);
+        }
         scheduler.cancel_wait(thread);
         if previous == ThreadState::Created || initial {
             if previous == ThreadState::Ready {
@@ -517,6 +511,7 @@ pub(crate) fn suspend_interrupted(thread: &Thread, generation: u64) -> Result<()
         data.trapped = Some(generation);
         data.state = ThreadState::Blocked;
         drop(data);
+        scheduler.change_runnable(false);
         scheduler.ready.remove(thread);
         Ok(())
     })
@@ -525,6 +520,7 @@ pub(crate) fn suspend_interrupted(thread: &Thread, generation: u64) -> Result<()
 pub(crate) fn resume_interrupted(thread: &Thread) {
     with_scheduler(|scheduler| {
         thread.0.data.lock().state = ThreadState::Ready;
+        scheduler.change_runnable(true);
         scheduler.enqueue(thread.clone(), Placement::Wake);
     });
 }
@@ -628,28 +624,32 @@ impl Scheduler {
     }
 }
 
-impl LoadAverage {
-    fn sample(&mut self, now: u64, active: usize) {
-        let elapsed = u128::from(now.saturating_sub(self.updated_ns));
-        self.updated_ns = now;
-        if elapsed == 0 {
-            return;
-        }
-        let target = u128::from((active as u64).saturating_mul(1 << 16));
-        for (value, period) in [
-            (&mut self.one, 60_000_000_000u128),
-            (&mut self.five, 300_000_000_000),
-            (&mut self.fifteen, 900_000_000_000),
-        ] {
-            let current = u128::from(*value);
-            // First-order low-pass: move by elapsed / (period + elapsed) toward the sample.
-            let change = current.abs_diff(target) * elapsed / (period + elapsed);
-            let next = if target >= current {
-                current + change
-            } else {
-                current - change
-            };
-            *value = next.min(u128::from(u32::MAX)) as u32;
-        }
+impl Scheduler {
+    fn account_runnable(&mut self, now: u64) {
+        let elapsed = now.saturating_sub(self.runnable.sample_ns);
+        self.runnable.integral = self
+            .runnable
+            .integral
+            .saturating_add(u128::from(self.runnable.runnable_count) * u128::from(elapsed));
+        self.runnable.sample_ns = now;
+    }
+
+    pub(super) fn change_runnable(&mut self, added: bool) {
+        self.account_runnable(
+            hardware::timer()
+                .now_ns()
+                .expect("runnable transition without monotonic time"),
+        );
+        self.runnable.runnable_count = if added {
+            self.runnable
+                .runnable_count
+                .checked_add(1)
+                .expect("runnable count overflow")
+        } else {
+            self.runnable
+                .runnable_count
+                .checked_sub(1)
+                .expect("runnable count underflow")
+        };
     }
 }

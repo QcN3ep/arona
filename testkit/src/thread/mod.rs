@@ -42,13 +42,23 @@ pub fn run<P: crate::Platform>() {
     let second = Thread::new(notifier, 42).unwrap();
     assert_eq!(first.state(), ThreadState::Created);
     assert_eq!(second.state(), ThreadState::Created);
+    assert_eq!(scheduler::runnable_integral().unwrap().runnable_count, 0);
     first.start().unwrap();
     second.start().unwrap();
+    let runnable = scheduler::runnable_integral().unwrap();
+    assert_eq!(runnable.runnable_count, 2);
     assert_eq!(first.start(), Err(ThreadError::InvalidState));
     assert_eq!(first.state(), ThreadState::Ready);
     assert!(thread::current().is_none());
     assert_eq!(thread::yield_now(), Err(ThreadError::InvalidState));
     scheduler::run_ready().unwrap();
+    let finished = scheduler::runnable_integral().unwrap();
+    assert_eq!(finished.runnable_count, 0);
+    assert!(finished.integral >= runnable.integral);
+    assert_eq!(
+        scheduler::runnable_integral().unwrap().integral,
+        finished.integral
+    );
     assert_eq!(ORDER.load(Ordering::Relaxed), 6);
     assert_eq!(first.state(), ThreadState::Dead(73));
     assert_eq!(second.state(), ThreadState::Dead(42));
