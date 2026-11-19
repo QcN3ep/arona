@@ -45,11 +45,11 @@ pub(super) fn receive(
     port: &TrapPortReference,
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
-    let output = caller.pin_user_memory(args[0] as usize, TrapInfo::SIZE, true)?;
     let delivery = port.try_receive()?;
-    output.write(0, &delivery.info().encode())?;
+    let output = caller.pin_user_memory(args[0] as usize, TrapInfo::SIZE, true)?;
     let rights = Rights::READ | Rights::SET_STATE | Rights::TRANSFER;
     let [handle] = super::object::create(caller, [rights], || {
+        output.write(0, &delivery.info().encode())?;
         Ok([Object::TrapContinuation(delivery.commit())])
     })?;
     Ok([handle.raw(), TrapInfo::SIZE as u64])

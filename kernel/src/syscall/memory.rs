@@ -109,12 +109,14 @@ fn copy_task_memory(
 }
 
 fn atomic_compare_exchange(target: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
+    let expected = u32::try_from(args[1]).map_err(|_| Error::InvalidArgument)?;
+    let desired = u32::try_from(args[2]).map_err(|_| Error::InvalidArgument)?;
     let remote = target.pin_user_memory(args[0] as usize, 4, true)?;
     let old = remote
-        .compare_exchange_u32(0, args[1] as u32, args[2] as u32)
+        .compare_exchange_u32(0, expected, desired)
         .map_err(mm::UserMemoryError)?;
     Ok([
-        u64::from(old.unwrap_or(args[1] as u32)),
+        u64::from(old.unwrap_or(expected)),
         u64::from(old.is_some() as u8),
     ])
 }

@@ -55,6 +55,10 @@ fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, CallError> {
     if !rights.contains(required) {
         return Err(Error::Denied.into());
     }
+    let count = method::argument_count(object.kind(), arguments[0]).ok_or(Error::Unsupported)?;
+    if arguments[count + 1..].iter().any(|value| *value != 0) {
+        return Err(Error::InvalidArgument.into());
+    }
     let values = match arguments[0] {
         method::INFO => info::invoke(&caller, &object, rights, arguments[1..].try_into().unwrap())?,
         method::CLOSE => {
