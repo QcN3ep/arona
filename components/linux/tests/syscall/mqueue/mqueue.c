@@ -81,10 +81,11 @@ static void install_handler(void) {
     CHECK(SC(134, SIGUSR1, P(&action), 0, 8) == 0);
 }
 
-static long now_ns(void) {
+static void check_expired(const struct timespec *deadline) {
     struct timespec time;
-    CHECK(SC(113, 1, P(&time)) == 0);
-    return time.seconds * 1000000000 + time.nanoseconds;
+    CHECK(SC(113, 0, P(&time)) == 0);
+    CHECK(time.seconds > deadline->seconds ||
+          (time.seconds == deadline->seconds && time.nanoseconds >= deadline->nanoseconds));
 }
 
 static void pause_ns(long nanoseconds) {
@@ -299,17 +300,16 @@ static void block(void) {
     char message[16];
     CHECK(receive(nonblock, message, 16, &priority) == -EAGAIN);
 
+    // Whole-second deadlines remain observable with second-resolution realtime clocks.
     struct timespec deadline;
-    timeout_at(&deadline, 100000000);
-    long start = now_ns();
+    timeout_at(&deadline, 1000000000);
     CHECK(receive_timed(reader, message, 16, &priority, &deadline) == -ETIMEDOUT);
-    CHECK(now_ns() - start >= 50000000);
+    check_expired(&deadline);
 
     CHECK(send(writer, "x", 1, 0) == 0);
-    timeout_at(&deadline, 100000000);
-    start = now_ns();
+    timeout_at(&deadline, 1000000000);
     CHECK(send_timed(writer, "y", 1, 0, &deadline) == -ETIMEDOUT);
-    CHECK(now_ns() - start >= 50000000);
+    check_expired(&deadline);
     CHECK(receive(reader, message, 16, &priority) == 1 && message[0] == 'x');
 
     long parent = SC(172);
