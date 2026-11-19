@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+use super::error::CallError;
 use crate::{
     device::{DeviceReference, DeviceSet},
     task::{Object, ObjectReference, Task},
@@ -15,7 +16,7 @@ pub(super) fn catalog(
     target: &DeviceSet,
     method: u64,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     let id = u32::try_from(args[0]).map_err(|_| Error::InvalidArgument)?;
     match method {
         device_set::NEXT => Ok([target.next(id)?.unwrap_or(0) as u64, 0]),
@@ -33,14 +34,14 @@ pub(super) fn catalog(
         device_set::CLAIM_GROUP => {
             let rights = Rights::from_bits(args[1]).ok_or(Error::InvalidArgument)?;
             if !ObjectType::Device.supported_rights().contains(rights) {
-                return Err(Error::Denied);
+                return Err(Error::Denied.into());
             }
             let [handle] = super::object::create(caller, [rights], || {
                 Ok([Object::Device(target.claim_group(id)?)])
             })?;
             Ok([handle.raw(), 0])
         }
-        _ => Err(Error::Unsupported),
+        _ => Err(Error::Unsupported.into()),
     }
 }
 
@@ -49,7 +50,7 @@ pub(super) fn invoke(
     target: &DeviceReference,
     method: u64,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     if method == device::REVOKE {
         target.revoke()?;
         return Ok([0; 2]);
@@ -64,7 +65,7 @@ pub(super) fn invoke(
         device::CREATE_DMA => {
             let rights = Rights::from_bits(args[1]).ok_or(Error::InvalidArgument)?;
             if !ObjectType::DmaDomain.supported_rights().contains(rights) {
-                return Err(Error::Denied);
+                return Err(Error::Denied.into());
             }
             let [handle] = super::object::create(caller, [rights], || {
                 Ok([Object::DmaDomain(target.create_dma(id)?)])
@@ -92,13 +93,13 @@ pub(super) fn invoke(
             target.acknowledge(id, index)?;
             Ok([0; 2])
         }
-        _ => Err(Error::Unsupported),
+        _ => Err(Error::Unsupported.into()),
     }
 }
 
-fn write(caller: &Task, address: u64, capacity: u64, bytes: &[u8]) -> Result<(), Error> {
+fn write(caller: &Task, address: u64, capacity: u64, bytes: &[u8]) -> Result<(), CallError> {
     if capacity < bytes.len() as u64 {
-        return Err(Error::BufferTooSmall);
+        return Err(CallError::buffer_too_small(bytes.len()));
     }
     caller
         .pin_user_memory(address as usize, bytes.len(), true)?

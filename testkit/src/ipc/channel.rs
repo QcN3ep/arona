@@ -447,7 +447,7 @@ fn transfer_messages(source: Task, target: Task, sender: Handle, receiver: Handl
     }
     assert_eq!(
         target.try_receive(receiver, 7),
-        Err(TaskError::Channel(ChannelError::BufferTooSmall))
+        Err(TaskError::Channel(ChannelError::BufferTooSmall(8)))
     );
     let ObjectReference::Channel(reference) = target
         .get(receiver, ObjectType::Channel, Rights::READ)
@@ -455,7 +455,10 @@ fn transfer_messages(source: Task, target: Task, sender: Handle, receiver: Handl
     else {
         panic!("expected channel");
     };
-    assert_eq!(reference.try_receive(), Err(ChannelError::BufferTooSmall));
+    assert_eq!(
+        reference.try_receive(),
+        Err(ChannelError::BufferTooSmall(8))
+    );
     let received = target.receive(receiver, 8).unwrap();
     assert_eq!(received.message, message(73));
     assert_eq!(received.handles().len(), 8);
@@ -670,7 +673,7 @@ fn receive_waiters(source: &Task, target: &Task, sender: Handle, receiver: Handl
                 if capacity == 0 {
                     assert_eq!(
                         received,
-                        Err(TaskError::Channel(ChannelError::BufferTooSmall))
+                        Err(TaskError::Channel(ChannelError::BufferTooSmall(1)))
                     );
                 } else {
                     let received = received.unwrap();

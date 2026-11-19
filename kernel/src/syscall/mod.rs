@@ -13,6 +13,7 @@ mod task;
 mod thread;
 mod trap;
 
+use self::error::CallError;
 use crate::{
     task::{Object, ObjectReference},
     thread as threads,
@@ -25,14 +26,14 @@ pub(crate) fn dispatch(handle: usize, arguments: [usize; 6]) -> TrapOutcome {
         Handle::from_raw(handle as u64),
         arguments.map(|value| value as u64),
     );
-    let result = result.unwrap_or_else(Return::failure);
+    let result = result.unwrap_or_else(|error| Return::failure(error.code, error.values));
     TrapOutcome::Return {
         status: result.status as usize,
         values: result.values.map(|value| value as usize),
     }
 }
 
-fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, Error> {
+fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, CallError> {
     let current = threads::current().ok_or(Error::InvalidState)?;
     let caller = current.task().ok_or(Error::InvalidState)?;
     let self_rights =
@@ -44,13 +45,13 @@ fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, Error> {
     };
     let required = method::required_rights(kind, arguments[0]).ok_or(Error::Unsupported)?;
     if !rights.contains(required) {
-        return Err(Error::Denied);
+        return Err(Error::Denied.into());
     }
     let values = match arguments[0] {
         method::INFO => [kind as u64, rights.bits()],
         method::CLOSE => {
             if handle == Handle::CURRENT_THREAD {
-                return Err(Error::InvalidArgument);
+                return Err(Error::InvalidArgument.into());
             }
             caller.close(handle)?;
             [0; 2]
@@ -59,7 +60,7 @@ fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, Error> {
             let rights = Rights::from_bits(arguments[1]).ok_or(Error::InvalidArgument)?;
             let duplicate = if handle == Handle::CURRENT_THREAD {
                 if !self_rights.contains(rights) {
-                    return Err(Error::Denied);
+                    return Err(Error::Denied.into());
                 }
                 caller.insert(Object::Thread(current.clone()), rights)?
             } else {

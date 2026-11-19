@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+use super::error::CallError;
 use crate::{
     hardware::cpu::InterruptGuard,
     task::{HandleEntry, Object, Task},
 };
-use abi::{Error, Handle, Rights};
+use abi::{Handle, Rights};
 use arrayvec::ArrayVec;
 
 pub(super) fn create<const N: usize>(
     caller: &Task,
     rights: [Rights; N],
-    build: impl FnOnce() -> Result<[Object; N], Error>,
-) -> Result<[Handle; N], Error> {
+    build: impl FnOnce() -> Result<[Object; N], CallError>,
+) -> Result<[Handle; N], CallError> {
     let _interrupts = InterruptGuard::new();
     let mut reservation = caller.reserve_handles(N)?;
     let handles = core::array::from_fn(|index| reservation.handles[index]);

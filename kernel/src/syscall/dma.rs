@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+use super::error::CallError;
 use crate::{
     device::dma::DmaDomain,
     task::{ObjectReference, Task},
@@ -11,7 +12,7 @@ pub(super) fn invoke(
     target: &DmaDomain,
     method: u64,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     match method {
         dma::STATE => Ok([target.state()? as u64, 0]),
         dma::MAP => {
@@ -44,6 +45,6 @@ pub(super) fn invoke(
             target.revoke()?;
             Ok([0; 2])
         }
-        _ => Err(Error::Unsupported),
+        _ => Err(Error::Unsupported.into()),
     }
 }

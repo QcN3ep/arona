@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+use super::error::CallError;
 use crate::{
     hardware::execution::UserEntry,
     task::{Object, ObjectType, Task, TaskState, TransferRequest},
@@ -21,7 +22,7 @@ pub(super) fn invoke(
     authority: Rights,
     method: u64,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     match method {
         task::STATE => Ok(match target.state() {
             TaskState::Created => [0, 0],
@@ -32,10 +33,10 @@ pub(super) fn invoke(
         task::CREATE => {
             let rights = Rights::from_bits(args[0]).ok_or(Error::InvalidArgument)?;
             if !ObjectType::Task.supported_rights().contains(rights) {
-                return Err(Error::InvalidArgument);
+                return Err(Error::InvalidArgument.into());
             }
             if rights.bits() & CREATION_RIGHTS.bits() & !authority.bits() != 0 {
-                return Err(Error::Denied);
+                return Err(Error::Denied.into());
             }
             let [handle] = super::object::create(caller, [rights], || {
                 Ok([Object::Task(target.create_child()?)])
@@ -110,10 +111,10 @@ fn memory_stats() -> [u64; 2] {
     [total, free]
 }
 
-fn create_thread(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {
+fn create_thread(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
     let rights = Rights::from_bits(args[1]).ok_or(Error::InvalidArgument)?;
     if !ObjectType::Thread.supported_rights().contains(rights) {
-        return Err(Error::InvalidArgument);
+        return Err(Error::InvalidArgument.into());
     }
     let input = caller.pin_user_memory(args[0] as usize, abi::thread::UserEntry::SIZE, false)?;
     let mut bytes = [0; abi::thread::UserEntry::SIZE];

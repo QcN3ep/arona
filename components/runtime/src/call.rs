@@ -76,5 +76,5 @@ unsafe fn raw(handle: abi::Handle, mut method: u64, arguments: [u64; 5]) -> abi:
 /// Only used for build targets that do not yet implement a native trap entry.
 #[cfg(not(any(target_arch = "riscv64", target_arch = "loongarch64")))]
 unsafe fn raw(_handle: abi::Handle, _method: u64, _arguments: [u64; 5]) -> abi::Return {
-    abi::Return::failure(abi::Error::Unsupported)
+    abi::Return::failure(abi::Error::Unsupported, [0; 2])
 }

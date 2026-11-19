@@ -14,7 +14,7 @@ use spin::Mutex;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReadError {
     Busy,
-    BufferTooSmall,
+    BufferTooSmall(usize),
 }
 
 pub(super) struct Buffer {
@@ -93,7 +93,9 @@ impl Buffer {
             let mut sequence = [0; 8];
             ring.copy(offset + 2, &mut sequence);
             if u64::from_le_bytes(sequence) >= cursor {
-                let output = output.get_mut(..length).ok_or(ReadError::BufferTooSmall)?;
+                let output = output
+                    .get_mut(..length)
+                    .ok_or(ReadError::BufferTooSmall(length))?;
                 ring.copy(offset + 2, output);
                 return Ok(length);
             }

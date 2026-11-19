@@ -118,7 +118,7 @@ fn round_trip(fixture: &Fixture) -> usize {
     let caller = fixture.start(invoke, 0);
     assert_eq!(
         fixture.server.try_receive(fixture.receiver, 7),
-        Err(TaskError::Channel(ChannelError::BufferTooSmall))
+        Err(TaskError::Channel(ChannelError::BufferTooSmall(8)))
     );
     let request = fixture.server.receive(fixture.receiver, 8).unwrap();
     assert!(request.has_reply());

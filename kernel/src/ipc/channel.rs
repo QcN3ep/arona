@@ -55,7 +55,7 @@ pub struct ReceivedMessage {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChannelError {
     InvalidMessage,
-    BufferTooSmall,
+    BufferTooSmall(usize),
     CyclicTransfer,
     Closed,
     WouldBlock,
@@ -336,7 +336,7 @@ impl ChannelReference {
                 if let Some(queued) = direction.messages.front() {
                     if queued.handles.len() > handle_capacity {
                         direction.receivers.wake_one();
-                        return Err(ChannelError::BufferTooSmall.into());
+                        return Err(ChannelError::BufferTooSmall(queued.handles.len()).into());
                     }
                     let mut queued = direction.messages.pop_front().unwrap();
                     drop(state);

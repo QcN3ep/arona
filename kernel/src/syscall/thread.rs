@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+use super::error::CallError;
 use crate::{
     hardware,
     task::Task,
@@ -12,7 +13,7 @@ pub(super) fn invoke(
     target: &Thread,
     method: u64,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     match method {
         thread::ID => Ok([target.id(), 0]),
         thread::CPU_TIME => Ok([target.cpu_time_ns()?, 0]),
@@ -74,7 +75,7 @@ pub(super) fn invoke(
         }
         thread::EXIT | thread::YIELD | thread::SLEEP | thread::WAIT_MANY => {
             if !is_current(target) {
-                return Err(Error::Denied);
+                return Err(Error::Denied.into());
             }
             match method {
                 thread::WAIT_MANY => {
@@ -87,7 +88,7 @@ pub(super) fn invoke(
             }
             Ok([0; 2])
         }
-        _ => Err(Error::Unsupported),
+        _ => Err(Error::Unsupported.into()),
     }
 }
 fn is_current(target: &Thread) -> bool {

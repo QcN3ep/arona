@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+use super::error::CallError;
 use crate::{
     hardware::mmu::PagePermissions,
     memory::{
@@ -13,7 +14,7 @@ use abi::{
     method::{memory, task},
 };
 
-pub(super) fn permissions(raw: u64) -> Result<PagePermissions, Error> {
+pub(super) fn permissions(raw: u64) -> Result<PagePermissions, CallError> {
     match abi::memory::Permissions::from_raw(raw).ok_or(Error::InvalidArgument)? {
         abi::memory::Permissions::NoAccess => Ok(PagePermissions::NoAccess),
         abi::memory::Permissions::ReadOnly => Ok(PagePermissions::ReadOnly),
@@ -24,7 +25,7 @@ pub(super) fn permissions(raw: u64) -> Result<PagePermissions, Error> {
     }
 }
 
-pub(super) fn range(start: u64, length: u64) -> Result<VirtRange, Error> {
+pub(super) fn range(start: u64, length: u64) -> Result<VirtRange, CallError> {
     Ok(VirtRange {
         start: start as usize,
         end: start.checked_add(length).ok_or(Error::InvalidArgument)? as usize,
@@ -36,7 +37,7 @@ pub(super) fn task(
     target: &Task,
     method: u64,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     match method {
         task::ADDRESS_RANGE => {
             let bounds = target.address_space()?.bounds();
@@ -88,7 +89,7 @@ pub(super) fn task(
                     });
             Ok([info.range.start as u64, info.range.end as u64 | permission])
         }
-        _ => Err(Error::Unsupported),
+        _ => Err(Error::Unsupported.into()),
     }
 }
 
@@ -97,10 +98,10 @@ fn copy_task_memory(
     target: &Task,
     method: u64,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     let write = method == task::WRITE_MEMORY;
     if write && caller.same(target) {
-        return Err(Error::Denied);
+        return Err(Error::Denied.into());
     }
     let length = usize::try_from(args[2]).map_err(|_| Error::InvalidArgument)?;
     let remote = target.pin_user_memory(args[0] as usize, length, write)?;
@@ -114,7 +115,7 @@ fn copy_task_memory(
     Ok([args[2], 0])
 }
 
-fn atomic_compare_exchange(target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {
+fn atomic_compare_exchange(target: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
     let remote = target.pin_user_memory(args[0] as usize, 4, true)?;
     let old = remote
         .compare_exchange_u32(0, args[1] as u32, args[2] as u32)
@@ -125,13 +126,13 @@ fn atomic_compare_exchange(target: &Task, args: [u64; 5]) -> Result<[u64; 2], Er
     ])
 }
 
-fn allocate(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {
+fn allocate(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
     let rights = Rights::from_bits(args[1]).ok_or(Error::InvalidArgument)?;
     if !ObjectType::FrameAllocation
         .supported_rights()
         .contains(rights)
     {
-        return Err(Error::InvalidArgument);
+        return Err(Error::InvalidArgument.into());
     }
     let [handle] = super::object::create(caller, [rights], || {
         let allocation = if args[2] == 0 {
@@ -146,7 +147,7 @@ fn allocate(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Er
     Ok([handle.raw(), 0])
 }
 
-fn map(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {
+fn map(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
     let permissions = permissions(args[4])?;
     let (ObjectReference::FrameAllocation(allocation), options) =
         mapping_reference(caller, args[0], permissions)?
@@ -162,7 +163,7 @@ fn map(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> 
     Ok([range.start as u64, (range.end - range.start) as u64])
 }
 
-fn map_huge(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {
+fn map_huge(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
     let permissions = permissions(args[4])?;
     let (ObjectReference::FrameAllocation(allocation), options) =
         mapping_reference(caller, args[0], permissions)?
@@ -182,11 +183,11 @@ fn mapping_reference(
     caller: &Task,
     raw: u64,
     permissions: PagePermissions,
-) -> Result<(ObjectReference, MappingOptions), Error> {
+) -> Result<(ObjectReference, MappingOptions), CallError> {
     let handle = Handle::from_raw(raw);
     let (kind, rights) = caller.handle_info(handle)?;
     if kind != ObjectType::FrameAllocation {
-        return Err(Error::WrongType);
+        return Err(Error::WrongType.into());
     }
     let mut required = Rights::MAP;
     let mut maximum = MappingRights::from(permissions);
@@ -224,7 +225,7 @@ pub(super) fn frames(
     allocation: &HeapArc<FrameAllocation>,
     method: u64,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     if method == memory::SIZE {
         return Ok([allocation.info().frames, 0]);
     }

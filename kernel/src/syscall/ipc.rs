@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+use super::error::CallError;
 use crate::{
     ipc::{Channel, Event, MESSAGE_HANDLES, Message, ReceivedMessage, Timer, WaitItem, WaitMode},
     memory::MemoryBuffer,
@@ -13,9 +14,9 @@ pub(super) fn create(
     target: &Task,
     method: u64,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     if !matches!(target.state(), TaskState::Created | TaskState::Active) {
-        return Err(Error::InvalidState);
+        return Err(Error::InvalidState.into());
     }
     match method {
         method::task::CHANNEL => {
@@ -45,13 +46,13 @@ pub(super) fn create(
             })?;
             Ok([timer.raw(), 0])
         }
-        _ => Err(Error::Unsupported),
+        _ => Err(Error::Unsupported.into()),
     }
 }
-fn rights(raw: u64, kind: ObjectType) -> Result<Rights, Error> {
+fn rights(raw: u64, kind: ObjectType) -> Result<Rights, CallError> {
     let rights = Rights::from_bits(raw).ok_or(Error::InvalidArgument)?;
     if !kind.supported_rights().contains(rights) {
-        return Err(Error::InvalidArgument);
+        return Err(Error::InvalidArgument.into());
     }
     Ok(rights)
 }
@@ -62,7 +63,7 @@ pub(super) fn invoke(
     object: ObjectReference,
     method: u64,
     args: [u64; 5],
-) -> Result<Return, Error> {
+) -> Result<Return, CallError> {
     match object {
         ObjectReference::Channel(_) => match method {
             method::channel::SEND => {
@@ -81,7 +82,7 @@ pub(super) fn invoke(
                     })?;
                 return Ok(Return::success([pending.raw(), 0]));
             }
-            _ => return Err(Error::Unsupported),
+            _ => return Err(Error::Unsupported.into()),
         },
         ObjectReference::Call(pending) => match method {
             method::call::RECEIVE => {
@@ -95,7 +96,7 @@ pub(super) fn invoke(
                 return Ok(Return::success([abi::ipc::Message::SIZE as u64, 0]));
             }
             method::call::CANCEL => pending.cancel()?,
-            _ => return Err(Error::Unsupported),
+            _ => return Err(Error::Unsupported.into()),
         },
         ObjectReference::Reply(_) => {
             let (message, transfers) = read_message(caller, args[0])?;
@@ -105,28 +106,28 @@ pub(super) fn invoke(
         ObjectReference::Timer(timer) => match method {
             method::timer::ARM => timer.arm(args[0])?,
             method::timer::CANCEL => timer.cancel()?,
-            _ => return Err(Error::Unsupported),
+            _ => return Err(Error::Unsupported.into()),
         },
-        _ => return Err(Error::Unsupported),
+        _ => return Err(Error::Unsupported.into()),
     }
     Ok(Return::success([0; 2]))
 }
 fn read_message(
     caller: &Task,
     address: u64,
-) -> Result<(Message, ArrayVec<TransferRequest, MESSAGE_HANDLES>), Error> {
+) -> Result<(Message, ArrayVec<TransferRequest, MESSAGE_HANDLES>), CallError> {
     let input = caller.pin_user_memory(address as usize, abi::ipc::Message::SIZE, false)?;
     let mut bytes = [0; abi::ipc::Message::SIZE];
     input.read(0, &mut bytes)?;
     let wire = abi::ipc::Message::decode(&bytes)?;
     if wire.has_reply {
-        return Err(Error::InvalidArgument);
+        return Err(Error::InvalidArgument.into());
     }
     let mut transfers = ArrayVec::new();
     for descriptor in wire.handles[..wire.handle_count].iter().flatten() {
         let (kind, _) = caller.handle_info(descriptor.handle)?;
         if kind != descriptor.kind {
-            return Err(Error::WrongType);
+            return Err(Error::WrongType.into());
         }
         transfers.push(TransferRequest {
             handle: descriptor.handle,
@@ -138,9 +139,9 @@ fn read_message(
         transfers,
     ))
 }
-fn receive(caller: &Task, handle: Handle, args: [u64; 5]) -> Result<Return, Error> {
+fn receive(caller: &Task, handle: Handle, args: [u64; 5]) -> Result<Return, CallError> {
     if args[1] > MESSAGE_HANDLES as u64 {
-        return Err(Error::InvalidArgument);
+        return Err(Error::InvalidArgument.into());
     }
     let output = caller.pin_user_memory(args[0] as usize, abi::ipc::Message::SIZE, true)?;
     caller.receive_deliver(
@@ -155,7 +156,7 @@ fn receive(caller: &Task, handle: Handle, args: [u64; 5]) -> Result<Return, Erro
     )?;
     Ok(Return::success([abi::ipc::Message::SIZE as u64, 0]))
 }
-fn request(caller: &Task, handle: Handle, args: [u64; 5]) -> Result<Return, Error> {
+fn request(caller: &Task, handle: Handle, args: [u64; 5]) -> Result<Return, CallError> {
     let (message, transfers) = read_message(caller, args[0])?;
     let output = caller.pin_user_memory(args[1] as usize, abi::ipc::Message::SIZE, true)?;
     let mut committed = false;
@@ -175,7 +176,7 @@ fn request(caller: &Task, handle: Handle, args: [u64; 5]) -> Result<Return, Erro
         Ok(_) => Return::success([abi::ipc::Message::SIZE as u64, 1]),
         Err(error) => Return {
             values: [0, u64::from(committed)],
-            ..Return::failure(error.into())
+            ..Return::failure(error.into(), [0; 2])
         },
     })
 }
@@ -210,10 +211,10 @@ fn mode(deadline: u64) -> WaitMode {
     }
 }
 
-pub(super) fn wait_many(caller: &Task, args: [u64; 5]) -> Result<[u64; 2], Error> {
+pub(super) fn wait_many(caller: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
     let count = usize::try_from(args[1]).map_err(|_| Error::InvalidArgument)?;
     if count == 0 {
-        return Err(Error::InvalidArgument);
+        return Err(Error::InvalidArgument.into());
     }
     let length = count
         .checked_mul(abi::ipc::WaitItem::SIZE)

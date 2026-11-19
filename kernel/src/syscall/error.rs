@@ -7,6 +7,70 @@ use crate::{
 };
 use abi::Error;
 
+pub(super) struct CallError {
+    pub code: Error,
+    pub values: [u64; 2],
+}
+
+impl CallError {
+    pub const fn buffer_too_small(required: usize) -> Self {
+        Self {
+            code: Error::BufferTooSmall,
+            values: [required as u64, 0],
+        }
+    }
+}
+
+macro_rules! ordinary_errors {
+    ($($source:ty),* $(,)?) => { $(
+        impl From<$source> for CallError {
+            fn from(error: $source) -> Self {
+                Self { code: Error::from(error), values: [0; 2] }
+            }
+        }
+    )* };
+}
+
+ordinary_errors!(
+    Error,
+    HandleError,
+    MemoryError,
+    ThreadError,
+    crate::memory::UserMemoryError,
+    crate::trap::port::ForwardError,
+    crate::ipc::EventError,
+    crate::ipc::TimerError,
+    crate::device::DeviceError,
+);
+
+impl From<crate::ipc::ChannelError> for CallError {
+    fn from(error: crate::ipc::ChannelError) -> Self {
+        match error {
+            crate::ipc::ChannelError::BufferTooSmall(required) => Self::buffer_too_small(required),
+            error => Error::from(error).into(),
+        }
+    }
+}
+
+impl From<TaskError> for CallError {
+    fn from(error: TaskError) -> Self {
+        match error {
+            TaskError::Channel(error) => error.into(),
+            TaskError::Wait(error) => error.into(),
+            error => Error::from(error).into(),
+        }
+    }
+}
+
+impl From<crate::ipc::WaitManyError> for CallError {
+    fn from(error: crate::ipc::WaitManyError) -> Self {
+        match error {
+            crate::ipc::WaitManyError::Channel(error) => error.into(),
+            error => Error::from(error).into(),
+        }
+    }
+}
+
 impl From<crate::trap::port::ForwardError> for Error {
     fn from(error: crate::trap::port::ForwardError) -> Self {
         use crate::trap::port::ForwardError;
@@ -87,7 +151,7 @@ impl From<crate::ipc::ChannelError> for Error {
         use crate::ipc::ChannelError as E;
         match error {
             E::InvalidMessage | E::CyclicTransfer => Self::InvalidArgument,
-            E::BufferTooSmall => Self::BufferTooSmall,
+            E::BufferTooSmall(_) => Self::BufferTooSmall,
             E::Closed => Self::Closed,
             E::WouldBlock => Self::WouldBlock,
             E::PeerClosed => Self::PeerClosed,

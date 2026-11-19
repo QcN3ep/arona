@@ -258,8 +258,9 @@ fn buffered_records_survive_failed_reads_and_overwrite_as_whole_records() {
     assert_eq!(reader.read(0, &mut bytes), Ok(0));
     ALLOCATIONS.set(Some(0));
     emit(&LOGGER, "early record");
-    assert_eq!(reader.read(0, &mut []), Err(ReadError::BufferTooSmall));
+    let short = reader.read(0, &mut []);
     let length = reader.read(0, &mut bytes).unwrap();
+    assert_eq!(short, Err(ReadError::BufferTooSmall(length)));
     let record = BufferedRecord::decode(&bytes[..length]).unwrap();
     assert_eq!(record.sequence, 1);
     assert_eq!(record.timestamp_ns, None);

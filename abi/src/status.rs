@@ -33,10 +33,11 @@ impl Return {
         Self { status: 0, values }
     }
 
-    pub const fn failure(error: Error) -> Self {
+    /// Encodes the error data specified by the invoked method's contract.
+    pub const fn failure(error: Error, values: [u64; 2]) -> Self {
         Self {
             status: error as u64,
-            values: [0; 2],
+            values,
         }
     }
 }

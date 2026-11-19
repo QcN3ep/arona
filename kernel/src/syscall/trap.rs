@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+use super::error::CallError;
 use crate::{
     task::{Object, ObjectReference, Task},
     trap::port::{TrapContinuationReference, TrapPortReference},
@@ -14,12 +15,12 @@ pub(super) fn task(
     target: &Task,
     method: u64,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     match method {
         method::task::TRAP_PORT => {
             let rights = Rights::from_bits(args[0]).ok_or(Error::InvalidArgument)?;
             if !ObjectType::TrapPort.supported_rights().contains(rights) {
-                return Err(Error::InvalidArgument);
+                return Err(Error::InvalidArgument.into());
             }
             let [handle] = super::object::create(caller, [rights], || {
                 Ok([Object::TrapPort(target.create_trap_port()?)])
@@ -38,7 +39,7 @@ pub(super) fn task(
             target.bind_trap(&port)?;
             Ok([0; 2])
         }
-        _ => Err(Error::Unsupported),
+        _ => Err(Error::Unsupported.into()),
     }
 }
 
@@ -46,7 +47,7 @@ pub(super) fn receive(
     caller: &Task,
     port: &TrapPortReference,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     let output = caller.pin_user_memory(args[0] as usize, TrapInfo::SIZE, true)?;
     let delivery = port.try_receive()?;
     output.write(0, &delivery.info().encode())?;
@@ -62,7 +63,7 @@ pub(super) fn continuation(
     target: &TrapContinuationReference,
     method: u64,
     args: [u64; 5],
-) -> Result<[u64; 2], Error> {
+) -> Result<[u64; 2], CallError> {
     match method {
         method::trap_continuation::STATE => {
             let output = caller.pin_user_memory(args[0] as usize, UserState::SIZE, true)?;
@@ -73,11 +74,11 @@ pub(super) fn continuation(
             target.resume(&read_state(caller, args[0])?)?;
             Ok([0; 2])
         }
-        _ => Err(Error::Unsupported),
+        _ => Err(Error::Unsupported.into()),
     }
 }
 
-pub(super) fn read_state(caller: &Task, address: u64) -> Result<UserState, Error> {
+pub(super) fn read_state(caller: &Task, address: u64) -> Result<UserState, CallError> {
     let input = caller.pin_user_memory(address as usize, UserState::SIZE, false)?;
     let mut bytes = [0; UserState::SIZE];
     input.read(0, &mut bytes)?;
