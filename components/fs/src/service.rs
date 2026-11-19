@@ -78,6 +78,9 @@ pub(crate) fn serve(
         match control.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
+                    if request.tag == protocol::UNMOUNT {
+                        reclaim_closed_sessions(namespace, &mut files)?;
+                    }
                     let response = admin(
                         task,
                         namespace,
@@ -96,7 +99,7 @@ pub(crate) fn serve(
             }
             Err(error) => return Err(error.into()),
         }
-        poll_mounts(task, namespace, &mut mounts)?;
+        poll_mounts(task, namespace, &mut mounts, &mut files)?;
         let mut index = 0;
         while index < clients.len() {
             match clients[index].receive(WaitMode::Poll) {
@@ -139,12 +142,16 @@ fn poll_mounts(
     task: &'static Handle<runtime::Task>,
     namespace: &Namespace,
     mounts: &mut Vec<MountChannel>,
+    files: &mut Vec<FileSession>,
 ) -> Result<(), Error> {
     let mut index = 0;
     while index < mounts.len() {
         match mounts[index].channel.receive(WaitMode::Poll) {
             Ok(mut request) => {
                 if let Some(reply) = request.take_reply() {
+                    if request.tag == protocol::UNMOUNT_MEMORY {
+                        reclaim_closed_sessions(namespace, files)?;
+                    }
                     protocol::respond(
                         reply,
                         mount_admin(task, namespace, mounts[index].id, request),
@@ -157,6 +164,27 @@ fn poll_mounts(
                 let mount = mounts.swap_remove(index);
                 namespace.release_user_mounts(mount.id);
             }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn reclaim_closed_sessions(
+    namespace: &Namespace,
+    files: &mut Vec<FileSession>,
+) -> Result<(), Error> {
+    // The client may close a session after poll_files but before its unmount request is received.
+    let mut index = 0;
+    while index < files.len() {
+        // Pending calls retain the session until their queued requests are handled.
+        let item = WaitItem::new(&files[index].channel, ipc::READABLE | ipc::PEER_CLOSED);
+        match ipc::wait_many(&[item], WaitMode::Poll) {
+            Ok(ready) if ready.ready == ipc::PEER_CLOSED => {
+                files.swap_remove(index);
+                namespace.reclaim_files()?;
+            }
+            Ok(_) | Err(runtime::Error::Kernel(KernelError::WouldBlock)) => index += 1,
             Err(error) => return Err(error.into()),
         }
     }
