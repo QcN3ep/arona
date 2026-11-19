@@ -991,19 +991,6 @@ impl AddressSpace {
         pin().map_err(super::UserMemoryError)
     }
 
-    pub fn translate(&self, address: usize) -> Result<Option<u64>, MemoryError> {
-        self.query(address)?;
-        self.table.edit(|table| {
-            let walk = table.walk(address)?;
-            Ok(match walk.entry {
-                PageTableEntry::Mapping(mapping) => {
-                    Some(mapping.physical_address + (address % leaf_size(walk.level)) as u64)
-                }
-                _ => None,
-            })
-        })
-    }
-
     pub(super) fn map_device(&self, physical: PhysRange) -> Result<(VirtRange, u64), MemoryError> {
         let mmu = hardware::mmu();
         let bits = mmu.physical_address_bits();

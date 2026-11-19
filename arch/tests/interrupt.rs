@@ -468,11 +468,11 @@ fn mapping_lifecycle(mmio: &impl MmioMapper) {
     let range = mapping.virtual_range();
     let space = memory::manager().kernel_address_space();
     assert_eq!(
-        space.translate(range.start).unwrap(),
+        testkit::memory::physical_address(space, range.start).unwrap(),
         Some(mapping.physical_range().start)
     );
     assert_eq!(
-        space.translate(range.end - 1).unwrap(),
+        testkit::memory::physical_address(space, range.end - 1).unwrap(),
         Some(mapping.physical_range().end - 1)
     );
     let attributes = space

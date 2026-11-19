@@ -200,7 +200,7 @@ fn mappings() {
     assert_eq!(allocation.info().mappings, 3);
     for index in 0..3 {
         assert_eq!(
-            space.translate(ADDRESS + index * PAGE_SIZE + 17).unwrap(),
+            physical_address(&space, ADDRESS + index * PAGE_SIZE + 17).unwrap(),
             Some(identifiers[index + 1].address() + 17)
         );
     }
@@ -217,7 +217,7 @@ fn mappings() {
         PagePermissions::ReadOnly
     );
     space.unmap(range(ADDRESS + PAGE_SIZE, 1)).unwrap();
-    assert_eq!(space.translate(ADDRESS + PAGE_SIZE).unwrap(), None);
+    assert_eq!(physical_address(&space, ADDRESS + PAGE_SIZE).unwrap(), None);
     assert_eq!(space.unmap(mapped), Err(MemoryError::NotMapped));
     assert_eq!(space.query(ADDRESS).unwrap(), Some(first));
     space.unmap(range(ADDRESS, 1)).unwrap();
@@ -427,7 +427,7 @@ fn shared_kernel() {
         assert!(!mapping.attributes.user_accessible);
         assert_eq!(space.query(mapped.start), Err(MemoryError::InvalidRequest));
         assert_eq!(
-            space.translate(mapped.start),
+            physical_address(space, mapped.start),
             Err(MemoryError::InvalidRequest)
         );
         assert_eq!(space.unmap(mapped), Err(MemoryError::InvalidRequest));
@@ -690,9 +690,7 @@ fn huge_mappings() {
     assert_eq!(allocation.info().mappings, HUGE_PAGE_FRAMES);
     for index in [0, 1, HUGE_PAGE_FRAMES as usize - 1] {
         assert_eq!(
-            space
-                .translate(mapped.start + index * PAGE_SIZE + 7)
-                .unwrap(),
+            physical_address(&space, mapped.start + index * PAGE_SIZE + 7).unwrap(),
             Some(frames[index].address() + 7)
         );
     }
@@ -754,7 +752,7 @@ fn huge_mappings() {
     );
     space.unmap(mapped).unwrap();
     assert_eq!(allocation.info().mappings, 0);
-    assert_eq!(space.translate(mapped.start).unwrap(), None);
+    assert_eq!(physical_address(&space, mapped.start).unwrap(), None);
     drop((frames, allocation, space));
     manager.reclaim_heap();
     assert_eq!(manager.stats(), initial);

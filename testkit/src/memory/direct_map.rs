@@ -30,7 +30,10 @@ pub(super) fn run(regions: &[MemoryRegion]) {
         lookup(&user, address).unwrap().physical_address,
         frame.address()
     );
-    assert_eq!(user.translate(address), Err(MemoryError::InvalidRequest));
+    assert_eq!(
+        physical_address(&user, address),
+        Err(MemoryError::InvalidRequest)
+    );
     assert!(writer.write(PAGE_SIZE / 8, &[1]).is_err());
     drop(allocation);
     assert_eq!(

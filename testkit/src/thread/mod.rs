@@ -262,7 +262,10 @@ fn inspect_stack(index: usize) {
     let address = &local as *const _ as usize;
     let space = memory::manager().kernel_address_space();
     let mut guard = address & !(PAGE_SIZE - 1);
-    while space.translate(guard).unwrap().is_some() {
+    while crate::memory::physical_address(space, guard)
+        .unwrap()
+        .is_some()
+    {
         guard -= PAGE_SIZE;
         assert!(address - guard <= 17 * PAGE_SIZE);
     }

@@ -121,3 +121,13 @@ fn lookup(space: &AddressSpace, address: usize) -> Option<PageMapping> {
 fn first_frame(allocation: &memory::FrameAllocation) -> Frame {
     allocation.frames().next().unwrap()
 }
+
+/// Resolve a byte address through the public mapping query.
+pub fn physical_address(space: &AddressSpace, address: usize) -> Result<Option<u64>, MemoryError> {
+    Ok(space.query(address)?.and_then(|info| {
+        info.mapping.map(|mapping| {
+            let size = PAGE_SIZE << (hardware::mmu().layout().index_bits * info.leaf_level as u32);
+            mapping.physical_address + (address % size) as u64
+        })
+    }))
+}
