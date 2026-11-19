@@ -478,6 +478,7 @@ impl ChannelReference {
 
 impl ChannelState {
     fn allocate() -> Result<HeapArc<Mutex<Self>>, ChannelError> {
+        CHANNEL_STATES.fetch_add(1, Ordering::Relaxed);
         let channel = memory::manager().allocate_arc(Mutex::new(Self {
             credits: [1; 2],
             directions: [Direction::new(), Direction::new()],
@@ -485,7 +486,6 @@ impl ChannelState {
             cleanup_next: None,
             queued_for_cleanup: false,
         }))?;
-        CHANNEL_STATES.fetch_add(1, Ordering::Relaxed);
         Ok(channel)
     }
 

@@ -73,6 +73,7 @@ impl Timer {
         if event.is_closed() {
             return Err(TimerError::Closed);
         }
+        TIMER_STATES.fetch_add(1, Ordering::Relaxed);
         let timer = memory::manager().allocate_arc(Mutex::new(TimerState {
             credits: 1,
             event,
@@ -80,7 +81,6 @@ impl Timer {
             phase: TimerPhase::Disarmed,
             next: None,
         }))?;
-        TIMER_STATES.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
             reference: TimerReference { timer },
         })

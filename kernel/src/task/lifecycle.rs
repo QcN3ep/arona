@@ -902,6 +902,7 @@ impl TaskRegistry {
         let id = NEXT_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .map_err(|_| MemoryError::NoMemory)?;
+        TASK_RECORDS.fetch_add(1, Ordering::Relaxed);
         let task = Task(memory::manager().allocate_arc(TaskRecord {
             id,
             data: Mutex::new(TaskData {
@@ -910,7 +911,7 @@ impl TaskRegistry {
                 observers: Observers::new(),
             }),
         })?);
-        TASK_RECORDS.fetch_add(1, Ordering::Relaxed);
+        TASK_RESOURCES.fetch_add(1, Ordering::Relaxed);
         let mut resources = HeapBox::try_new(TaskResources {
             task: task.clone(),
             creator,
@@ -922,7 +923,6 @@ impl TaskRegistry {
             next: None,
         })
         .map_err(|_| MemoryError::NoMemory)?;
-        TASK_RESOURCES.fetch_add(1, Ordering::Relaxed);
         resources.next = position.take();
         *position = Some(resources);
         Ok(task)

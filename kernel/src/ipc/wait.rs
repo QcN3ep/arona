@@ -120,12 +120,12 @@ fn wait_resolved(
         }
     }
     let wait = prepare(mode)?;
+    SELECTIONS.fetch_add(1, Ordering::Relaxed);
     let selection = memory::manager().allocate_arc(Selection {
         items,
         waker: wait.waker(),
         result: Mutex::new(None),
     })?;
-    SELECTIONS.fetch_add(1, Ordering::Relaxed);
     let observer = Observer {
         selection,
         index: 0,

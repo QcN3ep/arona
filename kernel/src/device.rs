@@ -252,12 +252,12 @@ impl DeviceSet {
             .map_err(|_| MemoryError::NoMemory)?;
         let id = state.next_id;
         state.next_id = id.checked_add(1).ok_or(MemoryError::NoMemory)?;
+        GRANT_TOKENS.fetch_add(1, Ordering::Relaxed);
         let reference = DeviceReference(memory::manager().allocate_arc(GrantToken {
             id,
             credits: AtomicUsize::new(1),
             revoked: AtomicBool::new(false),
         })?);
-        GRANT_TOKENS.fetch_add(1, Ordering::Relaxed);
         registry.pci_memory(group, true)?;
         state.grants.push(Grant {
             token: reference.clone(),

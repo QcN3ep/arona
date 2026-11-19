@@ -51,13 +51,13 @@ pub enum EventError {
 impl Event {
     pub fn new() -> Result<Self, EventError> {
         let _interrupts = InterruptGuard::new();
+        EVENTS.fetch_add(1, Ordering::Relaxed);
         let event = memory::manager().allocate_arc(Mutex::new(EventState {
             credits: 1,
             pending: 0,
             closed: false,
             observers: Observers::new(),
         }))?;
-        EVENTS.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
             reference: EventReference { event },
         })
