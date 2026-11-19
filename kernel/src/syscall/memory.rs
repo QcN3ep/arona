@@ -53,7 +53,7 @@ pub(super) fn task(
     match method {
         task::ALLOCATE => allocate(caller, target, args),
         task::READ_MEMORY | task::WRITE_MEMORY => copy_task_memory(caller, target, method, args),
-        task::ATOMIC_COMPARE_EXCHANGE => atomic_compare_exchange(target, args),
+        task::ATOMIC_COMPARE_EXCHANGE => atomic_compare_exchange(caller, target, args),
         task::MAP => map(caller, target, args),
 
         task::UNMAP => {
@@ -108,7 +108,14 @@ fn copy_task_memory(
     Ok([args[2], 0])
 }
 
-fn atomic_compare_exchange(target: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
+fn atomic_compare_exchange(
+    caller: &Task,
+    target: &Task,
+    args: [u64; 5],
+) -> Result<[u64; 2], CallError> {
+    if caller.same(target) {
+        return Err(Error::Denied.into());
+    }
     let expected = u32::try_from(args[1]).map_err(|_| Error::InvalidArgument)?;
     let desired = u32::try_from(args[2]).map_err(|_| Error::InvalidArgument)?;
     let remote = target.pin_user_memory(args[0] as usize, 4, true)?;

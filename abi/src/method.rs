@@ -88,7 +88,7 @@ methods!(task {
     /// Closing the last port owner terminates all Tasks still bound to it.
     SET_TRAP = 35 => SET_TRAP (port_handle);
     /// Compares and exchanges one aligned writable u32, returning [previous, exchanged].
-    /// Expected and desired must fit in u32. A mismatch is successful with exchanged=0.
+    /// The calling Task is Denied. Expected and desired must fit in u32. A mismatch is successful with exchanged=0.
     ATOMIC_COMPARE_EXCHANGE = 40 => WRITE_MEMORY (address, expected, desired);
 });
 methods!(memory {

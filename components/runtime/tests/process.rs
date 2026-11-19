@@ -175,6 +175,12 @@ fn supervised() {
 }
 
 fn remote_memory() {
+    let local = 73u32;
+    assert_eq!(
+        process::task().compare_exchange_memory(core::ptr::from_ref(&local) as usize, 73, 91),
+        Err(Error::Kernel(abi::Error::Denied))
+    );
+    assert_eq!(local, 73);
     let task = process::task()
         .create_task(
             Rights::MAP_MEMORY
