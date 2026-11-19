@@ -14,15 +14,15 @@ pub fn run(mut startup: ReceivedMessage) {
         .unwrap();
     assert!(startup.handles().is_empty());
     let denied = log.try_clone(Rights::NONE).unwrap();
+    assert_eq!(denied.capacity(), Err(Error::Kernel(abi::Error::Denied)));
+    assert!(log.capacity().unwrap() >= MAX_RECORD_SIZE);
     let mut bytes = [0; MAX_RECORD_SIZE];
     assert_eq!(
         denied.read(0, &mut bytes),
         Err(Error::Kernel(abi::Error::Denied))
     );
-    assert_eq!(
-        log.read(0, &mut []),
-        Err(Error::Kernel(abi::Error::BufferTooSmall))
-    );
+    let short = log.read(0, &mut []).unwrap_err();
+    assert_eq!(short, Error::Kernel(abi::Error::BufferTooSmall));
     let early = log.read(0, &mut bytes).unwrap().unwrap();
     assert_eq!(early.sequence, 1);
     assert_eq!(early.timestamp_ns, None);

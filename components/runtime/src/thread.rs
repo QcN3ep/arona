@@ -3,8 +3,7 @@
 use crate::{BorrowedHandle, Error, Handle, Rights, Task, Thread};
 use abi::method::{task, thread};
 pub use abi::thread::{
-    PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, SchedulingPolicy, TaskState, ThreadState,
-    UserEntry,
+    Lifecycle, PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, SchedulingPolicy, UserEntry,
 };
 
 #[cfg(all(feature = "program", target_os = "none"))]
@@ -84,12 +83,9 @@ impl Handle<Task> {
             Err(error) => Err((error, handle)),
         }
     }
-    pub fn state(&self) -> Result<(TaskState, usize), Error> {
-        let [state, status] = self.borrow().invoke(task::STATE, [0; 5])?;
-        Ok((
-            TaskState::from_raw(state).ok_or(Error::Protocol)?,
-            status as usize,
-        ))
+    pub fn state(&self) -> Result<(Lifecycle, usize), Error> {
+        let [state, status] = self.borrow().query(abi::info::task::LIFECYCLE)?;
+        lifecycle(state, status)
     }
     pub fn terminate(&self, status: usize) -> Result<(), Error> {
         self.borrow()
@@ -122,11 +118,11 @@ impl Handle<Thread> {
     pub fn set_priority(&self, priority: i32) -> Result<(), Error> {
         self.borrow().set_priority(priority)
     }
-    pub fn state(&self) -> Result<(ThreadState, usize), Error> {
+    pub fn state(&self) -> Result<(Lifecycle, usize), Error> {
         self.borrow().state()
     }
     pub fn cpu_time_ns(&self) -> Result<u64, Error> {
-        Ok(self.borrow().invoke(thread::CPU_TIME, [0; 5])?[0])
+        Ok(self.borrow().query(abi::info::thread::CPU_TIME)?[0])
     }
     pub fn terminate(&self, status: usize) -> Result<(), Error> {
         self.borrow()
@@ -147,11 +143,22 @@ impl BorrowedHandle<'_, Thread> {
         self.invoke(thread::SET_PRIORITY, [priority as i64 as u64, 0, 0, 0, 0])
             .map(|_| ())
     }
-    pub fn state(&self) -> Result<(ThreadState, usize), Error> {
-        let [state, status] = self.invoke(thread::STATE, [0; 5])?;
-        Ok((
-            ThreadState::from_raw(state).ok_or(Error::Protocol)?,
-            status as usize,
-        ))
+    pub fn state(&self) -> Result<(Lifecycle, usize), Error> {
+        let [state, status] = self.query(abi::info::thread::LIFECYCLE)?;
+        lifecycle(state, status)
     }
+}
+
+fn lifecycle(state: u64, status: u64) -> Result<(Lifecycle, usize), Error> {
+    let state = if state == Lifecycle::Live as u64 {
+        if status != 0 {
+            return Err(Error::Protocol);
+        }
+        Lifecycle::Live
+    } else if state == Lifecycle::Exited as u64 {
+        Lifecycle::Exited
+    } else {
+        return Err(Error::Protocol);
+    };
+    Ok((state, status as usize))
 }

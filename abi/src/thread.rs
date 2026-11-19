@@ -65,43 +65,7 @@ impl UserEntry {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u64)]
-pub enum TaskState {
-    Created = 0,
-    Active = 1,
-    Dying = 2,
-    Dead = 3,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u64)]
-pub enum ThreadState {
-    Created = 0,
-    Ready = 1,
-    Running = 2,
-    Blocked = 3,
-    Dying = 4,
-    Dead = 5,
-}
-impl TaskState {
-    pub fn from_raw(raw: u64) -> Option<Self> {
-        Some(match raw {
-            0 => Self::Created,
-            1 => Self::Active,
-            2 => Self::Dying,
-            3 => Self::Dead,
-            _ => return None,
-        })
-    }
-}
-impl ThreadState {
-    pub fn from_raw(raw: u64) -> Option<Self> {
-        Some(match raw {
-            0 => Self::Created,
-            1 => Self::Ready,
-            2 => Self::Running,
-            3 => Self::Blocked,
-            4 => Self::Dying,
-            5 => Self::Dead,
-            _ => return None,
-        })
-    }
+pub enum Lifecycle {
+    Live = 0,
+    Exited = 1,
 }

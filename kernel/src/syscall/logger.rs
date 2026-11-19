@@ -12,6 +12,9 @@ pub(super) fn read(
     target: &KernelLog,
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
+    if args[3..] != [0; 2] {
+        return Err(Error::InvalidArgument.into());
+    }
     let mut bytes = [0; MAX_RECORD_SIZE];
     let length = target
         .read(args[0], &mut bytes)

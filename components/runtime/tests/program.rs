@@ -138,7 +138,7 @@ fn main() {
     }
     assert_eq!(
         runtime::process::task().info().unwrap().kind,
-        runtime::ObjectType::Task
+        runtime::ObjectType::Task as u64
     );
     runtime::thread::yield_now().unwrap();
     if mode == 4 {

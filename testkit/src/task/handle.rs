@@ -304,7 +304,7 @@ fn allocation_failure() {
         .allocate(FrameOwner::Kernel, FramePurpose::Data, 2)
         .unwrap();
     let frame = allocation.frames().next().unwrap();
-    let object = Object::FrameAllocation(manager.allocate_arc(allocation).unwrap());
+    let object = Object::frame_allocation(manager.allocate_arc(allocation).unwrap()).unwrap();
     let handle = source
         .insert(
             object.try_clone().unwrap(),

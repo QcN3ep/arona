@@ -8,6 +8,7 @@
 pub mod device;
 pub mod dma;
 mod handle;
+pub mod info;
 pub mod ipc;
 pub mod logger;
 pub mod memory;

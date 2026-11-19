@@ -4,7 +4,7 @@ use super::error::CallError;
 use crate::{
     hardware,
     task::Task,
-    thread::{self as threads, Thread, ThreadState, scheduler},
+    thread::{self as threads, Thread, scheduler},
 };
 use abi::{Error, method::thread};
 
@@ -15,8 +15,6 @@ pub(super) fn invoke(
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
     match method {
-        thread::ID => Ok([target.id(), 0]),
-        thread::CPU_TIME => Ok([target.cpu_time_ns()?, 0]),
         thread::SET_STATE => {
             target.set_user_state(&super::trap::read_state(caller, args[0])?)?;
             Ok([0; 2])
@@ -25,14 +23,6 @@ pub(super) fn invoke(
             target.interrupt()?;
             Ok([0; 2])
         }
-        thread::STATE => Ok(match target.state() {
-            ThreadState::Created => [0, 0],
-            ThreadState::Ready => [1, 0],
-            ThreadState::Running => [2, 0],
-            ThreadState::Blocked => [3, 0],
-            ThreadState::Dying(status) => [4, status as u64],
-            ThreadState::Dead(status) => [5, status as u64],
-        }),
         thread::START => {
             target.start()?;
             Ok([0; 2])

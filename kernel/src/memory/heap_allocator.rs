@@ -174,7 +174,7 @@ impl HeapAllocator {
                 record: *record,
             }),
             HeapStorage::Direct(head) => {
-                let backing = FrameAllocation { head: *head };
+                let backing = FrameAllocation::new(*head);
                 for frame in backing.frames() {
                     manager().allocator().lock().release_access(
                         frame,
@@ -520,9 +520,7 @@ impl SlabAllocator {
         }
         if header.occupied == 0 {
             self.unlink_free_metadata(page);
-            drop(FrameAllocation {
-                head: header.backing,
-            });
+            drop(FrameAllocation::new(header.backing));
             self.metadata_frames -= 1;
         }
     }

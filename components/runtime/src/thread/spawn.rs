@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use super::{ThreadState, UserEntry, reaper};
+use super::{Lifecycle, UserEntry, reaper};
 use crate::{
     Error, Handle, Rights, Thread,
     memory::{Mapping, Permissions, Reservation},
@@ -102,7 +102,7 @@ impl<T: Send + 'static> JoinHandle<T> {
     }
 
     pub fn is_finished(&self) -> Result<bool, Error> {
-        Ok(self.thread().state()?.0 == ThreadState::Dead)
+        Ok(self.thread().state()?.0 == Lifecycle::Exited)
     }
 
     pub fn join(mut self) -> Result<T, JoinError> {
@@ -153,7 +153,7 @@ impl<T: Send + 'static> Resources<T> {
                     thread_pointer: tls.thread_pointer() as u64,
                     argument: ptr::from_ref(&*packet) as u64,
                 },
-                Rights::START | Rights::WAIT | Rights::TERMINATE,
+                Rights::START | Rights::WAIT | Rights::READ | Rights::TERMINATE,
             )?
         };
         let resources = Box::new(Self {

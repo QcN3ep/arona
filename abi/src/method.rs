@@ -24,7 +24,6 @@ methods!(task {
     RESERVE = 20 => MAP_MEMORY;
     UNRESERVE = 21 => MAP_MEMORY;
     QUERY = 22 => MAP_MEMORY;
-    STATE = 23 => NONE;
     CREATE = 24 => CREATE_TASK;
     CREATE_THREAD = 25 => CREATE_THREAD;
     INSTALL = 26 => INSTALL_HANDLE;
@@ -46,14 +45,11 @@ methods!(task {
     RANDOM = 42 => NONE;
 });
 methods!(memory {
-    SIZE = 16 => NONE;
     READ = 17 => READ;
     WRITE = 18 => WRITE;
-    STATE = 19 => NONE;
 });
 
 methods!(thread {
-    STATE = 16 => NONE;
     START = 17 => START;
     TERMINATE = 18 => TERMINATE;
     WAIT = 19 => WAIT;
@@ -64,8 +60,6 @@ methods!(thread {
     WAIT_MANY = 24 => NONE;
     SET_STATE = 25 => SET_STATE;
     INTERRUPT = 26 => INTERRUPT;
-    ID = 27 => NONE;
-    CPU_TIME = 28 => NONE;
     GET_PRIORITY = 29 => NONE;
     SET_PRIORITY = 30 => SET_STATE;
     GET_SCHEDULING = 31 => NONE;
@@ -102,7 +96,6 @@ methods!(device {
     CREATE_DMA = 22 => DEVICE_CONTROL;
 });
 methods!(dma {
-    STATE = 16 => READ;
     MAP = 17 => DMA_MAP;
     UNMAP = 18 => DMA_MAP;
     RESUME = 19 => DEVICE_CONTROL;
@@ -110,13 +103,23 @@ methods!(dma {
     REVOKE = 21 => REVOKE;
 });
 
+/// Queries `[topic, query_address, query_length, output_address, output_capacity]`.
+///
+/// Each topic declares its rights and fixed query and output forms. Topics with
+/// register results require zero output address and capacity. Buffer results
+/// return `[bytes_written, 0]`; insufficient capacity returns `BufferTooSmall`
+/// with `[required_bytes, 0]` without changing the output or the object.
+/// Unknown topics return `Unsupported`; malformed queries return
+/// `InvalidArgument`, and missing topic rights return `Denied`.
+/// Queries do not block or change the object's lifecycle.
 pub const INFO: u64 = 0;
 pub const CLOSE: u64 = 1;
 pub const DUPLICATE: u64 = 2;
 
-pub const fn required_rights(kind: ObjectType, method: u64) -> Option<Rights> {
+pub const fn required_rights(kind: ObjectType, method: u64, topic: u64) -> Option<Rights> {
     match method {
-        INFO | CLOSE => Some(Rights::NONE),
+        INFO => crate::info::required_rights(kind, topic),
+        CLOSE => Some(Rights::NONE),
         DUPLICATE => Some(Rights::DUPLICATE),
         _ => match kind {
             ObjectType::Task => task::required(method),

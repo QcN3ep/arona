@@ -39,14 +39,15 @@ fn blocked_senders() {
     let mut workers = Vec::new();
     for value in 1..=3 {
         let sending = mailbox.clone();
-        let worker =
-            thread::spawn(move || sending.send(value, WaitMode::Forever).unwrap()).unwrap();
-        super::blocked(&worker);
+        let worker = super::spawn(move || sending.send(value, WaitMode::Forever).unwrap()).unwrap();
         workers.push(worker);
     }
-    for value in 0..=3 {
-        assert_eq!(mailbox.receive(WaitMode::Forever).unwrap(), value);
-    }
+    assert_eq!(mailbox.receive(WaitMode::Forever).unwrap(), 0);
+    let mut received: Vec<_> = (0..3)
+        .map(|_| mailbox.receive(WaitMode::Forever).unwrap())
+        .collect();
+    received.sort_unstable();
+    assert_eq!(received, [1, 2, 3]);
     for worker in workers {
         worker.join().unwrap();
     }
@@ -57,8 +58,7 @@ fn blocked_receivers() {
     let mut workers = Vec::new();
     for _ in 0..3 {
         let receiving = mailbox.clone();
-        let worker = thread::spawn(move || receiving.receive(WaitMode::Forever).unwrap()).unwrap();
-        super::blocked(&worker);
+        let worker = super::spawn(move || receiving.receive(WaitMode::Forever).unwrap()).unwrap();
         workers.push(worker);
     }
     for value in 0..3 {

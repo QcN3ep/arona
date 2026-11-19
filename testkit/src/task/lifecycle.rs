@@ -234,7 +234,7 @@ fn allocation_failure() {
         |_| {
             let manager = memory::manager();
             let parent = Task::new().unwrap();
-            let object = Object::FrameAllocation(
+            let object = Object::frame_allocation(
                 manager
                     .allocate_arc(
                         manager
@@ -242,7 +242,8 @@ fn allocation_failure() {
                             .unwrap(),
                     )
                     .unwrap(),
-            );
+            )
+            .unwrap();
             let handle = parent
                 .insert(object, Rights::TRANSFER | Rights::READ)
                 .unwrap();

@@ -14,7 +14,6 @@ pub(super) fn invoke(
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
     match method {
-        dma::STATE => Ok([target.state()? as u64, 0]),
         dma::MAP => {
             let direction = DmaDirection::from_raw(args[3]).ok_or(Error::InvalidArgument)?;
             let ObjectReference::FrameAllocation(allocation) = caller.get(

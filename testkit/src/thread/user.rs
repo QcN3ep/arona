@@ -470,7 +470,7 @@ fn cancel_call(completed: bool) {
     if completed {
         let frame = task
             .insert(
-                Object::FrameAllocation(allocation.clone()),
+                Object::frame_allocation(allocation.clone()).unwrap(),
                 Rights::TRANSFER | Rights::READ,
             )
             .unwrap();

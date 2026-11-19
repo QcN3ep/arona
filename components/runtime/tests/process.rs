@@ -200,6 +200,16 @@ fn remote_memory() {
 }
 
 fn frame_io() {
+    let observed = process::task()
+        .allocate(1, Rights::READ | Rights::DUPLICATE)
+        .unwrap();
+    assert_eq!(observed.state().unwrap().handle_owners, 1);
+    let opaque = observed.try_clone(Rights::NONE).unwrap();
+    assert_eq!(opaque.frames().unwrap(), 1);
+    assert_eq!(opaque.state(), Err(Error::Kernel(abi::Error::Denied)));
+    assert_eq!(observed.state().unwrap().handle_owners, 2);
+    drop(opaque);
+    assert_eq!(observed.state().unwrap().handle_owners, 1);
     let mut frames = process::task().allocate(3, Rights::READ_WRITE).unwrap();
     let mut expected = alloc::vec![0xa5; 3 * PAGE_SIZE];
     frames.write(0, &expected).unwrap();

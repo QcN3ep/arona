@@ -140,9 +140,9 @@ fn allocate(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Ca
         } else {
             target.allocate_frames_aligned(args[0], args[2])?
         };
-        Ok([Object::FrameAllocation(
+        Ok([Object::frame_allocation(
             mm::manager().allocate_arc(allocation)?,
-        )])
+        )?])
     })?;
     Ok([handle.raw(), 0])
 }
@@ -226,14 +226,6 @@ pub(super) fn frames(
     method: u64,
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
-    if method == memory::SIZE {
-        return Ok([allocation.info().frames, 0]);
-    }
-    if method == memory::STATE {
-        let info = allocation.info();
-        let handles = u64::try_from(HeapArc::strong_count(allocation)).unwrap_or(u64::MAX);
-        return Ok([info.mappings, handles]);
-    }
     let write = method == memory::WRITE;
     let user = caller.pin_user_memory(args[1] as usize, args[2] as usize, !write)?;
     let data = MemoryBuffer::allocation(allocation, args[0] as usize, args[2] as usize, write)?;

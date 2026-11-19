@@ -15,7 +15,31 @@ use crate::{
 };
 pub use abi::ObjectType;
 
-type FrameAllocation = HeapArc<memory::FrameAllocation>;
+pub struct FrameAllocation(HeapArc<memory::FrameAllocation>);
+
+impl core::ops::Deref for FrameAllocation {
+    type Target = HeapArc<memory::FrameAllocation>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for FrameAllocation {
+    fn drop(&mut self) {
+        self.0.release_handle();
+    }
+}
+
+impl ObjectPayload for FrameAllocation {
+    type Reference = HeapArc<memory::FrameAllocation>;
+    fn reference(&self) -> Self::Reference {
+        self.0.clone()
+    }
+    fn try_clone(&self) -> Result<Self, HandleError> {
+        self.0.retain_handle().map_err(|_| HandleError::NoMemory)?;
+        Ok(Self(self.0.clone()))
+    }
+}
 
 pub trait ObjectPayload: Sized {
     type Reference: Clone;
@@ -49,9 +73,24 @@ macro_rules! define_objects {
                 Ok(match self { $(Self::$kind(value) => Self::$kind(ObjectPayload::try_clone(value)?),)* })
             }
         }
+
+        impl ObjectReference {
+            pub fn kind(&self) -> ObjectType {
+                match self { $(Self::$kind(_) => ObjectType::$kind,)* }
+            }
+        }
     };
 }
 abi::objects!(define_objects);
+
+impl Object {
+    pub fn frame_allocation(
+        allocation: HeapArc<memory::FrameAllocation>,
+    ) -> Result<Self, memory::MemoryError> {
+        allocation.retain_handle()?;
+        Ok(Self::FrameAllocation(FrameAllocation(allocation)))
+    }
+}
 
 macro_rules! cloned_payload {
     ($($kind:ty),*) => { $(
@@ -62,14 +101,7 @@ macro_rules! cloned_payload {
         }
     )* };
 }
-cloned_payload!(
-    Task,
-    Thread,
-    FrameAllocation,
-    DeviceSet,
-    KernelLog,
-    DmaDomain
-);
+cloned_payload!(Task, Thread, DeviceSet, KernelLog, DmaDomain);
 
 macro_rules! referenced_payload {
     ($($kind:ty => $reference:ty),*) => { $(

@@ -12,6 +12,7 @@ The kernel checks permissions and state at each of these operations.
 
 An `AnyHandle` received from IPC also owns a handle.
 A program can check `kind()` and then convert it to a concrete type through `downcast::<T>()`; if the type does not match, the original AnyHandle is returned.
+Object type numbers remain integers in the generic container, so it can release a handle even when it has no typed wrapper for that object.
 The converted handle retains the original rights.
 
 ```rust
@@ -94,6 +95,6 @@ Without that seed, the call returns `Unsupported`, and services can use a devmgr
 
 ## Error Handling
 
-`runtime::Error::Kernel` preserves ABI error codes, while `Error::Protocol` indicates that handoff or kernel-returned data does not conform to the wrapper's conventions.
+`runtime::Error::Kernel` contains the ABI error code, while `Error::Protocol` indicates that handoff or kernel-returned data does not conform to the wrapper's conventions.
 Error returns also preserve resource ownership.
 For example, a failed `install` returns the original Handle, and a failed continuation restore returns the original continuation, so the caller can continue processing the objects it holds.

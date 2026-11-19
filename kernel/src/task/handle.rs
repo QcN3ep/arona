@@ -113,6 +113,13 @@ impl HandleTable {
         Ok(entry.object.reference())
     }
 
+    pub(crate) fn lookup(&self, handle: Handle) -> Result<(ObjectReference, Rights), HandleError> {
+        let _interrupts = InterruptGuard::new();
+        let state = self.state.lock();
+        let entry = state.entry(handle)?;
+        Ok((entry.object.reference(), entry.rights))
+    }
+
     pub fn close(&self, handle: Handle) -> Result<(), HandleError> {
         let _interrupts = InterruptGuard::new();
         drop(self.remove(handle)?);

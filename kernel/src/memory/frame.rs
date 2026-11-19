@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use core::marker::PhantomData;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::{MemoryError, PhysRange, manager};
 use crate::hardware::{
@@ -103,6 +104,7 @@ pub struct FrameAllocationInfo {
 #[must_use]
 pub struct FrameAllocation {
     pub(super) head: u64,
+    handle_owners: AtomicU64,
 }
 
 /// The allocation is returned to the pool only after the owner and all references are released.
@@ -137,6 +139,31 @@ pub struct ReservedRangeReference {
 }
 
 impl FrameAllocation {
+    pub(super) const fn new(head: u64) -> Self {
+        Self {
+            head,
+            handle_owners: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn retain_handle(&self) -> Result<(), MemoryError> {
+        self.handle_owners
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                count.checked_add(1)
+            })
+            .map(|_| ())
+            .map_err(|_| MemoryError::ReferenceOverflow)
+    }
+
+    pub(crate) fn release_handle(&self) {
+        let previous = self.handle_owners.fetch_sub(1, Ordering::Relaxed);
+        assert!(previous != 0, "frame handle ownership underflow");
+    }
+
+    pub(crate) fn handle_owners(&self) -> u64 {
+        self.handle_owners.load(Ordering::Relaxed)
+    }
+
     pub(super) fn merge(&mut self, other: Self) {
         manager().allocator().lock().merge(self.head, other.head);
         core::mem::forget(other);
@@ -145,7 +172,7 @@ impl FrameAllocation {
     pub(super) fn detach(&mut self, frame: Frame) -> Self {
         let (remaining, head) = manager().allocator().lock().detach(self.head, frame);
         self.head = remaining;
-        Self { head }
+        Self::new(head)
     }
 
     pub fn info(&self) -> FrameAllocationInfo {

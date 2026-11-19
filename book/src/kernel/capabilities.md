@@ -35,7 +35,7 @@ Handles are interpreted within their owning Task.
 A handle value encodes a slot and a generation; reusing a slot changes the generation so that identifiers pointing at old contents are rejected.
 Slot states are vacant, reserved, occupied, and retired from reuse.
 
-`INFO` returns the object type and the current handle permissions, and `CLOSE` releases a handle.
+`INFO` selects information by topic. The common HANDLE topic returns the object type number and current handle permissions, and `CLOSE` releases a handle.
 An object can have multiple handles, and `CLOSE` releases one of those holdings.
 When handing a handle across Tasks, the kernel installs the object in the target handle table, and the receiver gets a slot and generation in its own table.
 
@@ -45,6 +45,7 @@ When handing a handle across Tasks, the kernel installs the object in the target
 Its declaration assigns each bit explicitly and generates the accepted mask with compile-time checks for duplicate and out-of-range bits.
 The object declaration gives the acceptable permissions, and the method table gives the permissions required by each operation.
 These declarations remain in `abi` and generate the permission entries in the API documentation.
+Each INFO topic declares its own required rights, which the dispatcher checks before reading the resource.
 For example, sending on a Channel requires `WRITE`, receiving requires `READ`, and calling requires `READ_WRITE`; mapping operations on a Task require `MAP_MEMORY`.
 
 The system call dispatcher first obtains the object type and handle permissions, then looks up the method table and checks permissions, and only then enters the handler for the type.
@@ -73,7 +74,7 @@ Object creation also goes through the unified path of reserving a handle, creati
 
 The native ABI reserves handle value 0 for `CURRENT_THREAD`.
 At call time the kernel resolves it to the calling thread, which can query time, identity, and state, and can also yield, wait, or exit.
-The duplication permissions of this special entry include `DUPLICATE`, `TRANSFER`, `WAIT`, and `TERMINATE`.
+The duplication permissions of this special entry include `DUPLICATE`, `TRANSFER`, `WAIT`, `TERMINATE`, `SET_STATE`, and `READ`.
 Duplicating it produces an ordinary Thread handle; close operations require an ordinary handle.
 
 The current Task, by contrast, is handed over through the program start record.

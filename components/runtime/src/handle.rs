@@ -24,7 +24,7 @@ impl<T: Object> Clone for BorrowedHandle<'_, T> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HandleInfo {
-    pub kind: ObjectType,
+    pub kind: u64,
     pub rights: Rights,
 }
 
@@ -76,7 +76,7 @@ impl<T: Object> BorrowedHandle<'_, T> {
     pub fn info(&self) -> Result<HandleInfo, Error> {
         let [kind, rights] = self.invoke(abi::method::INFO, [0; 5])?;
         Ok(HandleInfo {
-            kind: ObjectType::from_raw(kind).ok_or(Error::Protocol)?,
+            kind,
             rights: Rights::from_bits(rights).ok_or(Error::Protocol)?,
         })
     }
@@ -88,19 +88,23 @@ impl<T: Object> BorrowedHandle<'_, T> {
     pub(crate) fn invoke(&self, method: u64, arguments: [u64; 5]) -> Result<[u64; 2], Error> {
         call::invoke(self.raw, method, arguments)
     }
+
+    pub(crate) fn query(&self, topic: u64) -> Result<[u64; 2], Error> {
+        self.invoke(abi::method::INFO, [topic, 0, 0, 0, 0])
+    }
 }
 
 #[derive(Debug)]
 pub struct AnyHandle {
     raw: abi::Handle,
-    kind: ObjectType,
+    kind: u64,
 }
 impl AnyHandle {
-    pub fn kind(&self) -> ObjectType {
+    pub fn kind(&self) -> u64 {
         self.kind
     }
     pub fn downcast<T: Object>(self) -> Result<Handle<T>, Self> {
-        if self.kind != T::TYPE {
+        if self.kind != T::TYPE as u64 {
             return Err(self);
         }
         let raw = self.into_raw();
@@ -126,7 +130,7 @@ impl<T: Object> From<Handle<T>> for AnyHandle {
     fn from(handle: Handle<T>) -> Self {
         Self {
             raw: handle.into_raw(),
-            kind: T::TYPE,
+            kind: T::TYPE as u64,
         }
     }
 }

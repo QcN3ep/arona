@@ -741,7 +741,7 @@ fn bootstrap(receiver: &Channel, mode: u64) {
             let archive = memory::manager().allocate_arc(archive).unwrap();
             let rights = Rights::READ | Rights::MAP | Rights::TRANSFER;
             let handle = source
-                .insert(Object::FrameAllocation(archive), rights)
+                .insert(Object::frame_allocation(archive).unwrap(), rights)
                 .unwrap();
             let mut transfers = alloc::vec![TransferRequest { handle, rights }, device];
             if mode >= 9 {
@@ -797,7 +797,7 @@ fn bootstrap(receiver: &Channel, mode: u64) {
         let rights = Rights::READ | Rights::TRANSFER;
         let handle = source
             .insert(
-                Object::FrameAllocation(memory::manager().allocate_arc(frames).unwrap()),
+                Object::frame_allocation(memory::manager().allocate_arc(frames).unwrap()).unwrap(),
                 rights,
             )
             .unwrap();

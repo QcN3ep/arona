@@ -396,7 +396,7 @@ fn transfer_messages(source: Task, target: Task, sender: Handle, receiver: Handl
     let requests: [TransferRequest; 8] = core::array::from_fn(|_| TransferRequest {
         handle: source
             .insert(
-                Object::FrameAllocation(allocation.clone()),
+                Object::frame_allocation(allocation.clone()).unwrap(),
                 Rights::TRANSFER | Rights::READ | Rights::WRITE,
             )
             .unwrap(),
@@ -539,7 +539,8 @@ fn transfer_waits(source: Task, target: Task, sender: Handle, receiver: Handle) 
     let allocation = memory::manager()
         .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
         .unwrap();
-    let object = Object::FrameAllocation(memory::manager().allocate_arc(allocation).unwrap());
+    let object =
+        Object::frame_allocation(memory::manager().allocate_arc(allocation).unwrap()).unwrap();
     receive_waiters(
         &source,
         &target,
@@ -774,7 +775,7 @@ fn receive_allocation_failure(source: Task, target: Task, sender: Handle, receiv
     let allocation = manager
         .allocate(FrameOwner::User(1), FramePurpose::Data, 1)
         .unwrap();
-    let object = Object::FrameAllocation(manager.allocate_arc(allocation).unwrap());
+    let object = Object::frame_allocation(manager.allocate_arc(allocation).unwrap()).unwrap();
     let requests: [TransferRequest; 8] = core::array::from_fn(|_| TransferRequest {
         handle: source
             .insert(object.try_clone().unwrap(), Rights::TRANSFER | Rights::READ)

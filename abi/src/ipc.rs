@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use crate::{Error, Handle, ObjectType, Rights};
+use crate::{Error, Handle, Rights};
 
 pub const MESSAGE_WORDS: usize = 8;
 pub const MESSAGE_HANDLES: usize = 8;
@@ -12,7 +12,7 @@ pub const EXITED: u64 = 1;
 #[derive(Clone, Copy, Debug)]
 pub struct HandleDescriptor {
     pub handle: Handle,
-    pub kind: ObjectType,
+    pub kind: u64,
     pub rights: Rights,
 }
 #[derive(Clone, Copy)]
@@ -52,7 +52,7 @@ impl Message {
             let descriptor = self.handles[index].ok_or(Error::InvalidArgument)?;
             words[12 + index * 3..15 + index * 3].copy_from_slice(&[
                 descriptor.handle.raw(),
-                descriptor.kind as u64,
+                descriptor.kind,
                 descriptor.rights.bits(),
             ]);
         }
@@ -77,7 +77,7 @@ impl Message {
             let first = 12 + index * 3;
             message.handles[index] = Some(HandleDescriptor {
                 handle: Handle::from_raw(words[first]),
-                kind: ObjectType::from_raw(words[first + 1]).ok_or(Error::InvalidArgument)?,
+                kind: words[first + 1],
                 rights: Rights::from_bits(words[first + 2]).ok_or(Error::InvalidArgument)?,
             });
         }

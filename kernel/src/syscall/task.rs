@@ -3,7 +3,7 @@
 use super::error::CallError;
 use crate::{
     hardware::execution::UserEntry,
-    task::{Object, ObjectType, Task, TaskState, TransferRequest},
+    task::{Object, ObjectType, Task, TransferRequest},
 };
 use abi::{Error, Rights, method::task};
 
@@ -24,12 +24,6 @@ pub(super) fn invoke(
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
     match method {
-        task::STATE => Ok(match target.state() {
-            TaskState::Created => [0, 0],
-            TaskState::Active => [1, 0],
-            TaskState::Dying(status) => [2, status as u64],
-            TaskState::Dead(status) => [3, status as u64],
-        }),
         task::CREATE => {
             let rights = Rights::from_bits(args[0]).ok_or(Error::InvalidArgument)?;
             if !ObjectType::Task.supported_rights().contains(rights) {

@@ -130,7 +130,7 @@ impl ReceivedMessage {
             && message
                 .handles
                 .first()
-                .is_none_or(|handle| handle.kind() != abi::ObjectType::Reply)
+                .is_none_or(|handle| handle.kind() != abi::ObjectType::Reply as u64)
         {
             return Err(Error::Protocol);
         }

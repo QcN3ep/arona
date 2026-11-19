@@ -14,7 +14,7 @@ use namespace::PidNamespace;
 use runtime::{
     Handle, Rights, Task, TrapPort,
     ipc::{EXITED, WaitItem},
-    thread::{ThreadState, UserEntry},
+    thread::{Lifecycle, UserEntry},
     trap::{Trap, TrapInfo},
 };
 use signal::{Signals, ThreadSignals, delivery};
@@ -197,6 +197,7 @@ impl<'a> Process<'a> {
             Rights::WAIT
                 | Rights::START
                 | Rights::SET_STATE
+                | Rights::READ
                 | Rights::TERMINATE
                 | Rights::INTERRUPT,
         )?;
@@ -280,7 +281,7 @@ impl<'a> Process<'a> {
         else {
             return Ok(());
         };
-        if self.threads[index].native.state()?.0 == ThreadState::Dead {
+        if self.threads[index].native.state()?.0 == Lifecycle::Exited {
             return Ok(());
         }
         self.threads[index].interrupt_requested = false;
@@ -326,7 +327,7 @@ impl<'a> Process<'a> {
         }
         let mut index = 0;
         while index < self.threads.len() {
-            if self.threads[index].native.state()?.0 == ThreadState::Dead {
+            if self.threads[index].native.state()?.0 == Lifecycle::Exited {
                 self.cpu_ns = self
                     .cpu_ns
                     .saturating_add(self.threads[index].native.cpu_time_ns().unwrap_or(0));
@@ -345,7 +346,7 @@ impl<'a> Process<'a> {
             }
             progress |= delivery::poll(self, index)?;
             if !self.signals.borrow().stopped
-                && self.threads[index].native.state()?.0 != ThreadState::Dead
+                && self.threads[index].native.state()?.0 != Lifecycle::Exited
             {
                 progress |= syscall::poll(self, index, files, services)?;
             }
@@ -586,12 +587,12 @@ impl<'a> Process<'a> {
     }
 
     fn runnable(&self) -> bool {
-        self.threads.iter().any(|thread| {
-            matches!(
-                thread.native.state(),
-                Ok((ThreadState::Ready | ThreadState::Running, _))
-            )
-        })
+        !self.signals.borrow().stopped
+            && self.threads.iter().any(|thread| {
+                thread.pending.is_none()
+                    && thread.held.is_none()
+                    && matches!(thread.native.state(), Ok((Lifecycle::Live, _)))
+            })
     }
 
     /// Earliest deadline among asynchronous memory operations.
@@ -629,12 +630,7 @@ impl<'a> Process<'a> {
         self.max_rss = self.max_rss.max(resident);
         let state = if self.signals.borrow().stopped {
             b'T'
-        } else if self.threads.iter().any(|thread| {
-            matches!(
-                thread.native.state().map(|state| state.0),
-                Ok(ThreadState::Running | ThreadState::Ready)
-            )
-        }) {
+        } else if self.runnable() {
             b'R'
         } else {
             b'S'

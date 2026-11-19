@@ -63,6 +63,14 @@ impl Log {
             .map(|(bytes, _)| bytes.len())
     }
 
+    pub(crate) fn capacity(&self) -> Result<usize, Errno> {
+        self.kernel
+            .as_ref()
+            .ok_or(ENODEV)?
+            .capacity()
+            .map_err(|_| EIO)
+    }
+
     /// Return the visible tail and a clear floor to commit after the user copy succeeds.
     pub(crate) fn read_clear(&self, length: usize) -> Result<(Vec<u8>, u64), Errno> {
         let start = Cursor {

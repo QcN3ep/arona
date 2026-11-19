@@ -4,8 +4,7 @@ use alloc::{sync::Arc, vec::Vec};
 use runtime::{
     Error, KernelError, Rights,
     ipc::{self, Message, Transfer, WaitItem, WaitMode, WaitResult},
-    process,
-    thread::{self, ThreadState},
+    process, thread,
 };
 
 pub fn run() {
@@ -42,9 +41,12 @@ pub fn run() {
     );
     assert_eq!(receivers[last].receive(WaitMode::Poll).unwrap().tag, 73);
     let waiting = Arc::clone(&receivers);
+    let entered = Arc::new(runtime::sync::Semaphore::new(0));
+    let ready = entered.clone();
     let worker = thread::Builder::new()
         .stack_size(64 * 1024)
         .spawn(move || {
+            ready.post().unwrap();
             let items: Vec<_> = waiting
                 .iter()
                 .map(|channel| WaitItem::new(channel, ipc::READABLE | ipc::PEER_CLOSED))
@@ -52,7 +54,7 @@ pub fn run() {
             ipc::wait_many(&items, WaitMode::Forever)
         })
         .unwrap();
-    super::wait_for(|| worker.thread().state().unwrap().0 == ThreadState::Blocked);
+    entered.wait(WaitMode::Forever).unwrap();
     senders[last]
         .send(&mut Message::new(74, &[]).unwrap(), WaitMode::Poll)
         .unwrap();
@@ -172,13 +174,16 @@ fn cancelled_calls() {
     let failed = client
         .start_call(&mut Message::new(5, &[]).unwrap())
         .unwrap();
+    let entered = Arc::new(runtime::sync::Semaphore::new(0));
+    let ready = entered.clone();
     let worker = thread::spawn(move || {
+        ready.post().unwrap();
         let items = [WaitItem::new(&failed, ipc::READABLE)];
         ipc::wait_many(&items, WaitMode::Forever).unwrap();
         failed.try_receive().unwrap_err()
     })
     .unwrap();
-    super::wait_for(|| worker.thread().state().unwrap().0 == ThreadState::Blocked);
+    entered.wait(WaitMode::Forever).unwrap();
     drop(server);
     assert_eq!(
         worker.join().unwrap(),

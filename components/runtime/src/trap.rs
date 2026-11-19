@@ -33,7 +33,7 @@ impl Handle<Task> {
 
 impl Handle<Thread> {
     pub fn id(&self) -> Result<u64, Error> {
-        Ok(self.borrow().invoke(method::thread::ID, [0; 5])?[0])
+        Ok(self.borrow().query(abi::info::thread::IDENTITY)?[0])
     }
 
     pub fn set_user_state(&self, state: &UserState) -> Result<(), Error> {

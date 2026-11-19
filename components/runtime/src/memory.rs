@@ -194,19 +194,21 @@ impl Handle<Task> {
 pub struct AllocationState {
     /// Kernel mapping references that keep the frames installed in page tables.
     pub mappings: u64,
-    /// Handles that keep the allocation object alive, including the caller's handle
-    /// and the transient reference used to answer the query.
-    pub handles: u64,
+    /// Owned capabilities, including in-flight transfers and excluding temporary borrows.
+    pub handle_owners: u64,
 }
 
 impl Handle<FrameAllocation> {
     pub fn frames(&self) -> Result<u64, Error> {
-        Ok(self.borrow().invoke(memory::SIZE, [0; 5])?[0])
+        Ok(self.borrow().query(abi::info::memory::SIZE)?[0])
     }
 
     pub fn state(&self) -> Result<AllocationState, Error> {
-        let [mappings, handles] = self.borrow().invoke(memory::STATE, [0; 5])?;
-        Ok(AllocationState { mappings, handles })
+        let [mappings, handle_owners] = self.borrow().query(abi::info::memory::USAGE)?;
+        Ok(AllocationState {
+            mappings,
+            handle_owners,
+        })
     }
     pub fn read(&self, offset: usize, output: &mut [u8]) -> Result<(), Error> {
         self.borrow().invoke(

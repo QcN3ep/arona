@@ -178,7 +178,7 @@ impl MemoryManager {
         frames: u64,
     ) -> Result<FrameAllocation, MemoryError> {
         let head = self.allocator().lock().allocate(owner, purpose, frames)?;
-        let allocation = FrameAllocation { head };
+        let allocation = FrameAllocation::new(head);
         self.zero_allocation(&allocation)?;
         Ok(allocation)
     }
@@ -199,7 +199,7 @@ impl MemoryManager {
             .allocator()
             .lock()
             .allocate_contiguous(owner, purpose, frames, alignment)?;
-        let allocation = FrameAllocation { head };
+        let allocation = FrameAllocation::new(head);
         self.zero_allocation(&allocation)?;
         Ok(allocation)
     }

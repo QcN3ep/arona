@@ -5,6 +5,7 @@
 mod device;
 mod dma;
 mod error;
+mod info;
 mod ipc;
 mod logger;
 mod memory;
@@ -36,19 +37,24 @@ pub(crate) fn dispatch(handle: usize, arguments: [usize; 6]) -> TrapOutcome {
 fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, CallError> {
     let current = threads::current().ok_or(Error::InvalidState)?;
     let caller = current.task().ok_or(Error::InvalidState)?;
-    let self_rights =
-        Rights::DUPLICATE | Rights::TRANSFER | Rights::WAIT | Rights::TERMINATE | Rights::SET_STATE;
-    let (kind, rights) = if handle == Handle::CURRENT_THREAD {
-        (abi::ObjectType::Thread, self_rights)
+    let self_rights = Rights::DUPLICATE
+        | Rights::TRANSFER
+        | Rights::WAIT
+        | Rights::TERMINATE
+        | Rights::SET_STATE
+        | Rights::READ;
+    let (object, rights) = if handle == Handle::CURRENT_THREAD {
+        (ObjectReference::Thread(current.clone()), self_rights)
     } else {
-        caller.handle_info(handle)?
+        caller.with_handles(|table| table.lookup(handle))??
     };
-    let required = method::required_rights(kind, arguments[0]).ok_or(Error::Unsupported)?;
+    let required = method::required_rights(object.kind(), arguments[0], arguments[1])
+        .ok_or(Error::Unsupported)?;
     if !rights.contains(required) {
         return Err(Error::Denied.into());
     }
     let values = match arguments[0] {
-        method::INFO => [kind as u64, rights.bits()],
+        method::INFO => info::invoke(&object, rights, arguments[1..].try_into().unwrap())?,
         method::CLOSE => {
             if handle == Handle::CURRENT_THREAD {
                 return Err(Error::InvalidArgument.into());
@@ -69,11 +75,6 @@ fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, CallError> {
             [duplicate.raw(), 0]
         }
         _ => {
-            let object = if handle == Handle::CURRENT_THREAD {
-                ObjectReference::Thread(current)
-            } else {
-                caller.get(handle, kind, required)?
-            };
             let args = arguments[1..].try_into().unwrap();
             match object {
                 ObjectReference::DeviceSet(target) => {

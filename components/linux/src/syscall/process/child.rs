@@ -65,6 +65,7 @@ fn spawn<'a>(
             Rights::WAIT
                 | Rights::START
                 | Rights::SET_STATE
+                | Rights::READ
                 | Rights::TERMINATE
                 | Rights::INTERRUPT,
         )

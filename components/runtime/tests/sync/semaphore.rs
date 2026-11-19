@@ -44,24 +44,23 @@ fn multiple_waiters() {
     let mut workers = Vec::new();
     for index in 0..4 {
         let waiting = semaphore.clone();
-        let worker = thread::spawn(move || {
+        let worker = super::spawn(move || {
             waiting.wait(WaitMode::Forever).unwrap();
             index
         })
         .unwrap();
-        super::blocked(&worker);
         workers.push(worker);
     }
     for _ in &workers {
         semaphore.post().unwrap();
     }
+    for (index, worker) in workers.into_iter().enumerate() {
+        assert_eq!(worker.join().unwrap(), index);
+    }
     assert_eq!(
         semaphore.wait(WaitMode::Poll),
         Err(Error::Kernel(KernelError::WouldBlock))
     );
-    for (index, worker) in workers.into_iter().enumerate() {
-        assert_eq!(worker.join().unwrap(), index);
-    }
 }
 
 fn deadline_race() {

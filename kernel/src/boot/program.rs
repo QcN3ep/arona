@@ -220,7 +220,7 @@ fn bootstrap(
             || {
                 Ok(vec![
                     HandleEntry {
-                        object: Object::FrameAllocation(frames.clone()),
+                        object: Object::frame_allocation(frames.clone())?,
                         rights: Rights::READ | Rights::MAP | Rights::TRANSFER,
                     },
                     HandleEntry {

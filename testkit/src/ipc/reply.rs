@@ -106,7 +106,7 @@ fn round_trip(fixture: &Fixture) -> usize {
         let handle = fixture
             .client
             .insert(
-                Object::FrameAllocation(allocation.clone()),
+                Object::frame_allocation(allocation.clone()).unwrap(),
                 Rights::TRANSFER | Rights::READ,
             )
             .unwrap();
@@ -158,7 +158,7 @@ fn round_trip(fixture: &Fixture) -> usize {
         handle: fixture
             .server
             .insert(
-                Object::FrameAllocation(allocation.clone()),
+                Object::frame_allocation(allocation.clone()).unwrap(),
                 Rights::TRANSFER | Rights::READ,
             )
             .unwrap(),
@@ -338,7 +338,7 @@ fn reply_under_pressure(fixture: &Fixture) -> usize {
     let object = fixture
         .client
         .insert(
-            Object::FrameAllocation(allocation.clone()),
+            Object::frame_allocation(allocation.clone()).unwrap(),
             Rights::DUPLICATE | Rights::READ,
         )
         .unwrap();
@@ -346,7 +346,7 @@ fn reply_under_pressure(fixture: &Fixture) -> usize {
         handle: fixture
             .server
             .insert(
-                Object::FrameAllocation(allocation.clone()),
+                Object::frame_allocation(allocation.clone()).unwrap(),
                 Rights::TRANSFER | Rights::READ,
             )
             .unwrap(),

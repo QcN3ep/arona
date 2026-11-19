@@ -63,6 +63,7 @@ pub(super) fn clone(
             Rights::WAIT
                 | Rights::START
                 | Rights::SET_STATE
+                | Rights::READ
                 | Rights::TERMINATE
                 | Rights::INTERRUPT,
         )

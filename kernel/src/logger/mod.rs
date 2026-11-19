@@ -4,6 +4,7 @@
 
 mod buffer;
 
+pub(crate) use buffer::CAPACITY;
 pub use buffer::ReadError;
 
 use core::fmt;

@@ -7,9 +7,11 @@ use core::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use abi::logger::{BUFFER_SIZE, HEADER_SIZE, MAX_RECORD_SIZE, Record};
+use abi::logger::{HEADER_SIZE, MAX_RECORD_SIZE, Record};
 use arrayvec::ArrayString;
 use spin::Mutex;
+
+pub(crate) const CAPACITY: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReadError {
@@ -23,7 +25,7 @@ pub(super) struct Buffer {
 }
 
 struct Ring {
-    bytes: [u8; BUFFER_SIZE],
+    bytes: [u8; CAPACITY],
     head: usize,
     length: usize,
 }
@@ -38,7 +40,7 @@ impl Buffer {
         Self {
             sequence: AtomicU64::new(0),
             ring: Mutex::new(Ring {
-                bytes: [0; BUFFER_SIZE],
+                bytes: [0; CAPACITY],
                 head: 0,
                 length: 0,
             }),
@@ -113,25 +115,25 @@ impl Ring {
     }
 
     fn copy(&self, offset: usize, output: &mut [u8]) {
-        let start = (self.head + offset) % BUFFER_SIZE;
-        let first = output.len().min(BUFFER_SIZE - start);
+        let start = (self.head + offset) % CAPACITY;
+        let first = output.len().min(CAPACITY - start);
         output[..first].copy_from_slice(&self.bytes[start..start + first]);
         let remaining = output.len() - first;
         output[first..].copy_from_slice(&self.bytes[..remaining]);
     }
 
     fn append(&mut self, bytes: &[u8]) {
-        let start = (self.head + self.length) % BUFFER_SIZE;
-        let first = bytes.len().min(BUFFER_SIZE - start);
+        let start = (self.head + self.length) % CAPACITY;
+        let first = bytes.len().min(CAPACITY - start);
         self.bytes[start..start + first].copy_from_slice(&bytes[..first]);
         self.bytes[..bytes.len() - first].copy_from_slice(&bytes[first..]);
         self.length += bytes.len();
     }
 
     fn push(&mut self, bytes: &[u8]) {
-        while BUFFER_SIZE - self.length < bytes.len() + 2 {
+        while CAPACITY - self.length < bytes.len() + 2 {
             let discarded = self.record_length(0) + 2;
-            self.head = (self.head + discarded) % BUFFER_SIZE;
+            self.head = (self.head + discarded) % CAPACITY;
             self.length -= discarded;
         }
         self.append(&(bytes.len() as u16).to_le_bytes());

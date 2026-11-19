@@ -126,7 +126,7 @@ fn read_message(
     let mut transfers = ArrayVec::new();
     for descriptor in wire.handles[..wire.handle_count].iter().flatten() {
         let (kind, _) = caller.handle_info(descriptor.handle)?;
-        if kind != descriptor.kind {
+        if ObjectType::from_raw(descriptor.kind) != Some(kind) {
             return Err(Error::WrongType.into());
         }
         transfers.push(TransferRequest {
@@ -194,12 +194,12 @@ fn write_message(
         let (kind, rights) = descriptor(index)?;
         wire.handles[index] = Some(abi::ipc::HandleDescriptor {
             handle: *handle,
-            kind,
+            kind: kind as u64,
             rights,
         });
     }
     if response.has_reply()
-        && wire.handles[0].is_none_or(|handle| handle.kind != ObjectType::Reply)
+        && wire.handles[0].is_none_or(|handle| handle.kind != ObjectType::Reply as u64)
     {
         return Err(crate::ipc::ChannelError::InvalidMessage.into());
     }

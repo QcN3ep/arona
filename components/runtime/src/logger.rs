@@ -3,9 +3,13 @@
 //! Read the kernel log by cursor.
 
 use crate::{Error, Handle, KernelLog};
-pub use abi::logger::{BUFFER_SIZE, Level, MAX_RECORD_SIZE, Record};
+pub use abi::logger::{Level, MAX_RECORD_SIZE, Record};
 
 impl Handle<KernelLog> {
+    pub fn capacity(&self) -> Result<usize, Error> {
+        usize::try_from(self.borrow().query(abi::info::kernel_log::CAPACITY)?[0])
+            .map_err(|_| Error::Protocol)
+    }
     /// When cursor is zero, read the earliest record; afterward use the previous record's sequence + 1.
     pub fn read<'a>(&self, cursor: u64, output: &'a mut [u8]) -> Result<Option<Record<'a>>, Error> {
         let [length, _] = self.borrow().invoke(

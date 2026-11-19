@@ -245,6 +245,15 @@ impl Task {
         Ok(handle)
     }
 
+    pub(crate) fn with_handles<T>(
+        &self,
+        operation: impl FnOnce(&HandleTable) -> T,
+    ) -> Result<T, TaskError> {
+        let _interrupts = InterruptGuard::new();
+        let registry = TASKS.lock();
+        Ok(operation(&registry.find(self)?.handles))
+    }
+
     pub(crate) fn handle_info(&self, handle: Handle) -> Result<(ObjectType, Rights), TaskError> {
         let _interrupts = InterruptGuard::new();
         Ok(TASKS.lock().find(self)?.handles.info(handle)?)

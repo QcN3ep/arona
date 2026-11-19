@@ -60,9 +60,7 @@ impl Context<'_> {
         let mut index = 0;
         while index < self.retired.len() {
             let state = self.retired[index].frames.state();
-            // The caller's handle and the transient reference used by the query keep
-            // two handles alive even when no client still owns the block.
-            if state.is_ok_and(|state| state.handles <= 2 && state.mappings == 0) {
+            if state.is_ok_and(|state| state.handle_owners == 1 && state.mappings == 0) {
                 let retired = self.retired.swap_remove(index);
                 self.release(retired.bytes);
             } else {

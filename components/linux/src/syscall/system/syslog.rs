@@ -48,7 +48,7 @@ fn call(process: &Process<'_>, services: &Services<'_>, args: [usize; 6]) -> Sys
         // does not control. Report them as unsupported instead of succeeding.
         ACTION_CONSOLE_OFF | ACTION_CONSOLE_ON | ACTION_CONSOLE_LEVEL => Err(EINVAL),
         ACTION_SIZE_UNREAD => services.log.size_unread(),
-        ACTION_SIZE_BUFFER => Ok(runtime::logger::BUFFER_SIZE),
+        ACTION_SIZE_BUFFER => services.log.capacity(),
         ACTION_CLEAR => services.log.clear().map(|()| 0),
         ACTION_READ | ACTION_READ_ALL | ACTION_READ_CLEAR => {
             let length = args[2] as i32;

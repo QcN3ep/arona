@@ -573,7 +573,10 @@ fn shared_console(control: &Handle<Channel>, id: u32, logger: &RunningLogger) {
     let terminal =
         Arc::new(Session::open(process::task(), control, id, Access::InputOutput).unwrap());
     let input = Arc::clone(&terminal);
+    let entered = Arc::new(runtime::sync::Semaphore::new(0));
+    let ready = entered.clone();
     let reader = thread::spawn(move || {
+        ready.post().unwrap();
         let expected = b"shared-console-input";
         let mut bytes = [0; 20];
         let mut count = 0;
@@ -585,11 +588,9 @@ fn shared_console(control: &Handle<Channel>, id: u32, logger: &RunningLogger) {
         assert_eq!(&bytes, expected);
     })
     .unwrap();
-    let end = deadline();
-    while reader.thread().state().unwrap().0 != thread::ThreadState::Blocked {
-        assert!(thread::now_ns().unwrap() < end);
-        thread::yield_now().unwrap();
-    }
+    entered
+        .wait(runtime::ipc::WaitMode::Until(deadline()))
+        .unwrap();
     logger
         .client
         .write(

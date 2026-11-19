@@ -301,7 +301,7 @@ pub(crate) mod current {
         // SAFETY: The launcher must transfer exclusive ownership of the current Task handle.
         let task = unsafe { Handle::<Task>::from_raw(start.task) };
         let info = task.info()?;
-        if info.kind != crate::ObjectType::Task
+        if info.kind != crate::ObjectType::Task as u64
             || !info.rights.contains(ProcessStart::REQUIRED_RIGHTS)
         {
             return Err(Error::Kernel(abi::Error::Denied));
@@ -309,7 +309,7 @@ pub(crate) mod current {
         let bootstrap = if let Some(raw) = start.bootstrap {
             // SAFETY: The launcher must transfer exclusive ownership of the Channel handle.
             let channel = unsafe { Handle::<Channel>::from_raw(raw) };
-            if channel.info()?.kind != crate::ObjectType::Channel {
+            if channel.info()?.kind != crate::ObjectType::Channel as u64 {
                 return Err(Error::Kernel(abi::Error::WrongType));
             }
             Some(channel)

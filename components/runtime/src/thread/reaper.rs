@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use super::{ThreadState, spawn::Resources};
+use super::{Lifecycle, spawn::Resources};
 use crate::{
     Error, Event, Handle, Rights, Thread,
     ipc::{WaitItem, WaitMode, wait_many},
@@ -65,7 +65,7 @@ impl State {
                     .state()
                     .expect("failed to query retired thread")
                     .0
-                    == ThreadState::Dead
+                    == Lifecycle::Exited
                 {
                     drop(pending.swap_remove(index));
                 } else {

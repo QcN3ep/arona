@@ -4,7 +4,13 @@ mod mailbox;
 mod mutex;
 mod semaphore;
 
-use runtime::thread::{JoinHandle, ThreadState};
+use alloc::sync::Arc;
+use runtime::{
+    Error,
+    ipc::WaitMode,
+    sync::Semaphore,
+    thread::{self, JoinHandle},
+};
 
 pub fn run() {
     semaphore::run();
@@ -12,6 +18,15 @@ pub fn run() {
     mailbox::run();
 }
 
-fn blocked<T: Send + 'static>(worker: &JoinHandle<T>) {
-    super::wait_for(|| worker.thread().state().unwrap().0 == ThreadState::Blocked);
+fn spawn<T: Send + 'static>(
+    function: impl FnOnce() -> T + Send + 'static,
+) -> Result<JoinHandle<T>, Error> {
+    let entered = Arc::new(Semaphore::new(0));
+    let ready = entered.clone();
+    let worker = thread::spawn(move || {
+        ready.post().unwrap();
+        function()
+    })?;
+    entered.wait(WaitMode::Forever)?;
+    Ok(worker)
 }

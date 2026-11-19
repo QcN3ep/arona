@@ -14,7 +14,7 @@ pub(super) fn run() {
     let mut workers = Vec::new();
     for _ in 0..4 {
         let shared = mutex.clone();
-        let worker = thread::spawn(move || {
+        let worker = super::spawn(move || {
             for _ in 0..16 {
                 let guard = shared.lock(WaitMode::Forever).unwrap();
                 let previous = guard.get();
@@ -23,7 +23,6 @@ pub(super) fn run() {
             }
         })
         .unwrap();
-        super::blocked(&worker);
         workers.push(worker);
     }
     held.set(10);

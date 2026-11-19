@@ -35,7 +35,7 @@ impl Handle<Device> {
 
 impl Handle<DmaDomain> {
     pub fn state(&self) -> Result<DmaState, Error> {
-        let [state, _] = self.borrow().invoke(dma::STATE, [0; 5])?;
+        let [state, _] = self.borrow().query(abi::info::dma::STATE)?;
         DmaState::from_raw(state).ok_or(Error::Protocol)
     }
 
