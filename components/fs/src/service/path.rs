@@ -62,31 +62,54 @@ pub(super) fn directory(
 pub(super) fn relative(
     namespace: &Namespace,
     files: &mut Vec<FileSession>,
-    mut request: ReceivedMessage,
+    request: ReceivedMessage,
 ) -> Result<Message, Error> {
     let words = request.words().to_vec();
     let [method, anchor, flags, rest @ ..] = words.as_slice() else {
         return Err(Error::InvalidRequest);
     };
-    match (*method, rest) {
-        (protocol::STATFS, [length]) if request.handles().len() == 2 && *flags == 0 => {
+    match *method {
+        protocol::STATFS | protocol::METADATA | protocol::READ_LINK => {
+            read_at(namespace, files, *method, *anchor, *flags, rest, request)
+        }
+        protocol::OPEN | protocol::OPEN_DIRECTORY => {
+            open_at(namespace, files, *method, *anchor, *flags, rest, request)
+        }
+        protocol::SET_ATTRIBUTES | protocol::MKDIR | protocol::UNLINK => {
+            update_at(namespace, files, *method, *anchor, *flags, rest, request)
+        }
+        protocol::RENAME | protocol::HARD_LINK | protocol::SYMLINK => {
+            link_at(namespace, files, *method, *anchor, *flags, rest, request)
+        }
+        _ => Err(Error::InvalidRequest),
+    }
+}
+
+fn read_at(
+    namespace: &Namespace,
+    files: &[FileSession],
+    method: u64,
+    anchor: u64,
+    flags: u64,
+    words: &[u64],
+    mut request: ReceivedMessage,
+) -> Result<Message, Error> {
+    match (method, words) {
+        (protocol::STATFS, [length]) if request.handles().len() == 2 && flags == 0 => {
             let name = path(&mut request, *length)?;
-            let name = resolve(namespace, files, *anchor, &name, true, false)?;
+            let name = resolve(namespace, files, anchor, &name, true, false)?;
             let mut output = take_frames(&mut request, Rights::WRITE)?;
             output.write(0, &namespace.statistics(&name)?.encode())?;
             Ok(Message::new(protocol::SUCCESS, &[])?)
         }
-        (protocol::OPEN | protocol::OPEN_DIRECTORY, _) => {
-            open_at(namespace, files, *method, *anchor, *flags, rest, request)
-        }
         (protocol::METADATA | protocol::READ_LINK, [length]) if request.handles().len() == 2 => {
-            if flags & !1 != 0 || *method == protocol::READ_LINK && *flags != 0 {
+            if flags & !1 != 0 || method == protocol::READ_LINK && flags != 0 {
                 return Err(Error::InvalidRequest);
             }
             let path = path(&mut request, *length)?;
-            let path = resolve(namespace, files, *anchor, &path, *flags == 1, false)?;
+            let path = resolve(namespace, files, anchor, &path, flags == 1, false)?;
             let mut output = take_frames(&mut request, Rights::WRITE)?;
-            if *method == protocol::METADATA {
+            if method == protocol::METADATA {
                 output.write(0, &namespace.metadata(&path)?.encode())?;
                 Ok(Message::new(protocol::SUCCESS, &[])?)
             } else {
@@ -95,56 +118,79 @@ pub(super) fn relative(
                 Ok(Message::new(protocol::SUCCESS, &[bytes.len() as u64])?)
             }
         }
-        (protocol::SET_ATTRIBUTES, [length]) if request.handles().len() == 2 && *flags <= 1 => {
+        _ => Err(Error::InvalidRequest),
+    }
+}
+
+fn update_at(
+    namespace: &Namespace,
+    files: &[FileSession],
+    method: u64,
+    anchor: u64,
+    flags: u64,
+    words: &[u64],
+    mut request: ReceivedMessage,
+) -> Result<Message, Error> {
+    match (method, words) {
+        (protocol::SET_ATTRIBUTES, [length]) if request.handles().len() == 2 && flags <= 1 => {
             let path = path(&mut request, *length)?;
-            let path = resolve(namespace, files, *anchor, &path, *flags == 1, false)?;
+            let path = resolve(namespace, files, anchor, &path, flags == 1, false)?;
             let input = take_frames(&mut request, Rights::READ)?;
             let mut bytes = [0; crate::Attributes::SIZE];
             input.read(0, &mut bytes)?;
             namespace.set_attributes(&path, crate::Attributes::decode(&bytes)?)?;
             Ok(Message::new(protocol::SUCCESS, &[])?)
         }
-        (protocol::MKDIR, [length, permissions]) if request.handles().len() == 1 && *flags == 0 => {
+        (protocol::MKDIR, [length, permissions]) if request.handles().len() == 1 && flags == 0 => {
             let permissions = u16::try_from(*permissions).map_err(|_| Error::InvalidRequest)?;
             let mut path = path(&mut request, *length)?;
             trim_slashes(&mut path);
-            let path = resolve(namespace, files, *anchor, &path, false, true)?;
+            let path = resolve(namespace, files, anchor, &path, false, true)?;
             namespace.mkdir_with_permissions(&path, permissions)?;
             Ok(Message::new(protocol::SUCCESS, &[])?)
         }
-        (protocol::UNLINK, [length]) if request.handles().len() == 1 && *flags <= 1 => remove(
-            namespace,
-            files,
-            *anchor,
-            *flags == 1,
-            &mut request,
-            *length,
-        ),
+        (protocol::UNLINK, [length]) if request.handles().len() == 1 && flags <= 1 => {
+            remove(namespace, files, anchor, flags == 1, &mut request, *length)
+        }
+        _ => Err(Error::InvalidRequest),
+    }
+}
+
+fn link_at(
+    namespace: &Namespace,
+    files: &[FileSession],
+    method: u64,
+    anchor: u64,
+    flags: u64,
+    words: &[u64],
+    mut request: ReceivedMessage,
+) -> Result<Message, Error> {
+    match (method, words) {
         (protocol::RENAME | protocol::HARD_LINK, [first, second, target_anchor])
-            if request.handles().len() == 2 && *flags <= 1 =>
+            if request.handles().len() == 2 && flags <= 1 =>
         {
-            if *method == protocol::RENAME && *flags != 0 {
+            if method == protocol::RENAME && flags != 0 {
                 return Err(Error::InvalidRequest);
             }
             let source = path(&mut request, *first)?;
             let target = path(&mut request, *second)?;
-            if *method == protocol::RENAME {
+            if method == protocol::RENAME {
                 entry_name(&source)?;
             }
             entry_name(&target)?;
-            let source = resolve(namespace, files, *anchor, &source, *flags == 1, false)?;
+            let source = resolve(namespace, files, anchor, &source, flags == 1, false)?;
             let target = resolve(namespace, files, *target_anchor, &target, false, true)?;
-            if *method == protocol::RENAME {
+            if method == protocol::RENAME {
                 namespace.rename(&source, &target)?;
             } else {
                 namespace.hard_link(&source, &target)?;
             }
             Ok(Message::new(protocol::SUCCESS, &[])?)
         }
-        (protocol::SYMLINK, [first, second]) if request.handles().len() == 2 && *flags == 0 => {
+        (protocol::SYMLINK, [first, second]) if request.handles().len() == 2 && flags == 0 => {
             let target = path(&mut request, *first)?;
             let path = path(&mut request, *second)?;
-            let path = resolve(namespace, files, *anchor, &path, false, true)?;
+            let path = resolve(namespace, files, anchor, &path, false, true)?;
             namespace.symlink(&target, &path)?;
             Ok(Message::new(protocol::SUCCESS, &[])?)
         }
