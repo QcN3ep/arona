@@ -40,10 +40,10 @@ Linux program syscalls are forwarded through a TrapPort to the compatibility ser
 All objects share `INFO`, `CLOSE`, and `DUPLICATE`.
 Object-specific methods start at 16 and reuse numbers by type.
 
-| Type | Dedicated operations |
+| Type | Operations and queries |
 |---|---|
-| Task | Allocate page frames, map, reserve, and query addresses, read or write target memory, create Task, Thread, Channel, Event, Timer, install handles, set Traps, terminate and wait |
-| Thread | Status, start, terminate, wait, exit, yield, sleep, time, identity, user state setup, interrupt, priority query and change, multi-object wait |
+| Task | Allocate page frames, map, reserve, and query addresses, read or write target memory, create Task, Thread, Channel, Event, Timer, install handles, set Traps, terminate, and query lifecycle |
+| Thread | Start, terminate, yield, multi-object wait, lifecycle and execution queries, user state setup, interrupt, scheduling parameters |
 | FrameAllocation | Size, read, and write |
 | Channel | Send, receive, synchronous call, start asynchronous call |
 | Call, Reply | Receive result, cancel call, send one-shot reply |
@@ -52,7 +52,9 @@ Object-specific methods start at 16 and reuse numbers by type.
 | Device | Map, unmap, bind interrupt, unbind, acknowledge, revoke, create DMA object |
 | DmaDomain | Status, map, unmap, enable, quiesce, and revoke |
 | TrapPort, TrapContinuation | Receive event, read user state, resume |
-| KernelLog | Read records by cursor |
+| KernelLog | Read records by cursor, query capacity |
+| Clock, SystemInfo | Query monotonic time or global resource measurements |
+| Entropy | Generate random bytes |
 
 Method constants and required permissions are centralized in `abi/src/method.rs`.
 Concrete input records reside in modules such as `abi/src/memory.rs`, `thread.rs`, and `device.rs`.

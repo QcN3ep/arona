@@ -12,6 +12,7 @@ extern crate alloc;
 // TODO: Provide platform adaptation for Rust std and support for I/O, synchronization, time, and networking.
 
 mod call;
+mod clock;
 pub mod device;
 pub mod dma;
 mod handle;

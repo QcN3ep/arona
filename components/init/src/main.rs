@@ -57,7 +57,7 @@ init_errors!(
 fn main() -> Result<usize, InitError> {
     let bootstrap = process::bootstrap().ok_or(Error::Protocol)?;
     let mut startup = bootstrap.receive(WaitMode::Forever)?;
-    if startup.tag != 0 || startup.words().len() != 1 || startup.handles().len() != 3 {
+    if startup.tag != 0 || startup.words().len() != 1 || startup.handles().len() != 5 {
         return Err(Error::Protocol.into());
     }
     let length = usize::try_from(startup.words()[0]).map_err(|_| Error::Protocol)?;
@@ -75,6 +75,16 @@ fn main() -> Result<usize, InitError> {
         .take_handle(0)
         .ok_or(Error::Protocol)?
         .downcast::<KernelLog>()
+        .map_err(|_| Error::Protocol)?;
+    let system = startup
+        .take_handle(0)
+        .ok_or(Error::Protocol)?
+        .downcast::<runtime::SystemInfo>()
+        .map_err(|_| Error::Protocol)?;
+    let entropy = startup
+        .take_handle(0)
+        .ok_or(Error::Protocol)?
+        .downcast::<runtime::Entropy>()
         .map_err(|_| Error::Protocol)?;
     drop(bootstrap);
     let archive = Archive::new(frames, length)?;
@@ -109,14 +119,14 @@ fn main() -> Result<usize, InitError> {
         persistent_log,
     )?;
     logger::init(client, logger::log::LevelFilter::Info).map_err(|_| Error::Protocol)?;
-    let (net, net_control) = service::start_net(&loader, &files, &device_control)?;
+    let (net, net_control) = service::start_net(&loader, &files, &device_control, &entropy)?;
     let (linux, linux_control) = service::start_linux(
         &loader,
         &files,
         &mounts,
         &device_control,
         &net_control,
-        &kernel_log,
+        (&kernel_log, &system, &entropy),
         reserved_disk,
     )?;
     if mounted {

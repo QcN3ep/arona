@@ -2,7 +2,6 @@
 
 use super::error::CallError;
 use crate::{
-    hardware,
     task::Task,
     thread::{self as threads, Thread, scheduler},
 };
@@ -35,12 +34,6 @@ pub(super) fn invoke(
             }
             Ok([0; 2])
         }
-        thread::NOW => Ok([
-            hardware::timer()
-                .now_ns()
-                .map_err(|_| Error::InvalidState)?,
-            0,
-        ]),
         thread::GET_SCHEDULING => Ok([target.scheduling() as u64, 0]),
         thread::SET_SCHEDULING => {
             let policy =

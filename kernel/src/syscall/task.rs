@@ -37,15 +37,6 @@ pub(super) fn invoke(
             })?;
             Ok([handle.raw(), 0])
         }
-        task::RANDOM => {
-            let length = usize::try_from(args[1]).map_err(|_| Error::InvalidArgument)?;
-            let mut bytes = [0; 256];
-            let output = bytes.get_mut(..length).ok_or(Error::InvalidArgument)?;
-            let memory = caller.pin_user_memory(args[0] as usize, length, true)?;
-            crate::random::fill(output)?;
-            memory.write(0, output)?;
-            Ok([0; 2])
-        }
         task::CREATE_THREAD => create_thread(caller, target, args),
         task::TRAP_PORT | task::SET_TRAP => super::trap::task(caller, target, method, args),
         task::INSTALL => Ok([
@@ -67,8 +58,6 @@ pub(super) fn invoke(
         task::CHANNEL | task::EVENT | task::TIMER => {
             super::ipc::create(caller, target, method, args)
         }
-        // System-wide statistics are readable through any Task handle; they expose only totals.
-        task::MEMORY_STATS => Ok(memory_stats()),
         // Pack the 16.16 fixed-point 1-minute and 5-minute averages into one value.
         task::LOAD_AVERAGE => {
             let [one, five, fifteen] = crate::thread::scheduler::load_average();
@@ -76,25 +65,6 @@ pub(super) fn invoke(
         }
         _ => super::memory::task(caller, target, method, args),
     }
-}
-
-/// Total and free page-frame bytes, including reserved and metadata frames in the total.
-fn memory_stats() -> [u64; 2] {
-    let stats = crate::memory::manager().stats();
-    let page = crate::hardware::mmu::PAGE_SIZE as u64;
-    let total = stats
-        .kernel
-        .total_frames
-        .saturating_add(stats.user.total_frames)
-        .saturating_add(stats.reserved_frames)
-        .saturating_add(stats.metadata_frames)
-        .saturating_mul(page);
-    let free = stats
-        .kernel
-        .free_frames
-        .saturating_add(stats.user.free_frames)
-        .saturating_mul(page);
-    [total, free]
 }
 
 fn create_thread(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {

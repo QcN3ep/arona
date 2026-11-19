@@ -9,7 +9,7 @@ use crate::{
 };
 use alloc::vec::Vec;
 use fs::ReadAt;
-use runtime::{Call, Handle, Task};
+use runtime::{Call, Handle};
 
 /// The maximum number of nested script interpreters accepted during startup and `execve`.
 pub(crate) const MAX_INTERPRETERS: usize = 4;
@@ -74,12 +74,11 @@ impl<'a> Chain<'a> {
         &mut self,
         files: &fs::Client<'a>,
         machine: Machine,
-        task: &Handle<Task>,
         services: &Services<'_>,
         process: Option<&super::Process<'a>>,
     ) -> Result<Option<Images>, Error> {
         if self.main.is_none() {
-            let Some(loaded) = self.executable.poll(task, services)? else {
+            let Some(loaded) = self.executable.poll(services)? else {
                 return Ok(None);
             };
             if loaded.bytes.starts_with(b"#!") {
@@ -129,7 +128,7 @@ impl<'a> Chain<'a> {
             self.interpreter_path = None;
         }
         let interpreter = match &mut self.interpreter {
-            Some(executable) => match executable.poll(task, services)? {
+            Some(executable) => match executable.poll(services)? {
                 Some(loaded) => Some(loaded),
                 None => return Ok(None),
             },
@@ -203,11 +202,7 @@ impl<'a> Executable<'a> {
         }
     }
 
-    pub fn poll(
-        &mut self,
-        task: &Handle<Task>,
-        services: &Services<'_>,
-    ) -> Result<Option<Loaded>, Error> {
+    pub fn poll(&mut self, services: &Services<'_>) -> Result<Option<Loaded>, Error> {
         let random = self.random;
         match &mut self.stage {
             Stage::Open(request) => {
@@ -242,9 +237,15 @@ impl<'a> Executable<'a> {
                     } else {
                         let seed = if random {
                             let mut seed = [0; 16];
-                            match task.random(&mut seed) {
-                                Ok(()) => Some(seed),
-                                Err(runtime::Error::Kernel(runtime::KernelError::Unsupported)) => {
+                            match services
+                                .generator
+                                .as_ref()
+                                .map(|generator| generator.random(&mut seed))
+                                .transpose()
+                            {
+                                Ok(Some(())) => Some(seed),
+                                Ok(None) => None,
+                                Err(runtime::Error::Kernel(runtime::KernelError::InvalidState)) => {
                                     None
                                 }
                                 Err(error) => return Err(error.into()),

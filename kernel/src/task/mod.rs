@@ -14,4 +14,4 @@ pub use lifecycle::registered_tasks;
 pub use lifecycle::{Task, TaskError, TaskState};
 pub(crate) use lifecycle::{reclaim_finished, thread_exited};
 
-pub use object::{Object, ObjectReference, ObjectType};
+pub use object::{Clock, Entropy, Object, ObjectReference, ObjectType, SystemInfo};

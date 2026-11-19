@@ -15,14 +15,20 @@ use session::Session;
 pub fn run(control: Handle<Channel>) -> Result<(), Error> {
     let mut startup = control.receive(WaitMode::Forever)?;
     let reply = startup.take_reply().ok_or(Error::InvalidRequest)?;
-    if startup.tag != p::START || !startup.words().is_empty() || startup.handles().len() > 1 {
+    if startup.tag != p::START
+        || !matches!(startup.words(), [0 | 1])
+        || startup.handles().len() != 1
+    {
         return Err(Error::InvalidRequest);
     }
     let mut seed = [0; 32];
-    if startup.handles().is_empty() {
-        process::task()
-            .random(&mut seed)
-            .map_err(|_| Error::Unavailable)?;
+    if startup.words() == [1] {
+        let entropy = startup
+            .take_handle(0)
+            .unwrap()
+            .downcast::<runtime::Entropy>()
+            .map_err(|_| Error::InvalidRequest)?;
+        entropy.random(&mut seed).map_err(|_| Error::Unavailable)?;
     } else {
         let entropy =
             devmgr::rng::Session::from_channel(process::task(), p::take(&mut startup, p::CHANNEL)?)

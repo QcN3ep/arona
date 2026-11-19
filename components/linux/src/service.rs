@@ -15,7 +15,7 @@ use runtime::{
 use crate::{Error, Services, elf::Machine, process::Process, protocol};
 use loading::Loading;
 
-pub const REQUIRED_RIGHTS: Rights = runtime::process::ProcessStart::REQUIRED_RIGHTS
+pub const REQUIRED_RIGHTS: Rights = runtime::process::REQUIRED_RIGHTS
     .union(Rights::CREATE_TASK)
     .union(Rights::CREATE_THREAD)
     .union(Rights::CREATE_CHANNEL)
@@ -34,6 +34,7 @@ struct Guests<'a> {
 }
 
 pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
+    let native = native_resources(control.receive(WaitMode::Forever)?)?;
     let mut startup = control.receive(WaitMode::Forever)?;
     let reply = startup.take_reply().ok_or(Error::InvalidRequest)?;
     let files = bootstrap(task, startup);
@@ -44,6 +45,8 @@ pub fn run(task: &Handle<Task>, control: Handle<Channel>) -> Result<(), Error> {
             return Err(error);
         }
     };
+    services.system = native.system;
+    services.generator = native.generator;
     services.initialize(task)?;
     let shared = crate::process::Shared {
         namespace: Rc::new(crate::process::namespace::PidNamespace::new()),
@@ -328,4 +331,55 @@ fn wait(
         Ok(_) | Err(runtime::Error::Kernel(runtime::KernelError::TimedOut)) => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+fn native_resources(mut message: ReceivedMessage) -> Result<Services<'static>, Error> {
+    let flags = match message.words() {
+        [flags] if flags & !3 == 0 => *flags,
+        _ => return Err(Error::InvalidRequest),
+    };
+    if message.tag != protocol::RESOURCES
+        || message.take_reply().is_some()
+        || message.handles().len() != flags.count_ones() as usize
+    {
+        return Err(Error::InvalidRequest);
+    }
+    let system = if flags & 1 != 0 {
+        Some(
+            message
+                .take_handle(0)
+                .unwrap()
+                .downcast::<runtime::SystemInfo>()
+                .map_err(|_| Error::InvalidRequest)?,
+        )
+    } else {
+        None
+    };
+    let generator = if flags & 2 != 0 {
+        Some(
+            message
+                .take_handle(0)
+                .unwrap()
+                .downcast::<runtime::Entropy>()
+                .map_err(|_| Error::InvalidRequest)?,
+        )
+    } else {
+        None
+    };
+    if system.as_ref().is_some_and(|handle| {
+        !handle
+            .info()
+            .is_ok_and(|info| info.rights.contains(Rights::READ))
+    }) || generator.as_ref().is_some_and(|handle| {
+        !handle
+            .info()
+            .is_ok_and(|info| info.rights.contains(Rights::READ))
+    }) {
+        return Err(Error::InvalidRequest);
+    }
+    Ok(Services {
+        system,
+        generator,
+        ..Services::default()
+    })
 }

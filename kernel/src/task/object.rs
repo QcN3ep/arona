@@ -15,6 +15,13 @@ use crate::{
 };
 pub use abi::ObjectType;
 
+#[derive(Clone)]
+pub struct Clock;
+#[derive(Clone)]
+pub struct SystemInfo;
+#[derive(Clone)]
+pub struct Entropy;
+
 pub struct FrameAllocation(HeapArc<memory::FrameAllocation>);
 
 impl core::ops::Deref for FrameAllocation {
@@ -101,7 +108,9 @@ macro_rules! cloned_payload {
         }
     )* };
 }
-cloned_payload!(Task, Thread, DeviceSet, KernelLog, DmaDomain);
+cloned_payload!(
+    Task, Thread, DeviceSet, KernelLog, DmaDomain, Clock, SystemInfo, Entropy
+);
 
 macro_rules! referenced_payload {
     ($($kind:ty => $reference:ty),*) => { $(

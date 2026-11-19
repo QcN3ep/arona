@@ -281,12 +281,24 @@ fn scenario(_: usize) -> usize {
             },
         )
         .unwrap();
+    let clock = if mode == 4 {
+        None
+    } else {
+        Some(
+            task.insert(
+                Object::Clock(kernel::task::Clock),
+                ObjectType::Clock.supported_rights(),
+            )
+            .unwrap(),
+        )
+    };
     write(
         &stack,
         0,
         &ProcessStart {
             task: task_handle,
             bootstrap: Some(bootstrap),
+            clock,
         }
         .encode(),
     );
@@ -753,6 +765,14 @@ fn bootstrap(receiver: &Channel, mode: u64) {
                     )
                     .unwrap();
                 transfers.push(TransferRequest { handle, rights });
+                for object in [
+                    Object::SystemInfo(kernel::task::SystemInfo),
+                    Object::Entropy(kernel::task::Entropy),
+                ] {
+                    let rights = object.kind().supported_rights();
+                    let handle = source.insert(object, rights).unwrap();
+                    transfers.push(TransferRequest { handle, rights });
+                }
             }
             source
                 .try_send(
@@ -801,11 +821,20 @@ fn bootstrap(receiver: &Channel, mode: u64) {
                 rights,
             )
             .unwrap();
+        let mut transfers = alloc::vec![TransferRequest { handle, rights }];
+        for object in [
+            Object::SystemInfo(kernel::task::SystemInfo),
+            Object::Entropy(kernel::task::Entropy),
+        ] {
+            let rights = object.kind().supported_rights();
+            let handle = source.insert(object, rights).unwrap();
+            transfers.push(TransferRequest { handle, rights });
+        }
         source
             .try_send(
                 channel,
                 Message::new(mode, &[image.len() as u64]).unwrap(),
-                &[TransferRequest { handle, rights }],
+                &transfers,
             )
             .unwrap();
         source.terminate(0);

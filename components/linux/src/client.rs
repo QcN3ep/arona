@@ -21,6 +21,8 @@ pub struct Program<'a> {
 
 #[derive(Default)]
 pub struct Services<'a> {
+    pub system: Option<Handle<runtime::SystemInfo>>,
+    pub generator: Option<Handle<runtime::Entropy>>,
     pub clock: Option<devmgr::rtc::Session>,
     pub entropy: Option<devmgr::rng::Session<'a>>,
     pub net: Option<net::Client<'a>>,
@@ -160,6 +162,24 @@ impl<'a> Control<'a> {
         mut services: Services<'_>,
         deadline: u64,
     ) -> Result<Self, Error> {
+        let native_flags =
+            u64::from(services.system.is_some()) | (u64::from(services.generator.is_some()) << 1);
+        let mut resources = Message::new(protocol::RESOURCES, &[native_flags])?;
+        for resource in [
+            services.system.take().map(Into::into),
+            services.generator.take().map(Into::into),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            resources
+                .push(runtime::ipc::Transfer {
+                    handle: resource,
+                    rights: Rights::READ,
+                })
+                .map_err(|_| runtime::Error::Protocol)?;
+        }
+        channel.send(&mut resources, WaitMode::Until(deadline))?;
         let flags = u64::from(services.clock.is_some())
             | (u64::from(services.entropy.is_some()) << 1)
             | (u64::from(services.net.is_some()) << 2)

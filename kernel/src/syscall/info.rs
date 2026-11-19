@@ -24,6 +24,13 @@ pub(super) fn invoke(
         return Err(Error::InvalidArgument.into());
     }
     Ok(match (target, args[0]) {
+        (ObjectReference::Clock(_), info::clock::MONOTONIC) => [
+            crate::hardware::timer()
+                .now_ns()
+                .map_err(|_| Error::InvalidState)?,
+            0,
+        ],
+        (ObjectReference::SystemInfo(_), info::system::MEMORY) => memory_stats(),
         (_, info::HANDLE) => [target.kind() as u64, rights.bits()],
         (ObjectReference::Task(task), info::task::LIFECYCLE) => match task.state() {
             TaskState::Dead(status) => [Lifecycle::Exited as u64, status as u64],
@@ -121,4 +128,23 @@ pub(super) fn query<const N: usize>(
         .pin_user_memory(address as usize, N, false)?
         .read(0, &mut bytes)?;
     Ok(bytes)
+}
+
+/// Total and free page-frame bytes, including reserved and metadata frames in the total.
+fn memory_stats() -> [u64; 2] {
+    let stats = crate::memory::manager().stats();
+    let page = crate::hardware::mmu::PAGE_SIZE as u64;
+    let total = stats
+        .kernel
+        .total_frames
+        .saturating_add(stats.user.total_frames)
+        .saturating_add(stats.reserved_frames)
+        .saturating_add(stats.metadata_frames)
+        .saturating_mul(page);
+    let free = stats
+        .kernel
+        .free_frames
+        .saturating_add(stats.user.free_frames)
+        .saturating_mul(page);
+    [total, free]
 }

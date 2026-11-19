@@ -3,7 +3,7 @@
 use runtime::{
     Channel, DeviceSet, Error, Handle, KernelError, KernelLog, Rights, Task,
     ipc::{self, CallError, Message, Transfer, WaitItem},
-    process::{self, ProcessStart},
+    process::{self},
     thread,
 };
 
@@ -22,11 +22,7 @@ pub fn start_fs(
     loader: &Loader,
     archive: Archive,
 ) -> Result<(Service, fs::Control<'static>, fs::Client<'static>), InitError> {
-    let (service, channel) = launch(
-        loader,
-        archive.open("/bin/fs")?,
-        ProcessStart::REQUIRED_RIGHTS,
-    )?;
+    let (service, channel) = launch(loader, archive.open("/bin/fs")?, process::REQUIRED_RIGHTS)?;
     let (frames, length) = archive.into_parts()?;
     let control = fs::Control::start(process::task(), channel, frames, length, deadline()?)?;
     let client = control.connect(deadline()?)?;
@@ -38,7 +34,7 @@ pub fn start_devmgr(
     files: &fs::Client<'_>,
     devices: &Handle<DeviceSet>,
 ) -> Result<(Service, Handle<Channel>), InitError> {
-    let rights = ProcessStart::REQUIRED_RIGHTS
+    let rights = process::REQUIRED_RIGHTS
         .union(Rights::CREATE_EVENT)
         .union(Rights::CREATE_CHANNEL)
         .union(Rights::CREATE_THREAD);
@@ -80,7 +76,7 @@ pub fn start_logger(
     let (service, control) = launch(
         loader,
         files.open("/bin/logger", deadline()?)?,
-        ProcessStart::REQUIRED_RIGHTS,
+        process::REQUIRED_RIGHTS,
     )?;
     let (control, client) = logger::Control::start(
         process::task(),
@@ -96,11 +92,12 @@ pub fn start_net(
     loader: &Loader,
     files: &fs::Client<'_>,
     devices: &Handle<Channel>,
+    generator: &Handle<runtime::Entropy>,
 ) -> Result<(Service, net::Control<'static>), InitError> {
     let (service, channel) = launch(
         loader,
         files.open("/bin/net", deadline()?)?,
-        ProcessStart::REQUIRED_RIGHTS
+        process::REQUIRED_RIGHTS
             | Rights::CREATE_EVENT
             | Rights::CREATE_CHANNEL
             | Rights::CREATE_THREAD,
@@ -109,6 +106,10 @@ pub fn start_net(
     let entropy = devmgr::device::next(devices, devmgr::device::DriverKind::Rng, 0, until)?
         .map(|id| devmgr::rng::Session::open(process::task(), devices, id, until))
         .transpose()?;
+    let entropy = match entropy {
+        Some(source) => net::EntropySource::Device(source),
+        None => net::EntropySource::Kernel(generator.try_clone(Rights::READ | Rights::TRANSFER)?),
+    };
     let control = net::Control::start(process::task(), channel, entropy, until)?;
     Ok((service, control))
 }
@@ -146,7 +147,11 @@ pub fn start_linux(
     filesystem: &fs::Control<'static>,
     devices: &Handle<Channel>,
     network: &net::Control<'static>,
-    kernel_log: &Handle<KernelLog>,
+    (kernel_log, system, generator): (
+        &Handle<KernelLog>,
+        &Handle<runtime::SystemInfo>,
+        &Handle<runtime::Entropy>,
+    ),
     reserved: Option<u32>,
 ) -> Result<(Service, linux::Control<'static>), InitError> {
     let (service, channel) = launch(
@@ -166,6 +171,8 @@ pub fn start_linux(
         channel,
         filesystem.connect(deadline()?)?,
         linux::Services {
+            system: Some(system.try_clone(Rights::READ | Rights::TRANSFER)?),
+            generator: Some(generator.try_clone(Rights::READ | Rights::TRANSFER)?),
             clock,
             entropy,
             net: Some(network.connect()?),
@@ -226,7 +233,14 @@ fn launch(
         control_rights.union(Rights::TRANSFER),
     )?;
     let service = Service {
-        task: child.start(entry, STACK_SIZE, Some((receiver, control_rights)))?,
+        task: child.start(
+            entry,
+            STACK_SIZE,
+            Some((receiver, control_rights)),
+            process::clock()
+                .map(|clock| clock.try_clone(runtime::ObjectType::Clock.supported_rights()))
+                .transpose()?,
+        )?,
     };
     Ok((service, sender))
 }

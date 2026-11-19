@@ -56,7 +56,7 @@ impl File {
             Self::ProcSelfStatus => status(process),
             Self::ProcSelfMaps => maps(process, false)?,
             Self::ProcSelfSmaps => maps(process, true)?,
-            Self::ProcMeminfo => meminfo(process)?,
+            Self::ProcMeminfo => meminfo(services)?,
             Self::ProcUptime => uptime()?,
             Self::ProcVersion => {
                 alloc::format!("Linux version {} (arona) #1 SMP\n", crate::KERNEL_RELEASE)
@@ -236,8 +236,13 @@ fn stat(process: &Process<'_>, pid: usize) -> Result<Vec<u8>, Errno> {
     Ok(text)
 }
 
-fn meminfo(process: &Process<'_>) -> Result<Vec<u8>, Errno> {
-    let (total, free) = process.supervisor.memory_stats().map_err(|_| EIO)?;
+fn meminfo(services: &Services<'_>) -> Result<Vec<u8>, Errno> {
+    let (total, free) = services
+        .system
+        .as_ref()
+        .ok_or(EIO)?
+        .memory_stats()
+        .map_err(|_| EIO)?;
     let kilobytes = |bytes: u64| bytes / 1024;
     let mut data = String::new();
     for (name, value) in [

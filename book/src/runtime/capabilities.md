@@ -70,7 +70,7 @@ The Task handle provides creating child Tasks, installing handles, termination, 
 `install` consumes the transferred Handle; on failure it returns the error together with the original Handle.
 
 The Thread handle provides operations such as start, state, terminate, wait, and id.
-The current thread can also query monotonic time, sleep, and yield the processor.
+The runtime reads monotonic time through its granted Clock. It sleeps with an empty wait and yields through the current Thread.
 See [Program Runtime Environment](environment.md) for stack and result management of closure threads.
 
 ## Devices, MMIO, and DMA
@@ -92,11 +92,13 @@ The continuation reads, modifies, and restores user register state; on restore f
 KernelLog's `read` accepts a cursor and an output slice and returns an optional borrowed record.
 The record text borrows the output slice; after the reader has processed this record, it reuses this storage and obtains the next record with a new cursor.
 
+SystemInfo reports physical memory totals through its own handle. A Task handle grants neither global statistics nor random bytes.
+
 ## Random Bytes
 
-`Handle<Task>::random` fills a buffer from the kernel ChaCha20 generator.
+`Handle<Entropy>::random` fills a buffer from the kernel ChaCha20 generator.
 The firmware must supply at least 32 seed bytes through DTB `rng-seed`.
-Without that seed, the call returns `Unsupported`, and services can use a devmgr RNG session.
+Without that seed, the call returns `InvalidState`, and services can use a devmgr RNG session.
 
 ## Error Handling
 

@@ -30,7 +30,9 @@ pub fn sleep_until(deadline_ns: u64) -> Result<(), Error> {
     }
 }
 pub fn now_ns() -> Result<u64, Error> {
-    Ok(current().invoke(thread::NOW, [0; 5])?[0])
+    crate::process::clock()
+        .ok_or(Error::Kernel(abi::Error::Denied))?
+        .now_ns()
 }
 /// Returns the current thread's nice value.
 pub fn priority() -> Result<i32, Error> {

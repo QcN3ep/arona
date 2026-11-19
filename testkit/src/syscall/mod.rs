@@ -76,6 +76,21 @@ fn scenario(_: usize) -> usize {
             ObjectType::Task.supported_rights(),
         )
         .unwrap();
+    let clock = task
+        .insert(
+            Object::Clock(kernel::task::Clock),
+            ObjectType::Clock.supported_rights(),
+        )
+        .unwrap();
+    stack
+        .access(
+            stack.frames().next().unwrap(),
+            ReferenceKind::Temporary,
+            FrameAccess::Write,
+        )
+        .unwrap()
+        .write(1496 / 8, &[clock.raw()])
+        .unwrap();
     let user = task
         .create_thread(UserEntry {
             pc: text.start,

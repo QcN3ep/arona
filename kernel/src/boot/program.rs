@@ -154,6 +154,12 @@ fn prepare(
             MappingOptions::new(PagePermissions::ReadWrite),
         )
         .map_err(|_| "failed to map initial stack")?;
+    let clock = task
+        .insert(
+            Object::Clock(crate::task::Clock),
+            ObjectType::Clock.supported_rights(),
+        )
+        .map_err(|_| "failed to install initial clock")?;
     let argument = range.end - ProcessStart::SIZE;
     MemoryBuffer::allocation(&stack, argument - range.start, ProcessStart::SIZE, true)
         .and_then(|buffer| {
@@ -162,6 +168,7 @@ fn prepare(
                 &ProcessStart {
                     task: task_handle,
                     bootstrap: Some(bootstrap),
+                    clock: Some(clock),
                 }
                 .encode(),
             )
@@ -230,6 +237,14 @@ fn bootstrap(
                     HandleEntry {
                         object: Object::KernelLog(crate::logger::LOGGER.kernel_log()),
                         rights: ObjectType::KernelLog.supported_rights(),
+                    },
+                    HandleEntry {
+                        object: Object::SystemInfo(crate::task::SystemInfo),
+                        rights: ObjectType::SystemInfo.supported_rights(),
+                    },
+                    HandleEntry {
+                        object: Object::Entropy(crate::task::Entropy),
+                        rights: ObjectType::Entropy.supported_rights(),
                     },
                 ])
             },

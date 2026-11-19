@@ -5,13 +5,15 @@ With `runtime/program` enabled, the runtime manages the current Task, heap, TLS,
 
 ## Current Program
 
-`ProcessStart` is encoded as 16 bytes and contains handles for the current Task and an optional bootstrap channel.
+`ProcessStart` is encoded as 24 bytes and contains handles for the current Task, an optional bootstrap channel, and an optional Clock.
+The launcher explicitly grants the Clock. Without it, the default time query returns `Denied`.
 Its own Task handle carries page frame allocation, memory mapping, and termination rights; during initialization the runtime checks the handoff record against the handle information.
 
 | Interface | Purpose |
 |---|---|
 | `process::task()` | Borrow the saved handle of the program's own Task |
 | `process::bootstrap()` | Take the optional bootstrap channel |
+| `process::clock()` | Borrow the optional Clock handle |
 | `process::exit(status)` | Terminate the current Task |
 | `thread::current()` | Borrow a special handle to the current thread |
 

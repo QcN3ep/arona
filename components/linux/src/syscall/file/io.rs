@@ -244,11 +244,15 @@ fn virtual_read<'a>(
                         .saturating_add(1_000_000_000);
                     entropy.fill(&mut bytes, deadline).map_err(|_| EIO)?;
                 } else {
-                    process
-                        .supervisor
+                    services
+                        .generator
+                        .as_ref()
+                        .ok_or(EOPNOTSUPP)?
                         .random(&mut bytes)
                         .map_err(|error| match error {
-                            runtime::Error::Kernel(runtime::KernelError::Unsupported) => EOPNOTSUPP,
+                            runtime::Error::Kernel(runtime::KernelError::InvalidState) => {
+                                EOPNOTSUPP
+                            }
                             _ => EIO,
                         })?;
                 }

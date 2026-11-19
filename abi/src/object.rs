@@ -20,6 +20,9 @@ macro_rules! objects {
             TrapPort = 12 => [DUPLICATE, TRANSFER, WAIT, READ];
             TrapContinuation = 13 => [TRANSFER, READ, SET_STATE];
             Call = 14 => [WAIT, READ, WRITE];
+            Clock = 15 => [DUPLICATE, TRANSFER, READ];
+            SystemInfo = 16 => [DUPLICATE, TRANSFER, READ];
+            Entropy = 17 => [DUPLICATE, TRANSFER, READ];
         }
     };
 }

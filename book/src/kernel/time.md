@@ -53,8 +53,8 @@ A program can place the Event notified by a Timer, channels, and thread exits in
 
 ## Program-Visible Time
 
-Native programs obtain monotonic nanosecond time through the current Thread's `NOW`, and wait until a deadline through `SLEEP`.
-The runtime wraps these operations as thread interfaces.
+Native programs read monotonic nanoseconds through a granted Clock and sleep through an empty WAIT_MANY request.
+The runtime exposes these operations through its thread helpers.
 IPC's `WaitMode::Until` also uses the same absolute time domain.
 
 Wall clock time is provided by the RTC interface of the device management service.

@@ -2,18 +2,16 @@
 
 //! Cryptographic random bytes from the kernel's firmware-seeded generator.
 
-use crate::{Error, Handle, Task};
+use crate::{Entropy, Error, Handle};
 
-impl Handle<Task> {
-    /// Fill the buffer with random bytes. Returns `Unsupported` when firmware did
-    /// not supply a seed. Earlier chunks may have been written if a call fails.
+impl Handle<Entropy> {
+    /// Fills the buffer from the firmware-seeded generator.
+    /// Unseeded state returns InvalidState. A failed call may have written earlier bytes.
     pub fn random(&self, output: &mut [u8]) -> Result<(), Error> {
-        for chunk in output.chunks_mut(256) {
-            self.borrow().invoke(
-                abi::method::task::RANDOM,
-                [chunk.as_mut_ptr() as u64, chunk.len() as u64, 0, 0, 0],
-            )?;
-        }
+        self.borrow().invoke(
+            abi::method::entropy::GENERATE,
+            [output.as_mut_ptr() as u64, output.len() as u64, 0, 0, 0],
+        )?;
         Ok(())
     }
 }

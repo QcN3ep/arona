@@ -17,7 +17,8 @@ mod protocol;
 mod types;
 
 pub use client::{
-    Client, Completion, Control, Data, PendingReadiness, PendingSubscription, Socket, Subscription,
+    Client, Completion, Control, Data, EntropySource, PendingReadiness, PendingSubscription,
+    Socket, Subscription,
 };
 pub use types::{
     AddressFamily, CancelOutcome, DEVICE_RECORD, DeviceInfo, Endpoint, Error, IpAddr, Ipv4Addr,

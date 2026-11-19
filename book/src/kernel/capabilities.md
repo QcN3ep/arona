@@ -25,6 +25,9 @@ The ABI's type enumerations, along with the kernel's object and reference types,
 | `TrapPort` | Receiving end for forwarded execution events |
 | `TrapContinuation` | Permission to resume a suspended execution |
 | `Call` | Result and cancellation entry point for an asynchronous call |
+| `Clock` | Direct reads of the monotonic deadline timebase |
+| `SystemInfo` | Global physical memory and scheduler measurements |
+| `Entropy` | Firmware-seeded random byte generation |
 
 Objects control their own lifetime, and `ObjectReference` keeps a storage reference alive during kernel operations.
 Some types also count open references separately so that waiters can be notified promptly when an object is closed.
@@ -73,7 +76,7 @@ Object creation also goes through the unified path of reserving a handle, creati
 ## Current Thread Identity
 
 The native ABI reserves handle value 0 for `CURRENT_THREAD`.
-At call time the kernel resolves it to the calling thread, which can query time, identity, and state, and can also yield, wait, or exit.
+At call time the kernel resolves it to the calling thread, which can query its identity and lifecycle, yield, wait, or terminate itself.
 The duplication permissions of this special entry include `DUPLICATE`, `TRANSFER`, `WAIT`, `TERMINATE`, `SET_STATE`, and `READ`.
 Duplicating it produces an ordinary Thread handle; close operations require an ordinary handle.
 

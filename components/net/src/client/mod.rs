@@ -17,16 +17,32 @@ use runtime::{
 /// Startup authority retained by init. Dropping its last client channel stops the service.
 pub struct Control<'a>(Client<'a>);
 
+pub enum EntropySource<'a> {
+    Device(devmgr::rng::Session<'a>),
+    Kernel(Handle<runtime::Entropy>),
+}
+
 impl<'a> Control<'a> {
     pub fn start(
         task: &'a Handle<Task>,
         channel: Handle<Channel>,
-        entropy: Option<devmgr::rng::Session<'_>>,
+        entropy: EntropySource<'_>,
         deadline: u64,
     ) -> Result<Self, Error> {
-        let mut request = Message::new(p::START, &[])?;
-        if let Some(entropy) = entropy {
-            p::push(&mut request, entropy.into_channel(), p::CHANNEL)?;
+        let mut request = Message::new(
+            p::START,
+            &[u64::from(matches!(entropy, EntropySource::Kernel(_)))],
+        )?;
+        match entropy {
+            EntropySource::Device(entropy) => {
+                p::push(&mut request, entropy.into_channel(), p::CHANNEL)?
+            }
+            EntropySource::Kernel(entropy) => request
+                .push(runtime::ipc::Transfer {
+                    handle: entropy.into(),
+                    rights: Rights::READ,
+                })
+                .map_err(|_| Error::InvalidRequest)?,
         }
         empty(call(&channel, &mut request, deadline)?)?;
         Ok(Self(Client::from_channel(task, channel)?))

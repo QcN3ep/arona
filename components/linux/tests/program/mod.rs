@@ -19,7 +19,7 @@ fn main() {
     let bootstrap = process::bootstrap().unwrap();
     let mut startup = bootstrap.receive(WaitMode::Forever).unwrap();
     assert_eq!(startup.tag, 0);
-    assert_eq!(startup.handles().len(), 3);
+    assert_eq!(startup.handles().len(), 5);
     let length = startup.words()[0] as usize;
     let archive =
         Archive::new(startup.take_handle(0).unwrap().downcast().unwrap(), length).unwrap();
@@ -32,6 +32,16 @@ fn main() {
         .take_handle(0)
         .unwrap()
         .downcast::<runtime::KernelLog>()
+        .unwrap();
+    let system = startup
+        .take_handle(0)
+        .unwrap()
+        .downcast::<runtime::SystemInfo>()
+        .unwrap();
+    let entropy = startup
+        .take_handle(0)
+        .unwrap()
+        .downcast::<runtime::Entropy>()
         .unwrap();
     drop(startup);
     let native = service::read(&archive, "/bin/linux");
@@ -53,11 +63,17 @@ fn main() {
         .unwrap();
     mount_target_bounds(&mounts, &files);
     let (_linux, channel) = service::launch(&native, machine, linux::service::REQUIRED_RIGHTS);
-    let mut services = service::resources(&device_service, &kernel_log, Some(reserved));
+    let mut services = service::resources(
+        &device_service,
+        &kernel_log,
+        &system,
+        &entropy,
+        Some(reserved),
+    );
     let (_net, net_channel) = service::launch(
         &net,
         machine,
-        runtime::process::ProcessStart::REQUIRED_RIGHTS
+        process::REQUIRED_RIGHTS
             | runtime::Rights::CREATE_EVENT
             | runtime::Rights::CREATE_CHANNEL
             | runtime::Rights::CREATE_THREAD,
@@ -65,11 +81,27 @@ fn main() {
     let net = net::Control::start(
         process::task(),
         net_channel,
-        services.entropy.take(),
+        services.entropy.take().map_or_else(
+            || {
+                net::EntropySource::Kernel(
+                    entropy
+                        .try_clone(runtime::Rights::READ | runtime::Rights::TRANSFER)
+                        .unwrap(),
+                )
+            },
+            net::EntropySource::Device,
+        ),
         service::deadline(),
     )
     .unwrap();
-    services.entropy = service::resources(&device_service, &kernel_log, Some(reserved)).entropy;
+    services.entropy = service::resources(
+        &device_service,
+        &kernel_log,
+        &system,
+        &entropy,
+        Some(reserved),
+    )
+    .entropy;
     services.net = Some(net.connect().unwrap());
     services.mounts = Some(mounts.mount_control(service::deadline()).unwrap());
     let linux = Control::start_with_services(

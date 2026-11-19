@@ -54,6 +54,11 @@ pub fn launch(bytes: &[u8], machine: Machine, rights: Rights) -> (Service, Handl
             image.entry,
             64 * 1024,
             Some((receiver, Rights::READ | Rights::WAIT)),
+            process::clock().map(|clock| {
+                clock
+                    .try_clone(runtime::ObjectType::Clock.supported_rights())
+                    .unwrap()
+            }),
         )
         .unwrap();
     (Service(task), sender)
@@ -70,7 +75,7 @@ pub fn deadline() -> u64 {
     runtime::thread::now_ns().unwrap() + 60_000_000_000
 }
 
-pub const RIGHTS: Rights = runtime::process::ProcessStart::REQUIRED_RIGHTS
+pub const RIGHTS: Rights = process::REQUIRED_RIGHTS
     .union(Rights::CREATE_EVENT)
     .union(Rights::CREATE_CHANNEL)
     .union(Rights::CREATE_THREAD);

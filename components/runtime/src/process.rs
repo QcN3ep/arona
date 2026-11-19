@@ -2,12 +2,17 @@
 
 //! Process runtime environment and construction and startup of child Tasks.
 
+pub use crate::clock::clock;
 use crate::{
     Channel, Error, FrameAllocation, Handle, Object, Rights, Task, memory::Permissions,
     thread::UserEntry,
 };
 use abi::method::task;
 pub use abi::process::ProcessStart;
+
+pub const REQUIRED_RIGHTS: Rights = Rights::FRAME_ALLOCATE
+    .union(Rights::MAP_MEMORY)
+    .union(Rights::TERMINATE);
 use core::ops::Range;
 
 const PAGE_SIZE: usize = 4096;
@@ -144,7 +149,7 @@ impl Drop for SupervisedTask {
 impl ChildTask {
     /// rights specifies the rights to its own Task held by the child process.
     pub fn new(parent: &Handle<Task>, rights: Rights) -> Result<Self, Error> {
-        if !rights.contains(ProcessStart::REQUIRED_RIGHTS) {
+        if !rights.contains(REQUIRED_RIGHTS) {
             return Err(Error::Kernel(abi::Error::InvalidArgument));
         }
         Ok(Self {
@@ -194,6 +199,7 @@ impl ChildTask {
         entry: usize,
         stack_size: usize,
         bootstrap: Option<(Handle<Channel>, Rights)>,
+        clock: Option<Handle<crate::Clock>>,
     ) -> Result<Handle<Task>, Error> {
         let length = stack_size
             .checked_next_multiple_of(PAGE_SIZE)
@@ -220,11 +226,18 @@ impl ChildTask {
         let bootstrap = bootstrap
             .map(|(channel, rights)| task.install(channel, rights).map_err(|(error, _)| error))
             .transpose()?;
+        let clock = clock
+            .map(|clock| {
+                let rights = clock.info()?.rights;
+                task.install(clock, rights).map_err(|(error, _)| error)
+            })
+            .transpose()?;
         stack.write(
             length - ProcessStart::SIZE,
             &ProcessStart {
                 task: own,
                 bootstrap,
+                clock,
             }
             .encode(),
         )?;
@@ -272,7 +285,7 @@ pub use current::{bootstrap, exit, task};
 
 #[cfg(all(feature = "program", target_os = "none"))]
 pub(crate) mod current {
-    use super::ProcessStart;
+    use super::{ProcessStart, REQUIRED_RIGHTS};
     use crate::{Channel, Error, Handle, Task};
     use spin::{Mutex, Once};
 
@@ -301,9 +314,7 @@ pub(crate) mod current {
         // SAFETY: The launcher must transfer exclusive ownership of the current Task handle.
         let task = unsafe { Handle::<Task>::from_raw(start.task) };
         let info = task.info()?;
-        if info.kind != crate::ObjectType::Task as u64
-            || !info.rights.contains(ProcessStart::REQUIRED_RIGHTS)
-        {
+        if info.kind != crate::ObjectType::Task as u64 || !info.rights.contains(REQUIRED_RIGHTS) {
             return Err(Error::Kernel(abi::Error::Denied));
         }
         let bootstrap = if let Some(raw) = start.bootstrap {
@@ -316,7 +327,23 @@ pub(crate) mod current {
         } else {
             None
         };
+        let clock = if let Some(raw) = start.clock {
+            // SAFETY: The launcher transfers exclusive ownership of this Clock handle.
+            let clock = unsafe { Handle::<crate::Clock>::from_raw(raw) };
+            let info = clock.info()?;
+            if info.kind != crate::ObjectType::Clock as u64
+                || !info.rights.contains(crate::Rights::READ)
+            {
+                return Err(Error::Kernel(abi::Error::Denied));
+            }
+            Some(clock)
+        } else {
+            None
+        };
         TASK.call_once(|| task);
+        if let Some(clock) = clock {
+            crate::clock::DEFAULT.call_once(|| clock);
+        }
         *BOOTSTRAP.lock() = bootstrap;
         Ok(())
     }

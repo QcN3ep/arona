@@ -46,10 +46,8 @@ methods!(task {
     WRITE_MEMORY = 33 => WRITE_MEMORY;
     TRAP_PORT = 34 => SET_TRAP;
     SET_TRAP = 35 => SET_TRAP;
-    MEMORY_STATS = 38 => NONE;
     LOAD_AVERAGE = 39 => NONE;
     ATOMIC_COMPARE_EXCHANGE = 40 => WRITE_MEMORY;
-    RANDOM = 42 => NONE;
 });
 methods!(memory {
     READ = 17 => READ;
@@ -60,7 +58,6 @@ methods!(thread {
     START = 17 => START;
     TERMINATE = 18 => TERMINATE;
     YIELD = 21 => NONE;
-    NOW = 23 => NONE;
     /// Waits on distinct sources using `[items, count, deadline, 0, 0]`.
     /// Each target requires WAIT. Events consume selected signal bits; other
     /// sources remain ready until their contents or lifecycle change.
@@ -91,6 +88,12 @@ methods!(reply { SEND = 16 => WRITE; });
 methods!(event { SIGNAL = 16 => SIGNAL; });
 methods!(timer { ARM = 16 => WRITE; CANCEL = 17 => WRITE; });
 methods!(kernel_log { READ = 16 => READ; });
+methods!(entropy {
+    /// Fills `[output_address, length, 0, 0, 0]` from the seeded generator.
+    /// Unseeded state returns InvalidState. Earlier bytes may be written if
+    /// generation fails after a chunk has completed.
+    GENERATE = 16 => READ;
+});
 methods!(device_set {
     NEXT = 16 => READ;
     DESCRIBE = 17 => READ;
@@ -147,6 +150,8 @@ pub const fn required_rights(kind: ObjectType, method: u64, topic: u64) -> Optio
             ObjectType::DmaDomain => dma::required(method),
             ObjectType::TrapPort => trap_port::required(method),
             ObjectType::TrapContinuation => trap_continuation::required(method),
+            ObjectType::Entropy => entropy::required(method),
+            ObjectType::Clock | ObjectType::SystemInfo => None,
         },
     }
 }

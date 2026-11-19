@@ -30,6 +30,13 @@ fn main() {
         .unwrap()
         .downcast::<DeviceSet>()
         .unwrap();
+    drop(startup.take_handle(0));
+    drop(startup.take_handle(0));
+    let generator = startup
+        .take_handle(0)
+        .unwrap()
+        .downcast::<runtime::Entropy>()
+        .unwrap();
     let native = launch::read(&archive, "/bin/net");
     let client = launch::read(&archive, "/bin/net-native");
     let devmgr = launch::read(&archive, "/bin/devmgr");
@@ -70,7 +77,7 @@ fn main() {
     .unwrap();
     output.write_all(b"Network test: devices ready\n").unwrap();
     let (service, net_channel) = launch::launch(&native, machine, rights);
-    let control = start_network(net_channel, &channel);
+    let control = start_network(net_channel, &channel, generator);
     for family in [0, 2] {
         native_clients(&control, &client, machine, &output, family);
     }
@@ -162,6 +169,7 @@ fn native_clients(
 fn start_network(
     net_channel: runtime::Handle<runtime::Channel>,
     channel: &runtime::Handle<runtime::Channel>,
+    generator: runtime::Handle<runtime::Entropy>,
 ) -> Control<'static> {
     let entropy = devmgr::device::next(
         channel,
@@ -173,5 +181,9 @@ fn start_network(
     .map(|rng| {
         devmgr::rng::Session::open(process::task(), channel, rng, launch::deadline()).unwrap()
     });
+    let entropy = entropy.map_or(
+        net::EntropySource::Kernel(generator),
+        net::EntropySource::Device,
+    );
     Control::start(process::task(), net_channel, entropy, launch::deadline()).unwrap()
 }

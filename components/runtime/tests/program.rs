@@ -87,7 +87,13 @@ fn main() {
     let mode = startup.tag;
     match mode {
         0 => logger::run(startup),
-        4 => {}
+        4 => {
+            assert!(runtime::process::clock().is_none());
+            assert_eq!(
+                thread::now_ns(),
+                Err(runtime::Error::Kernel(runtime::KernelError::Denied))
+            );
+        }
         1 => panic!("intentional runtime integration test failure"),
         2 => {
             core::hint::black_box(Vec::<u8>::with_capacity(core::hint::black_box(

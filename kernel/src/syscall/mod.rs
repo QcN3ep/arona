@@ -4,6 +4,7 @@
 
 mod device;
 mod dma;
+mod entropy;
 mod error;
 mod info;
 mod ipc;
@@ -77,6 +78,7 @@ fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, CallError> {
         _ => {
             let args = arguments[1..].try_into().unwrap();
             match object {
+                ObjectReference::Entropy(_) => entropy::generate(&caller, args)?,
                 ObjectReference::DeviceSet(target) => {
                     device::catalog(&caller, &target, arguments[0], args)?
                 }

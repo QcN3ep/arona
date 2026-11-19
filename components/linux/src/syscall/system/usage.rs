@@ -21,9 +21,18 @@ const SYSINFO_SIZE: usize = 112;
 // REFERENCE: https://man7.org/linux/man-pages/man2/times.2.html
 const TMS_SIZE: usize = 4 * 8;
 
-pub(super) fn sysinfo(process: &Process<'_>, address: usize) -> SyscallResult {
+pub(super) fn sysinfo(
+    process: &Process<'_>,
+    services: &crate::Services<'_>,
+    address: usize,
+) -> SyscallResult {
     let now = runtime::thread::now_ns().map_err(|_| EIO)?;
-    let (total, free) = memory_stats(process)?;
+    let (total, free) = services
+        .system
+        .as_ref()
+        .ok_or(EIO)?
+        .memory_stats()
+        .map_err(|_| EIO)?;
     let loads = load_average(process)?;
     let processes = process.namespace.processes.borrow().len();
     let mut bytes = [0; SYSINFO_SIZE];
@@ -79,10 +88,6 @@ pub(super) fn getrusage(process: &Process<'_>, who: usize, address: usize) -> Sy
 
 fn ticks(nanoseconds: u64) -> u64 {
     nanoseconds / NANOS_PER_TICK
-}
-
-fn memory_stats(process: &Process<'_>) -> Result<(u64, u64), Errno> {
-    process.supervisor.memory_stats().map_err(|_| EIO)
 }
 
 fn load_average(process: &Process<'_>) -> Result<[u32; 3], Errno> {

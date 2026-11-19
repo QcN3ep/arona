@@ -59,6 +59,14 @@ topics!(dma {
     /// Returns `[DmaState, 0]` for the referenced domain.
     STATE = 16 => READ;
 });
+topics!(clock {
+    /// Returns `[monotonic_nanoseconds, 0]` using the common deadline timebase.
+    MONOTONIC = 16 => READ;
+});
+topics!(system {
+    /// Returns `[total_physical_bytes, free_physical_bytes]`.
+    MEMORY = 16 => READ;
+});
 
 pub const fn required_rights(kind: ObjectType, topic: u64) -> Option<Rights> {
     if topic == HANDLE {
@@ -70,6 +78,8 @@ pub const fn required_rights(kind: ObjectType, topic: u64) -> Option<Rights> {
         ObjectType::FrameAllocation => memory::required(topic),
         ObjectType::KernelLog => kernel_log::required(topic),
         ObjectType::DmaDomain => dma::required(topic),
+        ObjectType::Clock => clock::required(topic),
+        ObjectType::SystemInfo => system::required(topic),
         _ => None,
     }
 }

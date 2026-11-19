@@ -6,7 +6,7 @@ use linux::elf::{Image, Machine};
 use runtime::{
     Channel, DeviceSet, Handle, Rights, Task,
     ipc::{Message, Transfer},
-    process::{self, ChildTask, ProcessStart},
+    process::{self, ChildTask},
 };
 
 pub struct Service(Handle<Task>);
@@ -51,6 +51,11 @@ pub fn launch(bytes: &[u8], machine: Machine, rights: Rights) -> (Service, Handl
             image.entry,
             64 * 1024,
             Some((receiver, Rights::READ | Rights::WAIT)),
+            process::clock().map(|clock| {
+                clock
+                    .try_clone(runtime::ObjectType::Clock.supported_rights())
+                    .unwrap()
+            }),
         )
         .unwrap();
     (Service(task), sender)
@@ -68,7 +73,7 @@ pub fn filesystem(
     image: &[u8],
     machine: Machine,
 ) -> (Service, fs::Control<'static>, fs::Client<'static>) {
-    let (service, channel) = launch(image, machine, ProcessStart::REQUIRED_RIGHTS);
+    let (service, channel) = launch(image, machine, process::REQUIRED_RIGHTS);
     let (frames, length) = archive.into_parts().unwrap();
     let control = fs::Control::start(process::task(), channel, frames, length, deadline()).unwrap();
     let client = control.connect(deadline()).unwrap();
@@ -80,7 +85,7 @@ pub fn devices(
     machine: Machine,
     devices: &Handle<DeviceSet>,
 ) -> (Service, Handle<Channel>) {
-    let rights = ProcessStart::REQUIRED_RIGHTS
+    let rights = process::REQUIRED_RIGHTS
         | Rights::CREATE_EVENT
         | Rights::CREATE_THREAD
         | Rights::CREATE_CHANNEL;
@@ -134,6 +139,8 @@ pub fn deadline() -> u64 {
 pub fn resources(
     service: &Handle<Channel>,
     kernel_log: &Handle<runtime::KernelLog>,
+    system: &Handle<runtime::SystemInfo>,
+    generator: &Handle<runtime::Entropy>,
     reserved: Option<u32>,
 ) -> linux::Services<'static> {
     let until = deadline();
@@ -147,6 +154,12 @@ pub fn resources(
         }
     };
     linux::Services {
+        system: Some(system.try_clone(Rights::READ | Rights::TRANSFER).unwrap()),
+        generator: Some(
+            generator
+                .try_clone(Rights::READ | Rights::TRANSFER)
+                .unwrap(),
+        ),
         net: None,
         mounts: None,
         devices: Some(

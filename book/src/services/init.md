@@ -1,14 +1,15 @@
 # init
 
-After the kernel hands the boot archive, device directory, and kernel log handle to init, the construction of the user-space system begins here.
+After the kernel hands the boot archive, device directory, kernel log, system information, and entropy handles to init, the construction of the user-space system begins here.
 init loads the base services one by one, delivers the resources they use, and then starts applications according to `/etc/init.toml`.
 Once in stable operation, it waits for state changes of applications and services and decides whether to restart applications according to the configuration.
 
 ## Receiving Boot Resources
 
 runtime stores the current Task and the bootstrap channel in the program environment.
-init receives a message tagged 0 from the channel, which contains one data word and three handles.
-The data word gives the archive length, and the handles are the archive page frame, DeviceSet, and KernelLog in order.
+init receives a message tagged 0 from the channel, which contains one data word and five handles.
+The data word gives the archive length, and the handles are the archive page frame, DeviceSet, KernelLog, SystemInfo, and Entropy in order.
+The runtime receives its Clock separately through `ProcessStart`.
 
 After verifying the message, init uses `Archive::new` to build a read-only index for the newc archive.
 It reads the ELF header of `/bin/init` to determine the current machine type, and subsequent native services are validated against this type.

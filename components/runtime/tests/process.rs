@@ -4,7 +4,7 @@ use runtime::{
     Error, FrameAllocation, Handle, ObjectType, Rights,
     ipc::{Message, ReceivedMessage, WaitMode},
     memory::{HUGE_PAGE_SIZE, Permissions},
-    process::{self, ChildTask, ProcessStart},
+    process::{self, ChildTask},
     thread,
 };
 
@@ -17,6 +17,36 @@ pub fn run(mut startup: ReceivedMessage) {
         .unwrap()
         .downcast::<FrameAllocation>()
         .unwrap();
+    let system = startup
+        .take_handle(0)
+        .unwrap()
+        .downcast::<runtime::SystemInfo>()
+        .unwrap();
+    let entropy = startup
+        .take_handle(0)
+        .unwrap()
+        .downcast::<runtime::Entropy>()
+        .unwrap();
+    let (total, free) = system.memory_stats().unwrap();
+    assert!(total > free && free > 0);
+    assert_eq!(
+        system.try_clone(Rights::NONE).unwrap().memory_stats(),
+        Err(Error::Kernel(abi::Error::Denied))
+    );
+    let mut random = [0x5a; 600];
+    assert_eq!(
+        entropy.random(&mut random),
+        Err(Error::Kernel(abi::Error::InvalidState))
+    );
+    assert_eq!(random, [0x5a; 600]);
+    assert_eq!(
+        process::clock()
+            .unwrap()
+            .try_clone(Rights::NONE)
+            .unwrap()
+            .now_ns(),
+        Err(Error::Kernel(abi::Error::Denied))
+    );
     let mut header = [0; 64];
     image.read(0, &mut header).unwrap();
     let entry = word(&header, 24) as usize;
@@ -24,7 +54,7 @@ pub fn run(mut startup: ReceivedMessage) {
     remote_memory();
     rollback();
     supervised();
-    let mut child = ChildTask::new(process::task(), ProcessStart::REQUIRED_RIGHTS).unwrap();
+    let mut child = ChildTask::new(process::task(), process::REQUIRED_RIGHTS).unwrap();
     let count = u16::from_le_bytes(header[56..58].try_into().unwrap());
     for index in 0..count {
         load(
@@ -47,7 +77,16 @@ pub fn run(mut startup: ReceivedMessage) {
         )
         .unwrap();
     let task = child
-        .start(entry, STACK_SIZE, Some((receiver, Rights::READ_WRITE)))
+        .start(
+            entry,
+            STACK_SIZE,
+            Some((receiver, Rights::READ_WRITE)),
+            process::clock().map(|clock| {
+                clock
+                    .try_clone(ObjectType::Clock.supported_rights())
+                    .unwrap()
+            }),
+        )
         .unwrap();
     let deadline = thread::now_ns().unwrap() + 2_000_000_000;
     let report = sender.receive(WaitMode::Until(deadline)).unwrap();
@@ -282,7 +321,7 @@ fn frame_io() {
 pub fn child(startup: ReceivedMessage) {
     assert_eq!(
         process::task().info().unwrap().rights,
-        ProcessStart::REQUIRED_RIGHTS
+        process::REQUIRED_RIGHTS
     );
     assert!(matches!(
         process::task().event(Rights::SIGNAL),
@@ -340,11 +379,11 @@ fn rollback() {
     ));
     let parent = process::task().try_clone(Rights::CREATE_TASK).unwrap();
     assert!(matches!(
-        ChildTask::new(&parent, ProcessStart::REQUIRED_RIGHTS),
+        ChildTask::new(&parent, process::REQUIRED_RIGHTS),
         Err(Error::Kernel(abi::Error::Denied))
     ));
     for stack_size in [0, usize::MAX, STACK_SIZE] {
-        let mut child = ChildTask::new(process::task(), ProcessStart::REQUIRED_RIGHTS).unwrap();
+        let mut child = ChildTask::new(process::task(), process::REQUIRED_RIGHTS).unwrap();
         let mut frames = child
             .allocate(1, Rights::READ_WRITE.union(Rights::MAP))
             .unwrap();
@@ -371,7 +410,7 @@ fn rollback() {
             .unwrap();
         assert!(
             child
-                .start(0, stack_size, Some((receiver, Rights::READ)))
+                .start(0, stack_size, Some((receiver, Rights::READ)), None)
                 .is_err()
         );
         assert!(matches!(
@@ -386,7 +425,7 @@ fn rollback() {
         frames.read(0, &mut output).unwrap();
         assert_eq!(&output, b"child storage");
     }
-    let mut child = ChildTask::new(process::task(), ProcessStart::REQUIRED_RIGHTS).unwrap();
+    let mut child = ChildTask::new(process::task(), process::REQUIRED_RIGHTS).unwrap();
     let (observer, installed) = process::task()
         .channel(
             ObjectType::Channel.supported_rights(),

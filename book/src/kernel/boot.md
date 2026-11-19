@@ -74,7 +74,7 @@ The kernel allocates user page frames for init, copies the file contents accordi
 Mappings use the permissions of the program segments, and the loader checks the executable segment containing the entry point.
 The kernel also establishes a user stack with a guard page, writes `ProcessStart`, creates the user execution context, and starts the thread.
 
-`ProcessStart` hands over the current Task handle and the bootstrap channel.
+`ProcessStart` hands over the current Task, bootstrap channel, and Clock handles.
 The bootstrap message has tag 0, its data word gives the archive length, and its handles are, in order:
 
 | Position | Object | Purpose |

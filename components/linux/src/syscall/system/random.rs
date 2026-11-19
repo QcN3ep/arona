@@ -37,11 +37,13 @@ pub(super) fn start<'a>(
     if services.entropy.is_none() {
         return Outcome::Complete((|| {
             let mut bytes = alloc::vec![0; length.min(devmgr::rng::MAX_BYTES)];
-            process
-                .supervisor
+            services
+                .generator
+                .as_ref()
+                .ok_or(EOPNOTSUPP)?
                 .random(&mut bytes)
                 .map_err(|error| match error {
-                    runtime::Error::Kernel(runtime::KernelError::Unsupported) => EOPNOTSUPP,
+                    runtime::Error::Kernel(runtime::KernelError::InvalidState) => EOPNOTSUPP,
                     _ => EIO,
                 })?;
             process

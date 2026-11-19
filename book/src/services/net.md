@@ -9,7 +9,7 @@ This version provides loopback networking without requiring a network interface.
 
 Init starts `/bin/net` after the device and log services.
 It supplies a devmgr RNG session when one is available.
-Otherwise, net obtains random bytes from the kernel, whose ChaCha20 generator is seeded by the firmware DTB `rng-seed` property.
+Otherwise, init supplies an Entropy handle and net obtains random bytes from the kernel, whose ChaCha20 generator is seeded by the firmware DTB `rng-seed` property.
 Startup fails if neither source is available.
 Init supervises net with the other base services and stops it after Linux during ordered shutdown.
 

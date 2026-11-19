@@ -24,7 +24,7 @@ pub fn initialize(seed: Option<&crate::boot::RandomSeed>) {
 pub(crate) fn fill(output: &mut [u8]) -> Result<(), Error> {
     let _interrupts = crate::hardware::cpu::InterruptGuard::new();
     let mut generator = GENERATOR.lock();
-    let generator = generator.as_mut().ok_or(Error::Unsupported)?;
+    let generator = generator.as_mut().ok_or(Error::InvalidState)?;
     output.fill(0);
     generator.apply_keystream(output);
     // Rekey after each request to protect earlier output if state is exposed
