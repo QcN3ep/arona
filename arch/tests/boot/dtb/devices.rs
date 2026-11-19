@@ -67,7 +67,7 @@ fn discovers_unfamiliar_devices_and_preserves_owned_configuration() {
         Some(3_686_400_u32.to_be_bytes().as_slice())
     );
     assert_eq!(sensor.use_policy, DeviceUsePolicy::UserAssignable);
-    assert_eq!(sensor.dma, DmaCapability::Unknown);
+    assert!(matches!(sensor.dma, DmaCapability::Present(_)));
     prepare_boot_info(
         BOOT_CPU_ID,
         image(PhysRange {
@@ -293,7 +293,7 @@ fn rejects_conflicting_device_resources() {
         .find(|device| device.has_identity("devicetree", "acme,adc"))
         .unwrap();
     assert_eq!(unknown.use_policy, DeviceUsePolicy::UserAssignable);
-    assert_eq!(unknown.dma, DmaCapability::Unknown);
+    assert!(matches!(unknown.dma, DmaCapability::Present(_)));
     for (original, path, property, values, expected) in [
         (
             DTB,

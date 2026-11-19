@@ -72,7 +72,8 @@ Mappings are registered per page frame range within an allocation, checking phys
 `ToDevice` retains read access, and the device-write direction retains write access.
 Page frame references persist until the DMA mapping is safely removed, and conflicts between CPU mappings and DMA writes or execution are checked through page frame access records.
 
-The current configuration uses the `CompetitionTrusted` DMA profile.
+The current platforms use identity DMA addresses without IOMMU isolation.
+Device address width comes from the bus description.
 Device accesses use platform bus addresses, and lifetime operations include synchronization and control of the PCI bus master.
 If ownership is lost while DMA is active, the device may still be accessing buffers.
 This error path retains the page frames and halts the machine, and the resource state becomes `Poisoned`.

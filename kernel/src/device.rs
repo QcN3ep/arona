@@ -397,9 +397,28 @@ impl Registry {
                 }
             }
         }
-        log::info!("DMA profile: {:?}", hardware::dma().profile());
-        if hardware::dma().profile() == abi::dma::DmaProfile::CompetitionTrusted {
-            log::warn!("Trusted DMA does not isolate malicious device accesses");
+        for index in 0..devices.len() {
+            if !matches!(
+                devices[index].hardware.location,
+                HardwareDeviceLocation::Pci { .. }
+            ) {
+                continue;
+            }
+            let mut parent = devices[index].hardware.parent;
+            while let Some(id) = parent {
+                let ancestor = devices
+                    .iter()
+                    .find(|device| device.hardware.instance_id == id)
+                    .ok_or(DeviceError::InvalidArgument)?;
+                if matches!(
+                    ancestor.hardware.location,
+                    HardwareDeviceLocation::PciHostBridge { .. }
+                ) {
+                    devices[index].hardware.dma = ancestor.hardware.dma;
+                    break;
+                }
+                parent = ancestor.hardware.parent;
+            }
         }
         for device in devices.iter_mut() {
             device.group = Some(device.hardware.instance_id.0);

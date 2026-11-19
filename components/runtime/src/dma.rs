@@ -3,7 +3,7 @@
 //! DMA domains, bus address mapping, and buffer access.
 
 use crate::{BorrowedHandle, Device, DmaDomain, Error, FrameAllocation, Handle, Rights, Task};
-pub use abi::dma::{DmaDirection, DmaInfo, DmaProfile, DmaState};
+pub use abi::dma::{DmaDirection, DmaState};
 use abi::method::{device, dma, memory};
 
 pub struct DmaMapping<'a> {

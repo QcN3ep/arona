@@ -5,8 +5,7 @@
 // TODO: Implement IOMMU isolation.
 
 use kernel::{
-    HardwareDeviceInfo, HardwareDeviceLocation,
-    hardware::dma::{Dma, DmaProfile},
+    DmaCapability, HardwareDeviceInfo, HardwareDeviceLocation, hardware::dma::Dma,
     memory::PhysRange,
 };
 
@@ -15,43 +14,28 @@ crate::declare_hardware!(static DMA: QemuDma = QemuDma => kernel::hardware::dma:
 struct QemuDma;
 
 impl Dma for QemuDma {
-    fn profile(&self) -> DmaProfile {
-        DmaProfile::CompetitionTrusted
-    }
-
     fn address_bits(&self, device: &HardwareDeviceInfo) -> Option<u8> {
-        if !cfg!(any(target_arch = "riscv64", target_arch = "loongarch64")) {
+        if !cfg!(any(target_arch = "riscv64", target_arch = "loongarch64"))
+            || !matches!(
+                device.location,
+                HardwareDeviceLocation::Pci { .. } | HardwareDeviceLocation::Platform
+            )
+        {
             return None;
         }
-        let supported = match &device.location {
-            HardwareDeviceLocation::Pci { .. } => {
-                // Modern 0x1040-series and transitional legacy VirtIO PCI IDs.
-                device.has_identity("pci", "1af4:1041")
-                    || device.has_identity("pci", "1af4:1042")
-                    || device.has_identity("pci", "1af4:1044")
-                    || device.has_identity("pci", "1af4:1000")
-                    || device.has_identity("pci", "1af4:1001")
-                    || device.has_identity("pci", "1af4:1005")
-            }
-            HardwareDeviceLocation::Platform => {
-                cfg!(target_arch = "riscv64")
-                    && device.has_identity("devicetree", "virtio,mmio")
-                    && device.mmio_regions.len() == 1
-                    && device.mmio_regions[0].start >= 0x1000_1000
-                    && device.mmio_regions[0].end <= 0x1000_9000
-                    && device.mmio_regions[0].start.is_multiple_of(4096)
-                    && device.mmio_regions[0].end - device.mmio_regions[0].start == 4096
-            }
-            _ => false,
+        let DmaCapability::Present(info) = device.dma else {
+            return None;
         };
-        supported.then_some(64)
+        (info.address_bits != 0 && info.address_bits <= 64 && info.isolation.is_none())
+            .then_some(info.address_bits)
     }
 
     fn bus_address(&self, device: &HardwareDeviceInfo, range: PhysRange) -> Option<u64> {
-        self.address_bits(device)?;
+        let bits = self.address_bits(device)?;
         // The kernel pins owned RAM frames before requesting their bus addresses.
-        // QEMU VirtIO devices use the same physical addresses for DMA.
-        (range.start < range.end).then_some(range.start)
+        // The supported bus windows have no DMA translation.
+        (range.start < range.end && (bits == 64 || range.end - 1 < (1u64 << bits)))
+            .then_some(range.start)
     }
 
     fn synchronize(&self) {

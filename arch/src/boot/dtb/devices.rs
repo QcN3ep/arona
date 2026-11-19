@@ -282,21 +282,13 @@ fn matches(node: Node<'_>, identity: &str) -> Result<bool> {
 
 fn dma(walk: &Nodes<'_>) -> Result<DmaCapability> {
     let node = walk.node();
-    if !(matches(node, "virtio,mmio")?
-        || matches(node, "pci-host-ecam-generic")?
-        || matches(node, "qemu,fw-cfg-mmio")?)
+    if matches(node, "ns16550a")?
+        || matches(node, "ns16550")?
+        || matches(node, "cfi-flash")?
+        || matches(node, "google,goldfish-rtc")?
+        || matches(node, "loongson,ls7a-rtc")?
     {
-        let capability = if matches(node, "ns16550a")?
-            || matches(node, "ns16550")?
-            || matches(node, "cfi-flash")?
-            || matches(node, "google,goldfish-rtc")?
-            || matches(node, "loongson,ls7a-rtc")?
-        {
-            DmaCapability::None
-        } else {
-            DmaCapability::Unknown
-        };
-        return Ok(capability);
+        return Ok(DmaCapability::None);
     }
     if node.raw_property("iommus")?.is_some() || node.raw_property("iommu-map")?.is_some() {
         return Err("IOMMU device bindings are not supported".into());

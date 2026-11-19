@@ -2,19 +2,6 @@
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u64)]
-pub enum DmaProfile {
-    Isolated = 0,
-    CompetitionTrusted = 1,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DmaInfo {
-    pub profile: DmaProfile,
-    pub address_bits: u8,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u64)]
 pub enum DmaDirection {
     ToDevice = 1,
     FromDevice = 2,

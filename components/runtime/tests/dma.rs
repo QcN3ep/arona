@@ -258,6 +258,24 @@ impl<'a> Transport<'a> {
                 queue_notify: 0,
             })
         } else {
+            let info = devices.describe(id).ok()?;
+            let mut bytes = [0; 64];
+            let virtio = (0..info.identities).any(|index| {
+                devices
+                    .read(
+                        id,
+                        runtime::device::topic::IDENTITY_NAMESPACE,
+                        index,
+                        &mut bytes,
+                    )
+                    .is_ok_and(|value| value == b"devicetree")
+                    && devices
+                        .read(id, runtime::device::topic::IDENTITY, index, &mut bytes)
+                        .is_ok_and(|value| value == b"virtio,mmio")
+            });
+            if !virtio {
+                return None;
+            }
             let mut registers = grant.map_mmio(id, 0).unwrap();
             if registers.read_u32(0).unwrap() != 0x7472_6976 || registers.read_u32(8).unwrap() != 4
             {

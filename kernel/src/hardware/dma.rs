@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! DMA addressing, trust configuration, and device memory synchronization capability.
+//! DMA addressing and device memory synchronization.
 
 use super::{BindError, Slot};
 use crate::{HardwareDeviceInfo, memory::PhysRange};
-pub use abi::dma::DmaProfile;
 
 static SLOT: Slot<&'static dyn Dma> = Slot::new();
 
@@ -17,7 +16,6 @@ pub fn dma() -> &'static dyn Dma {
 }
 
 pub trait Dma: Sync {
-    fn profile(&self) -> DmaProfile;
     fn address_bits(&self, device: &HardwareDeviceInfo) -> Option<u8>;
     fn bus_address(&self, device: &HardwareDeviceInfo, range: PhysRange) -> Option<u64>;
     fn synchronize(&self);

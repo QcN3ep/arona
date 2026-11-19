@@ -13,7 +13,7 @@ use crate::{
         ReferenceKind,
     },
 };
-pub use abi::dma::{DmaDirection, DmaProfile, DmaState};
+pub use abi::dma::{DmaDirection, DmaState};
 
 /// # Safety
 ///
