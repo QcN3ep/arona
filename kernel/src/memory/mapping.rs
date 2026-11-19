@@ -109,15 +109,6 @@ pub(super) struct MappingJournal {
 }
 
 impl MappingJournal {
-    pub fn frame(self) -> Frame {
-        Frame::new(
-            self.mapping
-                .expect("missing staged mapping")
-                .physical_address,
-        )
-        .expect("unaligned mapping frame")
-    }
-
     pub fn permissions(self) -> PagePermissions {
         self.mapping
             .expect("missing staged mapping")

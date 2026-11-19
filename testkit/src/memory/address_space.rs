@@ -702,6 +702,29 @@ fn huge_mappings() {
         info.mapping.unwrap().attributes.permissions,
         PagePermissions::ReadWrite
     );
+    let writer = allocation
+        .access(
+            *frames.last().unwrap(),
+            ReferenceKind::Dma,
+            FrameAccess::Write,
+        )
+        .unwrap();
+    let before = allocation.info();
+    let generation = space.query(mapped.start).unwrap().unwrap().generation;
+    assert_eq!(
+        space.protect(mapped, PagePermissions::ReadExecute),
+        Err(MemoryError::AccessConflict)
+    );
+    assert_eq!(allocation.info(), before);
+    for address in [mapped.start, mapped.end - PAGE_SIZE] {
+        let info = space.query(address).unwrap().unwrap();
+        assert_eq!(info.generation, generation);
+        assert_eq!(
+            info.mapping.unwrap().attributes.permissions,
+            PagePermissions::ReadWrite
+        );
+    }
+    drop(writer);
     space
         .protect(mapped, PagePermissions::ReadWriteExecute)
         .unwrap();

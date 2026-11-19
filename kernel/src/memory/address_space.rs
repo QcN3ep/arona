@@ -777,8 +777,8 @@ impl AddressSpace {
         let mut cursor = range.start;
         while cursor < range.end {
             let record = state.mappings.get(cursor).ok_or(MemoryError::NotMapped)?;
-            if record.kind == MappingKind::Huge {
-                return self.protect_large_range(&mut state, range, permissions);
+            if record.range.start != cursor || record.range.end > range.end {
+                return Err(MemoryError::InvalidRequest);
             }
             cursor = record.range.end;
         }
@@ -798,41 +798,41 @@ impl AddressSpace {
         let mut allocator = manager().allocator().lock();
         // Multiple aliases of the same page frame must revoke the old access counts together so that their permissions can be switched together.
         for address in pages(range) {
-            let journal = state.record(address).journal;
+            let record = state.record(address);
             allocator.release_access(
-                journal.frame(),
+                record.frame_at(address),
                 ReferenceKind::Mapping,
-                journal.permissions().into(),
+                record.journal.permissions().into(),
             );
         }
         let result = (|| {
             for address in pages(range) {
                 state.update_record(address, |record| {
-                    let frame = record.journal.frame();
+                    let frame = record.frame_at(address);
                     let head = allocator.allocation_of(frame)?;
-                    record.journal.direct_was_writable = manager().reserve_access(
+                    manager().reserve_access(
                         &mut allocator,
                         head,
                         frame,
                         ReferenceKind::Mapping,
                         permissions.into(),
                     )?;
-                    record.journal.referenced = true;
+                    record.journal.reserved += 1;
                     Ok::<_, MemoryError>(())
                 })?;
             }
-            for address in pages(range) {
-                let record = state.record(address);
+            let mut cursor = range.start;
+            while cursor < range.end {
+                let record = state.record(cursor);
                 let mut mapping = record.journal.mapping.unwrap();
                 if permissions.executable() && !mapping.attributes.permissions.executable() {
-                    hardware::mmu().synchronize_frame(record.journal.frame())?;
+                    for address in pages(record.range) {
+                        hardware::mmu().synchronize_frame(record.frame_at(address))?;
+                    }
                 }
                 mapping.attributes.permissions = permissions;
-                PageTableState::write_leaf(
-                    address,
-                    record.journal.tables[0].unwrap(),
-                    Some(mapping),
-                )?;
+                write_record_leaf(cursor, &record, Some(mapping))?;
+                cursor = record.range.end;
             }
             Ok(())
         })();
@@ -844,8 +844,12 @@ impl AddressSpace {
             state.restore_entries(range);
         } else {
             hardware::mmu().invalidate_all();
-            for address in pages(range) {
-                state.update_record(address, |record| record.generation = generation);
+            let mut cursor = range.start;
+            while cursor < range.end {
+                cursor = state.update_record(cursor, |record| {
+                    record.generation = generation;
+                    record.range.end
+                });
             }
         }
         state.clear_journals(range);
@@ -897,112 +901,6 @@ impl AddressSpace {
             hardware::mmu().invalidate_all();
             result
         })
-    }
-
-    fn protect_large_range(
-        &self,
-        state: &mut AddressSpaceState,
-        range: VirtRange,
-        permissions: PagePermissions,
-    ) -> Result<(), MemoryError> {
-        let mut cursor = range.start;
-        while cursor < range.end {
-            let record = state.mappings.get(cursor).ok_or(MemoryError::NotMapped)?;
-            if record.range.start != cursor || record.range.end > range.end {
-                return Err(MemoryError::InvalidRequest);
-            }
-            cursor = record.range.end;
-        }
-        let generation = state.next_generation()?;
-        if let Err(error) = self
-            .table
-            .edit(|table| state.stage(table, range, Some(permissions), None))
-        {
-            state.clear_journals(range);
-            return Err(error);
-        }
-        let mut changes = alloc::vec::Vec::with_capacity((range.end - range.start) / PAGE_SIZE);
-        for address in pages(range) {
-            let record = state.record(address);
-            changes.push((
-                record.frame_at(address),
-                record.journal.permissions(),
-                false,
-            ));
-        }
-        if let Err(error) = state.withdraw_entries(range) {
-            state.restore_entries(range);
-            state.clear_journals(range);
-            return Err(error);
-        }
-        let mut allocator = manager().allocator().lock();
-        // Revoke all aliases together before acquiring the new access mode.
-        for (frame, old, _) in &changes {
-            allocator.release_access(*frame, ReferenceKind::Mapping, (*old).into());
-        }
-        let mut acquired = 0;
-        let result = (|| {
-            for (frame, old, direct_was_writable) in &mut changes {
-                let head = allocator.allocation_of(*frame)?;
-                *direct_was_writable = manager().reserve_access(
-                    &mut allocator,
-                    head,
-                    *frame,
-                    ReferenceKind::Mapping,
-                    permissions.into(),
-                )?;
-                acquired += 1;
-                if permissions.executable() && !old.executable() {
-                    hardware::mmu().synchronize_frame(*frame)?;
-                }
-            }
-            let mut cursor = range.start;
-            while cursor < range.end {
-                let record = state.record(cursor);
-                let mut mapping = record.journal.mapping.unwrap();
-                mapping.attributes.permissions = permissions;
-                write_record_leaf(cursor, &record, Some(mapping))?;
-                cursor = record.range.end;
-            }
-            Ok(())
-        })();
-        if result.is_err() {
-            state
-                .withdraw_entries(range)
-                .expect("failed to withdraw changed mappings");
-            for (frame, _, _) in &changes[..acquired] {
-                allocator.release_access(*frame, ReferenceKind::Mapping, permissions.into());
-            }
-            for (frame, _, direct_was_writable) in changes[..acquired].iter().rev() {
-                manager().restore_direct_access(&allocator, *frame, *direct_was_writable);
-            }
-            for (frame, old, _) in &changes {
-                let head = allocator
-                    .allocation_of(*frame)
-                    .expect("lost mapping allocation");
-                manager()
-                    .reserve_access(
-                        &mut allocator,
-                        head,
-                        *frame,
-                        ReferenceKind::Mapping,
-                        (*old).into(),
-                    )
-                    .expect("failed to restore mapping access");
-            }
-            state.restore_entries(range);
-        } else {
-            hardware::mmu().invalidate_all();
-            let mut cursor = range.start;
-            while cursor < range.end {
-                let mut record = state.record(cursor);
-                record.generation = generation;
-                state.mappings.set(record);
-                cursor = record.range.end;
-            }
-        }
-        state.clear_journals(range);
-        result
     }
 
     pub(crate) fn bounds(&self) -> VirtRange {
@@ -1475,31 +1373,21 @@ impl AddressSpaceState {
         range: VirtRange,
         permissions: PagePermissions,
     ) {
-        for address in pages(range) {
-            let record = self.record(address);
-            if record.journal.referenced {
+        let mut cursor = range.start;
+        while cursor < range.end {
+            let record = self.record(cursor);
+            for index in 0..record.journal.reserved as usize {
                 allocator.release_access(
-                    record.journal.frame(),
+                    record.frame_at(cursor + index * PAGE_SIZE),
                     ReferenceKind::Mapping,
                     permissions.into(),
                 );
             }
-        }
-        if FrameAccess::from(permissions) != FrameAccess::Read {
-            for address in pages(range).rev() {
-                let journal = self.record(address).journal;
-                if journal.referenced {
-                    manager().restore_direct_access(
-                        allocator,
-                        journal.frame(),
-                        journal.direct_was_writable,
-                    );
-                }
-            }
+            cursor = record.range.end;
         }
         for address in pages(range) {
-            let journal = self.record(address).journal;
-            let frame = journal.frame();
+            let record = self.record(address);
+            let frame = record.frame_at(address);
             let head = allocator
                 .allocation_of(frame)
                 .expect("lost mapping allocation");
@@ -1509,9 +1397,17 @@ impl AddressSpaceState {
                     head,
                     frame,
                     ReferenceKind::Mapping,
-                    journal.permissions().into(),
+                    record.journal.permissions().into(),
                 )
                 .expect("failed to restore frame access");
+        }
+        // Recompute direct-map permissions after all original aliases have been restored.
+        for address in pages(range) {
+            manager().restore_direct_access(
+                allocator,
+                self.record(address).frame_at(address),
+                true,
+            );
         }
     }
 }
