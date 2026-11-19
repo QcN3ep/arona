@@ -47,13 +47,13 @@ fn catalog(devices: &DeviceSet, hardware: &HardwareInfo) -> (usize, usize) {
     for device in &hardware.devices {
         let id = device.instance_id.0;
         assert_eq!(
-            devices.read(id, abi::device::DeviceField::Name, 0).unwrap(),
+            devices.read(id, abi::info::device::NAME, 0).unwrap(),
             device.name.as_bytes()
         );
         if device.use_policy == DeviceUsePolicy::KernelReserved
             || ((device.dma != DmaCapability::None
                 || device.location != HardwareDeviceLocation::Platform)
-                && devices.describe(id).unwrap().dma.address_bits == 0)
+                && devices.describe(id).unwrap().dma_address_bits == 0)
         {
             assert!(devices.describe(id).unwrap().group.is_none());
             assert!(matches!(devices.claim_group(id), Err(DeviceError::Denied)));
@@ -79,7 +79,7 @@ fn pci_catalog(devices: &DeviceSet, hardware: &HardwareInfo) -> (usize, usize) {
 
 fn is_pci_device(devices: &DeviceSet, id: u32) -> bool {
     devices
-        .read(id, abi::device::DeviceField::IdentityNamespace, 0)
+        .read(id, abi::info::device::IDENTITY_NAMESPACE, 0)
         .is_ok_and(|namespace| namespace == b"pci")
 }
 
@@ -90,12 +90,12 @@ fn assert_pci_device(
     info: abi::device::DeviceInfo,
 ) -> bool {
     assert_eq!(info.identities, 2);
-    assert_eq!(info.properties, 1);
+    assert!(info.properties >= 1);
     if info.group.is_none() {
         assert!(matches!(devices.claim_group(id), Err(DeviceError::Denied)));
     }
     let config = devices
-        .read(id, abi::device::DeviceField::PciConfig, 0)
+        .read(id, abi::info::device::CONFIGURATION, 0)
         .unwrap();
     assert_eq!(config.len(), 4096);
     assert_eq!(config[4] & 5, 0);
@@ -107,7 +107,7 @@ fn assert_pci_device(
     let bridged = assert_pci_parent(devices, hardware, info);
     assert_eq!(
         bdf,
-        &devices.read(id, abi::device::DeviceField::Name, 0).unwrap()[4..]
+        &devices.read(id, abi::info::device::NAME, 0).unwrap()[4..]
     );
     bridged
 }
@@ -115,10 +115,21 @@ fn assert_pci_device(
 fn assert_pci_bars(devices: &DeviceSet, id: u32, info: abi::device::DeviceInfo, config: &[u8]) {
     let mut regions = 0;
     for index in 0..6 {
-        let Ok(bytes) = devices.read(id, abi::device::DeviceField::PciBar, index) else {
+        let name = [b'b', b'a', b'r', b'0' + index as u8];
+        let Some(bytes) = devices
+            .property(id, "pci", core::str::from_utf8(&name).unwrap())
+            .unwrap()
+        else {
             continue;
         };
-        let bar = abi::device::PciBar::decode(bytes).unwrap();
+        let bar = kernel::PciBar {
+            index: bytes[0],
+            width: bytes[1],
+            prefetchable: bytes[2] != 0,
+            region: (bytes[3] != u8::MAX).then_some(bytes[3]),
+            bus_address: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            size: u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+        };
         assert_eq!(usize::from(bar.index), index);
         let offset = 0x10 + usize::from(bar.index) * 4;
         let value = u32::from_le_bytes(config[offset..offset + 4].try_into().unwrap());
@@ -142,13 +153,11 @@ fn assert_pci_bars(devices: &DeviceSet, id: u32, info: abi::device::DeviceInfo, 
 fn assert_pci_identity(devices: &DeviceSet, id: u32) {
     assert!(
         devices
-            .read(id, abi::device::DeviceField::Name, 0)
+            .read(id, abi::info::device::NAME, 0)
             .unwrap()
             .starts_with(b"PCI ")
     );
-    let vendor_device = devices
-        .read(id, abi::device::DeviceField::Identity, 0)
-        .unwrap();
+    let vendor_device = devices.read(id, abi::info::device::IDENTITY, 0).unwrap();
     assert_eq!(vendor_device.len(), 9);
     assert_eq!(vendor_device[4], b':');
     assert!(
@@ -159,13 +168,11 @@ fn assert_pci_identity(devices: &DeviceSet, id: u32) {
     );
     assert_eq!(
         devices
-            .read(id, abi::device::DeviceField::IdentityNamespace, 1)
+            .read(id, abi::info::device::IDENTITY_NAMESPACE, 1)
             .unwrap(),
         b"pci-class"
     );
-    let class = devices
-        .read(id, abi::device::DeviceField::Identity, 1)
-        .unwrap();
+    let class = devices.read(id, abi::info::device::IDENTITY, 1).unwrap();
     assert_eq!(class.len(), 8);
     assert_eq!((class[2], class[5]), (b':', b':'));
     assert!(
@@ -179,18 +186,18 @@ fn assert_pci_identity(devices: &DeviceSet, id: u32) {
 fn assert_pci_properties(devices: &DeviceSet, id: u32) -> &'static [u8] {
     assert_eq!(
         devices
-            .read(id, abi::device::DeviceField::PropertyNamespace, 0)
+            .read(id, abi::info::device::PROPERTY_NAMESPACE, 0)
             .unwrap(),
         b"pci"
     );
     assert_eq!(
         devices
-            .read(id, abi::device::DeviceField::PropertyName, 0)
+            .read(id, abi::info::device::PROPERTY_NAME, 0)
             .unwrap(),
         b"bdf"
     );
     let bdf = devices
-        .read(id, abi::device::DeviceField::PropertyValue, 0)
+        .read(id, abi::info::device::PROPERTY_VALUE, 0)
         .unwrap();
     assert_eq!(bdf.len(), 12);
     assert_eq!((bdf[4], bdf[7], bdf[10]), (b':', b':', b'.'));
@@ -237,7 +244,7 @@ fn assert_pci_parent(
     } else {
         assert_eq!(
             devices
-                .read(parent, abi::device::DeviceField::IdentityNamespace, 0)
+                .read(parent, abi::info::device::IDENTITY_NAMESPACE, 0)
                 .unwrap(),
             b"pci"
         );
@@ -341,7 +348,11 @@ fn scenario_devices(devices: &DeviceSet) -> (abi::device::DeviceInfo, u32) {
     let mut reserved = None;
     while let Some(id) = devices.next(cursor).unwrap() {
         let info = devices.describe(id).unwrap();
-        if info.console {
+        if devices
+            .property(id, "console", "selected")
+            .unwrap()
+            .is_some()
+        {
             console = Some(info);
         }
         if info.group.is_none() && info.mmio_regions != 0 {

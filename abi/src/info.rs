@@ -79,6 +79,28 @@ topics!(trap_continuation {
     REGISTERS = 16 => READ;
 });
 
+topics!(device {
+    /// Queries `{after_id}` and returns `[next_id, 0]`; zero ends enumeration.
+    NEXT_DEVICE = 16 => READ;
+    /// Queries `{device_id}` and writes the 64-byte DeviceInfo record.
+    DEVICE = 17 => READ;
+    /// Queries `{device_id}` and writes the name bytes.
+    NAME = 18 => READ;
+    /// Queries `{device_id, index}` and writes identity namespace bytes.
+    IDENTITY_NAMESPACE = 19 => READ;
+    /// Queries `{device_id, index}` and writes identity value bytes.
+    IDENTITY = 20 => READ;
+    /// Queries `{device_id, index}` and writes property namespace bytes.
+    PROPERTY_NAMESPACE = 21 => READ;
+    /// Queries `{device_id, index}` and writes property name bytes.
+    PROPERTY_NAME = 22 => READ;
+    /// Queries `{device_id, index}` and writes property value bytes.
+    PROPERTY_VALUE = 23 => READ;
+    /// Queries `{device_id}` and writes a read-only configuration snapshot.
+    /// The device identity determines its format. This grants no configuration writes.
+    CONFIGURATION = 24 => READ;
+});
+
 pub const fn required_rights(kind: ObjectType, topic: u64) -> Option<Rights> {
     if topic == HANDLE {
         return Some(Rights::NONE);
@@ -89,6 +111,7 @@ pub const fn required_rights(kind: ObjectType, topic: u64) -> Option<Rights> {
         ObjectType::FrameAllocation => memory::required(topic),
         ObjectType::KernelLog => kernel_log::required(topic),
         ObjectType::DmaDomain => dma::required(topic),
+        ObjectType::DeviceSet | ObjectType::Device => device::required(topic),
         ObjectType::Clock => clock::required(topic),
         ObjectType::SystemInfo => system::required(topic),
         ObjectType::TrapContinuation => trap_continuation::required(topic),

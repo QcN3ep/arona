@@ -18,7 +18,6 @@ pub(in crate::device) struct Configuration {
     offset: usize,
     snapshot: HeapBox<[u8; 4096]>,
     original: [u32; 13],
-    pub(in crate::device) bars: [Option<[u8; abi::device::PciBar::SIZE]>; 6],
     pub(in crate::device) unmapped_bars: arrayvec::ArrayVec<PhysRange, 6>,
 }
 
@@ -29,7 +28,6 @@ impl Configuration {
             offset,
             snapshot: memory::manager().allocate_box([0; 4096])?,
             original: [0; 13],
-            bars: [None; 6],
             unmapped_bars: arrayvec::ArrayVec::new(),
         };
         config.freeze()?;

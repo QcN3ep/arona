@@ -4,8 +4,8 @@
 
 use arrayvec::ArrayVec;
 use kernel::{
-    DeviceProperty, DeviceUsePolicy, DmaCapability, HardwareDeviceInfo, HardwareDeviceInstanceId,
-    HardwareInfo, boot::MAX_DEVICES,
+    DeviceProperty, DmaCapability, HardwareDeviceInfo, HardwareDeviceInstanceId, HardwareInfo,
+    boot::MAX_DEVICES,
 };
 
 use super::super::Result;
@@ -188,7 +188,6 @@ pub(super) fn capture(hardware: &mut HardwareInfo) -> Result<()> {
             continue;
         };
         // The controller provides register operations only and never initiates DMA.
-        entry.use_policy = DeviceUsePolicy::UserAssignable;
         entry.dma = DmaCapability::None;
     }
     Ok(())

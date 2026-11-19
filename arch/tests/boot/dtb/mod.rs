@@ -627,7 +627,11 @@ fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
         .iter()
         .find(|device| device.has_identity("devicetree", "sifive,plic-1.0.0"))
         .unwrap();
-    assert_eq!(controller.use_policy, DeviceUsePolicy::KernelReserved);
+    assert!(
+        hardware
+            .device_property(controller.instance_id, "devicetree", "interrupt-controller")
+            .is_some()
+    );
     assert_eq!(hardware.pci.interrupts.len(), 16);
     assert!(hardware.pci.msi_maps.is_empty());
     let pci = hardware

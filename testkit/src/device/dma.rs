@@ -19,7 +19,7 @@ pub(super) fn run(devices: &DeviceSet) {
         };
         let grant = devices.claim_group(group).unwrap();
         let reference = grant.reference();
-        if info.dma.address_bits == 0 {
+        if info.dma_address_bits == 0 {
             assert!(matches!(
                 reference.create_dma(id),
                 Err(DeviceError::Unsupported)
@@ -102,7 +102,7 @@ pub fn run_failure(devices: &DeviceSet, revoke: bool) -> ! {
     while let Some(id) = devices.next(cursor).unwrap() {
         cursor = id;
         let info = devices.describe(id).unwrap();
-        let Some(group) = info.group.filter(|_| info.dma.address_bits != 0) else {
+        let Some(group) = info.group.filter(|_| info.dma_address_bits != 0) else {
             continue;
         };
         let grant = devices.claim_group(group).unwrap();

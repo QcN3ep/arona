@@ -215,7 +215,10 @@ pub fn console(devices: &Handle<DeviceSet>) -> Result<u32, Error> {
     let mut cursor = 0;
     loop {
         let id = devices.next(cursor)?.ok_or(Error::Protocol)?;
-        if devices.describe(id)?.console {
+        if devices
+            .property(id, "console", "selected", &mut [0; 1])?
+            .is_some()
+        {
             return Ok(id);
         }
         cursor = id;

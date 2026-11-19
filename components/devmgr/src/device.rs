@@ -4,7 +4,7 @@
 
 use runtime::{
     Call, Channel, DeviceSet, Handle, KernelError, Reply, Rights, Task,
-    device::{DeviceField, DeviceInfo},
+    device::{DeviceInfo, topic},
     ipc::{Message, ReceivedMessage, Transfer, WaitMode},
 };
 
@@ -268,6 +268,9 @@ fn reject(reply: &Handle<Reply>, status: u64) -> Result<(), Error> {
     }
 }
 
+mod pci;
+pub use pci::PciBar;
+
 pub struct DeviceDescription<'a> {
     catalog: &'a Handle<DeviceSet>,
     info: DeviceInfo,
@@ -286,28 +289,37 @@ impl<'a> DeviceDescription<'a> {
     }
 
     pub(crate) fn pci_config(&self, output: &mut [u8; 4096]) -> Result<(), Error> {
-        Ok(self.catalog.pci_config(self.info.id, output)?)
+        if self.catalog.configuration(self.info.id, output)? != output.len() {
+            return Err(runtime::Error::Protocol.into());
+        }
+        Ok(())
     }
 
-    pub(crate) fn pci_bar(&self, index: usize) -> Result<runtime::device::PciBar, Error> {
-        Ok(self.catalog.pci_bar(self.info.id, index)?)
+    pub fn pci_bar(&self, index: usize) -> Result<PciBar, Error> {
+        if index >= 6 {
+            return Err(Error::InvalidConfiguration);
+        }
+        let name = [b'b', b'a', b'r', b'0' + index as u8];
+        let mut bytes = [0; PciBar::SIZE];
+        let bytes = self
+            .property("pci", core::str::from_utf8(&name).unwrap(), &mut bytes)?
+            .ok_or(Error::Unsupported)?;
+        PciBar::decode(bytes).ok_or(Error::InvalidConfiguration)
     }
 
     pub fn matches(&self, namespace: &str, identity: &str) -> Result<bool, Error> {
         let mut buffer = [0; 128];
         for index in 0..self.info.identities {
-            if self.catalog.read(
-                self.info.id,
-                DeviceField::IdentityNamespace,
-                index,
-                &mut buffer,
-            )? != namespace.as_bytes()
+            if self
+                .catalog
+                .read(self.info.id, topic::IDENTITY_NAMESPACE, index, &mut buffer)?
+                != namespace.as_bytes()
             {
                 continue;
             }
             if self
                 .catalog
-                .read(self.info.id, DeviceField::Identity, index, &mut buffer)?
+                .read(self.info.id, topic::IDENTITY, index, &mut buffer)?
                 == identity.as_bytes()
             {
                 return Ok(true);
@@ -324,22 +336,20 @@ impl<'a> DeviceDescription<'a> {
     ) -> Result<Option<&'b [u8]>, Error> {
         let mut buffer = [0; 128];
         for index in 0..self.info.properties {
-            if self.catalog.read(
-                self.info.id,
-                DeviceField::PropertyNamespace,
-                index,
-                &mut buffer,
-            )? != namespace.as_bytes()
+            if self
+                .catalog
+                .read(self.info.id, topic::PROPERTY_NAMESPACE, index, &mut buffer)?
+                != namespace.as_bytes()
                 || self
                     .catalog
-                    .read(self.info.id, DeviceField::PropertyName, index, &mut buffer)?
+                    .read(self.info.id, topic::PROPERTY_NAME, index, &mut buffer)?
                     != name.as_bytes()
             {
                 continue;
             }
             return Ok(Some(self.catalog.read(
                 self.info.id,
-                DeviceField::PropertyValue,
+                topic::PROPERTY_VALUE,
                 index,
                 output,
             )?));

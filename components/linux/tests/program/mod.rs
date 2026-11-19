@@ -920,7 +920,11 @@ fn console(devices: &Handle<DeviceSet>) -> u32 {
     let mut cursor = 0;
     loop {
         let id = devices.next(cursor).unwrap().unwrap();
-        if devices.describe(id).unwrap().console {
+        if devices
+            .property(id, "console", "selected", &mut [0; 1])
+            .unwrap()
+            .is_some()
+        {
             return id;
         }
         cursor = id;

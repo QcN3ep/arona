@@ -392,7 +392,11 @@ fn console(devices: &Handle<DeviceSet>) -> (u32, u32, Configuration) {
     loop {
         let id = devices.next(cursor).unwrap().unwrap();
         let device = DeviceDescription::new(devices, id).unwrap();
-        if device.info().console {
+        if device
+            .property("console", "selected", &mut [0; 1])
+            .unwrap()
+            .is_some()
+        {
             return (
                 id,
                 device.info().group.unwrap(),

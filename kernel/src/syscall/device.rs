@@ -7,7 +7,6 @@ use crate::{
 };
 use abi::{
     Error, Handle, ObjectType, Rights,
-    device::DeviceField,
     method::{device, device_set},
 };
 
@@ -19,18 +18,6 @@ pub(super) fn catalog(
 ) -> Result<[u64; 2], CallError> {
     let id = u32::try_from(args[0]).map_err(|_| Error::InvalidArgument)?;
     match method {
-        device_set::NEXT => Ok([target.next(id)?.unwrap_or(0) as u64, 0]),
-        device_set::DESCRIBE => {
-            let bytes = target.describe(id)?.encode();
-            write(caller, args[1], args[2], &bytes)?;
-            Ok([bytes.len() as u64, 0])
-        }
-        device_set::READ => {
-            let field = DeviceField::from_raw(args[1]).ok_or(Error::InvalidArgument)?;
-            let bytes = target.read(id, field, args[2] as usize)?;
-            write(caller, args[3], args[4], bytes)?;
-            Ok([bytes.len() as u64, 0])
-        }
         device_set::CLAIM_GROUP => {
             let rights = Rights::from_bits(args[1]).ok_or(Error::InvalidArgument)?;
             if !ObjectType::Device.supported_rights().contains(rights) {
@@ -97,12 +84,57 @@ pub(super) fn invoke(
     }
 }
 
-fn write(caller: &Task, address: u64, capacity: u64, bytes: &[u8]) -> Result<(), CallError> {
-    if capacity < bytes.len() as u64 {
-        return Err(CallError::buffer_too_small(bytes.len()));
+pub(super) fn info(
+    caller: &Task,
+    target: &ObjectReference,
+    args: [u64; 5],
+) -> Result<[u64; 2], CallError> {
+    use abi::info::device as topic;
+    let indexed = matches!(
+        args[0],
+        topic::IDENTITY_NAMESPACE
+            | topic::IDENTITY
+            | topic::PROPERTY_NAMESPACE
+            | topic::PROPERTY_NAME
+            | topic::PROPERTY_VALUE
+    );
+    let (id, index) = if indexed {
+        let bytes = super::info::query::<16>(caller, args[1], args[2])?;
+        (
+            u64::from_le_bytes(bytes[..8].try_into().unwrap()),
+            u64::from_le_bytes(bytes[8..].try_into().unwrap()),
+        )
+    } else {
+        (
+            u64::from_le_bytes(super::info::query(caller, args[1], args[2])?),
+            0,
+        )
+    };
+    let id = u32::try_from(id).map_err(|_| Error::InvalidArgument)?;
+    if args[0] == topic::NEXT_DEVICE {
+        if args[3..] != [0; 2] {
+            return Err(Error::InvalidArgument.into());
+        }
+        let next = match target {
+            ObjectReference::DeviceSet(set) => set.next(id)?,
+            ObjectReference::Device(grant) => grant.next(id)?,
+            _ => return Err(Error::Unsupported.into()),
+        };
+        return Ok([u64::from(next.unwrap_or(0)), 0]);
     }
-    caller
-        .pin_user_memory(address as usize, bytes.len(), true)?
-        .write(0, bytes)?;
-    Ok(())
+    if args[0] == topic::DEVICE {
+        let info = match target {
+            ObjectReference::DeviceSet(set) => set.describe(id)?,
+            ObjectReference::Device(grant) => grant.describe(id)?,
+            _ => return Err(Error::Unsupported.into()),
+        };
+        return super::info::output(caller, args[3], args[4], &info.encode());
+    }
+    let index = usize::try_from(index).map_err(|_| Error::InvalidArgument)?;
+    let bytes = match target {
+        ObjectReference::DeviceSet(set) => set.read(id, args[0], index)?,
+        ObjectReference::Device(grant) => grant.read(id, args[0], index)?,
+        _ => return Err(Error::Unsupported.into()),
+    };
+    super::info::output(caller, args[3], args[4], bytes)
 }

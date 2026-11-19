@@ -16,6 +16,13 @@ pub(super) fn invoke(
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
     if matches!(
+        target,
+        ObjectReference::DeviceSet(_) | ObjectReference::Device(_)
+    ) && args[0] != info::HANDLE
+    {
+        return super::device::info(caller, target, args);
+    }
+    if matches!(
         (target, args[0]),
         (ObjectReference::Thread(_), info::thread::REGISTERS)
             | (

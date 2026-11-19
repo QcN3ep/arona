@@ -32,7 +32,11 @@ fn main() {
     let console = loop {
         let id = devices.next(cursor).unwrap().expect("console is missing");
         let description = DeviceDescription::new(&devices, id).unwrap();
-        if description.info().console {
+        if description
+            .property("console", "selected", &mut [0; 1])
+            .unwrap()
+            .is_some()
+        {
             break description;
         }
         cursor = id;

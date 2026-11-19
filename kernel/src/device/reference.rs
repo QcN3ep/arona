@@ -11,6 +11,35 @@ use core::sync::atomic::Ordering;
 use super::{DeviceError, DeviceReference, IrqRoute, MappedRegion, registry, same_source};
 
 impl DeviceReference {
+    pub fn next(&self, after: u32) -> Result<Option<u32>, DeviceError> {
+        let _interrupts = InterruptGuard::new();
+        let registry = registry()?;
+        let state = registry.state.lock();
+        let group = state.grant(self)?.group;
+        Ok(registry
+            .devices
+            .iter()
+            .filter(|device| device.group == Some(group))
+            .map(|device| device.hardware.instance_id.0)
+            .filter(|id| *id > after)
+            .min())
+    }
+    pub fn describe(&self, id: u32) -> Result<super::DeviceInfo, DeviceError> {
+        self.check_member(id)?;
+        super::DeviceSet(()).describe(id)
+    }
+    pub fn read(&self, id: u32, topic: u64, index: usize) -> Result<&'static [u8], DeviceError> {
+        self.check_member(id)?;
+        super::DeviceSet(()).read(id, topic, index)
+    }
+    fn check_member(&self, id: u32) -> Result<(), DeviceError> {
+        let _interrupts = InterruptGuard::new();
+        let registry = registry()?;
+        let state = registry.state.lock();
+        registry.member(state.grant(self)?.group, id)?;
+        Ok(())
+    }
+
     pub fn map(&self, task: &Task, id: u32, region: usize) -> Result<VirtRange, DeviceError> {
         let _interrupts = InterruptGuard::new();
         let space = task.address_space().map_err(|_| DeviceError::Closed)?;

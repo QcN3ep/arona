@@ -3,9 +3,13 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+#[path = "device/pci.rs"]
+mod pci;
+use pci::{PciBar, configuration, pci_bar};
+
 use runtime::{
     DeviceSet, Error, ObjectType, Rights,
-    device::DeviceField,
+    device::topic,
     ipc::{self, ReceivedMessage, WaitItem, WaitMode},
     process, thread,
 };
@@ -35,7 +39,20 @@ fn scenario(mut startup: ReceivedMessage) -> [u64; 3] {
             ObjectType::Device.supported_rights(),
         )
         .unwrap();
+    assert_eq!(grant.describe(console.id).unwrap(), console);
+    let mut cursor = 0;
+    while let Some(id) = devices.next(cursor).unwrap() {
+        if devices.describe(id).unwrap().group != console.group {
+            assert_eq!(grant.describe(id), Err(Error::Kernel(abi::Error::Denied)));
+            break;
+        }
+        cursor = id;
+    }
     let denied = grant.try_clone(Rights::MAP).unwrap();
+    assert_eq!(
+        denied.describe(console.id),
+        Err(Error::Kernel(abi::Error::Denied))
+    );
     let event = process::task()
         .event(ObjectType::Event.supported_rights())
         .unwrap();
@@ -58,6 +75,10 @@ fn scenario(mut startup: ReceivedMessage) -> [u64; 3] {
     interrupts(&grant, console.id, &event, &mut mmio);
     let previous = mmio.range().unwrap();
     grant.revoke().unwrap();
+    assert_eq!(
+        grant.describe(console.id),
+        Err(Error::Kernel(abi::Error::Closed))
+    );
     assert!(
         process::task()
             .query(previous.start)
@@ -116,7 +137,7 @@ fn pci_devices(devices: &runtime::Handle<DeviceSet>) -> [u64; 3] {
 
 fn pci_device(devices: &runtime::Handle<DeviceSet>, id: u32) -> Option<[u64; 3]> {
     let mut bytes = [0; 4096];
-    devices.pci_config(id, &mut bytes).ok()?;
+    configuration(devices, id, &mut bytes).ok()?;
     let info = devices.describe(id).unwrap();
     let group = info.group?;
     let grant = devices
@@ -145,7 +166,7 @@ fn pci_bars(
 ) -> [u64; 3] {
     let mut counts = [0; 3];
     for index in 0..6 {
-        let Ok(bar) = devices.pci_bar(id, index) else {
+        let Ok(bar) = pci_bar(devices, id, index) else {
             continue;
         };
         assert_eq!(usize::from(bar.index), index);
@@ -163,7 +184,7 @@ fn pci_bars(
 
 fn verify_pci_bar(
     config: &[u8; 4096],
-    bar: abi::device::PciBar,
+    bar: PciBar,
     info: &runtime::device::DeviceInfo,
     devices: &runtime::Handle<DeviceSet>,
     grant: &runtime::Handle<runtime::Device>,
@@ -321,7 +342,11 @@ fn catalog(devices: &runtime::Handle<DeviceSet>) -> runtime::device::DeviceInfo 
     let mut console = None;
     while let Some(id) = devices.next(cursor).unwrap() {
         let info = devices.describe(id).unwrap();
-        if info.console {
+        if devices
+            .property(id, "console", "selected", &mut [0; 1])
+            .unwrap()
+            .is_some()
+        {
             console = Some(info);
         }
         if info.group.is_none() {
@@ -334,19 +359,19 @@ fn catalog(devices: &runtime::Handle<DeviceSet>) -> runtime::device::DeviceInfo 
     }
     let console = console.unwrap();
     let mut short = [0xa5];
-    assert_eq!(
-        reader.read(console.id, DeviceField::Name, 0, &mut short),
-        Err(Error::Kernel(abi::Error::BufferTooSmall))
-    );
+    let error = reader
+        .read(console.id, topic::NAME, 0, &mut short)
+        .unwrap_err();
+    assert_eq!(error, Error::Kernel(abi::Error::BufferTooSmall));
     assert_eq!(short, [0xa5]);
     assert_eq!(
-        reader.read(console.id, DeviceField::Name, 1, &mut short),
+        reader.read(console.id, topic::NAME, 1, &mut short),
         Err(Error::Kernel(abi::Error::InvalidArgument))
     );
     let mut bytes = [0; 128];
     assert!(
         !reader
-            .read(console.id, DeviceField::Name, 0, &mut bytes)
+            .read(console.id, topic::NAME, 0, &mut bytes)
             .unwrap()
             .is_empty()
     );
@@ -357,17 +382,17 @@ fn catalog(devices: &runtime::Handle<DeviceSet>) -> runtime::device::DeviceInfo 
     for index in 0..console.identities {
         assert!(
             !devices
-                .read(console.id, DeviceField::Identity, index, &mut bytes)
+                .read(console.id, topic::IDENTITY, index, &mut bytes)
                 .unwrap()
                 .is_empty()
         );
     }
     for index in 0..console.properties {
         devices
-            .read(console.id, DeviceField::PropertyName, index, &mut bytes)
+            .read(console.id, topic::PROPERTY_NAME, index, &mut bytes)
             .unwrap();
         devices
-            .read(console.id, DeviceField::PropertyValue, index, &mut bytes)
+            .read(console.id, topic::PROPERTY_VALUE, index, &mut bytes)
             .unwrap();
     }
     console

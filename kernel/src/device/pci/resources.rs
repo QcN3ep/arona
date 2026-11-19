@@ -428,7 +428,6 @@ fn publish(
             config.unmapped_bars.push(physical);
         }
         bars.push(bar);
-        config.bars[usize::from(bar.index)] = Some(bar.encode());
     }
     if plans[index].header == 0 && !device.hardware.mmio_regions.is_empty() {
         device.hardware.use_policy = DeviceUsePolicy::UserAssignable;

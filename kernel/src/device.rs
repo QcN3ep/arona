@@ -9,8 +9,8 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::{Mutex, Once};
 
 use crate::{
-    DeviceProperty, DeviceUsePolicy, DmaCapability, HardwareDeviceInfo, HardwareDeviceInstanceId,
-    HardwareDeviceLocation, HardwareInfo, HardwareInterruptInfo,
+    DeviceProperty, DeviceUsePolicy, DmaCapability, HardwareDeviceInfo, HardwareDeviceLocation,
+    HardwareInfo, HardwareInterruptInfo,
     hardware::{
         self,
         cpu::InterruptGuard,
@@ -19,7 +19,8 @@ use crate::{
     ipc::EventReference,
     memory::{self, AddressSpace, HeapArc, MemoryError, PhysRange, UserDeviceMapping, VirtRange},
 };
-pub use abi::device::{DeviceField, DeviceInfo};
+pub use abi::device::DeviceInfo;
+use abi::info::device as topic;
 
 pub mod dma;
 mod pci;
@@ -89,7 +90,6 @@ struct Descriptor {
 struct Registry {
     devices: Vec<Descriptor>,
     properties: Vec<DeviceProperty>,
-    console: Option<HardwareDeviceInstanceId>,
     state: Mutex<DeviceState>,
 }
 
@@ -165,39 +165,28 @@ impl DeviceSet {
                 .iter()
                 .filter(|property| property.device == hardware.instance_id)
                 .count(),
-            console: registry.console == Some(hardware.instance_id),
-            dma: abi::dma::DmaInfo {
-                profile: hardware::dma().profile(),
-                address_bits: hardware::dma().address_bits(hardware).unwrap_or(0),
-            },
+            dma_address_bits: hardware::dma().address_bits(hardware).unwrap_or(0),
         })
     }
 
-    pub fn read(
-        &self,
-        id: u32,
-        field: DeviceField,
-        index: usize,
-    ) -> Result<&'static [u8], DeviceError> {
+    pub fn read(&self, id: u32, field: u64, index: usize) -> Result<&'static [u8], DeviceError> {
         let registry = registry()?;
         let descriptor = registry.device(id)?;
         let device = &descriptor.hardware;
         let bytes = match field {
-            DeviceField::Name if index == 0 => device.name.as_bytes(),
-            DeviceField::IdentityNamespace | DeviceField::Identity => {
+            topic::NAME if index == 0 => device.name.as_bytes(),
+            topic::IDENTITY_NAMESPACE | topic::IDENTITY => {
                 let identity = device
                     .identities
                     .get(index)
                     .ok_or(DeviceError::InvalidArgument)?;
-                if field == DeviceField::IdentityNamespace {
+                if field == topic::IDENTITY_NAMESPACE {
                     identity.namespace.as_bytes()
                 } else {
                     identity.value.as_bytes()
                 }
             }
-            DeviceField::PropertyNamespace
-            | DeviceField::PropertyName
-            | DeviceField::PropertyValue => {
+            topic::PROPERTY_NAMESPACE | topic::PROPERTY_NAME | topic::PROPERTY_VALUE => {
                 let property = registry
                     .properties
                     .iter()
@@ -205,26 +194,38 @@ impl DeviceSet {
                     .nth(index)
                     .ok_or(DeviceError::InvalidArgument)?;
                 match field {
-                    DeviceField::PropertyNamespace => property.namespace.as_bytes(),
-                    DeviceField::PropertyName => property.name.as_bytes(),
+                    topic::PROPERTY_NAMESPACE => property.namespace.as_bytes(),
+                    topic::PROPERTY_NAME => property.name.as_bytes(),
                     _ => property.value.as_slice(),
                 }
             }
-            DeviceField::PciConfig if index == 0 => descriptor
+            topic::CONFIGURATION if index == 0 => descriptor
                 .pci
                 .as_ref()
                 .ok_or(DeviceError::InvalidArgument)?
                 .snapshot(),
-            DeviceField::PciBar => descriptor
-                .pci
-                .as_ref()
-                .and_then(|config| config.bars.get(index))
-                .and_then(Option::as_ref)
-                .ok_or(DeviceError::InvalidArgument)?
-                .as_slice(),
             _ => return Err(DeviceError::InvalidArgument),
         };
         Ok(bytes)
+    }
+
+    pub fn property(
+        &self,
+        id: u32,
+        namespace: &str,
+        name: &str,
+    ) -> Result<Option<&'static [u8]>, DeviceError> {
+        let registry = registry()?;
+        registry.device(id)?;
+        Ok(registry
+            .properties
+            .iter()
+            .find(|property| {
+                property.device.0 == id
+                    && property.namespace.as_str() == namespace
+                    && property.name.as_str() == name
+            })
+            .map(|property| property.value.as_slice()))
     }
 
     pub fn claim_group(&self, group: u32) -> Result<Device, DeviceError> {
@@ -312,7 +313,6 @@ impl Registry {
         let mut registry = Self {
             devices: Vec::new(),
             properties: Vec::new(),
-            console: hardware.console.as_ref().map(|console| console.device),
             state: Mutex::new(DeviceState {
                 grants: Vec::new(),
                 routes: Vec::new(),
@@ -332,9 +332,26 @@ impl Registry {
             .try_reserve_exact(hardware.devices.len())
             .map_err(|_| MemoryError::NoMemory)?;
         for device in &hardware.devices {
+            let mut device = device.clone();
+            if hardware
+                .device_property(device.instance_id, "devicetree", "interrupt-controller")
+                .is_some()
+                || hardware
+                    .device_property(device.instance_id, "devicetree", "msi-controller")
+                    .is_some()
+                || device.has_identity("devicetree", "riscv,clint0")
+                || device.has_identity("devicetree", "sifive,clint0")
+                || device.has_identity("devicetree", "syscon")
+                    && !hardware.device_properties.iter().any(|property| {
+                        property.device == device.instance_id
+                            && property.namespace.as_str() == "power"
+                    })
+            {
+                device.use_policy = DeviceUsePolicy::KernelReserved;
+            }
             devices.push(Descriptor {
-                hardware: device.clone(),
                 group: Some(device.instance_id.0),
+                hardware: device,
                 pci: None,
             });
         }
@@ -352,6 +369,34 @@ impl Registry {
         properties.extend(hardware.device_properties.iter().cloned());
         let count = pci::enumerate(hardware, first_pci_id, properties, devices)?;
         log::info!("Enumerated {count} PCI devices");
+        if let Some(console) = &hardware.console {
+            properties
+                .try_reserve(1)
+                .map_err(|_| MemoryError::NoMemory)?;
+            properties.push(
+                DeviceProperty::new(console.device, "console", "selected", &[1])
+                    .map_err(|_| DeviceError::InvalidArgument)?,
+            );
+        }
+        for device in devices.iter() {
+            if let HardwareDeviceLocation::Pci { bars, .. } = &device.hardware.location {
+                properties
+                    .try_reserve(bars.len())
+                    .map_err(|_| MemoryError::NoMemory)?;
+                for bar in bars {
+                    let name = [b'b', b'a', b'r', b'0' + bar.index];
+                    properties.push(
+                        DeviceProperty::new(
+                            device.hardware.instance_id,
+                            "pci",
+                            core::str::from_utf8(&name).unwrap(),
+                            &bar.encode(),
+                        )
+                        .map_err(|_| DeviceError::InvalidArgument)?,
+                    );
+                }
+            }
+        }
         log::info!("DMA profile: {:?}", hardware::dma().profile());
         if hardware::dma().profile() == abi::dma::DmaProfile::CompetitionTrusted {
             log::warn!("Trusted DMA does not isolate malicious device accesses");

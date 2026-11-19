@@ -8,8 +8,9 @@ The same resource management also covers PCI devices, DMA mappings, and revocati
 
 The device directory is built from `HardwareInfo` and includes devices found by PCI enumeration.
 Each entry stores the device identifier, location, parent device, name, match identity, MMIO, interrupts, and attributes.
-Users enumerate entries and read fields through DeviceSet's `NEXT`, `DESCRIBE`, and `READ`.
-Variable-length fields can be read by offset, and the actual number of bytes copied is returned.
+Users enumerate and inspect entries through `INFO` topics on DeviceSet.
+Device exposes the same queries for members of its authorized group. Short buffers report the required length without changing the output.
+Configuration snapshots, PCI BAR descriptions, and console selection are exposed as configuration data and device properties.
 
 `DeviceUsePolicy` distinguishes devices reserved for the kernel from those that can be handed to users.
 User devices form authorization groups according to resource relationships, and `CLAIM_GROUP` establishes a Device capability for an entire group.

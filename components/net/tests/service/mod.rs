@@ -63,7 +63,11 @@ fn main() {
     let mut cursor = 0;
     let console = loop {
         let id = devices.next(cursor).unwrap().unwrap();
-        if devices.describe(id).unwrap().console {
+        if devices
+            .property(id, "console", "selected", &mut [0; 1])
+            .unwrap()
+            .is_some()
+        {
             break id;
         }
         cursor = id;

@@ -3,7 +3,7 @@
 use alloc::{format, string::String, vec::Vec};
 use kernel::{
     HardwareDeviceLocation, HardwareInfo, PciAddressSpace,
-    device::{DeviceError, DeviceField, DeviceSet},
+    device::{DeviceError, DeviceSet},
     hardware::{
         self,
         mmio::{DeviceMapper, MmioMapper},
@@ -151,12 +151,14 @@ pub fn verify(devices: &DeviceSet, expected: &[Expected]) {
                 .next(cursor)
                 .unwrap()
                 .expect("firmware PCI device is missing");
-            if devices.read(id, DeviceField::Name, 0).unwrap() == entry.name.as_bytes() {
+            if devices.read(id, abi::info::device::NAME, 0).unwrap() == entry.name.as_bytes() {
                 break id;
             }
             cursor = id;
         };
-        let snapshot = devices.read(id, DeviceField::PciConfig, 0).unwrap();
+        let snapshot = devices
+            .read(id, abi::info::device::CONFIGURATION, 0)
+            .unwrap();
         assert_eq!(
             u32::from_le_bytes(snapshot[entry.offset..entry.offset + 4].try_into().unwrap()),
             entry.value,

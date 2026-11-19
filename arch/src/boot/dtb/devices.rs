@@ -13,7 +13,7 @@ use core::{fmt::Write, ops::Range};
 use arrayvec::ArrayVec;
 use fdt::properties::{Compatible, values::PropertyValue};
 use kernel::{
-    DeviceIdentity, DeviceProperty, DeviceUsePolicy, DmaCapability, DmaInfo, HardwareDeviceInfo,
+    DeviceIdentity, DeviceProperty, DmaCapability, DmaInfo, HardwareDeviceInfo,
     HardwareDeviceInstanceId, HardwareDeviceLocation, HardwareInfo, PciWindow,
     boot::{MAX_DEVICE_PROPERTIES, MAX_DEVICES, MAX_MMIO_REGIONS},
     memory::PhysRange,
@@ -176,23 +176,6 @@ fn parse_device(
         device.mmio_regions = mmio(walk)?;
     }
     device.dma = dma(walk)?;
-    if node.raw_property("interrupt-controller")?.is_some()
-        || node.raw_property("msi-controller")?.is_some()
-        || node.property::<Compatible>()?.is_some_and(|names| {
-            names.into_iter().any(|name| {
-                matches!(
-                    name,
-                    "riscv,clint0"
-                        | "sifive,clint0"
-                        | "syscon"
-                        | "syscon-poweroff"
-                        | "syscon-reboot"
-                )
-            })
-        })
-    {
-        device.use_policy = DeviceUsePolicy::KernelReserved;
-    }
     Ok(())
 }
 

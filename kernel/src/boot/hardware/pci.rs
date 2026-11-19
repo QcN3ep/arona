@@ -2,7 +2,33 @@
 
 //! PCI address windows and INTx/MSI request-source routing.
 
-pub use abi::device::PciBar;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PciBar {
+    pub index: u8,
+    pub width: u8,
+    pub prefetchable: bool,
+    pub region: Option<u8>,
+    pub bus_address: u64,
+    pub size: u64,
+}
+
+impl PciBar {
+    pub const SIZE: usize = 24;
+
+    pub fn encode(self) -> [u8; Self::SIZE] {
+        let mut bytes = [0; Self::SIZE];
+        bytes[..4].copy_from_slice(&[
+            self.index,
+            self.width,
+            u8::from(self.prefetchable),
+            self.region.unwrap_or(u8::MAX),
+        ]);
+        bytes[8..16].copy_from_slice(&self.bus_address.to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.size.to_le_bytes());
+        bytes
+    }
+}
+
 use arrayvec::ArrayVec;
 
 use super::{HardwareDeviceInstanceId, HardwareInterruptInfo};

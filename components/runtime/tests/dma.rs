@@ -11,6 +11,9 @@ use runtime::{
     process, thread,
 };
 
+#[path = "device/pci.rs"]
+mod pci;
+
 fn main() {
     let bootstrap = process::bootstrap().unwrap();
     let mut startup = bootstrap.receive(WaitMode::Poll).unwrap();
@@ -31,7 +34,7 @@ fn main() {
             .claim_group(group, ObjectType::Device.supported_rights())
             .unwrap();
         let result = grant.create_dma(id, ObjectType::DmaDomain.supported_rights());
-        if info.dma.address_bits == 0 {
+        if info.dma_address_bits == 0 {
             assert!(matches!(
                 result,
                 Err(Error::Kernel(abi::Error::Unsupported))
@@ -76,11 +79,13 @@ fn shared_peer(
     while let Some(id) = devices.next(cursor).unwrap() {
         cursor = id;
         let info = devices.describe(id).unwrap();
-        if id == current.id || info.parent != current.parent || info.dma.address_bits == 0 {
+        if id == current.id || info.parent != current.parent || info.dma_address_bits == 0 {
             continue;
         }
         let mut config = [0; 4096];
-        if devices.pci_config(id, &mut config).is_err() || config[..4] != [0xf4, 0x1a, 0x44, 0x10] {
+        if pci::configuration(devices, id, &mut config).is_err()
+            || config[..4] != [0xf4, 0x1a, 0x44, 0x10]
+        {
             continue;
         }
         let peer = (info.group != current.group).then(|| {
@@ -234,14 +239,14 @@ enum Transport<'a> {
 impl<'a> Transport<'a> {
     fn open(devices: &Handle<DeviceSet>, grant: &'a Handle<Device>, id: u32) -> Option<Self> {
         let mut config = [0; 4096];
-        if devices.pci_config(id, &mut config).is_ok() {
+        if pci::configuration(devices, id, &mut config).is_ok() {
             if config[..4] != [0xf4, 0x1a, 0x44, 0x10] {
                 return None;
             }
             let common = capability(&config, 1);
             let notify = capability(&config, 2);
             assert_eq!(common.0, notify.0);
-            let bar = devices.pci_bar(id, usize::from(common.0)).unwrap();
+            let bar = pci::pci_bar(devices, id, usize::from(common.0)).unwrap();
             let registers = grant
                 .map_mmio(id, usize::from(bar.region.unwrap()))
                 .unwrap();

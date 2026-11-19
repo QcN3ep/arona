@@ -184,9 +184,8 @@ methods!(entropy {
     GENERATE = 16 => READ (output_address, length);
 });
 methods!(device_set {
-    NEXT = 16 => READ (after_id);
-    DESCRIBE = 17 => READ (device_id, output_address, capacity);
-    READ = 18 => READ (device_id, field, index, output_address, capacity);
+    /// Claims one resource group and returns its Device capability. Failure
+    /// leaves ownership unchanged. Device queries are limited to this group.
     CLAIM_GROUP = 19 => RESOURCE_SPLIT (group_id, handle_rights);
 });
 methods!(device {

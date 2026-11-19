@@ -61,9 +61,14 @@ pub fn handle(trap: Trap) -> TrapOutcome {
         } = trap.event
         && arguments[0] == abi::method::device::BIND as usize
         && DEVICES.get().is_some_and(|devices| {
-            devices
-                .describe(arguments[1] as u32)
-                .is_ok_and(|device| device.console)
+            devices.describe(arguments[1] as u32).is_ok_and(|device| {
+                DEVICES
+                    .get()
+                    .unwrap()
+                    .property(device.id, "console", "selected")
+                    .unwrap()
+                    .is_some()
+            })
         })
         && thread::current()
             .and_then(|thread| thread.task())
@@ -420,12 +425,12 @@ fn managed_service(task: &Task, user: &Thread, control: Channel) {
         let info = devices.describe(id).unwrap();
         if !(0..info.identities).any(|index| {
             devices
-                .read(id, abi::device::DeviceField::IdentityNamespace, index)
+                .read(id, abi::info::device::IDENTITY_NAMESPACE, index)
                 .unwrap()
                 == b"devicetree"
                 && matches!(
                     devices
-                        .read(id, abi::device::DeviceField::Identity, index)
+                        .read(id, abi::info::device::IDENTITY, index)
                         .unwrap(),
                     b"ns16550" | b"ns16550a"
                 )
@@ -653,7 +658,11 @@ fn console_group() -> u32 {
     loop {
         let id = devices.next(cursor).unwrap().unwrap();
         let info = devices.describe(id).unwrap();
-        if info.console {
+        if devices
+            .property(id, "console", "selected")
+            .unwrap()
+            .is_some()
+        {
             return info.group.unwrap();
         }
         cursor = id;

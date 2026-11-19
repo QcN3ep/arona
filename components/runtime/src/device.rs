@@ -3,7 +3,8 @@
 //! Device directory, MMIO access, and IRQ binding.
 
 use crate::{BorrowedHandle, Device, DeviceSet, Error, Event, Handle, Rights};
-pub use abi::device::{DeviceField, DeviceInfo, PciBar};
+pub use abi::device::DeviceInfo;
+pub use abi::info::device as topic;
 use abi::method::{device, device_set};
 use core::{cell::Cell, marker::PhantomData, ops::Range};
 
@@ -21,66 +22,89 @@ pub struct InterruptBinding<'a> {
     bound: bool,
 }
 
-impl Handle<DeviceSet> {
-    /// Read the read-only snapshot from when resource configuration completed.
-    pub fn pci_config(&self, id: u32, output: &mut [u8; 4096]) -> Result<(), Error> {
-        if self.read(id, DeviceField::PciConfig, 0, output)?.len() != output.len() {
-            return Err(Error::Protocol);
+macro_rules! catalog {
+    ($kind:ty) => {
+        impl Handle<$kind> {
+            pub fn next(&self, after: u32) -> Result<Option<u32>, Error> {
+                let query = u64::from(after).to_le_bytes();
+                let [id, _] = self.borrow().invoke(
+                    abi::method::INFO,
+                    [topic::NEXT_DEVICE, query.as_ptr() as u64, 8, 0, 0],
+                )?;
+                let id = u32::try_from(id).map_err(|_| Error::Protocol)?;
+                Ok((id != 0).then_some(id))
+            }
+            pub fn describe(&self, id: u32) -> Result<DeviceInfo, Error> {
+                let mut bytes = [0; DeviceInfo::SIZE];
+                self.read(id, topic::DEVICE, 0, &mut bytes)?;
+                DeviceInfo::decode(&bytes).ok_or(Error::Protocol)
+            }
+            pub fn configuration(&self, id: u32, output: &mut [u8]) -> Result<usize, Error> {
+                Ok(self.read(id, topic::CONFIGURATION, 0, output)?.len())
+            }
+            pub fn read<'a>(
+                &self,
+                id: u32,
+                topic: u64,
+                index: usize,
+                output: &'a mut [u8],
+            ) -> Result<&'a [u8], Error> {
+                let indexed = matches!(
+                    topic,
+                    topic::IDENTITY_NAMESPACE
+                        | topic::IDENTITY
+                        | topic::PROPERTY_NAMESPACE
+                        | topic::PROPERTY_NAME
+                        | topic::PROPERTY_VALUE
+                );
+                if !indexed && index != 0 {
+                    return Err(Error::Kernel(abi::Error::InvalidArgument));
+                }
+                let mut query = [0; 16];
+                query[..8].copy_from_slice(&u64::from(id).to_le_bytes());
+                query[8..].copy_from_slice(&(index as u64).to_le_bytes());
+                let length = if indexed { 16 } else { 8 };
+                let [written, _] = self.borrow().invoke(
+                    abi::method::INFO,
+                    [
+                        topic,
+                        query.as_ptr() as u64,
+                        length,
+                        output.as_mut_ptr() as u64,
+                        output.len() as u64,
+                    ],
+                )?;
+                output
+                    .get(..usize::try_from(written).map_err(|_| Error::Protocol)?)
+                    .ok_or(Error::Protocol)
+            }
+            pub fn property<'a>(
+                &self,
+                id: u32,
+                namespace: &str,
+                name: &str,
+                output: &'a mut [u8],
+            ) -> Result<Option<&'a [u8]>, Error> {
+                let count = self.describe(id)?.properties;
+                let mut bytes = [0; 128];
+                for index in 0..count {
+                    if self.read(id, topic::PROPERTY_NAMESPACE, index, &mut bytes)?
+                        == namespace.as_bytes()
+                        && self.read(id, topic::PROPERTY_NAME, index, &mut bytes)?
+                            == name.as_bytes()
+                    {
+                        return Ok(Some(self.read(id, topic::PROPERTY_VALUE, index, output)?));
+                    }
+                }
+                Ok(None)
+            }
         }
-        Ok(())
-    }
+    };
+}
+catalog!(DeviceSet);
+catalog!(Device);
 
-    pub fn pci_bar(&self, id: u32, index: usize) -> Result<PciBar, Error> {
-        let mut bytes = [0; PciBar::SIZE];
-        PciBar::decode(self.read(id, DeviceField::PciBar, index, &mut bytes)?)
-            .ok_or(Error::Protocol)
-    }
-
-    pub fn next(&self, after: u32) -> Result<Option<u32>, Error> {
-        let [id, _] = self
-            .borrow()
-            .invoke(device_set::NEXT, [after as u64, 0, 0, 0, 0])?;
-        let id = u32::try_from(id).map_err(|_| Error::Protocol)?;
-        Ok((id != 0).then_some(id))
-    }
-
-    pub fn describe(&self, id: u32) -> Result<DeviceInfo, Error> {
-        let mut bytes = [0; DeviceInfo::SIZE];
-        self.borrow().invoke(
-            device_set::DESCRIBE,
-            [
-                id as u64,
-                bytes.as_mut_ptr() as u64,
-                bytes.len() as u64,
-                0,
-                0,
-            ],
-        )?;
-        DeviceInfo::decode(&bytes).ok_or(Error::Protocol)
-    }
-
-    pub fn read<'a>(
-        &self,
-        id: u32,
-        field: DeviceField,
-        index: usize,
-        output: &'a mut [u8],
-    ) -> Result<&'a [u8], Error> {
-        let [length, _] = self.borrow().invoke(
-            device_set::READ,
-            [
-                id as u64,
-                field as u64,
-                index as u64,
-                output.as_mut_ptr() as u64,
-                output.len() as u64,
-            ],
-        )?;
-        output
-            .get(..usize::try_from(length).map_err(|_| Error::Protocol)?)
-            .ok_or(Error::Protocol)
-    }
-
+impl Handle<DeviceSet> {
     pub fn claim_group(&self, group: u32, rights: Rights) -> Result<Handle<Device>, Error> {
         let [raw, _] = self.borrow().invoke(
             device_set::CLAIM_GROUP,
