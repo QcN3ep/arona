@@ -58,6 +58,7 @@ enum Source {
     Event(EventReference),
     Task(Task),
     Thread(thread::Thread),
+    TrapPort(crate::trap::port::TrapPortReference),
 }
 
 struct ResolvedItem {
@@ -228,6 +229,7 @@ impl Source {
             Self::Event(event) => event.register_observer(observer),
             Self::Task(task) => task.register_observer(observer),
             Self::Thread(thread) => thread.register_observer(observer),
+            Self::TrapPort(port) => port.register_observer(observer),
         }
     }
 
@@ -238,6 +240,7 @@ impl Source {
             Self::Event(event) => event.unregister_observer(observer),
             Self::Task(task) => task.unregister_observer(observer),
             Self::Thread(thread) => thread.unregister_observer(observer),
+            Self::TrapPort(port) => port.unregister_observer(observer),
         }
     }
 
@@ -249,6 +252,7 @@ impl Source {
             Self::Event(event) => event.identity(),
             Self::Task(task) => task.identity(),
             Self::Thread(thread) => thread.identity(),
+            Self::TrapPort(port) => port.identity(),
         }
     }
 }
@@ -289,7 +293,12 @@ fn resolve(
         if item.condition_mask == 0 {
             return Err(WaitManyError::InvalidArgument);
         }
-        let source = match task.waitable(item.handle)? {
+        let object = if item.handle == Handle::CURRENT_THREAD {
+            ObjectReference::Thread(thread::current().ok_or(ThreadError::InvalidState)?)
+        } else {
+            task.waitable(item.handle)?
+        };
+        let source = match object {
             ObjectReference::Call(call) if item.condition_mask == READABLE => Source::Call(call),
             ObjectReference::Channel(channel) => {
                 if item.condition_mask & !(READABLE | WRITABLE | PEER_CLOSED) != 0 {
@@ -299,7 +308,7 @@ fn resolve(
             }
             ObjectReference::Event(event) => Source::Event(event),
             ObjectReference::TrapPort(port) if item.condition_mask == READABLE => {
-                Source::Event(port.event().map_err(|_| WaitManyError::Closed)?)
+                Source::TrapPort(port)
             }
             ObjectReference::Task(target) if item.condition_mask == EXITED => Source::Task(target),
             ObjectReference::Thread(target) if item.condition_mask == DEAD => {
@@ -362,6 +371,7 @@ impl ResolvedItem {
             Source::Call(call) => call.readiness()?,
             Source::Channel(channel) => channel.readiness(self.condition_mask)?,
             Source::Event(event) => event.readiness(self.condition_mask)?,
+            Source::TrapPort(port) => port.readiness().map_err(|_| WaitManyError::Closed)?,
             Source::Task(task) => {
                 if matches!(task.state(), TaskState::Dead(_)) {
                     EXITED

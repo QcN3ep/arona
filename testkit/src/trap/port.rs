@@ -7,7 +7,7 @@ use kernel::{
         execution::UserEntry,
         mmu::{PAGE_SIZE, PagePermissions},
     },
-    ipc::WaitItem,
+    ipc::{WaitItem, WaitManyError},
     memory::{
         self, FrameAccess, FrameOwner, FramePurpose, MappingOptions, ReferenceKind, VirtRange,
     },
@@ -15,8 +15,9 @@ use kernel::{
     thread::{self, ThreadState},
     trap::port::{ForwardError, TrapPort},
 };
-use spin::Once;
+use spin::{Mutex, Once};
 
+static WAITING: Mutex<Option<(Task, Handle)>> = Mutex::new(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static CODE: Once<[u64; PAGE_SIZE / 8]> = Once::new();
 static RETURN: Once<fn(&mut kernel::hardware::execution::UserState, [usize; 3])> = Once::new();
@@ -79,6 +80,7 @@ fn scenario(_: usize) -> usize {
     assert_eq!(child.state(), TaskState::Dead(usize::MAX));
     owner.close(handle).unwrap();
     drop(port);
+    queue_readiness(&owner);
     close_ports(&owner);
     0
 }
@@ -146,11 +148,22 @@ fn forward_syscalls(
             .unwrap();
         assert_eq!(ready.index, 0);
         assert_eq!(user.state(), ThreadState::Blocked);
+        let items = [WaitItem {
+            handle,
+            condition_mask: 1,
+        }];
+        assert_eq!(owner.try_wait_many(&items).unwrap(), ready);
+        assert_eq!(owner.try_wait_many(&items).unwrap(), ready);
         let delivery = port.try_receive().unwrap();
+        assert_eq!(
+            owner.try_wait_many(&items),
+            Err(TaskError::Wait(WaitManyError::WouldBlock))
+        );
         let info = delivery.info();
         assert_eq!(info.thread, user.id());
         assert_eq!(info.kind, abi::trap::TrapInfo::SYSCALL);
         drop(delivery);
+        assert_eq!(owner.try_wait_many(&items).unwrap(), ready);
         let continuation = port.try_receive().unwrap().commit();
         let reference = continuation.reference();
         let mut state = reference.user_state().unwrap();
@@ -174,6 +187,73 @@ fn forward_syscalls(
         drop(continuation);
         thread::yield_now().unwrap();
     }
+}
+
+fn queue_readiness(owner: &Task) {
+    let port = owner.create_trap_port().unwrap();
+    let handle = owner
+        .insert(Object::TrapPort(port.clone()), Rights::WAIT)
+        .unwrap();
+    let items = [WaitItem {
+        handle,
+        condition_mask: 1,
+    }];
+    let children = [owner.create_child().unwrap(), owner.create_child().unwrap()];
+    let users = children.each_ref().map(|child| {
+        child.bind_trap(&port).unwrap();
+        let (user, _) = create_user(child);
+        user.start().unwrap();
+        user.interrupt().unwrap();
+        user
+    });
+    assert_eq!(owner.try_wait_many(&items).unwrap().ready, 1);
+    let first = port.try_receive().unwrap();
+    assert_eq!(owner.try_wait_many(&items).unwrap().ready, 1);
+    let second = port.try_receive().unwrap();
+    assert_eq!(
+        owner.try_wait_many(&items),
+        Err(TaskError::Wait(WaitManyError::WouldBlock))
+    );
+    drop(second);
+    assert_eq!(owner.try_wait_many(&items).unwrap().ready, 1);
+    let second = port.try_receive().unwrap();
+    assert_eq!(
+        owner.try_wait_many(&items),
+        Err(TaskError::Wait(WaitManyError::WouldBlock))
+    );
+    for child in &children {
+        child.terminate(0);
+    }
+    drop(first.commit());
+    drop(second.commit());
+    for user in users {
+        assert_eq!(user.wait().unwrap(), 0);
+    }
+    *WAITING.lock() = Some((owner.clone(), handle));
+    let waiter = thread::Thread::new(
+        |_| {
+            let (owner, handle) = WAITING.lock().as_ref().unwrap().clone();
+            assert_eq!(
+                owner.wait_many(&[WaitItem {
+                    handle,
+                    condition_mask: 1
+                }]),
+                Err(TaskError::Wait(WaitManyError::Closed))
+            );
+            0
+        },
+        0,
+    )
+    .unwrap();
+    waiter.start().unwrap();
+    while waiter.state() == ThreadState::Ready {
+        thread::yield_now().unwrap();
+    }
+    assert_eq!(waiter.state(), ThreadState::Blocked);
+    owner.close(handle).unwrap();
+    drop(port);
+    assert_eq!(waiter.wait().unwrap(), 0);
+    WAITING.lock().take();
 }
 
 fn close_ports(owner: &Task) {

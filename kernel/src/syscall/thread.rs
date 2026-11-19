@@ -35,14 +35,6 @@ pub(super) fn invoke(
             }
             Ok([0; 2])
         }
-        thread::WAIT => {
-            let status = if args[0] == u64::MAX {
-                Some(target.wait()?)
-            } else {
-                target.wait_until(args[0])?
-            };
-            Ok([status.ok_or(Error::TimedOut)? as u64, 0])
-        }
         thread::NOW => Ok([
             hardware::timer()
                 .now_ns()
@@ -63,7 +55,7 @@ pub(super) fn invoke(
             target.set_nice(nice)?;
             Ok([0; 2])
         }
-        thread::EXIT | thread::YIELD | thread::SLEEP | thread::WAIT_MANY => {
+        thread::YIELD | thread::WAIT_MANY => {
             if !is_current(target) {
                 return Err(Error::Denied.into());
             }
@@ -71,9 +63,7 @@ pub(super) fn invoke(
                 thread::WAIT_MANY => {
                     return super::ipc::wait_many(&target.task().ok_or(Error::InvalidState)?, args);
                 }
-                thread::EXIT => scheduler::terminate(target, args[0] as usize),
                 thread::YIELD => threads::yield_now()?,
-                thread::SLEEP => threads::sleep_until(args[0])?,
                 _ => unreachable!(),
             }
             Ok([0; 2])

@@ -101,7 +101,10 @@ Clients such as device opening and Linux program startup use this wrapper.
 
 `WaitItem::new(&handle, conditions)` borrows a handle to observe.
 `wait_many` returns an index into the input list and the readiness bits for that entry, and the caller uses them to process the corresponding object.
-The kernel identifies wait items by their underlying source; duplicate sources return an error.
+The kernel identifies wait items by their underlying source, and duplicate sources return an error.
+An empty list waits only for its deadline. Polling returns `WouldBlock`, and reaching a finite deadline returns `TimedOut`.
+Task and Thread exit waits use `wait_many` and then query the exit status.
+TrapPort remains readable while its queue is nonempty. Waiting does not consume a trap event, and a failed receive leaves it available for another receive.
 
 ```rust
 fn wait_for_message(

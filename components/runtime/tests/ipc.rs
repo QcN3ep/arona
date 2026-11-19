@@ -8,6 +8,17 @@ use runtime::{
 };
 
 pub fn run() {
+    assert_eq!(
+        ipc::wait_many(&[], WaitMode::Poll),
+        Err(Error::Kernel(KernelError::WouldBlock))
+    );
+    let deadline = thread::now_ns().unwrap() + 1_000_000;
+    assert_eq!(
+        ipc::wait_many(&[], WaitMode::Until(deadline)),
+        Err(Error::Kernel(KernelError::TimedOut))
+    );
+    assert!(thread::now_ns().unwrap() >= deadline);
+    thread::sleep_until(0).unwrap();
     calls();
     cancelled_calls();
     call_backpressure();

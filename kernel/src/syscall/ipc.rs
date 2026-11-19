@@ -217,8 +217,27 @@ fn mode(deadline: u64) -> WaitMode {
 }
 
 pub(super) fn wait_many(caller: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
+    if args[3..] != [0; 2] {
+        return Err(Error::InvalidArgument.into());
+    }
     let count = usize::try_from(args[1]).map_err(|_| Error::InvalidArgument)?;
     if count == 0 {
+        if args[0] != 0 {
+            return Err(Error::InvalidArgument.into());
+        }
+        match mode(args[2]) {
+            WaitMode::NonBlocking => return Err(Error::WouldBlock.into()),
+            WaitMode::Deadline(deadline) => {
+                crate::thread::sleep_until(deadline)?;
+                return Err(Error::TimedOut.into());
+            }
+            WaitMode::Blocking => {
+                crate::thread::prepare_wait()?.wait()?;
+                return Err(Error::InvalidState.into());
+            }
+        }
+    }
+    if count > caller.with_handles(|table| table.handle_count())? + 1 {
         return Err(Error::InvalidArgument.into());
     }
     let length = count

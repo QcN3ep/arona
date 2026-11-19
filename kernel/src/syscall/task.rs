@@ -64,14 +64,6 @@ pub(super) fn invoke(
             target.terminate(args[0] as usize);
             Ok([0; 2])
         }
-        task::WAIT => {
-            let status = if args[0] == u64::MAX {
-                Some(target.wait()?)
-            } else {
-                target.wait_until(args[0])?
-            };
-            Ok([status.ok_or(Error::TimedOut)? as u64, 0])
-        }
         task::CHANNEL | task::EVENT | task::TIMER => {
             super::ipc::create(caller, target, method, args)
         }

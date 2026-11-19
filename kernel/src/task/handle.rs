@@ -34,6 +34,7 @@ struct TableState {
     slots: Vec<Slot>,
     free: Option<u32>,
     available: usize,
+    occupied: usize,
 }
 
 struct Slot {
@@ -80,6 +81,7 @@ impl HandleTable {
                 slots: Vec::new(),
                 free: None,
                 available: 0,
+                occupied: 0,
             }),
         }
     }
@@ -118,6 +120,11 @@ impl HandleTable {
         let state = self.state.lock();
         let entry = state.entry(handle)?;
         Ok((entry.object.reference(), entry.rights))
+    }
+
+    pub(crate) fn handle_count(&self) -> usize {
+        let _interrupts = InterruptGuard::new();
+        self.state.lock().occupied
     }
 
     pub fn close(&self, handle: Handle) -> Result<(), HandleError> {
@@ -551,6 +558,7 @@ impl TableState {
     fn publish(&mut self, handle: Handle, entry: HandleEntry) {
         self.slots[handle.raw_index().expect("invalid reserved handle")].state =
             SlotState::Occupied(entry);
+        self.occupied += 1;
     }
 
     fn release(&mut self, handle: Handle) -> Option<HandleEntry> {
@@ -563,7 +571,10 @@ impl TableState {
             self.available += 1;
         }
         match previous {
-            SlotState::Occupied(entry) => Some(entry),
+            SlotState::Occupied(entry) => {
+                self.occupied -= 1;
+                Some(entry)
+            }
             _ => None,
         }
     }

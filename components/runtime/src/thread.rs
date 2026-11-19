@@ -20,9 +20,14 @@ pub fn yield_now() -> Result<(), Error> {
     current().invoke(thread::YIELD, [0; 5]).map(|_| ())
 }
 pub fn sleep_until(deadline_ns: u64) -> Result<(), Error> {
-    current()
-        .invoke(thread::SLEEP, [deadline_ns, 0, 0, 0, 0])
-        .map(|_| ())
+    if deadline_ns == 0 {
+        return Ok(());
+    }
+    match current().invoke(thread::WAIT_MANY, [0, 0, deadline_ns, 0, 0]) {
+        Err(Error::Kernel(abi::Error::TimedOut)) => Ok(()),
+        Err(error) => Err(error),
+        Ok(_) => Err(Error::Protocol),
+    }
 }
 pub fn now_ns() -> Result<u64, Error> {
     Ok(current().invoke(thread::NOW, [0; 5])?[0])
@@ -37,7 +42,7 @@ pub fn set_priority(priority: i32) -> Result<(), Error> {
 }
 /// Terminate the current thread without unwinding the stack or running thread-local destructors.
 pub fn exit(status: usize) -> ! {
-    let _ = current().invoke(thread::EXIT, [status as u64, 0, 0, 0, 0]);
+    let _ = current().invoke(thread::TERMINATE, [status as u64, 0, 0, 0, 0]);
     loop {
         core::hint::spin_loop();
     }
@@ -93,9 +98,8 @@ impl Handle<Task> {
             .map(|_| ())
     }
     pub fn wait(&self, deadline_ns: u64) -> Result<usize, Error> {
-        Ok(self
-            .borrow()
-            .invoke(task::WAIT, [deadline_ns, 0, 0, 0, 0])?[0] as usize)
+        wait_for_exit(self, deadline_ns)?;
+        Ok(self.state()?.1)
     }
 }
 impl Handle<Thread> {
@@ -130,9 +134,8 @@ impl Handle<Thread> {
             .map(|_| ())
     }
     pub fn wait(&self, deadline_ns: u64) -> Result<usize, Error> {
-        Ok(self
-            .borrow()
-            .invoke(thread::WAIT, [deadline_ns, 0, 0, 0, 0])?[0] as usize)
+        wait_for_exit(self, deadline_ns)?;
+        Ok(self.state()?.1)
     }
 }
 impl BorrowedHandle<'_, Thread> {
@@ -161,4 +164,17 @@ fn lifecycle(state: u64, status: u64) -> Result<(Lifecycle, usize), Error> {
         return Err(Error::Protocol);
     };
     Ok((state, status as usize))
+}
+
+fn wait_for_exit<T: crate::Object>(target: &Handle<T>, deadline: u64) -> Result<(), Error> {
+    let mode = match deadline {
+        0 => crate::ipc::WaitMode::Poll,
+        u64::MAX => crate::ipc::WaitMode::Forever,
+        value => crate::ipc::WaitMode::Until(value),
+    };
+    crate::ipc::wait_many(
+        &[crate::ipc::WaitItem::new(target, crate::ipc::EXITED)],
+        mode,
+    )
+    .map(|_| ())
 }

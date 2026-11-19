@@ -364,9 +364,6 @@ pub struct WaitResult {
     pub ready: u64,
 }
 pub fn wait_many(items: &[WaitItem<'_>], mode: WaitMode) -> Result<WaitResult, Error> {
-    if items.is_empty() {
-        return Err(Error::Kernel(abi::Error::InvalidArgument));
-    }
     let length = items
         .len()
         .checked_mul(abi::ipc::WaitItem::SIZE)
@@ -380,7 +377,17 @@ pub fn wait_many(items: &[WaitItem<'_>], mode: WaitMode) -> Result<WaitResult, E
     }
     let [index, ready] = thread::current().invoke(
         method::thread::WAIT_MANY,
-        [bytes.as_ptr() as u64, items.len() as u64, mode.raw()?, 0, 0],
+        [
+            if items.is_empty() {
+                0
+            } else {
+                bytes.as_ptr() as u64
+            },
+            items.len() as u64,
+            mode.raw()?,
+            0,
+            0,
+        ],
     )?;
     if index >= items.len() as u64 {
         return Err(Error::Protocol);

@@ -3,10 +3,11 @@
 use crate::{ObjectType, Rights};
 
 macro_rules! methods {
-    ($name:ident { $($method:ident = $number:literal => $right:ident;)* }) => {
+    ($name:ident { $($(#[$meta:meta])* $method:ident = $number:literal => $right:ident;)* }) => {
         pub mod $name {
             use crate::Rights;
             $(
+                $(#[$meta])*
                 #[doc = concat!("Required handle rights: `", stringify!($right), "`.")]
                 pub const $method: u64 = $number;
             )*
@@ -28,7 +29,6 @@ methods!(task {
     CREATE_THREAD = 25 => CREATE_THREAD;
     INSTALL = 26 => INSTALL_HANDLE;
     TERMINATE = 27 => TERMINATE;
-    WAIT = 28 => WAIT;
     CHANNEL = 29 => CREATE_CHANNEL;
     EVENT = 30 => CREATE_EVENT;
     TIMER = 31 => CREATE_TIMER;
@@ -52,11 +52,15 @@ methods!(memory {
 methods!(thread {
     START = 17 => START;
     TERMINATE = 18 => TERMINATE;
-    WAIT = 19 => WAIT;
-    EXIT = 20 => NONE;
     YIELD = 21 => NONE;
-    SLEEP = 22 => NONE;
     NOW = 23 => NONE;
+    /// Waits on distinct sources using `[items, count, deadline, 0, 0]`.
+    /// Each target requires WAIT. Events consume selected signal bits; other
+    /// sources remain ready until their contents or lifecycle change.
+    /// TrapPort is readable while its queue is nonempty. Empty waits require
+    /// a zero items address: polling returns WouldBlock, finite deadlines
+    /// return TimedOut, and an infinite wait lasts until termination.
+    /// Count must not exceed the caller's handle count plus CURRENT_THREAD.
     WAIT_MANY = 24 => NONE;
     SET_STATE = 25 => SET_STATE;
     INTERRUPT = 26 => INTERRUPT;

@@ -9,7 +9,7 @@ use crate::{
         cpu::InterruptGuard,
         execution::{ExecutionError, UserState},
     },
-    ipc::{Event, EventReference},
+    ipc::wait::{Observer, Observers, READABLE, notify_observers},
     memory::{self, HeapArc, MemoryError},
     task::Task,
     thread::{Thread, ThreadError, Waker},
@@ -51,7 +51,8 @@ pub struct TrapPortReference(HeapArc<Mutex<PortState>>);
 
 struct PortState {
     credits: usize,
-    notification: Option<Event>,
+    closed: bool,
+    observers: Observers,
     owner: Task,
     bindings: Vec<Task>,
     queue: VecDeque<TrapContinuation>,
@@ -84,15 +85,12 @@ pub struct TrapDelivery {
 
 impl TrapPort {
     pub(crate) fn new(owner: Task) -> Result<Self, ForwardError> {
-        let notification = Event::new().map_err(|error| match error {
-            crate::ipc::EventError::Memory(error) => ForwardError::Memory(error),
-            _ => ForwardError::InvalidState,
-        })?;
         Ok(Self {
             reference: TrapPortReference(memory::manager().allocate_arc(Mutex::new(
                 PortState {
                     credits: 1,
-                    notification: Some(notification),
+                    closed: false,
+                    observers: Observers::new(),
                     owner,
                     bindings: Vec::new(),
                     queue: VecDeque::new(),
@@ -145,7 +143,7 @@ impl TrapPortReference {
     pub(crate) fn bind(&self, task: &Task) -> Result<(), ForwardError> {
         let _interrupts = InterruptGuard::new();
         let mut state = self.0.lock();
-        if state.notification.is_none() || state.owner.same(task) {
+        if state.closed || state.owner.same(task) {
             return Err(ForwardError::InvalidState);
         }
         state
@@ -156,14 +154,28 @@ impl TrapPortReference {
         Ok(())
     }
 
-    pub(crate) fn event(&self) -> Result<EventReference, ForwardError> {
-        let _interrupts = InterruptGuard::new();
-        self.0
-            .lock()
-            .notification
-            .as_ref()
-            .map(Event::reference)
-            .ok_or(ForwardError::Closed)
+    pub(crate) fn readiness(&self) -> Result<u64, ForwardError> {
+        let state = self.0.lock();
+        if state.closed {
+            return Err(ForwardError::Closed);
+        }
+        Ok(if state.queue.is_empty() { 0 } else { READABLE })
+    }
+
+    pub(crate) fn register_observer(&self, observer: Observer) -> Result<(), MemoryError> {
+        self.0.lock().observers.insert(observer)
+    }
+
+    pub(crate) fn unregister_observer(&self, observer: &Observer) {
+        self.0.lock().observers.remove(observer);
+    }
+
+    pub(crate) fn identity(&self) -> usize {
+        self.0.as_ptr().addr()
+    }
+
+    fn notify_observers(&self) {
+        notify_observers(|index| self.0.lock().observers.get(index));
     }
 
     pub(crate) fn unbind(&self, task: &Task) {
@@ -173,13 +185,11 @@ impl TrapPortReference {
 
     pub(crate) fn publish(&self, continuation: TrapContinuation) -> Result<(), ForwardError> {
         let _interrupts = InterruptGuard::new();
-        let event = {
+        {
             let mut state = self.0.lock();
-            let event = state
-                .notification
-                .as_ref()
-                .ok_or(ForwardError::Closed)?
-                .reference();
+            if state.closed {
+                return Err(ForwardError::Closed);
+            }
             let additional = state
                 .deliveries
                 .checked_add(1)
@@ -189,28 +199,22 @@ impl TrapPortReference {
                 .try_reserve(additional)
                 .map_err(|_| MemoryError::NoMemory)?;
             state.queue.push_back(continuation);
-            event
-        };
-        event.signal(1).map_err(|_| ForwardError::Closed)
+        }
+        self.notify_observers();
+        Ok(())
     }
 
     pub fn try_receive(&self) -> Result<TrapDelivery, ForwardError> {
         let _interrupts = InterruptGuard::new();
         loop {
-            let (continuation, event) = {
+            let continuation = {
                 let mut state = self.0.lock();
-                let event = state
-                    .notification
-                    .as_ref()
-                    .ok_or(ForwardError::Closed)?
-                    .reference();
-                event.consume(1).map_err(|_| ForwardError::Closed)?;
+                if state.closed {
+                    return Err(ForwardError::Closed);
+                }
                 let continuation = state.queue.pop_front().ok_or(ForwardError::WouldBlock)?;
                 state.deliveries += 1;
-                if !state.queue.is_empty() {
-                    event.signal(1).map_err(|_| ForwardError::Closed)?;
-                }
-                (continuation, event)
+                continuation
             };
             if continuation.reference.is_pending() {
                 return Ok(TrapDelivery {
@@ -220,23 +224,25 @@ impl TrapPortReference {
             }
             self.0.lock().deliveries -= 1;
             drop(continuation);
-            drop(event);
         }
     }
 
     pub(crate) fn close(&self) {
         let _interrupts = InterruptGuard::new();
-        let (event, owner, bindings, queue) = {
+        let (owner, bindings, queue) = {
             let mut state = self.0.lock();
+            if state.closed {
+                return;
+            }
+            state.closed = true;
             (
-                state.notification.take(),
                 state.owner.clone(),
                 core::mem::take(&mut state.bindings),
                 core::mem::take(&mut state.queue),
             )
         };
+        self.notify_observers();
         owner.remove_trap_port(self);
-        drop(event);
         drop(queue);
         for task in bindings {
             task.terminate(usize::MAX);
@@ -262,11 +268,10 @@ impl Drop for TrapDelivery {
         if let Some(continuation) = self.continuation.take() {
             let mut state = self.port.0.lock();
             state.deliveries -= 1;
-            if let Some(event) = &state.notification {
-                let event = event.reference();
+            if !state.closed {
                 state.queue.push_front(continuation);
                 drop(state);
-                let _ = event.signal(1);
+                self.port.notify_observers();
             } else {
                 drop(state);
                 drop(continuation);

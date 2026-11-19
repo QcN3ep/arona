@@ -495,6 +495,8 @@ pub(crate) fn terminate(thread: &Thread, status: usize) {
         if previous == ThreadState::Created || initial {
             if previous == ThreadState::Ready {
                 scheduler.ready.remove(thread);
+            }
+            if previous != ThreadState::Created {
                 scheduler.remove_live(thread);
             }
             thread.0.data.lock().reap_next = scheduler.reap.take();
