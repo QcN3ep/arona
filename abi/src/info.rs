@@ -44,6 +44,8 @@ topics!(thread {
     CPU_TIME = 18 => READ;
     /// Returns `[weight, 0]` for the thread's relative CPU share.
     SCHEDULING = 19 => READ;
+    /// Queries a u64 group ID and writes the ISA register record before START.
+    REGISTERS = 20 => READ;
 });
 topics!(memory {
     /// Returns `[frame_count, 0]` for this allocation.
@@ -72,6 +74,11 @@ topics!(system {
     RUNNABLE_INTEGRAL = 17 => READ;
 });
 
+topics!(trap_continuation {
+    /// Queries a u64 group ID while this continuation is pending.
+    REGISTERS = 16 => READ;
+});
+
 pub const fn required_rights(kind: ObjectType, topic: u64) -> Option<Rights> {
     if topic == HANDLE {
         return Some(Rights::NONE);
@@ -84,6 +91,7 @@ pub const fn required_rights(kind: ObjectType, topic: u64) -> Option<Rights> {
         ObjectType::DmaDomain => dma::required(topic),
         ObjectType::Clock => clock::required(topic),
         ObjectType::SystemInfo => system::required(topic),
+        ObjectType::TrapContinuation => trap_continuation::required(topic),
         _ => None,
     }
 }

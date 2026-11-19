@@ -11,6 +11,7 @@ mod ipc;
 mod logger;
 mod memory;
 mod object;
+mod register;
 mod task;
 mod thread;
 mod trap;

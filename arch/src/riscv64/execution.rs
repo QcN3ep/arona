@@ -9,7 +9,9 @@ use core::{
 
 use kernel::hardware::{
     cpu::{Cpu, InterruptState},
-    execution::{ContextStart, ContextStorage, Execution, ExecutionError, UserEntry, UserState},
+    execution::{
+        ContextStart, ContextStorage, Execution, ExecutionError, RegisterWrite, UserEntry,
+    },
 };
 
 use super::{
@@ -46,64 +48,155 @@ struct KernelContinuation {
 
 struct RiscvExecution;
 
+fn user_entry_from_registers(
+    general: &abi::register::General,
+) -> Result<UserEntry, ExecutionError> {
+    if general.registers[0] != 0 {
+        return Err(ExecutionError::InvalidState);
+    }
+    validate_user_entry(
+        UserEntry {
+            pc: general.pc as usize,
+            stack_pointer: general.registers[2] as usize,
+            thread_pointer: general.registers[4] as usize,
+            argument: general.registers[10] as usize,
+        },
+        2,
+    )
+}
+
 impl Execution for RiscvExecution {
     fn context_layout(&self) -> Layout {
         Layout::new::<Context>()
     }
 
-    fn user_entry(&self, state: &UserState) -> Result<UserEntry, ExecutionError> {
-        if state.registers[0] != 0
-            || state.floating_control & !0xff != 0
-            || state.floating_control >> 5 > 4
-            || state.floating_conditions != [0; 8]
-        {
-            return Err(ExecutionError::InvalidState);
-        }
-        validate_user_entry(
-            UserEntry {
-                pc: state.pc,
-                stack_pointer: state.registers[2],
-                thread_pointer: state.registers[4],
-                argument: state.registers[10],
-            },
-            2,
-        )
+    fn register_groups(&self) -> &'static [u64] {
+        &[abi::register::GENERAL, abi::register::FLOAT]
     }
 
-    fn user_state(&self, storage: &ContextStorage) -> Result<UserState, ExecutionError> {
+    fn register_size(&self, group: u64) -> Result<usize, ExecutionError> {
+        let byte_length = match group {
+            abi::register::GENERAL => abi::register::General::SIZE,
+            abi::register::FLOAT => abi::register::ScalarFloat::RISCV_SIZE,
+            _ => return Err(ExecutionError::InvalidRegisterGroup),
+        };
+        Ok(byte_length)
+    }
+
+    fn user_entry(&self, storage: &ContextStorage) -> Result<UserEntry, ExecutionError> {
         check_environment()?;
         let context = user_context(storage)?;
-        // SAFETY: The context must be exclusively held by the current processor with interrupts disabled.
+        // SAFETY: The context is exclusively held on this processor with interrupts disabled.
         let frame = unsafe { &(*context).frame };
-        Ok(UserState {
-            pc: frame.pc,
-            registers: frame.registers,
-            floating: if frame.status & FS != 0 {
-                // SAFETY: When FS is non-zero, the entry must have saved all floating-point registers.
-                unsafe { frame.floating.assume_init() }
-            } else {
-                [0; 32]
-            },
-            floating_control: frame.fcsr as u32,
-            floating_conditions: [0; 8],
+        user_entry_from_registers(&abi::register::General {
+            pc: frame.pc as u64,
+            registers: frame.registers.map(|register| register as u64),
         })
     }
 
-    fn set_user_state(
+    fn read_registers(
         &self,
         storage: &ContextStorage,
-        state: &UserState,
+        group: u64,
+        output: &mut [u8],
     ) -> Result<(), ExecutionError> {
         check_environment()?;
-        self.user_entry(state)?;
+        let layout = self.register_size(group)?;
+        if output.len() != layout {
+            return Err(ExecutionError::InvalidState);
+        }
         let context = user_context(storage)?;
-        // SAFETY: The context must be exclusively held by the current processor with interrupts disabled.
+        // SAFETY: The context is exclusively held on this processor with interrupts disabled.
+        let frame = unsafe { &(*context).frame };
+        if group == abi::register::GENERAL {
+            output.copy_from_slice(
+                &abi::register::General {
+                    pc: frame.pc as u64,
+                    registers: frame.registers.map(|register| register as u64),
+                }
+                .encode(),
+            );
+        } else {
+            let floating = abi::register::ScalarFloat {
+                registers: if frame.status & FS != 0 {
+                    // SAFETY: An enabled scalar FPU has saved every register in the frame.
+                    unsafe { frame.floating.assume_init() }
+                } else {
+                    [0; 32]
+                },
+                control: frame.fcsr as u32,
+                conditions: [0; 8],
+            };
+            let (bytes, length) = floating
+                .encode(layout)
+                .map_err(|_| ExecutionError::InvalidState)?;
+            output.copy_from_slice(&bytes[..length]);
+        }
+        Ok(())
+    }
+
+    fn set_registers(
+        &self,
+        storage: &ContextStorage,
+        groups: &[RegisterWrite<'_>],
+        validate: &mut dyn FnMut(UserEntry) -> Result<(), ExecutionError>,
+    ) -> Result<(), ExecutionError> {
+        check_environment()?;
+        if groups.len() > self.register_groups().len() {
+            return Err(ExecutionError::InvalidRegisterGroup);
+        }
+        let context = user_context(storage)?;
+        // SAFETY: The context is exclusively held on this processor with interrupts disabled.
         let frame = unsafe { &mut (*context).frame };
-        frame.pc = state.pc;
-        frame.registers = state.registers;
-        frame.floating = MaybeUninit::new(state.floating);
-        frame.fcsr = state.floating_control as usize;
-        frame.status = (frame.status & !FS) | FS_CLEAN;
+        let mut general = abi::register::General {
+            pc: frame.pc as u64,
+            registers: frame.registers.map(|register| register as u64),
+        };
+        let mut general_written = false;
+        let mut floating = None;
+        for group in groups {
+            let layout = self.register_size(group.group)?;
+            if group.bytes.len() != layout {
+                return Err(ExecutionError::InvalidState);
+            }
+            if group.group == abi::register::GENERAL {
+                if general_written {
+                    return Err(ExecutionError::InvalidRegisterGroup);
+                }
+                general = abi::register::General::decode(
+                    group
+                        .bytes
+                        .try_into()
+                        .map_err(|_| ExecutionError::InvalidState)?,
+                );
+                general_written = true;
+            } else {
+                if floating.is_some() {
+                    return Err(ExecutionError::InvalidRegisterGroup);
+                }
+                let value = abi::register::ScalarFloat::decode(group.bytes)
+                    .map_err(|_| ExecutionError::InvalidState)?;
+                floating = Some(value);
+            }
+        }
+        if let Some(floating) = &floating
+            && (floating.control & !0xff != 0
+                || floating.control >> 5 > 4
+                || floating.conditions != [0; 8])
+        {
+            return Err(ExecutionError::InvalidState);
+        }
+        let entry = user_entry_from_registers(&general)?;
+        validate(entry)?;
+        if general_written {
+            frame.pc = general.pc as usize;
+            frame.registers = general.registers.map(|register| register as usize);
+        }
+        if let Some(floating) = floating {
+            frame.floating = MaybeUninit::new(floating.registers);
+            frame.fcsr = floating.control as usize;
+            frame.status = (frame.status & !FS) | FS_CLEAN;
+        }
         Ok(())
     }
 

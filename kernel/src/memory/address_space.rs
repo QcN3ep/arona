@@ -20,6 +20,7 @@ use super::{
 };
 use crate::hardware::{
     self,
+    execution::{ExecutionError, UserEntry},
     mmu::{
         MemoryType, MmuError, PAGE_SIZE, PageAttributes, PageMapping, PagePermissions,
         PageTableEntry,
@@ -88,6 +89,48 @@ impl AddressSpace {
             }),
             bounds,
         }
+    }
+
+    pub(crate) fn validate_user_entry(&self, entry: UserEntry) -> Result<(), ExecutionError> {
+        let permissions = |address| -> Result<Option<PagePermissions>, ExecutionError> {
+            Ok(self
+                .query(address)
+                .map_err(ExecutionError::Memory)?
+                .and_then(|info| info.mapping)
+                .map(|mapping| mapping.attributes.permissions))
+        };
+        if !matches!(
+            permissions(entry.pc)?,
+            Some(
+                PagePermissions::ReadExecute
+                    | PagePermissions::ReadWriteExecute
+                    | PagePermissions::ExecuteOnly
+            )
+        ) {
+            return Err(ExecutionError::InvalidEntry);
+        }
+        let stack = entry
+            .stack_pointer
+            .checked_sub(1)
+            .ok_or(ExecutionError::InvalidStack)?;
+        if !entry.stack_pointer.is_multiple_of(16)
+            || !permissions(stack)?.is_some_and(PagePermissions::writable)
+        {
+            return Err(ExecutionError::InvalidStack);
+        }
+        if entry.thread_pointer != 0
+            && !matches!(
+                permissions(entry.thread_pointer)?,
+                Some(
+                    PagePermissions::ReadOnly
+                        | PagePermissions::ReadWrite
+                        | PagePermissions::ReadWriteExecute
+                )
+            )
+        {
+            return Err(ExecutionError::InvalidEntry);
+        }
+        Ok(())
     }
 
     pub fn root(&self) -> Frame {

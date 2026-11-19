@@ -5,10 +5,7 @@ use crate::{
     task::{Object, ObjectReference, Task},
     trap::port::{TrapContinuationReference, TrapPortReference},
 };
-use abi::{
-    Error, Handle, ObjectType, Rights, method,
-    trap::{TrapInfo, UserState},
-};
+use abi::{Error, Handle, ObjectType, Rights, method, trap::TrapInfo};
 
 pub(super) fn task(
     caller: &Task,
@@ -65,22 +62,15 @@ pub(super) fn continuation(
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
     match method {
-        method::trap_continuation::STATE => {
-            let output = caller.pin_user_memory(args[0] as usize, UserState::SIZE, true)?;
-            output.write(0, &target.user_state()?.encode())?;
-            Ok([UserState::SIZE as u64, 0])
-        }
         method::trap_continuation::RESUME => {
-            target.resume(&read_state(caller, args[0])?)?;
+            super::register::apply(
+                caller,
+                args,
+                |group| target.register_size(group),
+                |groups| target.resume_registers(groups),
+            )?;
             Ok([0; 2])
         }
         _ => Err(Error::Unsupported.into()),
     }
-}
-
-pub(super) fn read_state(caller: &Task, address: u64) -> Result<UserState, CallError> {
-    let input = caller.pin_user_memory(address as usize, UserState::SIZE, false)?;
-    let mut bytes = [0; UserState::SIZE];
-    input.read(0, &mut bytes)?;
-    Ok(UserState::decode(&bytes))
 }

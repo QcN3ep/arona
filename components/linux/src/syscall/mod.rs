@@ -126,7 +126,7 @@ pub(crate) fn dispatch<'a>(
 ) -> Result<(), Error> {
     let mut context = Context {
         machine: process.machine,
-        state: trap.state()?,
+        state: trap.general_state()?,
         trap,
     };
     let (number, arguments) = context.machine.syscall(&context.state);

@@ -103,6 +103,10 @@ pub fn install(
 }
 
 fn encode(machine: Machine, state: &UserState, bytes: &mut [u8]) {
+    let saved = state
+        .floating
+        .as_ref()
+        .expect("signal frame without floating registers");
     word(bytes, CONTEXT, state.pc);
     let (registers, floating, control) = match machine {
         Machine::Riscv64 => {
@@ -115,7 +119,7 @@ fn encode(machine: Machine, state: &UserState, bytes: &mut [u8]) {
             bytes[CONTEXT + 264..CONTEXT + 268].copy_from_slice(&1u32.to_le_bytes());
             bytes[576..580].copy_from_slice(&FPU_MAGIC.to_le_bytes());
             bytes[580..584].copy_from_slice(&288u32.to_le_bytes());
-            bytes[848..856].copy_from_slice(&state.floating_conditions);
+            bytes[848..856].copy_from_slice(&saved.conditions);
             (Some(CONTEXT + 8), 592, 856)
         }
     };
@@ -124,10 +128,10 @@ fn encode(machine: Machine, state: &UserState, bytes: &mut [u8]) {
             word(bytes, offset + index * 8, *value);
         }
     }
-    for (index, value) in state.floating.iter().enumerate() {
+    for (index, value) in saved.registers.iter().enumerate() {
         bytes[floating + index * 8..floating + index * 8 + 8].copy_from_slice(&value.to_le_bytes());
     }
-    bytes[control..control + 4].copy_from_slice(&state.floating_control.to_le_bytes());
+    bytes[control..control + 4].copy_from_slice(&saved.control.to_le_bytes());
 }
 
 pub fn restore(space: &AddressSpace, machine: Machine, address: usize) -> Result<Restored, Errno> {
@@ -140,8 +144,10 @@ pub fn restore(space: &AddressSpace, machine: Machine, address: usize) -> Result
         .map_err(|_| EFAULT)?;
     let mut state = UserState {
         pc: read(&bytes, CONTEXT),
+        floating: Some(runtime::register::ScalarFloat::default()),
         ..UserState::default()
     };
+    let saved = state.floating.as_mut().unwrap();
     let (floating, control) = match machine {
         Machine::Riscv64 => {
             for (index, value) in state.registers.iter_mut().enumerate().skip(1) {
@@ -162,14 +168,14 @@ pub fn restore(space: &AddressSpace, machine: Machine, address: usize) -> Result
             {
                 return Err(EINVAL);
             }
-            state.floating_conditions.copy_from_slice(&bytes[848..856]);
+            saved.conditions.copy_from_slice(&bytes[848..856]);
             (592, 856)
         }
     };
-    for (index, value) in state.floating.iter_mut().enumerate() {
+    for (index, value) in saved.registers.iter_mut().enumerate() {
         *value = read(&bytes, floating + index * 8) as u64;
     }
-    state.floating_control = u32::from_le_bytes(bytes[control..control + 4].try_into().unwrap());
+    saved.control = u32::from_le_bytes(bytes[control..control + 4].try_into().unwrap());
     let flags = u32::from_le_bytes(bytes[UCONTEXT + 24..UCONTEXT + 28].try_into().unwrap());
     if flags & !3 != 0 {
         return Err(EINVAL);

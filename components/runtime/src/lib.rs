@@ -20,6 +20,7 @@ pub mod ipc;
 pub mod logger;
 pub mod memory;
 pub mod random;
+pub mod register;
 pub mod statistics;
 pub mod thread;
 pub mod trap;

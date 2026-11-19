@@ -31,7 +31,8 @@ When a random number session is available, 16 bytes of random data are also gene
 ## Traps and Asynchronous Dispatch
 
 When a Linux program traps, the kernel publishes a TrapInfo and a continuation and suspends the calling thread.
-The compatibility service obtains the Linux system call number and arguments from the UserState according to the machine type, then dispatches to the corresponding module.
+The compatibility service reads the general register group to obtain the Linux system call number and arguments, then dispatches to the corresponding module.
+Fork, clone, and signal delivery also read the scalar floating-point group when preserving the interrupted context.
 On completion, the return value or negative errno is written to the registers, and execution resumes through the continuation.
 
 For example, when the Shell waits for a line of terminal input, the continuation for `read` is saved as Pending together with the input request.

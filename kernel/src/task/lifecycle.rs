@@ -14,12 +14,7 @@ use super::{
     Handle, HandleError, HandleTable, Object, ObjectReference, ObjectType, Rights, TransferRequest,
 };
 use crate::{
-    hardware::{
-        self,
-        cpu::InterruptGuard,
-        execution::{ExecutionError, UserEntry, UserState},
-        mmu::PagePermissions,
-    },
+    hardware::{self, cpu::InterruptGuard, execution::UserEntry, mmu::PagePermissions},
     ipc::{
         Call, CallReference, ChannelError, ChannelReference, MESSAGE_HANDLES, Message,
         ReceivedMessage, WaitItem, WaitManyError, WaitManyResult, WaitMode,
@@ -200,16 +195,6 @@ impl Task {
             .map_err(|_| ForwardError::InvalidState)?
             .trap
             .clone())
-    }
-
-    pub(crate) fn validate_user_state(&self, state: &UserState) -> Result<UserEntry, ForwardError> {
-        let entry = hardware::execution().user_entry(state)?;
-        TASKS
-            .lock()
-            .find(self)
-            .map_err(|_| ForwardError::InvalidState)?
-            .validate_entry(entry)?;
-        Ok(entry)
     }
 
     pub fn new() -> Result<Self, TaskError> {
@@ -1043,45 +1028,7 @@ pub(crate) fn reclaim_finished() {
 
 impl TaskResources {
     fn validate_entry(&self, entry: UserEntry) -> Result<(), ThreadError> {
-        let permissions = |address| -> Result<Option<PagePermissions>, ThreadError> {
-            Ok(self
-                .space
-                .query(address)?
-                .and_then(|info| info.mapping)
-                .map(|mapping| mapping.attributes.permissions))
-        };
-        if !matches!(
-            permissions(entry.pc)?,
-            Some(
-                PagePermissions::ReadExecute
-                    | PagePermissions::ReadWriteExecute
-                    | PagePermissions::ExecuteOnly
-            )
-        ) {
-            return Err(ExecutionError::InvalidEntry.into());
-        }
-        let stack = entry
-            .stack_pointer
-            .checked_sub(1)
-            .ok_or(ExecutionError::InvalidStack)?;
-        if !entry.stack_pointer.is_multiple_of(16)
-            || !permissions(stack)?.is_some_and(PagePermissions::writable)
-        {
-            return Err(ExecutionError::InvalidStack.into());
-        }
-        if entry.thread_pointer != 0
-            && !matches!(
-                permissions(entry.thread_pointer)?,
-                Some(
-                    PagePermissions::ReadOnly
-                        | PagePermissions::ReadWrite
-                        | PagePermissions::ReadWriteExecute
-                )
-            )
-        {
-            return Err(ExecutionError::InvalidEntry.into());
-        }
-        Ok(())
+        self.space.validate_user_entry(entry).map_err(Into::into)
     }
 
     fn remove_thread(&mut self, target: &Thread) {

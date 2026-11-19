@@ -4,7 +4,7 @@
 
 use super::{Thread, ThreadError, ThreadState, prepare_wait, scheduler};
 use crate::{
-    hardware::{cpu::InterruptGuard, execution::UserState},
+    hardware::{self, cpu::InterruptGuard, execution::RegisterWrite},
     trap::{
         Trap, TrapEvent, TrapOutcome,
         port::{ForwardError, TrapContinuation, TrapPortReference},
@@ -137,11 +137,36 @@ fn forwarded_info(trap: Trap) -> Option<TrapInfo> {
 }
 
 impl Thread {
-    pub fn set_user_state(&self, state: &UserState) -> Result<(), ForwardError> {
+    pub fn register_size(&self, group: u64) -> Result<usize, ForwardError> {
         let _interrupts = InterruptGuard::new();
-        self.task()
+        let data = self.0.data.lock();
+        if self.task().is_none() || data.resources.is_none() && data.state != ThreadState::Running {
+            return Err(ForwardError::InvalidState);
+        }
+        Ok(hardware::execution().register_size(group)?)
+    }
+
+    pub fn read_registers(&self, group: u64, output: &mut [u8]) -> Result<(), ForwardError> {
+        let _interrupts = InterruptGuard::new();
+        let data = self.0.data.lock();
+        if data.state != ThreadState::Created {
+            return Err(ForwardError::InvalidState);
+        }
+        Ok(data
+            .resources
+            .as_ref()
             .ok_or(ForwardError::InvalidState)?
-            .validate_user_state(state)?;
+            .context
+            .read_registers(group, output)?)
+    }
+
+    pub fn set_registers(&self, groups: &[RegisterWrite<'_>]) -> Result<(), ForwardError> {
+        let _interrupts = InterruptGuard::new();
+        let space = self
+            .task()
+            .ok_or(ForwardError::InvalidState)?
+            .address_space()
+            .map_err(|_| ForwardError::InvalidState)?;
         let data = self.0.data.lock();
         if data.state != ThreadState::Created {
             return Err(ForwardError::InvalidState);
@@ -150,7 +175,7 @@ impl Thread {
             .as_ref()
             .ok_or(ForwardError::InvalidState)?
             .context
-            .set_user_state(state)?;
+            .set_registers(groups, &mut |entry| space.validate_user_entry(entry))?;
         Ok(())
     }
 
@@ -180,7 +205,7 @@ impl Thread {
             .as_ref()
             .ok_or(ForwardError::InvalidState)?
             .context
-            .user_state()?
+            .user_entry()?
             .pc;
         drop(data);
         let continuation = TrapContinuation::interrupted(self.clone(), generation, pc)?;
@@ -194,7 +219,27 @@ impl Thread {
             && !matches!(data.state, ThreadState::Dying(_) | ThreadState::Dead(_))
     }
 
-    pub(crate) fn trap_state(&self, generation: u64) -> Result<UserState, ForwardError> {
+    pub(crate) fn trap_register_size(
+        &self,
+        generation: u64,
+        group: u64,
+    ) -> Result<usize, ForwardError> {
+        let data = self.0.data.lock();
+        if data.trapped != Some(generation)
+            || data.state != ThreadState::Blocked
+            || data.resources.is_none()
+        {
+            return Err(ForwardError::InvalidState);
+        }
+        Ok(hardware::execution().register_size(group)?)
+    }
+
+    pub(crate) fn trap_registers(
+        &self,
+        generation: u64,
+        group: u64,
+        output: &mut [u8],
+    ) -> Result<(), ForwardError> {
         let data = self.0.data.lock();
         if data.trapped != Some(generation) || data.state != ThreadState::Blocked {
             return Err(ForwardError::InvalidState);
@@ -204,13 +249,13 @@ impl Thread {
             .as_ref()
             .ok_or(ForwardError::InvalidState)?
             .context
-            .user_state()?)
+            .read_registers(group, output)?)
     }
 
     pub(crate) fn resume_trap(
         &self,
         generation: u64,
-        state: &UserState,
+        groups: &[RegisterWrite<'_>],
     ) -> Result<(), ForwardError> {
         let mut data = self.0.data.lock();
         if data.trapped != Some(generation) || data.state != ThreadState::Blocked {
@@ -222,7 +267,7 @@ impl Thread {
             .as_ref()
             .ok_or(ForwardError::InvalidState)?
             .context
-            .set_user_state(state)?;
+            .set_registers(groups, &mut |_| Ok(()))?;
         data.trapped = None;
         Ok(())
     }

@@ -15,6 +15,16 @@ pub(super) fn invoke(
     rights: Rights,
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
+    if matches!(
+        (target, args[0]),
+        (ObjectReference::Thread(_), info::thread::REGISTERS)
+            | (
+                ObjectReference::TrapContinuation(_),
+                info::trap_continuation::REGISTERS
+            )
+    ) {
+        return super::register::info(caller, target, args);
+    }
     if let ObjectReference::Task(target) = target
         && args[0] == info::task::ADDRESS_SPACE
     {

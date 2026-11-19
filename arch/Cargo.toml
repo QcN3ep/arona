@@ -71,6 +71,7 @@ harness = false
 required-features = ["baremetal"]
 
 [dependencies]
+abi = { package = "arona-abi", path = "../abi" }
 arrayvec = { version = "0.7.6", default-features = false }
 fdt = "0.2.0-alpha3"
 kernel = { package = "arona-kernel", path = "../kernel" }

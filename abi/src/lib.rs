@@ -15,6 +15,7 @@ pub mod memory;
 pub mod method;
 mod object;
 pub mod process;
+pub mod register;
 mod status;
 pub mod system;
 pub mod thread;

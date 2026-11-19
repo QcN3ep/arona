@@ -80,6 +80,9 @@ impl From<crate::trap::port::ForwardError> for Error {
             ForwardError::InvalidState => Self::InvalidState,
             ForwardError::Memory(error) => error.into(),
             ForwardError::Thread(error) => error.into(),
+            ForwardError::Execution(crate::hardware::execution::ExecutionError::Memory(error)) => {
+                error.into()
+            }
             ForwardError::Execution(_) => Self::InvalidArgument,
         }
     }
@@ -117,6 +120,9 @@ impl From<ThreadError> for Error {
         match error {
             ThreadError::Memory(error) => error.into(),
             ThreadError::Capacity | ThreadError::GenerationExhausted => Self::NoMemory,
+            ThreadError::Execution(crate::hardware::execution::ExecutionError::Memory(error)) => {
+                error.into()
+            }
             ThreadError::InvalidArgument | ThreadError::Execution(_) => Self::InvalidArgument,
             _ => Self::InvalidState,
         }

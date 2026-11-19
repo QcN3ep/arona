@@ -3,7 +3,6 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::{
     hardware::{
-        self,
         execution::UserEntry,
         mmu::{PAGE_SIZE, PagePermissions},
     },
@@ -20,7 +19,7 @@ use spin::{Mutex, Once};
 static WAITING: Mutex<Option<(Task, Handle)>> = Mutex::new(None);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static CODE: Once<[u64; PAGE_SIZE / 8]> = Once::new();
-static RETURN: Once<fn(&mut kernel::hardware::execution::UserState, [usize; 3])> = Once::new();
+static RETURN: Once<fn(&mut crate::register::UserState, [usize; 3])> = Once::new();
 
 pub fn active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
@@ -57,13 +56,10 @@ fn scenario(_: usize) -> usize {
     let interrupted = port.try_receive().unwrap();
     assert_eq!(interrupted.info().kind, abi::trap::TrapInfo::INTERRUPTED);
     let continuation = interrupted.commit();
-    let initial = continuation.reference().user_state().unwrap();
+    let initial = crate::register::read_continuation(&continuation.reference()).unwrap();
     assert_eq!(initial.pc, pc);
-    let stack = hardware::execution()
-        .user_entry(&initial)
-        .unwrap()
-        .stack_pointer;
-    continuation.reference().resume(&initial).unwrap();
+    let stack = crate::register::state_entry(&initial).stack_pointer;
+    crate::register::resume_continuation(&continuation.reference(), &initial).unwrap();
     drop(continuation);
     forward_syscalls(&owner, &child, &user, &port, handle);
     owner
@@ -166,15 +162,18 @@ fn forward_syscalls(
         assert_eq!(owner.try_wait_many(&items).unwrap(), ready);
         let continuation = port.try_receive().unwrap().commit();
         let reference = continuation.reference();
-        let mut state = reference.user_state().unwrap();
+        let mut state = crate::register::read_continuation(&reference).unwrap();
         let mut invalid = state.clone();
         invalid.pc = usize::MAX;
-        assert!(reference.resume(&invalid).is_err());
-        assert_eq!(reference.user_state().unwrap(), state);
+        assert!(crate::register::resume_continuation(&reference, &invalid).is_err());
+        assert_eq!(
+            crate::register::read_continuation(&reference).unwrap(),
+            state
+        );
         state.pc = info.successor as usize;
         RETURN.get().unwrap()(&mut state, [0, 73, remaining]);
         if remaining == 1 {
-            let entry = hardware::execution().user_entry(&state).unwrap();
+            let entry = crate::register::state_entry(&state);
             child
                 .unmap(VirtRange {
                     start: entry.thread_pointer,
@@ -182,8 +181,11 @@ fn forward_syscalls(
                 })
                 .unwrap();
         }
-        reference.resume(&state).unwrap();
-        assert_eq!(reference.resume(&state), Err(ForwardError::InvalidState));
+        crate::register::resume_continuation(&reference, &state).unwrap();
+        assert_eq!(
+            crate::register::resume_continuation(&reference, &state),
+            Err(ForwardError::InvalidState)
+        );
         drop(continuation);
         thread::yield_now().unwrap();
     }

@@ -75,7 +75,9 @@ After binding, system calls, page faults, illegal instructions, and other except
 The service receives the event and a `TrapContinuation` from the port.
 
 A continuation corresponds to one suspension of a specific thread and carries a generation.
-The handler reads `UserState`, modifies registers, PC, or other user state, and then commits a resume.
+The handler reads register groups through `INFO` and submits the groups to restore when resuming.
+GENERAL and FLOAT use the layouts of the running ISA.
+The kernel validates the complete update before changing any registers. A failed update leaves the continuation available.
 The kernel verifies the address and execution conditions of the target state and wakes the corresponding thread.
 When a continuation is abandoned, the kernel cancels the corresponding suspension handling.
 

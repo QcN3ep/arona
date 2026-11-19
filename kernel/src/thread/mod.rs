@@ -267,8 +267,7 @@ impl Thread {
             .lock()
             .resources
             .as_ref()
-            .and_then(|resources| resources.context.user_state().ok())
-            .and_then(|state| hardware::execution().user_entry(&state).ok())
+            .and_then(|resources| resources.context.user_entry().ok())
     }
 
     pub(crate) fn task_next(&self) -> Option<Thread> {

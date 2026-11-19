@@ -65,7 +65,9 @@ methods!(thread {
     /// return TimedOut, and an infinite wait lasts until termination.
     /// Count must not exceed the caller's handle count plus CURRENT_THREAD.
     WAIT_MANY = 24 => NONE;
-    SET_STATE = 25 => SET_STATE;
+    /// Writes `[groups_address, groups_count, 0, 0, 0]` before START.
+    /// Entries are register::WriteRequest records. The batch is applied atomically.
+    SET_REGISTERS = 25 => SET_STATE;
     INTERRUPT = 26 => INTERRUPT;
     /// Sets `[weight, 0, 0, 0, 0]`, accepting 1..=u32::MAX.
     /// The default weight is 1024. Failure preserves the previous weight.
@@ -73,7 +75,11 @@ methods!(thread {
 });
 
 methods!(trap_port { RECEIVE = 16 => READ; });
-methods!(trap_continuation { STATE = 16 => READ; RESUME = 17 => SET_STATE; });
+methods!(trap_continuation {
+    /// Writes `[groups_address, groups_count, 0, 0, 0]` and resumes atomically.
+    /// An empty batch preserves registers. Failure retains the continuation.
+    RESUME = 17 => SET_STATE;
+});
 
 methods!(channel {
     SEND = 16 => WRITE;

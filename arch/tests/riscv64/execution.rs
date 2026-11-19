@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use core::arch::{asm, naked_asm};
-use kernel::hardware::execution::{Context, UserState};
+use kernel::hardware::execution::Context;
+use testkit::register::UserState;
 
 pub fn set_user_marker(state: &mut UserState, id: usize) {
     state.registers[16] = 0x8800 + id;
@@ -12,7 +13,7 @@ pub fn return_values(state: &mut UserState, values: [usize; 3]) {
 }
 
 pub fn set_floating_control(state: &mut UserState, id: usize) {
-    state.floating_control = (id as u32 + 2) << 5;
+    state.floating.as_mut().unwrap().control = (id as u32 + 2) << 5;
 }
 
 pub fn frequency(dtb: usize) -> Option<u64> {

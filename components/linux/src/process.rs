@@ -274,7 +274,7 @@ impl<'a> Process<'a> {
         match trap.info.kind {
             TrapInfo::SYSCALL => syscall::dispatch(self, index, trap, files, services),
             TrapInfo::INTERRUPTED => {
-                let state = trap.state()?;
+                let state = trap.general_state()?;
                 delivery::resume(
                     self,
                     index,
@@ -282,7 +282,7 @@ impl<'a> Process<'a> {
                 )
             }
             _ => {
-                let state = trap.state()?;
+                let state = trap.general_state()?;
                 delivery::fault(
                     self,
                     index,

@@ -7,7 +7,7 @@ use spin::Mutex;
 use crate::{
     hardware::{
         cpu::InterruptGuard,
-        execution::{ExecutionError, UserState},
+        execution::{ExecutionError, RegisterWrite},
     },
     ipc::wait::{Observer, Observers, READABLE, notify_observers},
     memory::{self, HeapArc, MemoryError},
@@ -334,22 +334,31 @@ impl TrapContinuationReference {
         state.completion.is_some() && state.thread.has_trap(state.generation)
     }
 
-    pub fn user_state(&self) -> Result<UserState, ForwardError> {
+    pub fn register_size(&self, group: u64) -> Result<usize, ForwardError> {
         let _interrupts = InterruptGuard::new();
         let state = self.0.lock();
         if state.completion.is_none() {
             return Err(ForwardError::InvalidState);
         }
-        state.thread.trap_state(state.generation)
+        state.thread.trap_register_size(state.generation, group)
     }
 
-    pub fn resume(&self, user: &UserState) -> Result<(), ForwardError> {
+    pub fn read_registers(&self, group: u64, output: &mut [u8]) -> Result<(), ForwardError> {
+        let _interrupts = InterruptGuard::new();
+        let state = self.0.lock();
+        if state.completion.is_none() {
+            return Err(ForwardError::InvalidState);
+        }
+        state.thread.trap_registers(state.generation, group, output)
+    }
+
+    pub fn resume_registers(&self, groups: &[RegisterWrite<'_>]) -> Result<(), ForwardError> {
         let _interrupts = InterruptGuard::new();
         let mut state = self.0.lock();
         if state.completion.is_none() {
             return Err(ForwardError::InvalidState);
         }
-        state.thread.resume_trap(state.generation, user)?;
+        state.thread.resume_trap(state.generation, groups)?;
         match state.completion.take().unwrap() {
             Completion::Waiting(waker) => {
                 waker.wake();

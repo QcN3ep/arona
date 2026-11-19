@@ -28,7 +28,7 @@ The interface that waits for a Task to exit returns the status after final exit;
 
 Each Thread owns an execution context and a kernel stack with a guard page.
 A user thread is additionally associated with its owning Task, and its user stack and program mappings are located in that Task's address space.
-The current kernel thread stack size is 32 KiB, and thread object capacity is 4096.
+The current kernel thread stack size is 64 KiB, and thread object capacity is 4096.
 
 | State | Typical way to enter |
 |---|---|

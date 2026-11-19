@@ -16,6 +16,7 @@ version = "1.0.0"
 name = "arona-arch"
 version = "1.0.0"
 dependencies = [
+ "arona-abi",
  "arona-kernel",
  "arona-testkit",
  "arrayvec",

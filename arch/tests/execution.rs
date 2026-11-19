@@ -13,6 +13,8 @@ use core::{
     sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering},
 };
 
+use testkit::register::ContextState;
+
 use ::kernel::{
     hardware::{
         self,
@@ -47,7 +49,7 @@ const RAM: u64 = 0x8200_0000;
 #[cfg(target_arch = "loongarch64")]
 const RAM: u64 = 0x0200_0000;
 
-const STACK_SIZE: usize = 16 * 1024;
+const STACK_SIZE: usize = 64 * 1024;
 const ROUNDS: usize = 8;
 static CONTEXTS: AtomicPtr<Context> = AtomicPtr::new(core::ptr::null_mut());
 static FIRMWARE: AtomicUsize = AtomicUsize::new(0);
@@ -228,7 +230,7 @@ fn run_execution(manager: &'static MemoryManager) {
     CONTEXTS.store(owned.as_ptr().cast_mut(), Ordering::Relaxed);
     for index in 2..4 {
         let mut state = context(index).user_state().unwrap();
-        assert_eq!(state.floating, [0; 32]);
+        assert_eq!(state.floating.as_ref().unwrap().registers, [0; 32]);
         isa::set_user_marker(&mut state, index - 1);
         context(index).set_user_state(&state).unwrap();
     }
@@ -263,7 +265,7 @@ fn run_execution(manager: &'static MemoryManager) {
 struct Platform;
 
 impl testkit::Platform for Platform {
-    fn return_values(state: &mut ::kernel::hardware::execution::UserState, values: [usize; 3]) {
+    fn return_values(state: &mut testkit::register::UserState, values: [usize; 3]) {
         isa::return_values(state, values);
     }
     #[cfg(feature = "runtime-tests")]
@@ -447,14 +449,14 @@ fn user_state_round_trip(current: usize, id: usize, round: usize, pc: usize) {
     let before = context.user_state().unwrap();
     assert_eq!(before.pc, pc);
     assert_eq!(
-        before.floating,
+        before.floating.as_ref().unwrap().registers,
         [if round == 0 {
             id as u64
         } else {
             id as u64 + 256
         }; 32]
     );
-    let entry = hardware::execution().user_entry(&before).unwrap();
+    let entry = context.user_entry().unwrap();
     assert_eq!(entry.stack_pointer, user_entry(id).stack_pointer);
     assert_eq!(entry.thread_pointer, user_entry(id).thread_pointer);
     let mut invalid = before.clone();
@@ -470,20 +472,38 @@ fn user_state_round_trip(current: usize, id: usize, round: usize, pc: usize) {
         Err(ExecutionError::InvalidEntry)
     );
     invalid = before.clone();
-    invalid.floating_control = u32::MAX;
+    invalid.registers[12] ^= 73;
+    invalid.floating.as_mut().unwrap().control = u32::MAX;
     assert_eq!(
         context.set_user_state(&invalid),
         Err(ExecutionError::InvalidState)
     );
-    invalid = before.clone();
-    invalid.floating_conditions = [2; 8];
+    let group = hardware::execution().register_groups()[1];
+    let (mut floating, length) = before
+        .floating
+        .as_ref()
+        .unwrap()
+        .encode(hardware::execution().register_size(group).unwrap())
+        .unwrap();
+    floating[260] = 1;
     assert_eq!(
-        context.set_user_state(&invalid),
+        context.set_registers(
+            &[abi::register::Write {
+                group,
+                bytes: &floating[..length]
+            }],
+            &mut |_| Ok(())
+        ),
         Err(ExecutionError::InvalidState)
     );
     assert_eq!(context.user_state().unwrap(), before);
     let mut state = before;
-    state.floating.fill(id as u64 + 256);
+    state
+        .floating
+        .as_mut()
+        .unwrap()
+        .registers
+        .fill(id as u64 + 256);
     isa::set_floating_control(&mut state, id);
     context.set_user_state(&state).unwrap();
     assert_eq!(context.user_state().unwrap(), state);

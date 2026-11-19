@@ -148,6 +148,11 @@ fn supervised() {
     invalid.pc = usize::MAX;
     let (_, trap) = trap.resume(&invalid).unwrap_err();
     assert_eq!(trap.state().unwrap(), state);
+    let mut invalid = state.clone();
+    invalid.registers[12] ^= 73;
+    invalid.floating.as_mut().unwrap().control = u32::MAX;
+    let (_, trap) = trap.resume(&invalid).unwrap_err();
+    assert_eq!(trap.state().unwrap(), state);
     trap.resume(&state).unwrap();
     let trap = port
         .receive(WaitMode::Until(thread::now_ns().unwrap() + 2_000_000_000))

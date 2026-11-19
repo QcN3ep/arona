@@ -44,6 +44,10 @@ pub(super) fn clone(
     process.threads.try_reserve(1).map_err(|_| ENOMEM)?;
     let tid = process.namespace.allocate().ok_or(ENOMEM)?;
     let mut state = context.state.clone();
+    context
+        .trap
+        .load_floating(&mut state)
+        .map_err(super::error)?;
     process
         .machine
         .complete(&mut state, context.trap.info.successor as usize, Ok(0));

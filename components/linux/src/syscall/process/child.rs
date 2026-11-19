@@ -55,6 +55,10 @@ fn spawn<'a>(
     }
     .map_err(super::error)?;
     let mut state = context.state.clone();
+    context
+        .trap
+        .load_floating(&mut state)
+        .map_err(super::error)?;
     process
         .machine
         .complete(&mut state, context.trap.info.successor as usize, Ok(0));

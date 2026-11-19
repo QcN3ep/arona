@@ -172,6 +172,7 @@ fn install(
     info: Info,
     action: Action,
 ) -> Result<(), runtime::Error> {
+    context.trap.load_floating(&mut context.state)?;
     let trampoline = if let Some(address) = process.signal_return {
         address
     } else {

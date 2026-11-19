@@ -14,8 +14,13 @@ pub(super) fn invoke(
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
     match method {
-        thread::SET_STATE => {
-            target.set_user_state(&super::trap::read_state(caller, args[0])?)?;
+        thread::SET_REGISTERS => {
+            super::register::apply(
+                caller,
+                args,
+                |group| target.register_size(group),
+                |groups| target.set_registers(groups),
+            )?;
             Ok([0; 2])
         }
         thread::INTERRUPT => {

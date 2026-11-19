@@ -12,6 +12,7 @@ use kernel::trap::{Trap, TrapOrigin, TrapOutcome};
 pub use macros::{kperf, ktest};
 
 pub mod perf;
+pub mod register;
 
 pub struct Case {
     pub name: &'static str,
@@ -48,7 +49,7 @@ pub use thread::{run as run_threads, run_user as run_user_threads};
 pub use trap::run as run_traps;
 
 pub trait Platform {
-    fn return_values(state: &mut kernel::hardware::execution::UserState, values: [usize; 3]);
+    fn return_values(state: &mut register::UserState, values: [usize; 3]);
     fn set_floating_enabled(enabled: bool);
     fn syscall_code() -> &'static [u64];
     fn user_code() -> &'static [u64];

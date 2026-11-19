@@ -30,7 +30,7 @@ pub struct UserEntry {
     pub argument: usize,
 }
 
-pub use abi::trap::UserState;
+pub use abi::register::Write as RegisterWrite;
 
 #[derive(Clone, Copy, Debug)]
 pub enum ContextStart {
@@ -53,6 +53,7 @@ pub enum ExecutionError {
     InvalidEntry,
     InvalidStack,
     InvalidState,
+    InvalidRegisterGroup,
     NotInstalled,
     InterruptsEnabled,
     ExtensionsEnabled,
@@ -78,14 +79,23 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn user_state(&self) -> Result<UserState, ExecutionError> {
+    pub fn user_entry(&self) -> Result<UserEntry, ExecutionError> {
         check_interrupts()?;
-        execution().user_state(&self.storage)
+        execution().user_entry(&self.storage)
     }
 
-    pub fn set_user_state(&self, state: &UserState) -> Result<(), ExecutionError> {
+    pub fn read_registers(&self, group: u64, output: &mut [u8]) -> Result<(), ExecutionError> {
         check_interrupts()?;
-        execution().set_user_state(&self.storage, state)
+        execution().read_registers(&self.storage, group, output)
+    }
+
+    pub fn set_registers(
+        &self,
+        groups: &[RegisterWrite<'_>],
+        validate: &mut dyn FnMut(UserEntry) -> Result<(), ExecutionError>,
+    ) -> Result<(), ExecutionError> {
+        check_interrupts()?;
+        execution().set_registers(&self.storage, groups, validate)
     }
 
     /// # Safety
@@ -155,12 +165,23 @@ fn check_interrupts() -> Result<(), ExecutionError> {
 /// A switch must not retain pointers to the Context wrapper object and may run only on the same processor with interrupts and scalar floating-point disabled.
 pub trait Execution: Sync {
     fn context_layout(&self) -> Layout;
-    fn user_entry(&self, state: &UserState) -> Result<UserEntry, ExecutionError>;
-    fn user_state(&self, storage: &ContextStorage) -> Result<UserState, ExecutionError>;
-    fn set_user_state(
+    fn register_groups(&self) -> &'static [u64];
+    fn register_size(&self, group: u64) -> Result<usize, ExecutionError>;
+    fn user_entry(&self, storage: &ContextStorage) -> Result<UserEntry, ExecutionError>;
+    fn read_registers(
         &self,
         storage: &ContextStorage,
-        state: &UserState,
+        group: u64,
+        output: &mut [u8],
+    ) -> Result<(), ExecutionError>;
+    /// Validates every group and the prospective entry before calling `validate`.
+    /// The callback must not access this context. Failure preserves all groups.
+    /// The implementation commits the batch only after the callback succeeds.
+    fn set_registers(
+        &self,
+        storage: &ContextStorage,
+        groups: &[RegisterWrite<'_>],
+        validate: &mut dyn FnMut(UserEntry) -> Result<(), ExecutionError>,
     ) -> Result<(), ExecutionError>;
     fn initialize(
         &self,

@@ -1,44 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct UserState {
-    pub pc: usize,
-    pub registers: [usize; 32],
-    pub floating: [u64; 32],
-    pub floating_control: u32,
-    pub floating_conditions: [u8; 8],
-}
-
-impl UserState {
-    pub const SIZE: usize = 532;
-
-    pub fn encode(&self) -> [u8; Self::SIZE] {
-        let mut bytes = [0; Self::SIZE];
-        for (chunk, word) in bytes[..520].as_chunks_mut::<8>().0.iter_mut().zip(
-            core::iter::once(self.pc as u64)
-                .chain(self.registers.iter().map(|word| *word as u64))
-                .chain(self.floating.iter().copied()),
-        ) {
-            chunk.copy_from_slice(&word.to_le_bytes());
-        }
-        bytes[520..524].copy_from_slice(&self.floating_control.to_le_bytes());
-        bytes[524..].copy_from_slice(&self.floating_conditions);
-        bytes
-    }
-
-    pub fn decode(bytes: &[u8; Self::SIZE]) -> Self {
-        let word =
-            |index: usize| u64::from_le_bytes(bytes[index * 8..index * 8 + 8].try_into().unwrap());
-        Self {
-            pc: word(0) as usize,
-            registers: core::array::from_fn(|index| word(index + 1) as usize),
-            floating: core::array::from_fn(|index| word(index + 33)),
-            floating_control: u32::from_le_bytes(bytes[520..524].try_into().unwrap()),
-            floating_conditions: bytes[524..].try_into().unwrap(),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TrapInfo {
     pub thread: u64,
@@ -108,7 +69,7 @@ pub enum ExceptionClass {
 }
 
 impl ExceptionClass {
-    /// 从陷入信息中的原始类别值还原异常类别。
+    /// Decodes one defined exception class.
     pub const fn from_raw(value: u64) -> Option<Self> {
         Some(match value {
             0 => Self::MisalignedAddress,

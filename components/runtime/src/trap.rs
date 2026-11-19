@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
+pub use crate::register::UserState;
 use crate::{
     Error, Handle, Rights, Task, Thread, TrapContinuation, TrapPort,
     ipc::{self, WaitItem, WaitMode},
 };
 use abi::method;
-pub use abi::trap::{ExceptionClass, TrapInfo, UserState};
+pub use abi::trap::{ExceptionClass, TrapInfo};
 
 #[derive(Debug)]
 pub struct Trap {
@@ -36,13 +37,28 @@ impl Handle<Thread> {
         Ok(self.borrow().query(abi::info::thread::IDENTITY)?[0])
     }
 
-    pub fn set_user_state(&self, state: &UserState) -> Result<(), Error> {
-        let bytes = state.encode();
+    pub fn set_registers(&self, groups: &[crate::register::Write<'_>]) -> Result<(), Error> {
+        let records = crate::register::requests(groups)?;
         self.borrow().invoke(
-            method::thread::SET_STATE,
-            [bytes.as_ptr() as u64, 0, 0, 0, 0],
+            method::thread::SET_REGISTERS,
+            [
+                if records.is_empty() {
+                    0
+                } else {
+                    records.as_ptr() as u64
+                },
+                records.len() as u64,
+                0,
+                0,
+                0,
+            ],
         )?;
         Ok(())
+    }
+    pub fn set_user_state(&self, state: &UserState) -> Result<(), Error> {
+        state.with_groups(crate::register::float_size()?, |groups| {
+            self.set_registers(groups)
+        })?
     }
 
     pub fn interrupt(&self) -> Result<(), Error> {
@@ -81,23 +97,81 @@ impl Handle<TrapPort> {
 }
 
 impl Trap {
-    pub fn state(&self) -> Result<UserState, Error> {
-        let mut bytes = [0; UserState::SIZE];
-        self.continuation.borrow().invoke(
-            method::trap_continuation::STATE,
-            [bytes.as_mut_ptr() as u64, 0, 0, 0, 0],
-        )?;
-        Ok(UserState::decode(&bytes))
+    pub fn general_state(&self) -> Result<UserState, Error> {
+        crate::register::state(
+            self.continuation.borrow(),
+            abi::info::trap_continuation::REGISTERS,
+            false,
+        )
     }
-
-    pub fn resume(self, state: &UserState) -> Result<(), (Error, Self)> {
-        let bytes = state.encode();
+    pub fn state(&self) -> Result<UserState, Error> {
+        crate::register::state(
+            self.continuation.borrow(),
+            abi::info::trap_continuation::REGISTERS,
+            true,
+        )
+    }
+    pub fn load_floating(&self, state: &mut UserState) -> Result<(), Error> {
+        if state.floating.is_none() {
+            state.floating = Some(crate::register::read_floating(
+                self.continuation.borrow(),
+                abi::info::trap_continuation::REGISTERS,
+            )?);
+        }
+        Ok(())
+    }
+    pub fn resume_registers(
+        self,
+        groups: &[crate::register::Write<'_>],
+    ) -> Result<(), (Error, Self)> {
+        let records = match crate::register::requests(groups) {
+            Ok(records) => records,
+            Err(error) => return Err((error, self)),
+        };
         match self.continuation.borrow().invoke(
             method::trap_continuation::RESUME,
-            [bytes.as_ptr() as u64, 0, 0, 0, 0],
+            [
+                if records.is_empty() {
+                    0
+                } else {
+                    records.as_ptr() as u64
+                },
+                records.len() as u64,
+                0,
+                0,
+                0,
+            ],
         ) {
             Ok(_) => Ok(()),
             Err(error) => Err((error, self)),
         }
+    }
+    pub fn resume(self, state: &UserState) -> Result<(), (Error, Self)> {
+        let float_size = match crate::register::float_size() {
+            Ok(size) => size,
+            Err(error) => return Err((error, self)),
+        };
+        let general = state.general().encode();
+        let floating = match state
+            .floating
+            .as_ref()
+            .map(|floating| floating.encode(float_size))
+            .transpose()
+        {
+            Ok(floating) => floating,
+            Err(error) => return Err((Error::Kernel(error), self)),
+        };
+        let mut groups = arrayvec::ArrayVec::<crate::register::Write<'_>, 2>::new();
+        groups.push(crate::register::Write {
+            group: abi::register::GENERAL,
+            bytes: &general,
+        });
+        if let Some((bytes, length)) = &floating {
+            groups.push(crate::register::Write {
+                group: abi::register::FLOAT,
+                bytes: &bytes[..*length],
+            });
+        }
+        self.resume_registers(&groups)
     }
 }
