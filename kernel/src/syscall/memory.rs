@@ -25,6 +25,18 @@ pub(super) fn permissions(raw: u64) -> Result<PagePermissions, CallError> {
     }
 }
 
+pub(super) fn native_permissions(permissions: PagePermissions) -> abi::memory::Permissions {
+    use abi::memory::Permissions;
+    match permissions {
+        PagePermissions::NoAccess => Permissions::NoAccess,
+        PagePermissions::ReadOnly => Permissions::ReadOnly,
+        PagePermissions::ReadWrite => Permissions::ReadWrite,
+        PagePermissions::ReadExecute => Permissions::ReadExecute,
+        PagePermissions::ReadWriteExecute => Permissions::ReadWriteExecute,
+        PagePermissions::ExecuteOnly => Permissions::ExecuteOnly,
+    }
+}
+
 pub(super) fn range(start: u64, length: u64) -> Result<VirtRange, CallError> {
     Ok(VirtRange {
         start: start as usize,
@@ -39,10 +51,6 @@ pub(super) fn task(
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
     match method {
-        task::ADDRESS_RANGE => {
-            let bounds = target.address_space()?.bounds();
-            Ok([bounds.start as u64, bounds.end as u64])
-        }
         task::ALLOCATE => allocate(caller, target, args),
         task::READ_MEMORY | task::WRITE_MEMORY => copy_task_memory(caller, target, method, args),
         task::ATOMIC_COMPARE_EXCHANGE => atomic_compare_exchange(target, args),
@@ -73,27 +81,6 @@ pub(super) fn task(
         task::UNRESERVE => {
             target.unreserve(range(args[0], args[1])?)?;
             Ok([0; 2])
-        }
-        task::QUERY | task::QUERY_NEXT => {
-            let info = if method == task::QUERY_NEXT {
-                target.query_next(args[0] as usize)?
-            } else {
-                target.query(args[0] as usize)?
-            };
-            let Some(info) = info else {
-                return Ok([0; 2]);
-            };
-            let permission =
-                info.mapping
-                    .map_or(0, |mapping| match mapping.attributes.permissions {
-                        PagePermissions::NoAccess => 8,
-                        PagePermissions::ReadOnly => 1,
-                        PagePermissions::ReadWrite => 3,
-                        PagePermissions::ExecuteOnly => 4,
-                        PagePermissions::ReadExecute => 5,
-                        PagePermissions::ReadWriteExecute => 7,
-                    });
-            Ok([info.range.start as u64, info.range.end as u64 | permission])
         }
         _ => Err(Error::Unsupported.into()),
     }

@@ -143,6 +143,10 @@ fn remote_memory() {
     let range = mapping.range().unwrap();
     let bounds = task.address_range().unwrap();
     assert!(bounds.start <= range.start && bounds.end >= range.end);
+    assert_eq!(
+        task.query_next(range.start).unwrap().unwrap().range.start,
+        range.start
+    );
     assert!(task.query(bounds.end - 1).unwrap().is_none());
     assert_eq!(
         task.query(bounds.end),
@@ -210,6 +214,14 @@ fn frame_io() {
         .unwrap();
     let range = mapped.range().unwrap();
     assert_eq!(range.len(), large_size);
+    assert_eq!(
+        process::task()
+            .query(range.start)
+            .unwrap()
+            .unwrap()
+            .leaf_level,
+        1
+    );
     assert!(range.start.is_multiple_of(large_size));
     mapped.protect(Permissions::ReadOnly).unwrap();
     assert_eq!(

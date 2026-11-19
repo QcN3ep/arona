@@ -38,7 +38,7 @@ pub(crate) use mmio::UserDeviceMapping;
 pub use region::{MAX_MEMORY_REGIONS, MemoryRegion, MemoryRegionState, PhysRange, VirtRange};
 pub use stack::KernelStack;
 
-pub const MAX_USER_MAPPING_RECORDS: usize = abi::memory::MAX_USER_MAPPING_RECORDS;
+pub const MAX_USER_MAPPING_RECORDS: usize = 65536;
 
 pub use abi::memory::HUGE_PAGE_SIZE;
 

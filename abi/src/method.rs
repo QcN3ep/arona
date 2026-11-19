@@ -35,7 +35,6 @@ methods!(task {
     /// Reserves `[length, alignment, requested_address, 0, 0]`.
     RESERVE = 20 => MAP_MEMORY;
     UNRESERVE = 21 => MAP_MEMORY;
-    QUERY = 22 => MAP_MEMORY;
     CREATE = 24 => CREATE_TASK;
     CREATE_THREAD = 25 => CREATE_THREAD;
     INSTALL = 26 => INSTALL_HANDLE;
@@ -47,8 +46,6 @@ methods!(task {
     WRITE_MEMORY = 33 => WRITE_MEMORY;
     TRAP_PORT = 34 => SET_TRAP;
     SET_TRAP = 35 => SET_TRAP;
-    ADDRESS_RANGE = 36 => MAP_MEMORY;
-    QUERY_NEXT = 37 => MAP_MEMORY;
     MEMORY_STATS = 38 => NONE;
     LOAD_AVERAGE = 39 => NONE;
     ATOMIC_COMPARE_EXCHANGE = 40 => WRITE_MEMORY;

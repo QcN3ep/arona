@@ -40,6 +40,7 @@ pub struct MappingInfo {
     pub mapping: Option<PageMapping>,
     pub maximum: MappingRights,
     pub generation: u64,
+    pub leaf_level: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -261,6 +262,7 @@ impl MappingIndex {
                 mapping: None,
                 maximum: MappingRights(words[1] as u8),
                 generation: words[0],
+                leaf_level: usize::from(words[1] >> 8 == 8),
             },
             mapped,
         ))

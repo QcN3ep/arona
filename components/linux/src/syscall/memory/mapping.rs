@@ -18,7 +18,10 @@ use crate::{
     },
 };
 use alloc::{rc::Rc, vec::Vec};
-use runtime::{Call, Handle, Rights, memory::Permissions};
+use runtime::{
+    Call, Handle, Rights,
+    memory::{Permissions, PermissionsExt},
+};
 
 pub(in crate::syscall) enum Pending<'a> {
     Complete(Option<SyscallResult>),

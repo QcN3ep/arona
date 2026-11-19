@@ -8,7 +8,7 @@ use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::{cell::RefCell, ops::Range};
 use runtime::{
     FrameAllocation, Handle, Rights, Task, TrapPort,
-    memory::{HUGE_PAGE_SIZE, Permissions},
+    memory::{HUGE_PAGE_SIZE, Permissions, PermissionsExt},
     process::SupervisedTask,
 };
 

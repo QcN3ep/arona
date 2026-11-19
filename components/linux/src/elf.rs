@@ -13,7 +13,7 @@
 
 use alloc::vec::Vec;
 use core::ops::Range;
-use runtime::memory::Permissions;
+use runtime::memory::{Permissions, PermissionsExt};
 
 use crate::Error;
 

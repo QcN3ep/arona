@@ -15,6 +15,11 @@ pub(super) fn invoke(
     rights: Rights,
     args: [u64; 5],
 ) -> Result<[u64; 2], CallError> {
+    if let ObjectReference::Task(target) = target
+        && args[0] == info::task::ADDRESS_SPACE
+    {
+        return address_space(caller, target, args);
+    }
     if args[1..] != [0; 4] {
         return Err(Error::InvalidArgument.into());
     }
@@ -40,6 +45,67 @@ pub(super) fn invoke(
         (ObjectReference::DmaDomain(domain), info::dma::STATE) => [domain.state()? as u64, 0],
         _ => return Err(Error::Unsupported.into()),
     })
+}
+
+pub(super) fn output(
+    caller: &Task,
+    address: u64,
+    capacity: u64,
+    bytes: &[u8],
+) -> Result<[u64; 2], CallError> {
+    if capacity < bytes.len() as u64 {
+        return Err(CallError {
+            code: Error::BufferTooSmall,
+            values: [bytes.len() as u64, 0],
+        });
+    }
+    if !bytes.is_empty() {
+        caller
+            .pin_user_memory(address as usize, bytes.len(), true)?
+            .write(0, bytes)?;
+    }
+    Ok([bytes.len() as u64, 0])
+}
+
+fn address_space(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
+    use abi::memory::{AddressMode, AddressQuery, AddressRegion, RegionKind};
+    let query = AddressQuery::decode(&self::query(caller, args[1], args[2])?)?;
+    let region = match query.mode {
+        AddressMode::Bounds => {
+            let range = target.address_space()?.bounds();
+            AddressRegion {
+                start: range.start as u64,
+                end: range.end as u64,
+                kind: RegionKind::Bounds,
+                permissions: None,
+                leaf_level: 0,
+            }
+        }
+        AddressMode::Containing | AddressMode::AtOrAfter => {
+            let found = if query.mode == AddressMode::Containing {
+                target.query(query.address as usize)?
+            } else {
+                target.query_next(query.address as usize)?
+            };
+            let Some(region) = found else {
+                return Ok([0; 2]);
+            };
+            AddressRegion {
+                start: region.range.start as u64,
+                end: region.range.end as u64,
+                kind: if region.mapping.is_some() {
+                    RegionKind::Mapping
+                } else {
+                    RegionKind::Reserved
+                },
+                permissions: region.mapping.map(|mapping| {
+                    super::memory::native_permissions(mapping.attributes.permissions)
+                }),
+                leaf_level: region.leaf_level as u64,
+            }
+        }
+    };
+    output(caller, args[3], args[4], &region.encode())
 }
 
 pub(super) fn query<const N: usize>(

@@ -30,6 +30,10 @@ topics!(task {
     /// Returns `[Lifecycle, exit_status]`; live tasks report zero status.
     /// Exited tasks have completed cleanup and retain their final status.
     LIFECYCLE = 16 => WAIT;
+    /// Reads AddressQuery and writes one AddressRegion snapshot.
+    /// No matching region returns zero bytes without touching output.
+    /// BufferTooSmall reports AddressRegion::SIZE without changing output.
+    ADDRESS_SPACE = 17 => MAP_MEMORY;
 });
 topics!(thread {
     /// Returns `[Lifecycle, exit_status]` without exposing scheduler states.

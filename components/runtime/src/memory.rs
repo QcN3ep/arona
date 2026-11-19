@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use crate::{BorrowedHandle, Error, FrameAllocation, Handle, Rights, Task};
-pub use abi::memory::{HUGE_PAGE_SIZE, MAX_USER_MAPPING_RECORDS, Permissions};
+pub use abi::memory::{HUGE_PAGE_SIZE, Permissions};
 use abi::method::{memory, task};
 use core::ops::Range;
 
@@ -17,12 +17,35 @@ pub struct Reservation<'a> {
 pub struct MappingInfo {
     pub range: Range<usize>,
     pub permissions: Option<Permissions>,
+    pub leaf_level: u64,
+}
+
+/// Convenience access checks for native mapping permissions.
+pub trait PermissionsExt {
+    fn writable(self) -> bool;
+    fn executable(self) -> bool;
+}
+impl PermissionsExt for Permissions {
+    fn writable(self) -> bool {
+        matches!(self, Self::ReadWrite | Self::ReadWriteExecute)
+    }
+    fn executable(self) -> bool {
+        matches!(
+            self,
+            Self::ExecuteOnly | Self::ReadExecute | Self::ReadWriteExecute
+        )
+    }
 }
 
 impl Handle<Task> {
     pub fn address_range(&self) -> Result<Range<usize>, Error> {
-        let [start, end] = self.borrow().invoke(task::ADDRESS_RANGE, [0; 5])?;
-        decode_range(start, end.checked_sub(start).ok_or(Error::Protocol)?)
+        let region = self
+            .address_space_query(abi::memory::AddressMode::Bounds, 0)?
+            .ok_or(Error::Protocol)?;
+        if region.kind != abi::memory::RegionKind::Bounds {
+            return Err(Error::Protocol);
+        }
+        decode_range(region.start, region.end - region.start)
     }
 
     pub fn read_memory(&self, address: usize, output: &mut [u8]) -> Result<(), Error> {
@@ -170,28 +193,58 @@ impl Handle<Task> {
         })
     }
     pub fn query(&self, address: usize) -> Result<Option<MappingInfo>, Error> {
-        self.query_mapping(address, task::QUERY)
+        self.query_mapping(address, abi::memory::AddressMode::Containing)
     }
 
     /// Query the region covering address or the first region after it.
     pub fn query_next(&self, address: usize) -> Result<Option<MappingInfo>, Error> {
-        self.query_mapping(address, task::QUERY_NEXT)
+        self.query_mapping(address, abi::memory::AddressMode::AtOrAfter)
     }
 
-    fn query_mapping(&self, address: usize, method: u64) -> Result<Option<MappingInfo>, Error> {
-        let [start, end] = self.borrow().invoke(method, [address as u64, 0, 0, 0, 0])?;
-        if end == 0 {
+    fn query_mapping(
+        &self,
+        address: usize,
+        mode: abi::memory::AddressMode,
+    ) -> Result<Option<MappingInfo>, Error> {
+        let Some(region) = self.address_space_query(mode, address as u64)? else {
+            return Ok(None);
+        };
+        if region.kind == abi::memory::RegionKind::Bounds {
+            return Err(Error::Protocol);
+        }
+        Ok(Some(MappingInfo {
+            range: decode_range(region.start, region.end - region.start)?,
+            permissions: region.permissions,
+            leaf_level: region.leaf_level,
+        }))
+    }
+
+    fn address_space_query(
+        &self,
+        mode: abi::memory::AddressMode,
+        address: u64,
+    ) -> Result<Option<abi::memory::AddressRegion>, Error> {
+        let query = abi::memory::AddressQuery { mode, address }.encode();
+        let mut output = [0; abi::memory::AddressRegion::SIZE];
+        let [written, _] = self.borrow().invoke(
+            abi::method::INFO,
+            [
+                abi::info::task::ADDRESS_SPACE,
+                query.as_ptr() as u64,
+                query.len() as u64,
+                output.as_mut_ptr() as u64,
+                output.len() as u64,
+            ],
+        )?;
+        if written == 0 {
             return Ok(None);
         }
-        let permissions = if end & 0xfff == 0 {
-            None
-        } else {
-            Some(Permissions::from_raw(end & 0xfff).ok_or(Error::Protocol)?)
-        };
-        Ok(Some(MappingInfo {
-            range: start as usize..(end & !0xfff) as usize,
-            permissions,
-        }))
+        if written != output.len() as u64 {
+            return Err(Error::Protocol);
+        }
+        abi::memory::AddressRegion::decode(&output)
+            .map(Some)
+            .map_err(|_| Error::Protocol)
     }
 }
 /// Live references to a frame allocation.

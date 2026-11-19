@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use core::ops::Range;
-use runtime::memory::Permissions;
+use runtime::memory::{Permissions, PermissionsExt};
 
 use super::file::filesystem_error;
 use super::{
@@ -43,15 +43,6 @@ const MAP_HUGE_MASK: usize = 0x3f << MAP_HUGE_SHIFT;
 const MAP_HUGE_2MB: usize = 21 << MAP_HUGE_SHIFT;
 const HUGE_PAGE_SIZE: usize = 2 * 1024 * 1024;
 const HUGE_FRAMES: u64 = (HUGE_PAGE_SIZE / PAGE_SIZE) as u64;
-// Every 2 MiB large leaf consumes one mapping record, not one per base page. The
-// kernel bounds the records a user address space may hold, so a single mapping
-// cannot exceed the whole budget; checking it here keeps an attacker-controlled
-// length from reaching the block vector before any frame is obtained. The address
-// range is validated separately before the first block is materialized.
-const MAX_USER_MAPPING_RECORDS: usize = runtime::memory::MAX_USER_MAPPING_RECORDS;
-// One 2 MiB block consumes one mapping record, and the kernel budget is global to
-// the address space, so a single mapping cannot exceed the whole budget.
-const MAX_HUGE_BLOCKS: usize = MAX_USER_MAPPING_RECORDS;
 const HUGE_RIGHTS: Rights = Rights::READ_WRITE
     .union(Rights::MAP)
     .union(Rights::EXECUTE)
@@ -236,9 +227,6 @@ pub(super) fn validate_huge_request(request: &HugeRequest) -> Result<(), Errno> 
         return Err(EINVAL);
     }
     if request.length > isize::MAX as usize {
-        return Err(ENOMEM);
-    }
-    if request.length / HUGE_PAGE_SIZE > MAX_HUGE_BLOCKS {
         return Err(ENOMEM);
     }
     if request
