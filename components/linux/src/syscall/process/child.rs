@@ -70,7 +70,7 @@ fn spawn<'a>(
                 | Rights::INTERRUPT,
         )
         .map_err(super::error)?;
-    let policy = process.threads[index]
+    let (policy, nice) = process.threads[index]
         .inherit_scheduling(&native)
         .map_err(super::error)?;
     native.set_user_state(&state).map_err(super::error)?;
@@ -119,6 +119,7 @@ fn spawn<'a>(
             native_id,
             tid: pid,
             policy,
+            nice,
             clear_tid: if flags & CHILD_CLEARTID != 0 {
                 child_tid
             } else {

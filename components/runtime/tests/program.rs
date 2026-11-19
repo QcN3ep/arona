@@ -163,6 +163,23 @@ fn main() {
 }
 
 fn run_threads() {
+    let current = thread::current();
+    let original = current.weight().unwrap();
+    assert_eq!(
+        current.set_weight(0),
+        Err(runtime::Error::Kernel(abi::Error::InvalidArgument))
+    );
+    assert_eq!(current.weight().unwrap(), original);
+    for weight in [1, u32::MAX, 1024] {
+        current.set_weight(weight).unwrap();
+        assert_eq!(current.weight().unwrap(), weight);
+    }
+    let readonly = current.try_clone(runtime::Rights::READ).unwrap();
+    assert_eq!(
+        readonly.set_weight(original),
+        Err(runtime::Error::Kernel(abi::Error::Denied))
+    );
+    current.set_weight(original).unwrap();
     let dropped = Arc::new(AtomicUsize::new(0));
     let released = Arc::new(AtomicBool::new(false));
     let mut workers = Vec::new();

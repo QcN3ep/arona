@@ -28,24 +28,8 @@ use crate::{
     syscall::{self, Pending},
 };
 
-/// Non-real-time policies share the nice-based priority ordering of the kernel.
-pub(crate) const SCHED_OTHER: i32 = 0;
-pub(crate) const SCHED_BATCH: i32 = 3;
-pub(crate) const SCHED_IDLE: i32 = 5;
-
-impl Thread<'_> {
-    /// Copies the caller's kernel priority to a newly created thread and returns
-    /// the scheduling policy that the new thread must keep.
-    pub(crate) fn inherit_scheduling(
-        &self,
-        native: &Handle<runtime::Thread>,
-    ) -> Result<i32, runtime::Error> {
-        let priority = self.native.priority()?;
-        native.set_priority(priority)?;
-        native.set_scheduling(self.native.scheduling()?)?;
-        Ok(self.policy)
-    }
-}
+pub(crate) mod scheduling;
+pub(crate) use scheduling::{SCHED_BATCH, SCHED_IDLE, SCHED_OTHER};
 
 pub(crate) struct Thread<'a> {
     pub tid: usize,
@@ -55,6 +39,7 @@ pub(crate) struct Thread<'a> {
     pub native: Handle<runtime::Thread>,
     pub native_id: u64,
     pub policy: i32,
+    pub nice: i8,
     pub pending: Option<Pending<'a>>,
     pub signals: Rc<RefCell<ThreadSignals>>,
     pub held: Option<syscall::Context>,
@@ -241,6 +226,7 @@ impl<'a> Process<'a> {
                 native,
                 native_id: id,
                 policy: SCHED_OTHER,
+                nice: 0,
                 pending: None,
                 signals: thread_signals,
                 held: None,

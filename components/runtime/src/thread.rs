@@ -2,9 +2,7 @@
 
 use crate::{BorrowedHandle, Error, Handle, Rights, Task, Thread};
 use abi::method::{task, thread};
-pub use abi::thread::{
-    Lifecycle, PRIORITY_DEFAULT, PRIORITY_MAX, PRIORITY_MIN, SchedulingPolicy, UserEntry,
-};
+pub use abi::thread::{Lifecycle, UserEntry};
 
 #[cfg(all(feature = "program", target_os = "none"))]
 mod reaper;
@@ -33,14 +31,6 @@ pub fn now_ns() -> Result<u64, Error> {
     crate::process::clock()
         .ok_or(Error::Kernel(abi::Error::Denied))?
         .now_ns()
-}
-/// Returns the current thread's nice value.
-pub fn priority() -> Result<i32, Error> {
-    current().priority()
-}
-/// Changes the current thread scheduling priority within the priority range.
-pub fn set_priority(priority: i32) -> Result<(), Error> {
-    current().set_priority(priority)
 }
 /// Terminate the current thread without unwinding the stack or running thread-local destructors.
 pub fn exit(status: usize) -> ! {
@@ -105,24 +95,15 @@ impl Handle<Task> {
     }
 }
 impl Handle<Thread> {
-    pub fn scheduling(&self) -> Result<abi::thread::SchedulingPolicy, Error> {
-        let value = self.borrow().invoke(thread::GET_SCHEDULING, [0; 5])?[0];
-        abi::thread::SchedulingPolicy::from_raw(value).ok_or(Error::Protocol)
+    pub fn weight(&self) -> Result<u32, Error> {
+        self.borrow().weight()
     }
-    pub fn set_scheduling(&self, policy: abi::thread::SchedulingPolicy) -> Result<(), Error> {
-        self.borrow()
-            .invoke(thread::SET_SCHEDULING, [policy as u64, 0, 0, 0, 0])
-            .map(|_| ())
+    pub fn set_weight(&self, weight: u32) -> Result<(), Error> {
+        self.borrow().set_weight(weight)
     }
 
     pub fn start(&self) -> Result<(), Error> {
         self.borrow().invoke(thread::START, [0; 5]).map(|_| ())
-    }
-    pub fn priority(&self) -> Result<i32, Error> {
-        self.borrow().priority()
-    }
-    pub fn set_priority(&self, priority: i32) -> Result<(), Error> {
-        self.borrow().set_priority(priority)
     }
     pub fn state(&self) -> Result<(Lifecycle, usize), Error> {
         self.borrow().state()
@@ -141,11 +122,11 @@ impl Handle<Thread> {
     }
 }
 impl BorrowedHandle<'_, Thread> {
-    pub fn priority(&self) -> Result<i32, Error> {
-        Ok(self.invoke(thread::GET_PRIORITY, [0; 5])?[0] as u32 as i32)
+    pub fn weight(&self) -> Result<u32, Error> {
+        u32::try_from(self.query(abi::info::thread::SCHEDULING)?[0]).map_err(|_| Error::Protocol)
     }
-    pub fn set_priority(&self, priority: i32) -> Result<(), Error> {
-        self.invoke(thread::SET_PRIORITY, [priority as i64 as u64, 0, 0, 0, 0])
+    pub fn set_weight(&self, weight: u32) -> Result<(), Error> {
+        self.invoke(thread::SET_SCHEDULING, [u64::from(weight), 0, 0, 0, 0])
             .map(|_| ())
     }
     pub fn state(&self) -> Result<(Lifecycle, usize), Error> {

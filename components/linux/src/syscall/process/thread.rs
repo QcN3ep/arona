@@ -68,7 +68,7 @@ pub(super) fn clone(
                 | Rights::INTERRUPT,
         )
         .map_err(super::error)?;
-    let policy = process.threads[index]
+    let (policy, nice) = process.threads[index]
         .inherit_scheduling(&native)
         .map_err(super::error)?;
     let setup = start(
@@ -94,6 +94,7 @@ pub(super) fn clone(
                 native_id,
                 tid,
                 policy,
+                nice,
                 clear_tid: if flags & CHILD_CLEARTID != 0 {
                     child_tid
                 } else {

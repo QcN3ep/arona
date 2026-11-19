@@ -115,18 +115,11 @@ pub fn yield_now() -> Result<(), ThreadError> {
     suspend(SuspendReason::Yield)
 }
 
-pub(super) fn set_nice(thread: &Thread, nice: i8) -> Result<(), ThreadError> {
-    if !(-20..=19).contains(&nice) {
-        return Err(ThreadError::InvalidPriority);
+pub(super) fn set_weight(thread: &Thread, weight: u32) -> Result<(), ThreadError> {
+    if weight == 0 {
+        return Err(ThreadError::InvalidArgument);
     }
-    change_fair(thread, |entity| entity.set_nice(nice))
-}
-
-pub(super) fn set_policy(
-    thread: &Thread,
-    policy: abi::thread::SchedulingPolicy,
-) -> Result<(), ThreadError> {
-    change_fair(thread, |entity| entity.set_policy(policy))
+    change_fair(thread, |entity| entity.set_weight(weight))
 }
 
 fn change_fair(thread: &Thread, change: impl FnOnce(&mut Entity)) -> Result<(), ThreadError> {

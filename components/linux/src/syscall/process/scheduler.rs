@@ -9,7 +9,7 @@ use crate::{
 
 const PRIO_PROCESS: i32 = 0;
 const CPU_MASK_BYTES: usize = 8;
-const NICE_BIAS: i32 = -runtime::thread::PRIORITY_MIN;
+const NICE_BIAS: i32 = 20;
 
 // REFERENCE: https://man7.org/linux/man-pages/man2/sched_setscheduler.2.html
 pub(super) fn dispatch(
@@ -46,12 +46,10 @@ fn set_scheduler(process: &mut Process<'_>, index: usize, args: [usize; 6]) -> S
         // TODO: Support SCHED_FIFO and SCHED_RR once the kernel provides static priority bands.
         return Err(EINVAL);
     }
-    let native = runtime::thread::SchedulingPolicy::from_raw(policy as u64).ok_or(EINVAL)?;
+    let nice = process.threads[target].nice;
     process.threads[target]
-        .native
-        .set_scheduling(native)
+        .set_scheduling(policy, nice)
         .map_err(error)?;
-    process.threads[target].policy = policy;
     Ok(0)
 }
 
@@ -73,24 +71,19 @@ fn set_param(process: &Process<'_>, index: usize, args: [usize; 6]) -> SyscallRe
 }
 
 // REFERENCE: https://man7.org/linux/man-pages/man2/setpriority.2.html
-fn set_priority(process: &Process<'_>, index: usize, args: [usize; 6]) -> SyscallResult {
+fn set_priority(process: &mut Process<'_>, index: usize, args: [usize; 6]) -> SyscallResult {
     if args[0] as i32 != PRIO_PROCESS {
         return Err(EINVAL);
     }
     let target = target(process, index, args[1])?;
     // Linux clamps a nice value outside the supported range instead of failing.
-    let nice = i64::from(args[2] as i32).clamp(
-        i64::from(runtime::thread::PRIORITY_MIN),
-        i64::from(runtime::thread::PRIORITY_MAX),
-    );
-    if process.credentials.euid != 0
-        && nice < i64::from(process.threads[target].native.priority().map_err(error)?)
-    {
+    let nice = (args[2] as i32).clamp(-20, 19) as i8;
+    if process.credentials.euid != 0 && nice < process.threads[target].nice {
         return Err(EPERM);
     }
+    let policy = process.threads[target].policy;
     process.threads[target]
-        .native
-        .set_priority(nice as i32)
+        .set_scheduling(policy, nice)
         .map_err(error)?;
     Ok(0)
 }
@@ -101,7 +94,7 @@ fn get_priority(process: &Process<'_>, index: usize, args: [usize; 6]) -> Syscal
         return Err(EINVAL);
     }
     let target = target(process, index, args[1])?;
-    let nice = process.threads[target].native.priority().map_err(error)?;
+    let nice = i32::from(process.threads[target].nice);
     Ok((NICE_BIAS - nice) as usize)
 }
 

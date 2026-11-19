@@ -240,7 +240,7 @@ fn replace(
         )
         .map_err(super::error)?;
     // execve keeps the scheduling policy and nice value of the replaced thread.
-    let policy = process.threads[index]
+    let (policy, nice) = process.threads[index]
         .inherit_scheduling(&native)
         .map_err(super::error)?;
     native
@@ -282,6 +282,7 @@ fn replace(
         native_id,
         tid: process.pid,
         policy,
+        nice,
         clear_tid: 0,
         robust_list: 0,
         pending: None,

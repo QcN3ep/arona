@@ -40,33 +40,32 @@ fn fair_shares(yielding: bool) {
         Fixture::new(42 + index, rounds)
     });
     for fixture in &fixtures {
-        assert_eq!(fixture.thread.nice(), 0);
+        assert_eq!(fixture.thread.weight(), 1024);
         assert_eq!(
-            fixture.thread.set_nice(-21),
-            Err(ThreadError::InvalidPriority)
+            fixture.thread.set_weight(0),
+            Err(ThreadError::InvalidArgument)
         );
-        assert_eq!(
-            fixture.thread.set_nice(20),
-            Err(ThreadError::InvalidPriority)
-        );
-        assert_eq!(fixture.thread.nice(), 0);
+        assert_eq!(fixture.thread.weight(), 1024);
         fixture.thread.start().unwrap();
     }
     assert_shares(&fixtures, [1024; 3], yielding);
-    for (fixture, nice) in fixtures.iter().zip([-5, 0, 5]) {
-        fixture.thread.set_nice(nice).unwrap();
-        assert_eq!(fixture.thread.nice(), nice);
+    for (fixture, weight) in fixtures.iter().zip([3121, 1024, 335]) {
+        fixture.thread.set_weight(weight).unwrap();
+        assert_eq!(fixture.thread.weight(), weight);
     }
     assert_shares(&fixtures, [3121, 1024, 335], yielding);
-    for (fixture, nice) in fixtures.iter().zip([5, 0, -5]) {
-        fixture.thread.set_nice(nice).unwrap();
+    for (fixture, weight) in fixtures.iter().zip([335, 1024, 3121]) {
+        fixture.thread.set_weight(weight).unwrap();
     }
     assert_shares(&fixtures, [335, 1024, 3121], yielding);
     for fixture in fixtures {
         fixture.thread.terminate(19).unwrap();
         wait_dead(&fixture.thread);
         fixture.assert_exit(19);
-        assert_eq!(fixture.thread.set_nice(0), Err(ThreadError::InvalidState));
+        assert_eq!(
+            fixture.thread.set_weight(1024),
+            Err(ThreadError::InvalidState)
+        );
     }
 }
 
@@ -103,7 +102,7 @@ fn assert_shares(fixtures: &[Fixture; 3], mut weights: [u64; 3], yielding: bool)
 fn queued_cancellation() {
     let fixtures: [Fixture; 32] = core::array::from_fn(|index| {
         let fixture = Fixture::new(42 + index, 2);
-        fixture.thread.set_nice((index % 40) as i8 - 20).unwrap();
+        fixture.thread.set_weight((index as u32 + 1) * 32).unwrap();
         fixture.thread.start().unwrap();
         fixture
     });

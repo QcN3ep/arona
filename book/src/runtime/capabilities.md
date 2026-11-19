@@ -70,6 +70,7 @@ The Task handle provides creating child Tasks, installing handles, termination, 
 `install` consumes the transferred Handle; on failure it returns the error together with the original Handle.
 
 The Thread handle provides operations such as start, state, terminate, wait, and id.
+`weight` reads a thread's relative CPU share, and `set_weight` changes it.
 The runtime reads monotonic time through its granted Clock. It sleeps with an empty wait and yields through the current Thread.
 See [Program Runtime Environment](environment.md) for stack and result management of closure threads.
 

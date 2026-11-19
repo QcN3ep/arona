@@ -55,7 +55,7 @@ pub enum ThreadError {
     NotInitialized,
     AlreadyInitialized,
     InvalidState,
-    InvalidPriority,
+    InvalidArgument,
     Terminated,
     Capacity,
     GenerationExhausted,
@@ -233,26 +233,14 @@ impl Thread {
         }
     }
 
-    /// Returns the CFS nice value in the range -20 through 19.
-    pub fn nice(&self) -> i8 {
+    /// Relative CPU share, independent of the scheduler's internal accounting.
+    pub fn weight(&self) -> u32 {
         let _interrupts = InterruptGuard::new();
-        self.0.data.lock().fair.nice()
+        self.0.data.lock().fair.weight()
     }
 
-    /// Changes this thread's relative CPU share without resetting its execution history.
-    pub fn set_nice(&self, nice: i8) -> Result<(), ThreadError> {
-        scheduler::set_nice(self, nice)
-    }
-
-    /// Returns the scheduling behavior used by the fair scheduler.
-    pub fn scheduling(&self) -> abi::thread::SchedulingPolicy {
-        let _interrupts = InterruptGuard::new();
-        self.0.data.lock().fair.policy
-    }
-
-    /// Changes fair scheduling behavior without discarding execution history.
-    pub fn set_scheduling(&self, policy: abi::thread::SchedulingPolicy) -> Result<(), ThreadError> {
-        scheduler::set_policy(self, policy)
+    pub fn set_weight(&self, weight: u32) -> Result<(), ThreadError> {
+        scheduler::set_weight(self, weight)
     }
 
     pub fn terminate(&self, status: usize) -> Result<(), ThreadError> {

@@ -42,6 +42,8 @@ topics!(thread {
     IDENTITY = 17 => READ;
     /// Returns `[cpu_nanoseconds, 0]`, including the current execution interval.
     CPU_TIME = 18 => READ;
+    /// Returns `[weight, 0]` for the thread's relative CPU share.
+    SCHEDULING = 19 => READ;
 });
 topics!(memory {
     /// Returns `[frame_count, 0]` for this allocation.

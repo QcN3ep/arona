@@ -49,6 +49,9 @@ pub(super) fn invoke(
             ThreadState::Dead(status) => [Lifecycle::Exited as u64, status as u64],
             _ => [Lifecycle::Live as u64, 0],
         },
+        (ObjectReference::Thread(thread), info::thread::SCHEDULING) => {
+            [u64::from(thread.weight()), 0]
+        }
         (ObjectReference::Thread(thread), info::thread::IDENTITY) => [thread.id(), 0],
         (ObjectReference::Thread(thread), info::thread::CPU_TIME) => [thread.cpu_time_ns()?, 0],
         (ObjectReference::FrameAllocation(frames), info::memory::SIZE) => [frames.info().frames, 0],

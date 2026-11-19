@@ -117,7 +117,7 @@ impl From<ThreadError> for Error {
         match error {
             ThreadError::Memory(error) => error.into(),
             ThreadError::Capacity | ThreadError::GenerationExhausted => Self::NoMemory,
-            ThreadError::InvalidPriority | ThreadError::Execution(_) => Self::InvalidArgument,
+            ThreadError::InvalidArgument | ThreadError::Execution(_) => Self::InvalidArgument,
             _ => Self::InvalidState,
         }
     }

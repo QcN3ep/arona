@@ -67,9 +67,8 @@ methods!(thread {
     WAIT_MANY = 24 => NONE;
     SET_STATE = 25 => SET_STATE;
     INTERRUPT = 26 => INTERRUPT;
-    GET_PRIORITY = 29 => NONE;
-    SET_PRIORITY = 30 => SET_STATE;
-    GET_SCHEDULING = 31 => NONE;
+    /// Sets `[weight, 0, 0, 0, 0]`, accepting 1..=u32::MAX.
+    /// The default weight is 1024. Failure preserves the previous weight.
     SET_SCHEDULING = 32 => SET_STATE;
 });
 

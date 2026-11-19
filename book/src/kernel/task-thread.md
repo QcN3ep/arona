@@ -60,9 +60,10 @@ The Thread control object remains available for other threads to query and wait 
 ## Scheduling and Preemption Requests
 
 Arona uses CFS to share CPU time between runnable threads.
-Each thread accumulates virtual runtime from its actual execution time and nice weight.
+Each thread accumulates virtual runtime from its actual execution time and assigned weight.
 The ready queue is a red-black tree ordered by virtual runtime, and dispatch selects its leftmost thread.
-The default nice value is 0. Values from -20 through 19 increase or decrease a thread's relative CPU share.
+The native interface accepts weights from 1 through `u32::MAX`, with a default weight of 1024.
+The Linux service translates its own nice values and policy settings into these weights.
 
 The scheduling period is at least 6 ms and grows by 0.75 ms per runnable thread above eight threads.
 Each user thread receives a share of this period proportional to its weight.

@@ -3,25 +3,16 @@
 //! CFS execution accounting, placement, and preemption policy.
 
 use super::{Scheduler, Thread, ThreadKind};
-use abi::thread::SchedulingPolicy;
 
 const LATENCY_NS: u64 = 6_000_000;
 const MIN_GRANULARITY_NS: u64 = 750_000;
 const WAKEUP_GRANULARITY_NS: u64 = 1_000_000;
 const NORMAL_WEIGHT: u64 = 1024;
 
-// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/kernel/sched/core.c?h=v6.5
-const WEIGHTS: [u32; 40] = [
-    88761, 71755, 56483, 46273, 36291, 29154, 23254, 18705, 14949, 11916, 9548, 7620, 6100, 4904,
-    3906, 3121, 2501, 1991, 1586, 1277, 1024, 820, 655, 526, 423, 335, 272, 215, 172, 137, 110, 87,
-    70, 56, 45, 36, 29, 23, 18, 15,
-];
-
 pub(in crate::thread) struct Entity {
     pub(in crate::thread) vruntime: i128,
     pub(in crate::thread) slice_start: u64,
-    nice: i8,
-    pub(in crate::thread) policy: SchedulingPolicy,
+    weight: u32,
     remainder: u32,
 }
 
@@ -30,31 +21,17 @@ impl Entity {
         Self {
             vruntime: 0,
             slice_start: 0,
-            nice: 0,
-            policy: SchedulingPolicy::Normal,
+            weight: NORMAL_WEIGHT as u32,
             remainder: 0,
         }
     }
 
-    pub(in crate::thread) fn nice(&self) -> i8 {
-        self.nice
-    }
-
     pub(in crate::thread) fn weight(&self) -> u32 {
-        if self.policy == SchedulingPolicy::Idle {
-            3
-        } else {
-            WEIGHTS[(i16::from(self.nice) + 20) as usize]
-        }
+        self.weight
     }
 
-    pub(super) fn set_nice(&mut self, nice: i8) {
-        self.nice = nice;
-        self.remainder = 0;
-    }
-
-    pub(super) fn set_policy(&mut self, policy: SchedulingPolicy) {
-        self.policy = policy;
+    pub(super) fn set_weight(&mut self, weight: u32) {
+        self.weight = weight;
         self.remainder = 0;
     }
 
@@ -134,12 +111,9 @@ impl Scheduler {
                 };
                 data.fair.vruntime = self.min_vruntime.saturating_add(i128::from(debit));
             }
-            Placement::Wake if data.fair.policy == SchedulingPolicy::Normal => {
+            Placement::Wake => {
                 let floor = self.min_vruntime.saturating_sub(i128::from(LATENCY_NS / 2));
                 data.fair.vruntime = data.fair.vruntime.max(floor);
-            }
-            Placement::Wake => {
-                data.fair.vruntime = data.fair.vruntime.max(self.min_vruntime);
             }
             Placement::Requeue => {}
         }
