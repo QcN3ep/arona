@@ -271,7 +271,7 @@ fn scenario(_: usize) -> usize {
     assert_eq!(mapping.attributes.permissions, PagePermissions::ReadWrite);
     assert_eq!(
         task.protect(info.range, PagePermissions::ReadExecute),
-        Err(TaskError::Memory(MemoryError::InUse))
+        Err(TaskError::Memory(MemoryError::AccessConflict))
     );
     assert_eq!(
         task.unmap(info.range),
@@ -282,6 +282,19 @@ fn scenario(_: usize) -> usize {
         reference.map(&task, console.id, console.mmio_regions),
         Err(DeviceError::InvalidArgument)
     );
+    for permissions in [
+        PagePermissions::ReadOnly,
+        PagePermissions::NoAccess,
+        PagePermissions::ReadWrite,
+    ] {
+        task.protect(info.range, permissions).unwrap();
+        let protected = task.query(range.start).unwrap().unwrap();
+        assert_eq!(
+            protected.mapping.unwrap().attributes.permissions,
+            permissions
+        );
+        assert_eq!(protected.generation, info.generation);
+    }
     let alias = reference.map(&task, console.id, 0).unwrap();
     assert_eq!(alias, range);
     reference.unmap(&task, alias.start).unwrap();

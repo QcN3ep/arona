@@ -726,6 +726,11 @@ impl AddressSpace {
     ) -> Result<(), MemoryError> {
         self.validate_range(range)?;
         let mut state = self.state.lock();
+        if let Some(record) = state.mappings.get(range.start)
+            && matches!(record.kind, MappingKind::Device { .. })
+        {
+            return self.protect_device(record, range, permissions);
+        }
         let mut cursor = range.start;
         while cursor < range.end {
             let record = state.mappings.get(cursor).ok_or(MemoryError::NotMapped)?;
@@ -802,6 +807,53 @@ impl AddressSpace {
         }
         state.clear_journals(range);
         result
+    }
+
+    fn protect_device(
+        &self,
+        record: MappingRecord,
+        range: VirtRange,
+        permissions: PagePermissions,
+    ) -> Result<(), MemoryError> {
+        if !record.maximum.allows(permissions) {
+            return Err(MemoryError::AccessConflict);
+        }
+        if record.range != range {
+            return Err(MemoryError::Unsupported);
+        }
+        self.table.edit(|table| {
+            let PageTableEntry::Mapping(first) = table.walk(range.start)?.entry else {
+                return Err(MmuError::InvalidTable.into());
+            };
+            let mut written = range.start;
+            let result = (|| {
+                for address in pages(range) {
+                    let walk = table.walk(address)?;
+                    let PageTableEntry::Mapping(mut mapping) = walk.entry else {
+                        return Err(MmuError::InvalidTable.into());
+                    };
+                    mapping.attributes.permissions = permissions;
+                    PageTableState::write_leaf(address, walk.tables[0].unwrap(), Some(mapping))?;
+                    written = address + PAGE_SIZE;
+                }
+                Ok(())
+            })();
+            if result.is_err() {
+                for address in (range.start..written).step_by(PAGE_SIZE) {
+                    let walk = table
+                        .walk(address)
+                        .expect("lost device page during rollback");
+                    let original = PageMapping {
+                        physical_address: first.physical_address + (address - range.start) as u64,
+                        attributes: first.attributes,
+                    };
+                    PageTableState::write_leaf(address, walk.tables[0].unwrap(), Some(original))
+                        .expect("failed to restore device permissions");
+                }
+            }
+            hardware::mmu().invalidate_all();
+            result
+        })
     }
 
     fn protect_large_range(

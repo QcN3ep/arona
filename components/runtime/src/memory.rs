@@ -103,23 +103,10 @@ impl Handle<Task> {
         address: Option<usize>,
         permissions: Permissions,
     ) -> Result<Mapping<'_>, Error> {
-        let [start, length] = self.borrow().invoke(
-            task::MAP,
-            [
-                frames.borrow().raw().raw(),
-                offset,
-                count,
-                address.unwrap_or(0) as u64,
-                permissions as u64,
-            ],
-        )?;
-        Ok(Mapping {
-            task: self.borrow(),
-            range: Some(decode_range(start, length)?),
-        })
+        self.map_at_level(frames, offset, count, address, permissions, 0)
     }
 
-    /// Maps `count` frames as large page leaves; `offset` and `count` must be huge page aligned.
+    /// Maps frames using leaf level one, with the layout's alignment and contiguity requirements.
     pub fn map_huge(
         &self,
         frames: &Handle<FrameAllocation>,
@@ -128,14 +115,31 @@ impl Handle<Task> {
         address: Option<usize>,
         permissions: Permissions,
     ) -> Result<Mapping<'_>, Error> {
+        self.map_at_level(frames, offset, count, address, permissions, 1)
+    }
+
+    fn map_at_level(
+        &self,
+        frames: &Handle<FrameAllocation>,
+        offset: u64,
+        count: u64,
+        address: Option<usize>,
+        permissions: Permissions,
+        level: u64,
+    ) -> Result<Mapping<'_>, Error> {
+        let mode = abi::memory::MapMode {
+            permissions,
+            leaf_level: u8::try_from(level)
+                .map_err(|_| Error::Kernel(abi::Error::InvalidArgument))?,
+        };
         let [start, length] = self.borrow().invoke(
-            task::MAP_HUGE,
+            task::MAP,
             [
                 frames.borrow().raw().raw(),
                 offset,
                 count,
                 address.unwrap_or(0) as u64,
-                permissions as u64,
+                mode.encode(),
             ],
         )?;
         Ok(Mapping {
@@ -143,6 +147,7 @@ impl Handle<Task> {
             range: Some(decode_range(start, length)?),
         })
     }
+
     pub fn reserve(
         &self,
         length: usize,

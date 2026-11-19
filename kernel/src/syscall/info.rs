@@ -4,12 +4,13 @@
 
 use super::error::CallError;
 use crate::{
-    task::{ObjectReference, Rights, TaskState},
+    task::{ObjectReference, Rights, Task, TaskState},
     thread::ThreadState,
 };
 use abi::{Error, info, thread::Lifecycle};
 
 pub(super) fn invoke(
+    caller: &Task,
     target: &ObjectReference,
     rights: Rights,
     args: [u64; 5],
@@ -39,4 +40,19 @@ pub(super) fn invoke(
         (ObjectReference::DmaDomain(domain), info::dma::STATE) => [domain.state()? as u64, 0],
         _ => return Err(Error::Unsupported.into()),
     })
+}
+
+pub(super) fn query<const N: usize>(
+    caller: &Task,
+    address: u64,
+    length: u64,
+) -> Result<[u8; N], CallError> {
+    if length != N as u64 {
+        return Err(Error::InvalidArgument.into());
+    }
+    let mut bytes = [0; N];
+    caller
+        .pin_user_memory(address as usize, N, false)?
+        .read(0, &mut bytes)?;
+    Ok(bytes)
 }

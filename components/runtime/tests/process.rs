@@ -3,7 +3,7 @@
 use runtime::{
     Error, FrameAllocation, Handle, ObjectType, Rights,
     ipc::{Message, ReceivedMessage, WaitMode},
-    memory::Permissions,
+    memory::{HUGE_PAGE_SIZE, Permissions},
     process::{self, ChildTask, ProcessStart},
     thread,
 };
@@ -200,6 +200,44 @@ fn remote_memory() {
 }
 
 fn frame_io() {
+    let large_size = HUGE_PAGE_SIZE;
+    let large_frames = (large_size / PAGE_SIZE) as u64;
+    let large = process::task()
+        .allocate_contiguous(large_frames, large_size, Rights::READ_WRITE | Rights::MAP)
+        .unwrap();
+    let mut mapped = process::task()
+        .map_huge(&large, 0, large_frames, None, Permissions::ReadWrite)
+        .unwrap();
+    let range = mapped.range().unwrap();
+    assert_eq!(range.len(), large_size);
+    assert!(range.start.is_multiple_of(large_size));
+    mapped.protect(Permissions::ReadOnly).unwrap();
+    assert_eq!(
+        process::task()
+            .map_huge(&large, 1, large_frames - 1, None, Permissions::ReadWrite)
+            .err(),
+        Some(Error::Kernel(abi::Error::InvalidArgument))
+    );
+    mapped.unmap().unwrap();
+    assert_eq!(large.state().unwrap().mappings, 0);
+    drop(mapped);
+    drop(large);
+    for alignment in [1, PAGE_SIZE + 1] {
+        assert_eq!(
+            process::task()
+                .allocate_contiguous(4, alignment, Rights::READ_WRITE)
+                .unwrap_err(),
+            Error::Kernel(abi::Error::InvalidArgument)
+        );
+    }
+    let contiguous = process::task()
+        .allocate_contiguous(4, PAGE_SIZE * 4, Rights::READ_WRITE)
+        .unwrap();
+    assert_eq!(contiguous.frames().unwrap(), 4);
+    let mut zeroed = [1; PAGE_SIZE];
+    contiguous.read(PAGE_SIZE, &mut zeroed).unwrap();
+    assert_eq!(zeroed, [0; PAGE_SIZE]);
+    drop(contiguous);
     let observed = process::task()
         .allocate(1, Rights::READ | Rights::DUPLICATE)
         .unwrap();

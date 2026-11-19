@@ -7,7 +7,9 @@ pub(crate) mod files;
 use alloc::{collections::BTreeMap, rc::Rc, vec::Vec};
 use core::{cell::RefCell, ops::Range};
 use runtime::{
-    FrameAllocation, Handle, Rights, Task, TrapPort, memory::Permissions, process::SupervisedTask,
+    FrameAllocation, Handle, Rights, Task, TrapPort,
+    memory::{HUGE_PAGE_SIZE, Permissions},
+    process::SupervisedTask,
 };
 
 use crate::{
@@ -16,7 +18,6 @@ use crate::{
     protocol::Arguments,
 };
 
-const HUGE_PAGE_SIZE: usize = runtime::memory::HUGE_PAGE_SIZE;
 const HUGE_FRAMES: u64 = (HUGE_PAGE_SIZE / PAGE_SIZE) as u64;
 
 pub(crate) struct AddressSpace {

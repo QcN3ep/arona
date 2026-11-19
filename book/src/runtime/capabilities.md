@@ -53,6 +53,9 @@ fn mapped_bytes() -> Result<(), runtime::Error> {
 }
 ```
 
+`map` and `map_huge` use the same native MAP method. The latter selects leaf level one in the mapping mode.
+Leaf level one uses `HUGE_PAGE_SIZE`. A mapping must satisfy that level's alignment and physical contiguity requirements.
+
 `Mapping` holds a borrow of the target Task and the virtual range.
 Explicit `unmap` returns the result of unmapping, and destruction also attempts to unmap.
 `protect` modifies mapping permissions, and `Reservation` holds a reserved range and performs UNRESERVE on release.

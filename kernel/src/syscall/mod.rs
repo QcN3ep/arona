@@ -54,7 +54,7 @@ fn invoke(handle: Handle, arguments: [u64; 6]) -> Result<Return, CallError> {
         return Err(Error::Denied.into());
     }
     let values = match arguments[0] {
-        method::INFO => info::invoke(&object, rights, arguments[1..].try_into().unwrap())?,
+        method::INFO => info::invoke(&caller, &object, rights, arguments[1..].try_into().unwrap())?,
         method::CLOSE => {
             if handle == Handle::CURRENT_THREAD {
                 return Err(Error::InvalidArgument.into());

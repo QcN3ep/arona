@@ -41,7 +41,7 @@ const MAP_HUGETLB: usize = 0x40000;
 const MAP_HUGE_SHIFT: u32 = 26;
 const MAP_HUGE_MASK: usize = 0x3f << MAP_HUGE_SHIFT;
 const MAP_HUGE_2MB: usize = 21 << MAP_HUGE_SHIFT;
-const HUGE_PAGE_SIZE: usize = runtime::memory::HUGE_PAGE_SIZE;
+const HUGE_PAGE_SIZE: usize = 2 * 1024 * 1024;
 const HUGE_FRAMES: u64 = (HUGE_PAGE_SIZE / PAGE_SIZE) as u64;
 // Every 2 MiB large leaf consumes one mapping record, not one per base page. The
 // kernel bounds the records a user address space may hold, so a single mapping

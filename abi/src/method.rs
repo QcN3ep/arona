@@ -19,9 +19,20 @@ macro_rules! methods {
 }
 methods!(task {
     ALLOCATE = 16 => FRAME_ALLOCATE;
+    /// Maps `[allocation, frame_offset, frame_count, requested_address, mode]`.
+    /// MapMode encodes access in bits 0..3 and the leaf level in bits 8..15.
+    /// Levels zero and one select base pages and HUGE_PAGE_SIZE respectively.
+    /// Other levels return InvalidArgument. Requested leaves require their own
+    /// alignment and physical contiguity and never fall back to smaller pages.
+    /// The allocation additionally requires MAP and the requested access rights.
+    /// Success returns `[start, length]`; failure leaves the address space unchanged.
     MAP = 17 => MAP_MEMORY;
     UNMAP = 18 => MAP_MEMORY;
+    /// Changes `[start, length, permissions, 0, 0]`.
+    /// Device mappings retain their grant and accept their complete mapped range.
+    /// Partial device ranges return Unsupported; access above the grant returns Denied.
     PROTECT = 19 => MAP_MEMORY;
+    /// Reserves `[length, alignment, requested_address, 0, 0]`.
     RESERVE = 20 => MAP_MEMORY;
     UNRESERVE = 21 => MAP_MEMORY;
     QUERY = 22 => MAP_MEMORY;
@@ -41,7 +52,6 @@ methods!(task {
     MEMORY_STATS = 38 => NONE;
     LOAD_AVERAGE = 39 => NONE;
     ATOMIC_COMPARE_EXCHANGE = 40 => WRITE_MEMORY;
-    MAP_HUGE = 41 => MAP_MEMORY;
     RANDOM = 42 => NONE;
 });
 methods!(memory {

@@ -47,16 +47,22 @@ pub(super) fn task(
         task::READ_MEMORY | task::WRITE_MEMORY => copy_task_memory(caller, target, method, args),
         task::ATOMIC_COMPARE_EXCHANGE => atomic_compare_exchange(target, args),
         task::MAP => map(caller, target, args),
-        task::MAP_HUGE => map_huge(caller, target, args),
+
         task::UNMAP => {
             target.unmap(range(args[0], args[1])?)?;
             Ok([0; 2])
         }
         task::PROTECT => {
+            if args[3..] != [0; 2] {
+                return Err(Error::InvalidArgument.into());
+            }
             target.protect(range(args[0], args[1])?, permissions(args[2])?)?;
             Ok([0; 2])
         }
         task::RESERVE => {
+            if args[3..] != [0; 2] {
+                return Err(Error::InvalidArgument.into());
+            }
             let range = target.reserve(
                 args[0] as usize,
                 args[1] as usize,
@@ -148,33 +154,23 @@ fn allocate(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Ca
 }
 
 fn map(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
-    let permissions = permissions(args[4])?;
+    let mode = abi::memory::MapMode::decode(args[4]).ok_or(Error::InvalidArgument)?;
+    let level = u64::from(mode.leaf_level);
+    if level > 1 {
+        return Err(Error::InvalidArgument.into());
+    }
     let (ObjectReference::FrameAllocation(allocation), options) =
-        mapping_reference(caller, args[0], permissions)?
+        mapping_reference(caller, args[0], mode.permissions)?
     else {
         unreachable!()
     };
     let frames = args[1]..args[1].checked_add(args[2]).ok_or(Error::InvalidArgument)?;
-    let range = if args[3] == 0 {
-        target.map(&allocation, frames, options)?
-    } else {
-        target.map_at(args[3] as usize, &allocation, frames, options)?
-    };
-    Ok([range.start as u64, (range.end - range.start) as u64])
-}
-
-fn map_huge(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], CallError> {
-    let permissions = permissions(args[4])?;
-    let (ObjectReference::FrameAllocation(allocation), options) =
-        mapping_reference(caller, args[0], permissions)?
-    else {
-        unreachable!()
-    };
-    let frames = args[1]..args[1].checked_add(args[2]).ok_or(Error::InvalidArgument)?;
-    let range = if args[3] == 0 {
-        target.map_huge(&allocation, frames, options)?
-    } else {
-        target.map_huge_at(args[3] as usize, &allocation, frames, options)?
+    let range = match (level, args[3]) {
+        (0, 0) => target.map(&allocation, frames, options)?,
+        (0, address) => target.map_at(address as usize, &allocation, frames, options)?,
+        (1, 0) => target.map_huge(&allocation, frames, options)?,
+        (1, address) => target.map_huge_at(address as usize, &allocation, frames, options)?,
+        _ => unreachable!(),
     };
     Ok([range.start as u64, (range.end - range.start) as u64])
 }
@@ -182,14 +178,14 @@ fn map_huge(caller: &Task, target: &Task, args: [u64; 5]) -> Result<[u64; 2], Ca
 fn mapping_reference(
     caller: &Task,
     raw: u64,
-    permissions: PagePermissions,
+    native: abi::memory::Permissions,
 ) -> Result<(ObjectReference, MappingOptions), CallError> {
+    let permissions = permissions(native as u64)?;
     let handle = Handle::from_raw(raw);
-    let (kind, rights) = caller.handle_info(handle)?;
-    if kind != ObjectType::FrameAllocation {
+    let (object, rights) = caller.with_handles(|table| table.lookup(handle))??;
+    let ObjectReference::FrameAllocation(allocation) = object else {
         return Err(Error::WrongType.into());
-    }
-    let mut required = Rights::MAP;
+    };
     let mut maximum = MappingRights::from(permissions);
     for (right, mapping) in [
         (Rights::READ, MappingRights::READ),
@@ -200,19 +196,9 @@ fn mapping_reference(
             maximum = maximum | mapping;
         }
     }
-    match permissions {
-        PagePermissions::NoAccess => {}
-        PagePermissions::ReadOnly => required = required | Rights::READ,
-        PagePermissions::ReadWrite => required = required | Rights::READ | Rights::WRITE,
-        PagePermissions::ReadExecute => required = required | Rights::READ | Rights::EXECUTE,
-        PagePermissions::ReadWriteExecute => {
-            required = required | Rights::READ | Rights::WRITE | Rights::EXECUTE;
-        }
-        PagePermissions::ExecuteOnly => required = required | Rights::EXECUTE,
+    if !rights.contains(native.mapping_rights()) {
+        return Err(Error::Denied.into());
     }
-    let ObjectReference::FrameAllocation(allocation) = caller.get(handle, kind, required)? else {
-        unreachable!()
-    };
     let options = MappingOptions {
         maximum,
         ..MappingOptions::new(permissions)
