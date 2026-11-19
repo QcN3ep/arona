@@ -347,25 +347,6 @@ impl HandleTable {
         Ok(())
     }
 
-    pub(crate) fn install<const N: usize>(
-        &self,
-        entries: &mut Vec<HandleEntry>,
-    ) -> Result<ArrayVec<Handle, N>, HandleError> {
-        let _interrupts = InterruptGuard::new();
-        if entries.len() > N {
-            return Err(HandleError::InvalidArgument);
-        }
-        let mut state = self.state.lock();
-        state.ensure_available(entries.len())?;
-        let mut handles = ArrayVec::new();
-        for entry in entries.drain(..) {
-            let handle = state.reserve();
-            state.publish(handle, entry);
-            handles.push(handle);
-        }
-        Ok(handles)
-    }
-
     fn with_tables<T>(
         &self,
         target: &Self,

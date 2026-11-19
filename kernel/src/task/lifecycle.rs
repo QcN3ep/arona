@@ -560,13 +560,7 @@ impl Task {
         capacity: usize,
         mode: WaitMode,
     ) -> Result<ReceivedMessage, TaskError> {
-        let channel = self.channel(handle, Rights::READ)?;
-        channel.receive_with(mode, capacity, |_, _, entries| {
-            let registry = TASKS.lock();
-            let table = &registry.find(self)?.handles;
-            table.get(handle, ObjectType::Channel, Rights::READ)?;
-            Ok(table.install(entries)?)
-        })
+        self.receive_deliver(handle, capacity, mode, |_, _| Ok(()))
     }
 
     pub(crate) fn receive_deliver(
