@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use core::cell::Cell;
-use core::sync::atomic::Ordering;
 
 use super::{
     Frame, FrameAccess, FrameAllocationInfo, FrameOwner, FramePool, FramePurpose,
@@ -622,13 +621,13 @@ impl FrameAllocator {
 
     fn list_head(&self, region: ManagedRegion, pool: FramePool, order: usize) -> u64 {
         let mut words = [0];
-        read_metadata(region.lists, pool as usize * ORDERS + order, &mut words)
+        super::metadata::read(region.lists, pool as usize * ORDERS + order, &mut words)
             .expect("failed to read free list");
         words[0]
     }
 
     fn set_list_head(&mut self, region: ManagedRegion, pool: FramePool, order: usize, head: u64) {
-        write_metadata(region.lists, pool as usize * ORDERS + order, &[head])
+        super::metadata::write(region.lists, pool as usize * ORDERS + order, &[head])
             .expect("failed to write free list");
         if head != END {
             self.free_orders[pool as usize] |= 1 << order;
@@ -1023,7 +1022,7 @@ impl FrameMetadata {
             let mut region = self.region(index);
             region.lists = lists;
             self.write_region(index, region)?;
-            write_metadata(lists, 0, &[END; LIST_WORDS])?;
+            super::metadata::write(lists, 0, &[END; LIST_WORDS])?;
         }
         Ok(())
     }
@@ -1054,7 +1053,7 @@ impl FrameMetadata {
     }
 
     fn write_region(&self, index: usize, region: ManagedRegion) -> Result<(), MemoryError> {
-        write_metadata(
+        super::metadata::write(
             self.directory[index / REGIONS_PER_FRAME],
             (index % REGIONS_PER_FRAME) * REGION_WORDS,
             &[
@@ -1077,7 +1076,7 @@ impl FrameMetadata {
             return region;
         }
         let mut words = [0; REGION_WORDS];
-        read_metadata(
+        super::metadata::read(
             self.directory[index / REGIONS_PER_FRAME],
             (index % REGIONS_PER_FRAME) * REGION_WORDS,
             &mut words,
@@ -1206,63 +1205,17 @@ impl FrameMetadata {
     fn read_words<const N: usize>(&self, index: u64, field: usize) -> [u64; N] {
         let (address, offset) = self.location(index);
         let mut words = [0; N];
-        read_metadata(address, offset + field, &mut words).expect("failed to read frame metadata");
+        super::metadata::read(address, offset + field, &mut words)
+            .expect("failed to read frame metadata");
         words
     }
 
     #[inline(always)]
     fn write_words(&self, index: u64, field: usize, words: &[u64]) {
         let (address, offset) = self.location(index);
-        write_metadata(address, offset + field, words).expect("failed to write frame metadata");
+        super::metadata::write(address, offset + field, words)
+            .expect("failed to write frame metadata");
     }
-}
-
-#[inline(always)]
-fn read_metadata(address: u64, offset: usize, words: &mut [u64]) -> Result<(), MemoryError> {
-    let direct_map = &super::MEMORY_MANAGER.direct_map;
-    let mapped = if address > isize::MAX as u64 {
-        Some(address as usize)
-    } else {
-        let frame = Frame::new(address).ok_or(MemoryError::InvalidFrame)?;
-        direct_map.active_address(frame)
-    };
-    if let Some(address) = mapped {
-        // SAFETY: Metadata pages are permanently reserved in mapped RAM and remain writable. The frame allocator lock serializes access.
-        let mapped = hardware::mmu().mapped_atomic_words(address)?;
-        let source = &mapped[offset..offset + words.len()];
-        for (word, source) in words.iter_mut().zip(source) {
-            *word = source.load(Ordering::Relaxed);
-        }
-    } else if direct_map.is_active() {
-        return Err(MemoryError::NotMapped);
-    } else {
-        // Direct-map construction reads metadata before the new page table is active.
-        hardware::mmu().read_frame(address, offset, words)?;
-    }
-    Ok(())
-}
-
-#[inline(always)]
-fn write_metadata(address: u64, offset: usize, words: &[u64]) -> Result<(), MemoryError> {
-    let direct_map = &super::MEMORY_MANAGER.direct_map;
-    let mapped = if address > isize::MAX as u64 {
-        Some(address as usize)
-    } else {
-        let frame = Frame::new(address).ok_or(MemoryError::InvalidFrame)?;
-        direct_map.active_address(frame)
-    };
-    if let Some(address) = mapped {
-        // SAFETY: Metadata pages are permanently reserved in mapped RAM and remain writable. The frame allocator lock serializes access.
-        let mapped = hardware::mmu().mapped_atomic_words(address)?;
-        for (target, word) in mapped[offset..offset + words.len()].iter().zip(words) {
-            target.store(*word, Ordering::Relaxed);
-        }
-    } else if direct_map.is_active() {
-        return Err(MemoryError::NotMapped);
-    } else {
-        hardware::mmu().write_frame(address, offset, words)?;
-    }
-    Ok(())
 }
 
 impl ManagedRegion {

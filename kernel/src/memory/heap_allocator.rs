@@ -3,7 +3,6 @@
 //! Kernel heap allocation, usage accounting, and free cache reclamation.
 
 use core::alloc::Layout;
-use core::sync::atomic::Ordering;
 use spin::Mutex;
 
 pub use allocator_api2::boxed::Box as HeapBox;
@@ -13,10 +12,7 @@ use super::{
     Frame, FrameAccess, FrameAllocation, FrameOwner, FramePurpose, MappingOptions, MemoryError,
     ReferenceKind, manager, mapping::OwnedMapping,
 };
-use crate::hardware::{
-    self,
-    mmu::{PAGE_SIZE, PagePermissions},
-};
+use crate::hardware::mmu::{PAGE_SIZE, PagePermissions};
 
 const NIL: u64 = u64::MAX;
 const MIN_SIZE: usize = 16;
@@ -618,38 +614,18 @@ impl SlabMetadata {
 
 #[inline(always)]
 fn read<const N: usize>(address: u64) -> [u64; N] {
-    let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
-    let mapped = manager()
-        .direct_map
-        .active_address(frame)
-        .expect("slab metadata is not directly mapped");
-    let mut words = [0; N];
-    // SAFETY: The slab allocator owns its metadata pages exclusively and keeps them writable. The heap state lock serializes access.
-    let mapped = hardware::mmu()
-        .mapped_atomic_words(mapped)
-        .expect("failed to read slab metadata");
+    let base = address & !(PAGE_SIZE as u64 - 1);
     let offset = address as usize % PAGE_SIZE / size_of::<u64>();
-    for (word, source) in words.iter_mut().zip(&mapped[offset..offset + N]) {
-        *word = source.load(Ordering::Relaxed);
-    }
+    let mut words = [0; N];
+    super::metadata::read(base, offset, &mut words).expect("failed to read slab metadata");
     words
 }
 
 #[inline(always)]
 fn write(address: u64, words: &[u64]) {
-    let frame = Frame::new(address & !(PAGE_SIZE as u64 - 1)).unwrap();
-    let mapped = manager()
-        .direct_map
-        .active_address(frame)
-        .expect("slab metadata is not directly mapped");
-    // SAFETY: The slab allocator owns its metadata pages exclusively and keeps them writable. The heap state lock serializes access.
-    let mapped = hardware::mmu()
-        .mapped_atomic_words(mapped)
-        .expect("failed to write slab metadata");
+    let base = address & !(PAGE_SIZE as u64 - 1);
     let offset = address as usize % PAGE_SIZE / size_of::<u64>();
-    for (target, word) in mapped[offset..offset + words.len()].iter().zip(words) {
-        target.store(*word, Ordering::Relaxed);
-    }
+    super::metadata::write(base, offset, words).expect("failed to write slab metadata");
 }
 
 fn size_class(layout: Layout) -> Option<usize> {

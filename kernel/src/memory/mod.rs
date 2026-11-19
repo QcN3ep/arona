@@ -7,6 +7,7 @@ mod frame;
 mod frame_allocator;
 mod heap_allocator;
 mod mapping;
+mod metadata;
 mod mmio;
 mod paging;
 mod region;
