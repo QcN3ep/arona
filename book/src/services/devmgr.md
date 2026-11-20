@@ -43,6 +43,8 @@ The clock source can be `clock-frequency` or a referenced fixed-clock.
 
 `Settings` describes the baud rate, data bits, parity, and stop bits.
 The driver configures the UART FIFO, receive and transmit state, and binds the device interrupt to an Event.
+Initialization discards receive data left before the first session.
+Later configuration changes return `Busy` while transmit or receive data remains.
 Reception checks the line status and returns the read result and error state to the caller.
 
 The UART output session is used by clients such as logger for writing, and the input/output session is used by interactive terminals.

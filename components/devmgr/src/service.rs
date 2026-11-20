@@ -20,8 +20,6 @@ use runtime::{
     process, thread,
 };
 
-const START_TIMEOUT_NS: u64 = 1_000_000_000;
-
 #[derive(Clone, Copy, Debug)]
 enum Configuration {
     Uart(uart::Configuration),
@@ -365,17 +363,10 @@ fn serve(
     let Configuration::Uart(configuration) = configuration else {
         unreachable!()
     };
-    let deadline = thread::now_ns()?.saturating_add(START_TIMEOUT_NS);
-    let mut uart = loop {
-        match Uart::new(configuration, grant, event, 1, Settings::default()) {
-            Ok(uart) => break uart,
-            Err(Error::Busy) if thread::now_ns()? < deadline => thread::yield_now()?,
-            Err(error) => return Err(error),
-        }
-    };
+    let mut uart = Uart::new(configuration, grant, event, 1, Settings::default())?;
     ready.store(true, Ordering::Release);
     wake.signal(1)?;
-    uart::service::run(&mut uart, event, Some(server), id)
+    uart::service::run(&mut uart, event, server, id)
 }
 
 fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Error> {

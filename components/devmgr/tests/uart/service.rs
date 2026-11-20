@@ -50,18 +50,8 @@ fn start(
         .channel(CHANNEL_RIGHTS, CHANNEL_RIGHTS)
         .unwrap();
     let worker = thread::spawn(move || {
-        let deadline = thread::now_ns().unwrap() + 10_000_000_000;
-        let mut uart = loop {
-            match Uart::new(configuration, &grant, &event, 1, Settings::default()) {
-                Ok(uart) => break uart,
-                Err(Error::Busy) => {
-                    assert!(thread::now_ns().unwrap() < deadline);
-                    thread::yield_now().unwrap();
-                }
-                Err(error) => panic!("UART service initialization failed: {error:?}"),
-            }
-        };
-        uart::service::run(&mut uart, &event, Some(&server), id)
+        let mut uart = Uart::new(configuration, &grant, &event, 1, Settings::default())?;
+        uart::service::run(&mut uart, &event, &server, id)
     })
     .unwrap();
     (control, worker)

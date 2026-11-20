@@ -55,7 +55,7 @@ struct State {
 pub fn run(
     uart: &mut Uart<'_>,
     event: &Handle<Event>,
-    control: Option<&Handle<Channel>>,
+    control: &Handle<Channel>,
     device: u32,
 ) -> Result<(), Error> {
     let mut state = State {
@@ -69,16 +69,14 @@ pub fn run(
     loop {
         let mut again = state.pump(uart)?;
         again |= state.receive_requests(uart)?;
-        if let Some(control) = control {
-            match control.receive(WaitMode::Poll) {
-                Ok(request) => {
-                    state.open(request, device)?;
-                    again = true;
-                }
-                Err(runtime::Error::Kernel(KernelError::WouldBlock)) => {}
-                Err(runtime::Error::Kernel(KernelError::EndOfStream)) => return Ok(()),
-                Err(error) => return Err(error.into()),
+        match control.receive(WaitMode::Poll) {
+            Ok(request) => {
+                state.open(request, device)?;
+                again = true;
             }
+            Err(runtime::Error::Kernel(KernelError::WouldBlock)) => {}
+            Err(runtime::Error::Kernel(KernelError::EndOfStream)) => return Ok(()),
+            Err(error) => return Err(error.into()),
         }
         again |= state.complete(uart)?;
         state.transmit(uart)?;
@@ -98,9 +96,7 @@ pub fn run(
         };
         let mut items = Vec::with_capacity(state.connections.len() + 2);
         items.push(WaitItem::new(event, 1));
-        if let Some(control) = control {
-            items.push(WaitItem::new(control, ipc::READABLE | ipc::PEER_CLOSED));
-        }
+        items.push(WaitItem::new(control, ipc::READABLE | ipc::PEER_CLOSED));
         items.extend(state.connections.iter().map(|connection| {
             WaitItem::new(&connection.channel, ipc::READABLE | ipc::PEER_CLOSED)
         }));

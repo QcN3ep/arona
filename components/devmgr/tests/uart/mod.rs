@@ -63,14 +63,7 @@ fn driver(devices: &Handle<DeviceSet>, group: u32, configuration: devmgr::uart::
     let event = process::task()
         .event(ObjectType::Event.supported_rights())
         .unwrap();
-    let deadline = now() + 10 * SECOND;
-    let mut uart = loop {
-        match Uart::new(configuration, &grant, &event, 1, Settings::default()) {
-            Ok(uart) => break uart,
-            Err(Error::Busy) => pause(deadline),
-            Err(error) => panic!("UART initialization failed: {error:?}"),
-        }
-    };
+    let mut uart = Uart::new(configuration, &grant, &event, 1, Settings::default()).unwrap();
     uart.configure(Settings {
         baud_rate: Some(57_600),
         data_bits: DataBits::Seven,

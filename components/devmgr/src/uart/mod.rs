@@ -10,6 +10,7 @@ pub use session::{Access, MAX_BYTES, PendingOpen, PendingRead, Session};
 use runtime::{
     Device, Event, Handle,
     device::{InterruptBinding, Mmio},
+    thread,
 };
 
 use crate::{
@@ -34,6 +35,7 @@ const DATA_READY: u8 = 0x01;
 const HOLDING_EMPTY: u8 = 0x20;
 const TRANSMITTER_EMPTY: u8 = 0x40;
 const LINE_ERRORS: u8 = 0x1e;
+const START_TIMEOUT_NS: u64 = 1_000_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DataBits {
@@ -170,6 +172,7 @@ pub fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Er
 }
 
 impl<'a> Uart<'a> {
+    /// Discards startup receive data and waits for the transmitter to become idle.
     pub fn new(
         config: Configuration,
         device: &'a Handle<Device>,
@@ -177,7 +180,7 @@ impl<'a> Uart<'a> {
         mask: u64,
         settings: Settings,
     ) -> Result<Self, Error> {
-        settings.hardware(config.clock_frequency_hz)?;
+        let (initial_control, divisor) = settings.hardware(config.clock_frequency_hz)?;
         let mmio = device.map_mmio(config.id, 0)?;
         let mut registers = Registers::new(mmio, config.layout)?;
         let interrupt = device.bind_interrupt(config.id, 0, event, mask)?;
@@ -192,8 +195,15 @@ impl<'a> Uart<'a> {
             enabled_interrupts: 0,
             pending_errors: 0,
         };
-        uart.registers.write(FCR, 0x03)?;
-        uart.configure(settings)?;
+        let deadline = thread::now_ns()?.saturating_add(START_TIMEOUT_NS);
+        while uart.line_status()? & TRANSMITTER_EMPTY == 0 {
+            if thread::now_ns()? >= deadline {
+                return Err(Error::Busy);
+            }
+            thread::yield_now()?;
+        }
+        uart.registers.configure(initial_control, divisor)?;
+        // No session owns incoming bytes before initialization completes.
         uart.registers.write(FCR, 0x07)?;
         if uart.registers.read(IIR)? & 0xc0 == 0xc0 {
             uart.fifo_size = 16;
