@@ -17,6 +17,11 @@
 mappings:
     addi sp, sp, -16
     sd ra, 0(sp)
+    # The initial stack must cover frames larger than the old 64 KiB bound.
+    li t0, 98304
+    sub sp, sp, t0
+    sd zero, 0(sp)
+    add sp, sp, t0
     li a0, 0
     li a1, 12287
     li a2, 3

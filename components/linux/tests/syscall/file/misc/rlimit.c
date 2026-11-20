@@ -121,8 +121,60 @@ static void address_space(void) {
     CHECK(SC(SYS_BRK, current + 4096) == current + 4096);
 }
 
+static unsigned long hex_number(const unsigned char *text, long *cursor) {
+    unsigned long value = 0;
+    for (;;) {
+        unsigned long digit;
+        char byte = (char)text[*cursor];
+        if (byte >= '0' && byte <= '9') {
+            digit = (unsigned long)(byte - '0');
+        } else if (byte >= 'a' && byte <= 'f') {
+            digit = (unsigned long)(byte - 'a' + 10);
+        } else {
+            break;
+        }
+        value = value * 16 + digit;
+        ++*cursor;
+    }
+    return value;
+}
+
+// The loader caps the eagerly mapped initial stack at 1 MiB although
+// RLIMIT_STACK defaults to 8 MiB, so the mapping must stay far below the limit
+// while still covering frames larger than 96 KiB.
+static void stack_mapping(void) {
+    static unsigned char maps[16384];
+    long fd = misc_open("/proc/self/maps", O_RDONLY, 0);
+    CHECK(fd >= 0);
+    long length = misc_read(fd, maps, sizeof(maps));
+    CHECK(length > 0 && length < (long)sizeof(maps));
+    CHECK(misc_close(fd) == 0);
+    long marker = -1;
+    for (long index = 0; index + 7 <= length; ++index) {
+        if (maps[index] == '[' && maps[index + 1] == 's' && maps[index + 2] == 't' &&
+            maps[index + 3] == 'a' && maps[index + 4] == 'c' && maps[index + 5] == 'k' &&
+            maps[index + 6] == ']') {
+            marker = index;
+            break;
+        }
+    }
+    CHECK(marker > 0);
+    long line = marker;
+    while (line > 0 && maps[line - 1] != '\n') --line;
+    long cursor = line;
+    unsigned long base = hex_number(maps, &cursor);
+    CHECK(maps[cursor] == '-');
+    ++cursor;
+    unsigned long end = hex_number(maps, &cursor);
+    CHECK(end > base);
+    unsigned long size = end - base;
+    CHECK(size >= 96 * 1024);
+    CHECK(size <= 2 * 1024 * 1024);
+}
+
 static void stack_and_cpu(void) {
     struct rlimit limit;
+    stack_mapping();
     CHECK(SC(SYS_PRLIMIT64, 0, RLIMIT_STACK, 0, P(&limit)) == 0);
     CHECK(limit.current == 8 * 1024 * 1024 && limit.maximum == INFINITY_);
     struct rlimit stack = {1024 * 1024, INFINITY_};

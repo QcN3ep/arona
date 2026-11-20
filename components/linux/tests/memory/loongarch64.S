@@ -16,6 +16,11 @@
 mappings:
     addi.d $sp, $sp, -16
     st.d $ra, $sp, 0
+    # The initial stack must cover frames larger than the old 64 KiB bound.
+    li.d $t0, 98304
+    sub.d $sp, $sp, $t0
+    st.d $zero, $sp, 0
+    add.d $sp, $sp, $t0
     li.d $a0, 0
     li.d $a1, 12287
     li.d $a2, 3
