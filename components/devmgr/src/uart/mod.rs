@@ -12,7 +12,10 @@ use runtime::{
     device::{InterruptBinding, Mmio},
 };
 
-use crate::{Error, device::DeviceDescription};
+use crate::{
+    Error,
+    device::{ByteOrder, DeviceDescription},
+};
 
 // REFERENCE: https://media.digikey.com/pdf/Data%20Sheets/Texas%20Instruments%20PDFs/PC16550D.pdf#page=17
 const DATA: usize = 0;
@@ -86,14 +89,7 @@ struct RegisterLayout {
     shift: u32,
     width: usize,
     offset: usize,
-    endian: Endian,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Endian {
-    Little,
-    Big,
-    Native,
+    endian: ByteOrder,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -132,23 +128,11 @@ pub fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Er
     if info.mmio_regions != 1 || info.interrupts != 1 {
         return Err(Error::Unsupported);
     }
-    let big = flag(device, "big-endian")?;
-    let little = flag(device, "little-endian")?;
-    let native = flag(device, "native-endian")?;
-    if u8::from(big) + u8::from(little) + u8::from(native) > 1 {
-        return Err(Error::InvalidConfiguration);
-    }
     let layout = RegisterLayout {
-        shift: cell(device, "reg-shift")?.unwrap_or(0),
-        width: cell(device, "reg-io-width")?.unwrap_or(1) as usize,
-        offset: cell(device, "reg-offset")?.unwrap_or(0) as usize,
-        endian: if big {
-            Endian::Big
-        } else if native {
-            Endian::Native
-        } else {
-            Endian::Little
-        },
+        shift: device.cell("devicetree", "reg-shift")?.unwrap_or(0),
+        width: device.cell("devicetree", "reg-io-width")?.unwrap_or(1) as usize,
+        offset: device.cell("devicetree", "reg-offset")?.unwrap_or(0) as usize,
+        endian: device.byte_order("devicetree")?,
     };
     let stride = 1usize
         .checked_shl(layout.shift)
@@ -156,19 +140,24 @@ pub fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Er
     if !matches!(layout.width, 1 | 2 | 4) || stride < layout.width {
         return Err(Error::InvalidConfiguration);
     }
-    let mut frequency = integer(device, "clock-frequency")?;
+    let mut frequency = device.integer("devicetree", "clock-frequency")?;
     if frequency.is_none()
-        && let Some(phandle) = cell(device, "clocks")?
+        && let Some(phandle) = device.cell("devicetree", "clocks")?
     {
         if phandle == 0 || phandle == u32::MAX {
             return Err(Error::InvalidConfiguration);
         }
         let clock = device.resolve("devicetree", "phandle", &phandle.to_be_bytes())?;
-        if !clock.matches("devicetree", "fixed-clock")? || cell(&clock, "#clock-cells")? != Some(0)
+        if !clock.matches("devicetree", "fixed-clock")?
+            || clock.cell("devicetree", "#clock-cells")? != Some(0)
         {
             return Err(Error::Unsupported);
         }
-        frequency = Some(integer(&clock, "clock-frequency")?.ok_or(Error::InvalidConfiguration)?);
+        frequency = Some(
+            clock
+                .integer("devicetree", "clock-frequency")?
+                .ok_or(Error::InvalidConfiguration)?,
+        );
     }
     if frequency == Some(0) {
         return Err(Error::InvalidConfiguration);
@@ -378,31 +367,17 @@ impl<'a> Registers<'a> {
 
     fn read(&mut self, register: usize) -> Result<u8, Error> {
         let offset = self.layout.offset + (register << self.layout.shift);
-        Ok(match (self.layout.width, self.layout.endian) {
-            (1, _) => self.mmio.read_u8(offset)?,
-            (2, Endian::Little) => u16::from_le(self.mmio.read_u16(offset)?) as u8,
-            (2, Endian::Big) => u16::from_be(self.mmio.read_u16(offset)?) as u8,
-            (2, Endian::Native) => self.mmio.read_u16(offset)? as u8,
-            (4, Endian::Little) => u32::from_le(self.mmio.read_u32(offset)?) as u8,
-            (4, Endian::Big) => u32::from_be(self.mmio.read_u32(offset)?) as u8,
-            (4, Endian::Native) => self.mmio.read_u32(offset)? as u8,
-            _ => return Err(Error::InvalidConfiguration),
-        })
+        Ok(self
+            .layout
+            .endian
+            .read(&mut self.mmio, offset, self.layout.width)? as u8)
     }
 
     fn write(&mut self, register: usize, value: u8) -> Result<(), Error> {
         let offset = self.layout.offset + (register << self.layout.shift);
-        match (self.layout.width, self.layout.endian) {
-            (1, _) => self.mmio.write_u8(offset, value)?,
-            (2, Endian::Little) => self.mmio.write_u16(offset, u16::from(value).to_le())?,
-            (2, Endian::Big) => self.mmio.write_u16(offset, u16::from(value).to_be())?,
-            (2, Endian::Native) => self.mmio.write_u16(offset, value.into())?,
-            (4, Endian::Little) => self.mmio.write_u32(offset, u32::from(value).to_le())?,
-            (4, Endian::Big) => self.mmio.write_u32(offset, u32::from(value).to_be())?,
-            (4, Endian::Native) => self.mmio.write_u32(offset, value.into())?,
-            _ => return Err(Error::InvalidConfiguration),
-        }
-        Ok(())
+        self.layout
+            .endian
+            .write(&mut self.mmio, offset, self.layout.width, u32::from(value))
     }
 
     fn configure(&mut self, control: u8, divisor: Option<u16>) -> Result<(), Error> {
@@ -418,39 +393,5 @@ impl<'a> Registers<'a> {
         } else {
             self.write(LCR, control)
         }
-    }
-}
-
-fn cell(device: &DeviceDescription<'_>, name: &str) -> Result<Option<u32>, Error> {
-    let mut bytes = [0; 128];
-    device
-        .property("devicetree", name, &mut bytes)?
-        .map(|value| {
-            value
-                .try_into()
-                .map(u32::from_be_bytes)
-                .map_err(|_| Error::InvalidConfiguration)
-        })
-        .transpose()
-}
-
-fn integer(device: &DeviceDescription<'_>, name: &str) -> Result<Option<u64>, Error> {
-    let mut bytes = [0; 128];
-    device
-        .property("devicetree", name, &mut bytes)?
-        .map(|value| match value {
-            [a, b, c, d] => Ok(u32::from_be_bytes([*a, *b, *c, *d]) as u64),
-            [a, b, c, d, e, f, g, h] => Ok(u64::from_be_bytes([*a, *b, *c, *d, *e, *f, *g, *h])),
-            _ => Err(Error::InvalidConfiguration),
-        })
-        .transpose()
-}
-
-fn flag(device: &DeviceDescription<'_>, name: &str) -> Result<bool, Error> {
-    let mut bytes = [0; 128];
-    match device.property("devicetree", name, &mut bytes)? {
-        None => Ok(false),
-        Some([]) => Ok(true),
-        Some(_) => Err(Error::InvalidConfiguration),
     }
 }

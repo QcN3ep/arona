@@ -265,6 +265,53 @@ fn reject(reply: &Handle<Reply>, status: u64) -> Result<(), Error> {
 mod pci;
 pub use pci::PciBar;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ByteOrder {
+    Little,
+    Big,
+    Native,
+}
+
+impl ByteOrder {
+    pub(crate) fn read(
+        self,
+        registers: &mut runtime::device::Mmio<'_>,
+        offset: usize,
+        width: usize,
+    ) -> Result<u32, Error> {
+        Ok(match (width, self) {
+            (1, _) => u32::from(registers.read_u8(offset)?),
+            (2, Self::Little) => u32::from(u16::from_le(registers.read_u16(offset)?)),
+            (2, Self::Big) => u32::from(u16::from_be(registers.read_u16(offset)?)),
+            (2, Self::Native) => u32::from(registers.read_u16(offset)?),
+            (4, Self::Little) => u32::from_le(registers.read_u32(offset)?),
+            (4, Self::Big) => u32::from_be(registers.read_u32(offset)?),
+            (4, Self::Native) => registers.read_u32(offset)?,
+            _ => return Err(Error::InvalidConfiguration),
+        })
+    }
+
+    pub(crate) fn write(
+        self,
+        registers: &mut runtime::device::Mmio<'_>,
+        offset: usize,
+        width: usize,
+        value: u32,
+    ) -> Result<(), Error> {
+        match (width, self) {
+            (1, _) => registers.write_u8(offset, value as u8)?,
+            (2, Self::Little) => registers.write_u16(offset, (value as u16).to_le())?,
+            (2, Self::Big) => registers.write_u16(offset, (value as u16).to_be())?,
+            (2, Self::Native) => registers.write_u16(offset, value as u16)?,
+            (4, Self::Little) => registers.write_u32(offset, value.to_le())?,
+            (4, Self::Big) => registers.write_u32(offset, value.to_be())?,
+            (4, Self::Native) => registers.write_u32(offset, value)?,
+            _ => return Err(Error::InvalidConfiguration),
+        }
+        Ok(())
+    }
+}
+
 pub struct DeviceDescription<'a> {
     catalog: &'a Handle<DeviceSet>,
     info: DeviceInfo,
@@ -349,6 +396,56 @@ impl<'a> DeviceDescription<'a> {
             )?));
         }
         Ok(None)
+    }
+
+    pub(crate) fn cell(&self, namespace: &str, name: &str) -> Result<Option<u32>, Error> {
+        let mut bytes = [0; 128];
+        self.property(namespace, name, &mut bytes)?
+            .map(|value| {
+                value
+                    .try_into()
+                    .map(u32::from_be_bytes)
+                    .map_err(|_| Error::InvalidConfiguration)
+            })
+            .transpose()
+    }
+
+    pub(crate) fn integer(&self, namespace: &str, name: &str) -> Result<Option<u64>, Error> {
+        let mut bytes = [0; 128];
+        self.property(namespace, name, &mut bytes)?
+            .map(|value| match value {
+                [a, b, c, d] => Ok(u64::from(u32::from_be_bytes([*a, *b, *c, *d]))),
+                [a, b, c, d, e, f, g, h] => {
+                    Ok(u64::from_be_bytes([*a, *b, *c, *d, *e, *f, *g, *h]))
+                }
+                _ => Err(Error::InvalidConfiguration),
+            })
+            .transpose()
+    }
+
+    fn flag(&self, namespace: &str, name: &str) -> Result<bool, Error> {
+        let mut bytes = [0; 128];
+        match self.property(namespace, name, &mut bytes)? {
+            None => Ok(false),
+            Some([]) => Ok(true),
+            Some(_) => Err(Error::InvalidConfiguration),
+        }
+    }
+
+    pub(crate) fn byte_order(&self, namespace: &str) -> Result<ByteOrder, Error> {
+        let big = self.flag(namespace, "big-endian")?;
+        let little = self.flag(namespace, "little-endian")?;
+        let native = self.flag(namespace, "native-endian")?;
+        if u8::from(big) + u8::from(little) + u8::from(native) > 1 {
+            return Err(Error::InvalidConfiguration);
+        }
+        Ok(if big {
+            ByteOrder::Big
+        } else if native {
+            ByteOrder::Native
+        } else {
+            ByteOrder::Little
+        })
     }
 
     pub(crate) fn resolve(&self, namespace: &str, name: &str, value: &[u8]) -> Result<Self, Error> {

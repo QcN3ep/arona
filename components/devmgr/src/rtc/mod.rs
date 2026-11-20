@@ -7,7 +7,10 @@ mod session;
 
 pub use session::Session;
 
-use crate::{Error, device::DeviceDescription};
+use crate::{
+    Error,
+    device::{ByteOrder, DeviceDescription},
+};
 use runtime::{Device, Handle, device::Mmio};
 
 // REFERENCE: https://gitlab.com/qemu-project/qemu/-/blob/v11.1.2/hw/rtc/goldfish_rtc.c
@@ -51,7 +54,7 @@ pub struct Calendar {
 pub struct Configuration {
     id: u32,
     kind: Kind,
-    big_endian: bool,
+    byte_order: ByteOrder,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -76,26 +79,10 @@ pub fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Er
     if device.info().mmio_regions != 1 {
         return Err(Error::InvalidConfiguration);
     }
-    let mut buffer = [0; 4];
-    let mut flags = [false; 3];
-    for (index, name) in ["big-endian", "little-endian", "native-endian"]
-        .into_iter()
-        .enumerate()
-    {
-        if let Some(value) = device.property("devicetree", name, &mut buffer)? {
-            if !value.is_empty() {
-                return Err(Error::InvalidConfiguration);
-            }
-            flags[index] = true;
-        }
-    }
-    if flags.into_iter().filter(|value| *value).count() > 1 {
-        return Err(Error::InvalidConfiguration);
-    }
     Ok(Some(Configuration {
         id: device.info().id,
         kind,
-        big_endian: flags[0],
+        byte_order: device.byte_order("devicetree")?,
     }))
 }
 
@@ -243,21 +230,15 @@ impl<'a> Rtc<'a> {
     }
 
     fn read(&mut self, offset: usize) -> Result<u32, Error> {
-        let value = self.registers.read_u32(offset)?;
-        Ok(if self.configuration.big_endian {
-            u32::from_be(value)
-        } else {
-            u32::from_le(value)
-        })
+        self.configuration
+            .byte_order
+            .read(&mut self.registers, offset, 4)
     }
 
     fn write(&mut self, offset: usize, value: u32) -> Result<(), Error> {
-        let value = if self.configuration.big_endian {
-            value.to_be()
-        } else {
-            value.to_le()
-        };
-        Ok(self.registers.write_u32(offset, value)?)
+        self.configuration
+            .byte_order
+            .write(&mut self.registers, offset, 4, value)
     }
 }
 

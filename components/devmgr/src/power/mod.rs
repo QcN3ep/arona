@@ -7,14 +7,16 @@ mod session;
 
 pub use session::Session;
 
-use crate::{Error, device::DeviceDescription};
+use crate::{
+    Error,
+    device::{ByteOrder, DeviceDescription},
+};
 use runtime::{Device, Handle, device::Mmio};
 
 const NAMESPACE: &str = "power";
 const POWEROFF: &str = "poweroff";
 const REBOOT: &str = "reboot";
 const REGISTER_WIDTH: &str = "register-width";
-const BIG_ENDIAN: &str = "big-endian";
 const DEFAULT_REGISTER_WIDTH: u8 = 4;
 const OPERATION_BYTES: usize = 12;
 
@@ -38,7 +40,7 @@ pub struct Capabilities {
 pub struct Configuration {
     id: u32,
     register_width: u8,
-    big_endian: bool,
+    byte_order: ByteOrder,
     poweroff: Option<RegisterWrite>,
     reboot: Option<RegisterWrite>,
 }
@@ -98,23 +100,15 @@ pub fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Er
     if device.info().mmio_regions != 1 {
         return Err(Error::InvalidConfiguration);
     }
-    let mut width = [0; 4];
-    let register_width = match device.property(NAMESPACE, REGISTER_WIDTH, &mut width)? {
-        Some(value) => {
-            match u32::from_be_bytes(value.try_into().map_err(|_| Error::InvalidConfiguration)?) {
-                1 => 1,
-                2 => 2,
-                4 => 4,
-                _ => return Err(Error::InvalidConfiguration),
-            }
-        }
+    let register_width = match device.cell(NAMESPACE, REGISTER_WIDTH)? {
+        Some(width @ (1 | 2 | 4)) => width as u8,
+        Some(_) => return Err(Error::InvalidConfiguration),
         None => DEFAULT_REGISTER_WIDTH,
     };
-    let mut flag = [0; 1];
     Ok(Some(Configuration {
         id: device.info().id,
         register_width,
-        big_endian: device.property(NAMESPACE, BIG_ENDIAN, &mut flag)?.is_some(),
+        byte_order: device.byte_order(NAMESPACE)?,
         poweroff,
         reboot,
     }))
@@ -178,47 +172,19 @@ impl<'a> Power<'a> {
     }
 
     fn read(&mut self, offset: usize) -> Result<u32, Error> {
-        let value = match self.configuration.register_width {
-            1 => u32::from(self.registers.read_u8(offset)?),
-            2 => {
-                let value = self.registers.read_u16(offset)?;
-                u32::from(self.order16(value))
-            }
-            _ => {
-                let value = self.registers.read_u32(offset)?;
-                self.order32(value)
-            }
-        };
-        Ok(value)
+        self.configuration.byte_order.read(
+            &mut self.registers,
+            offset,
+            usize::from(self.configuration.register_width),
+        )
     }
 
     fn write(&mut self, offset: usize, value: u32) -> Result<(), Error> {
-        match self.configuration.register_width {
-            1 => Ok(self.registers.write_u8(offset, value as u8)?),
-            2 => {
-                let value = self.order16(value as u16);
-                Ok(self.registers.write_u16(offset, value)?)
-            }
-            _ => {
-                let value = self.order32(value);
-                Ok(self.registers.write_u32(offset, value)?)
-            }
-        }
-    }
-
-    fn order16(&self, value: u16) -> u16 {
-        if self.configuration.big_endian {
-            u16::from_be(value)
-        } else {
-            u16::from_le(value)
-        }
-    }
-
-    fn order32(&self, value: u32) -> u32 {
-        if self.configuration.big_endian {
-            u32::from_be(value)
-        } else {
-            u32::from_le(value)
-        }
+        self.configuration.byte_order.write(
+            &mut self.registers,
+            offset,
+            usize::from(self.configuration.register_width),
+            value,
+        )
     }
 }
