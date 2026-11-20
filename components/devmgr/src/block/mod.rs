@@ -9,9 +9,10 @@ pub use session::Session;
 
 use alloc::vec::Vec;
 use runtime::{
-    Device, DmaDomain, Event, FrameAllocation, Handle, Rights, Task,
+    Device, DmaDomain, Event, FrameAllocation, Handle, KernelError, Rights, Task,
     device::InterruptBinding,
     dma::{DmaBuffer, DmaDirection},
+    ipc::{self, WaitItem, WaitMode},
     thread,
 };
 
@@ -153,6 +154,11 @@ impl<'a> Block<'a> {
         for _ in 0..count {
             buffers.push(domain.allocate(task, 1, DmaDirection::Bidirectional)?);
         }
+        // Unbinding preserves Event bits, so discard the previous instance's notifications.
+        match ipc::wait_many(&[WaitItem::new(event, 1)], WaitMode::Poll) {
+            Ok(_) | Err(runtime::Error::Kernel(KernelError::WouldBlock)) => {}
+            Err(error) => return Err(error.into()),
+        }
         let interrupt = grant.bind_interrupt(configuration.id, 0, event, 1)?;
         let mut block = Self {
             transport,
@@ -222,10 +228,7 @@ impl<'a> Block<'a> {
                 let _ = self.acknowledge(0);
                 return Ok(());
             }
-            runtime::ipc::wait_many(
-                &[runtime::ipc::WaitItem::new(event, 1)],
-                runtime::ipc::WaitMode::Until(deadline),
-            )?;
+            ipc::wait_many(&[WaitItem::new(event, 1)], WaitMode::Until(deadline))?;
             self.acknowledge_interrupt()?;
         }
     }
