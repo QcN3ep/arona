@@ -11,11 +11,10 @@ use crate::{
     protocol::Arguments,
 };
 
-/// Default and maximum stack allowance for one image, applied by
-/// `Limits::stack`. The loader maps this allowance eagerly and adds the
-/// argument strings and auxiliary vector above the initial stack pointer;
-/// the bound keeps per-process memory bounded while covering libcbench's
-/// 80 KiB frames.
+/// Maximum eagerly mapped stack allowance for one Linux image.
+///
+/// `Limits::stack` caps this allowance at the process limit. Arguments and
+/// auxiliary data occupy additional space above the initial stack pointer.
 pub(crate) const STACK_SIZE: usize = 1024 * 1024;
 
 // REFERENCE: https://refspecs.linuxfoundation.org/elf/gabi4+/ch5.pheader.html

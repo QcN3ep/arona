@@ -433,7 +433,8 @@ The `setuid`, `setgid`, `setreuid`, `setregid`, `setresuid`, and `setresgid` cal
 Supplementary group lists are currently empty, and `setgroups` accepts an empty list only for root.
 
 `prlimit64` queries and updates the soft and hard limits of the calling process.
-The `RLIMIT_NOFILE` soft limit bounds descriptor allocation, `RLIMIT_FSIZE` truncates writes at the limit and reports `EFBIG` afterwards, `RLIMIT_AS` rejects mappings and heap growth beyond the limit, and `RLIMIT_STACK` bounds the initial stack allowance of an executed image, capped at the 1 MiB the service maps eagerly in addition to the argument and environment area.
+The `RLIMIT_NOFILE` soft limit bounds descriptor allocation, `RLIMIT_FSIZE` truncates writes at the limit and reports `EFBIG` afterwards, `RLIMIT_AS` rejects mappings and heap growth beyond the limit, and `RLIMIT_STACK` bounds the initial stack allowance of an executed image.
+The loader maps up to 1 MiB for this allowance. Arguments and environment data occupy additional space.
 `RLIMIT_CPU` sends `SIGXCPU` at the soft limit and `SIGKILL` at the hard limit.
 Requests for another process return `ESRCH`.
 Other resource kinds are recorded without enforcement.
