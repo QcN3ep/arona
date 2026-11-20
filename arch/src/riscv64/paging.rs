@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use core::arch::asm;
-use core::{ops::Range, sync::atomic::AtomicU64};
+use core::ops::Range;
 
-use kernel::hardware::mmu::{
-    MemoryType, Mmu, MmuError, PAGE_WORDS, PageAttributes, PageMapping, PagePermissions,
-    PageTableEntry, PageTableLayout, PageWalk,
-};
+use kernel::hardware::mmu::{MemoryType, MmuError, PageAttributes, PageMapping, PagePermissions};
 
 use kernel::memory::Frame;
 
-use crate::paging::{self, Format, PAGE_TABLE_WINDOW, PAGE_TABLE_WINDOW_TABLE, WINDOW_INDEX};
+use crate::paging::{self, Format};
 
 // REFERENCE: https://docs.riscv.org/reference/isa/priv/supervisor.html
 const VALID: u64 = 1;
@@ -33,13 +30,15 @@ fn invalidate_address(address: usize) {
 }
 
 crate::declare_hardware!(
-    static MMU: Sv39 = Sv39 => kernel::hardware::mmu::bind
+    static MMU: paging::MmuBackend<Sv39> = paging::MmuBackend(Sv39) => kernel::hardware::mmu::bind
 );
 
 pub struct Sv39;
 
 impl Format for Sv39 {
     const LEVELS: usize = 3;
+    const VIRTUAL_BITS: u32 = 39;
+    const DEVICE_MEMORY_TYPE: MemoryType = MemoryType::Normal;
     const PHYSICAL_BITS: u32 = 56;
 
     fn encode_table(&self, address: u64) -> u64 {
@@ -120,95 +119,8 @@ impl Format for Sv39 {
         level == 0 || entry & (READ | WRITE | EXECUTE | NO_ACCESS) != 0
     }
 
-    #[inline(always)]
-    fn with_frame<T>(
-        &self,
-        address: u64,
-        permissions: PagePermissions,
-        operation: impl FnOnce(usize) -> T,
-    ) -> Result<T, MmuError> {
-        paging::validate_physical::<Self>(address)?;
-        let _access = paging::lock_memory();
-        let entry = self.encode_mapping(
-            PageMapping {
-                physical_address: address,
-                attributes: PageAttributes {
-                    permissions,
-                    memory_type: MemoryType::Normal,
-                    user_accessible: false,
-                },
-            },
-            0,
-        )?;
-        let table = core::ptr::addr_of_mut!(PAGE_TABLE_WINDOW_TABLE);
-        // SAFETY: The physical access window lock must be held.
-        unsafe {
-            if (*table).read(WINDOW_INDEX) != 0 {
-                return Err(MmuError::InvalidTable);
-            }
-            (*table).write(WINDOW_INDEX, entry);
-        }
-        invalidate_address(PAGE_TABLE_WINDOW);
-        let result = operation(PAGE_TABLE_WINDOW);
-        // SAFETY: The physical access window lock must be held.
-        unsafe { (*table).write(WINDOW_INDEX, 0) };
-        invalidate_address(PAGE_TABLE_WINDOW);
-        Ok(result)
-    }
-}
-
-impl Mmu for Sv39 {
-    fn device_memory_type(&self) -> MemoryType {
-        MemoryType::Normal
-    }
-
-    fn is_valid_virtual_address(&self, address: usize) -> bool {
-        paging::is_canonical(address, 39)
-    }
-
-    fn physical_address_bits(&self) -> u32 {
-        Self::PHYSICAL_BITS
-    }
-
-    fn layout(&self) -> PageTableLayout {
-        paging::layout(self)
-    }
-
-    fn read_entry(
-        &self,
-        table: Frame,
-        index: usize,
-        level: usize,
-    ) -> Result<PageTableEntry, MmuError> {
-        paging::read_entry(self, table, index, level)
-    }
-
-    fn copy_kernel_entries(&self, source: Frame, destination: Frame) -> Result<(), MmuError> {
-        paging::copy_kernel_entries(self, source, destination)
-    }
-
-    fn walk_mapped(
-        &self,
-        root: Frame,
-        address: usize,
-        physical_start: u64,
-        mapping: Range<usize>,
-    ) -> Result<PageWalk, MmuError> {
-        paging::walk_mapped(self, root, address, physical_start, mapping)
-    }
-
-    fn write_entry(
-        &self,
-        table: Frame,
-        index: usize,
-        level: usize,
-        entry: PageTableEntry,
-    ) -> Result<(), MmuError> {
-        paging::write_entry(self, table, index, level, entry)
-    }
-
-    fn table_is_empty(&self, table: Frame, level: usize) -> Result<bool, MmuError> {
-        paging::table_is_empty(self, table, level)
+    fn invalidate_address(&self, address: usize) {
+        invalidate_address(address);
     }
 
     fn switch_root(&self, root: Frame) -> Result<(), MmuError> {
@@ -226,77 +138,6 @@ impl Mmu for Sv39 {
                 options(nostack),
             );
         }
-        Ok(())
-    }
-
-    fn read_frame(
-        &self,
-        physical_address: u64,
-        offset: usize,
-        words: &mut [u64],
-    ) -> Result<(), MmuError> {
-        paging::read_frame(self, physical_address, offset, words)
-    }
-
-    fn write_frame(
-        &self,
-        physical_address: u64,
-        offset: usize,
-        words: &[u64],
-    ) -> Result<(), MmuError> {
-        paging::write_frame(self, physical_address, offset, words)
-    }
-
-    fn zero_frame(&self, physical_address: u64) -> Result<(), MmuError> {
-        self.with_frame(
-            physical_address,
-            PagePermissions::ReadWrite,
-            paging::zero_page,
-        )
-    }
-
-    fn zero_mapped_frame(&self, address: usize) -> Result<(), MmuError> {
-        paging::zero_mapped_frame(self, address)
-    }
-
-    fn mapped_atomic_words(&self, address: usize) -> Result<&[AtomicU64; PAGE_WORDS], MmuError> {
-        paging::mapped_atomic_words(self, address)
-    }
-
-    fn read_mapped_frame(
-        &self,
-        address: usize,
-        offset: usize,
-        words: &mut [u64],
-    ) -> Result<(), MmuError> {
-        paging::read_mapped_frame(self, address, offset, words)
-    }
-
-    fn write_mapped_frame(
-        &self,
-        address: usize,
-        offset: usize,
-        words: &[u64],
-    ) -> Result<(), MmuError> {
-        paging::write_mapped_frame(self, address, offset, words)
-    }
-
-
-    fn compare_exchange_u32(
-        &self,
-        address: usize,
-        byte_offset: usize,
-        expected: u32,
-        new: u32,
-    ) -> Result<Option<u32>, MmuError> {
-        paging::compare_exchange_u32(self, address, byte_offset, expected, new)
-    }
-
-    fn invalidate_page(&self, address: usize) -> Result<(), MmuError> {
-        if !self.is_valid_virtual_address(address) {
-            return Err(MmuError::InvalidAddress);
-        }
-        invalidate_address(address);
         Ok(())
     }
 

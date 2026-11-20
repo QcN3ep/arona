@@ -6,8 +6,8 @@ use core::{
 };
 use kernel::{
     hardware::mmu::{
-        MAX_PAGE_TABLE_LEVELS, Mmu, MmuError, PAGE_SIZE, PAGE_WORDS, PageMapping, PagePermissions,
-        PageTableEntry, PageTableLayout, PageWalk, TableWindow,
+        MAX_PAGE_TABLE_LEVELS, MemoryType, Mmu, MmuError, PAGE_SIZE, PAGE_WORDS, PageAttributes,
+        PageMapping, PagePermissions, PageTableEntry, PageTableLayout, PageWalk, TableWindow,
     },
     memory::Frame,
 };
@@ -21,7 +21,9 @@ const KERNEL_OFFSET: usize = 0xffff_ffc0_0000_0000 - 0x8020_0000;
 #[cfg(target_arch = "loongarch64")]
 const KERNEL_OFFSET: usize = 0xffff_8000_0000_0000;
 
-pub(crate) trait Format: Mmu {
+pub(crate) trait Format: Sync + Sized {
+    const VIRTUAL_BITS: u32;
+    const DEVICE_MEMORY_TYPE: MemoryType;
     const LEVELS: usize;
     const PHYSICAL_BITS: u32;
 
@@ -31,9 +33,11 @@ pub(crate) trait Format: Mmu {
     fn decode_mapping(&self, entry: u64, level: usize) -> Result<PageMapping, MmuError>;
     /// Reports whether a nonzero entry above the base level is a leaf mapping rather than a table.
     fn is_mapping(entry: u64, level: usize) -> bool;
-    fn window_table_address(&self) -> u64 {
-        window_table_physical()
-    }
+    fn switch_root(&self, root: Frame) -> Result<(), MmuError>;
+    fn invalidate_address(&self, address: usize);
+    fn invalidate_all(&self);
+    fn synchronize_code(&self, range: Range<usize>) -> Result<(), MmuError>;
+    fn synchronize_frame(&self, frame: Frame) -> Result<(), MmuError>;
     fn with_table<T>(
         &self,
         address: u64,
@@ -44,12 +48,41 @@ pub(crate) trait Format: Mmu {
             operation(unsafe { &mut *(address as *mut PageTable) })
         })
     }
+    #[inline(always)]
     fn with_frame<T>(
         &self,
         address: u64,
         permissions: PagePermissions,
         operation: impl FnOnce(usize) -> T,
-    ) -> Result<T, MmuError>;
+    ) -> Result<T, MmuError> {
+        validate_physical::<Self>(address)?;
+        let _access = lock_memory();
+        let entry = self.encode_mapping(
+            PageMapping {
+                physical_address: address,
+                attributes: PageAttributes {
+                    permissions,
+                    memory_type: MemoryType::Normal,
+                    user_accessible: false,
+                },
+            },
+            0,
+        )?;
+        let table = core::ptr::addr_of_mut!(PAGE_TABLE_WINDOW_TABLE);
+        // SAFETY: The physical access window lock must be held.
+        unsafe {
+            if (*table).read(WINDOW_INDEX) != 0 {
+                return Err(MmuError::InvalidTable);
+            }
+            (*table).write(WINDOW_INDEX, entry);
+        }
+        self.invalidate_address(PAGE_TABLE_WINDOW);
+        let result = operation(PAGE_TABLE_WINDOW);
+        // SAFETY: The physical access window lock must be held.
+        unsafe { (*table).write(WINDOW_INDEX, 0) };
+        self.invalidate_address(PAGE_TABLE_WINDOW);
+        Ok(result)
+    }
 }
 
 #[repr(C, align(4096))]
@@ -271,13 +304,13 @@ pub(crate) fn validate_code_range(
     Ok(())
 }
 
-pub(crate) fn layout<F: Format>(format: &F) -> PageTableLayout {
+pub(crate) fn layout<F: Format>() -> PageTableLayout {
     PageTableLayout {
         levels: F::LEVELS,
         index_bits: 9,
         window: TableWindow {
             virtual_address: PAGE_TABLE_WINDOW,
-            table: Frame::new(format.window_table_address()).expect("unaligned table window"),
+            table: Frame::new(window_table_physical()).expect("unaligned table window"),
             level: 1,
         },
     }
@@ -348,7 +381,7 @@ pub(crate) fn walk_mapped<F: Format>(
     mapping: Range<usize>,
 ) -> Result<PageWalk, MmuError> {
     validate_physical::<F>(root.address())?;
-    if !format.is_valid_virtual_address(address) {
+    if !is_canonical(address, F::VIRTUAL_BITS) {
         return Err(MmuError::InvalidAddress);
     }
     let _access = lock_memory();
@@ -450,4 +483,140 @@ pub(crate) fn write_entry<F: Format>(
         _ => return Err(MmuError::InvalidTable),
     };
     format.with_table(table.address(), |table| table.write(index, encoded))
+}
+
+pub(crate) struct MmuBackend<F>(pub F);
+
+impl<F: Format> Mmu for MmuBackend<F> {
+    fn layout(&self) -> PageTableLayout {
+        crate::paging::layout::<F>()
+    }
+
+    fn read_entry(
+        &self,
+        table: Frame,
+        index: usize,
+        level: usize,
+    ) -> Result<PageTableEntry, MmuError> {
+        crate::paging::read_entry(&self.0, table, index, level)
+    }
+
+    fn copy_kernel_entries(&self, source: Frame, destination: Frame) -> Result<(), MmuError> {
+        crate::paging::copy_kernel_entries(&self.0, source, destination)
+    }
+
+    fn walk_mapped(
+        &self,
+        root: Frame,
+        address: usize,
+        physical_start: u64,
+        mapping: Range<usize>,
+    ) -> Result<PageWalk, MmuError> {
+        crate::paging::walk_mapped(&self.0, root, address, physical_start, mapping)
+    }
+
+    fn write_entry(
+        &self,
+        table: Frame,
+        index: usize,
+        level: usize,
+        entry: PageTableEntry,
+    ) -> Result<(), MmuError> {
+        crate::paging::write_entry(&self.0, table, index, level, entry)
+    }
+
+    fn table_is_empty(&self, table: Frame, level: usize) -> Result<bool, MmuError> {
+        crate::paging::table_is_empty(&self.0, table, level)
+    }
+
+    fn read_frame(
+        &self,
+        physical_address: u64,
+        offset: usize,
+        words: &mut [u64],
+    ) -> Result<(), MmuError> {
+        crate::paging::read_frame(&self.0, physical_address, offset, words)
+    }
+
+    fn write_frame(
+        &self,
+        physical_address: u64,
+        offset: usize,
+        words: &[u64],
+    ) -> Result<(), MmuError> {
+        crate::paging::write_frame(&self.0, physical_address, offset, words)
+    }
+
+    fn zero_frame(&self, physical_address: u64) -> Result<(), MmuError> {
+        self.0.with_frame(
+            physical_address,
+            PagePermissions::ReadWrite,
+            crate::paging::zero_page,
+        )
+    }
+
+    fn zero_mapped_frame(&self, address: usize) -> Result<(), MmuError> {
+        crate::paging::zero_mapped_frame(self, address)
+    }
+
+    fn mapped_atomic_words(&self, address: usize) -> Result<&[AtomicU64; PAGE_WORDS], MmuError> {
+        crate::paging::mapped_atomic_words(self, address)
+    }
+
+    fn read_mapped_frame(
+        &self,
+        address: usize,
+        offset: usize,
+        words: &mut [u64],
+    ) -> Result<(), MmuError> {
+        crate::paging::read_mapped_frame(self, address, offset, words)
+    }
+
+    fn write_mapped_frame(
+        &self,
+        address: usize,
+        offset: usize,
+        words: &[u64],
+    ) -> Result<(), MmuError> {
+        crate::paging::write_mapped_frame(self, address, offset, words)
+    }
+
+    fn compare_exchange_u32(
+        &self,
+        address: usize,
+        byte_offset: usize,
+        expected: u32,
+        new: u32,
+    ) -> Result<Option<u32>, MmuError> {
+        crate::paging::compare_exchange_u32(self, address, byte_offset, expected, new)
+    }
+
+    fn device_memory_type(&self) -> MemoryType {
+        F::DEVICE_MEMORY_TYPE
+    }
+    fn is_valid_virtual_address(&self, address: usize) -> bool {
+        is_canonical(address, F::VIRTUAL_BITS)
+    }
+    fn physical_address_bits(&self) -> u32 {
+        F::PHYSICAL_BITS
+    }
+    fn switch_root(&self, root: Frame) -> Result<(), MmuError> {
+        self.0.switch_root(root)
+    }
+    fn invalidate_page(&self, address: usize) -> Result<(), MmuError> {
+        if !self.is_valid_virtual_address(address) {
+            return Err(MmuError::InvalidAddress);
+        }
+        self.0.invalidate_address(address);
+        Ok(())
+    }
+    fn invalidate_all(&self) {
+        self.0.invalidate_all();
+    }
+    fn synchronize_code(&self, range: Range<usize>) -> Result<(), MmuError> {
+        self.0.synchronize_code(range)
+    }
+    fn synchronize_frame(&self, frame: Frame) -> Result<(), MmuError> {
+        self.0.synchronize_frame(frame)
+    }
 }
