@@ -336,6 +336,7 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
     assert_eq!(&bytes[..3], b"raw");
     service_metadata(&client);
     service_writes(&client);
+    memory_volumes(&control, &client);
     drop(raw);
     drop(file);
     control.unmount(b"/var", deadline()).unwrap();
@@ -354,6 +355,75 @@ fn mount_service(device: &runtime::Handle<runtime::Channel>, id: u32) {
     drop(client);
     drop(control);
     worker.join().unwrap();
+}
+
+fn memory_volumes(control: &fs::Control<'_>, client: &fs::Client<'_>) {
+    client.mkdir("/var/memory", deadline()).unwrap();
+    for huge in [false, true] {
+        if huge {
+            control.mount_hugepages(b"/var/memory", deadline()).unwrap();
+        } else {
+            control
+                .mount_tmpfs(b"/var/memory", 8192, deadline())
+                .unwrap();
+        }
+        let before = client.statfs(b"/var/memory", deadline()).unwrap();
+        assert_eq!(
+            client.rename("/var/memory/missing", "/var/memory/missing", deadline()),
+            Err(Error::NotFound)
+        );
+        assert_eq!(client.statfs(b"/var/memory", deadline()).unwrap(), before);
+        client.mkdir("/var/memory/directory", deadline()).unwrap();
+        let file = client.create("/var/memory/file", deadline()).unwrap();
+        let directory = client
+            .metadata(b"/var/memory/directory", deadline())
+            .unwrap();
+        let metadata = file.metadata(deadline()).unwrap();
+        let before = client.statfs(b"/var/memory", deadline()).unwrap();
+        for (source, target, error) in [
+            (
+                "/var/memory/file",
+                "/var/memory/directory",
+                Error::IsDirectory,
+            ),
+            (
+                "/var/memory/directory",
+                "/var/memory/file",
+                Error::NotDirectory,
+            ),
+        ] {
+            assert_eq!(client.rename(source, target, deadline()), Err(error));
+            assert_eq!(
+                client.metadata(b"/var/memory/file", deadline()).unwrap(),
+                metadata
+            );
+            assert_eq!(
+                client
+                    .metadata(b"/var/memory/directory", deadline())
+                    .unwrap(),
+                directory
+            );
+            assert_eq!(client.statfs(b"/var/memory", deadline()).unwrap(), before);
+            assert_eq!(client.read_dir("/var/memory", deadline()).unwrap().len(), 2);
+        }
+        client
+            .rename("/var/memory/file", "/var/memory/file", deadline())
+            .unwrap();
+        client
+            .rename("/var/memory/file", "/var/memory/moved", deadline())
+            .unwrap();
+        assert_eq!(
+            client.metadata(b"/var/memory/file", deadline()),
+            Err(Error::NotFound)
+        );
+        assert_eq!(
+            client.metadata(b"/var/memory/moved", deadline()).unwrap(),
+            metadata
+        );
+        drop(file);
+        control.unmount(b"/var/memory", deadline()).unwrap();
+    }
+    client.unlink("/var/memory", deadline()).unwrap();
 }
 
 fn service_metadata(client: &fs::Client<'_>) {

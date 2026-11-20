@@ -371,6 +371,7 @@ impl<F: FileData> Volume<F> {
     fn rename_path(&mut self, source: &[u8], target: &[u8]) -> Result<(), Error> {
         let source_path = crate::path::normalize(source)?;
         let target_path = crate::path::normalize(target)?;
+        self.lookup(source)?;
         if source_path == target_path {
             return Ok(());
         }
@@ -410,9 +411,9 @@ impl<F: FileData> Volume<F> {
         if let Some(replaced) = &replaced {
             if replaced_directory != directory {
                 return Err(if directory {
-                    Error::IsDirectory
-                } else {
                     Error::NotDirectory
+                } else {
+                    Error::IsDirectory
                 });
             }
             self.check_removable(replaced)?;
