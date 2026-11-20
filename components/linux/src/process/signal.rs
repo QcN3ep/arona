@@ -14,11 +14,25 @@ pub const CONT: u8 = 18;
 pub const STOP: u8 = 19;
 pub const VTALRM: u8 = 26;
 pub const PROF: u8 = 27;
+pub const NOCLDSTOP: usize = 1;
+pub const NOCLDWAIT: usize = 2;
+pub const SIGINFO: usize = 4;
 pub const RESTART: usize = 0x10000000;
 pub const NODEFER: usize = 0x40000000;
 pub const RESETHAND: usize = 0x80000000;
 pub const ONSTACK: usize = 0x08000000;
+// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/signal-defs.h?h=v6.12
+pub const EXPOSE_TAGBITS: usize = 0x800;
 pub const UNBLOCKABLE: u64 = bit(KILL) | bit(STOP);
+
+/// Bits `rt_sigaction` keeps from `sa_flags`.
+///
+/// Linux clears every other bit instead of failing, which lets userspace probe
+/// for flags it does not know. `SA_RESTORER` is absent because these
+/// architectures do not define it and use the kernel-provided trampoline.
+// REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/linux/signal_types.h?h=v6.12
+pub const FLAGS: usize =
+    NOCLDSTOP | NOCLDWAIT | SIGINFO | ONSTACK | RESTART | NODEFER | RESETHAND | EXPOSE_TAGBITS;
 
 #[derive(Clone, Copy, Default)]
 pub struct Action {

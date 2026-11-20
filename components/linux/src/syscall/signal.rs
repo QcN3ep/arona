@@ -107,13 +107,7 @@ fn action(process: &Process<'_>, args: [usize; 6]) -> SyscallResult {
             .address_space
             .read(input, &mut bytes)
             .map_err(|_| EFAULT)?;
-        let flags = word(&bytes, 8);
-        if flags
-            & !(3 | 4 | signal::ONSTACK | signal::RESTART | signal::NODEFER | signal::RESETHAND)
-            != 0
-        {
-            return Err(EINVAL);
-        }
+        let flags = word(&bytes, 8) & signal::FLAGS;
         Some(Action {
             handler: word(&bytes, 0),
             flags,

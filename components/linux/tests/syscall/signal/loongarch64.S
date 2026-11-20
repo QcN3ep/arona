@@ -42,6 +42,31 @@ signals:
     ld.d $t0, $t0, 0
     li.d $t1, 1
     bne $t0, $t1, signal_failure
+    # Unknown action flags are cleared instead of rejected.
+    action 10, unknown_flags_action
+    li.d $a0, 10
+    li.d $a1, 0
+    la.pcrel $a2, queried_action
+    li.d $a3, 8
+    invoke 134
+    expect 0
+    la.pcrel $t0, queried_action
+    ld.d $t0, $t0, 8
+    li.d $t1, 4
+    bne $t0, $t1, signal_failure
+    # The action mask sits at offset 16 of the three-word record.
+    action 10, masked_action
+    li.d $a0, 10
+    li.d $a1, 0
+    la.pcrel $a2, queried_action
+    li.d $a3, 8
+    invoke 134
+    expect 0
+    la.pcrel $t0, queried_action
+    ld.d $t0, $t0, 16
+    li.d $t1, 512
+    bne $t0, $t1, signal_failure
+    action 10, user_action
     li.d $a0, 0
     la.pcrel $a1, user_mask
     li.d $a2, 0
@@ -386,6 +411,7 @@ signal_failure:
 
 .section .data
 .balign 8
+# Each action record is handler, flags, mask (three 64-bit words).
 protection_action: .quad protection_handler, 4, 0
 continue_action: .quad continue_handler, 4, 0
 default_action: .quad 0, 0, 0
@@ -393,6 +419,8 @@ restart_action: .quad user_handler, 0x10000004, 0
 user_action: .quad user_handler, 4, 0
 alternate_action: .quad user_handler, 0x08000004, 0
 fault_action: .quad fault_handler, 4, 0
+unknown_flags_action: .quad user_handler, 0x04000004, 0
+masked_action: .quad user_handler, 4, 512
 user_mask: .quad 512
 second_mask: .quad 2048
 empty_mask: .quad 0
@@ -407,6 +435,7 @@ deliveries: .skip 8
 handler_mode: .skip 8
 alternate_seen: .skip 8
 pending_mask: .skip 8
+queried_action: .skip 24
 info: .skip 128
 .balign 16
 alternate_stack: .skip 8192

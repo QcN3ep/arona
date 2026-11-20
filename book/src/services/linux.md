@@ -419,6 +419,8 @@ The registering call rejects lengths other than 24 with `EINVAL` and unreadable 
 
 The signal implementation maintains the process-shared disposition and each thread's mask, pending set, and alternate stack.
 It supports `kill`, `tkill`, `tgkill`, `rt_sigaction`, `rt_sigprocmask`, `rt_sigpending`, `rt_sigsuspend`, `rt_sigtimedwait`, `sigaltstack`, and `rt_sigreturn`.
+`rt_sigaction` uses the three-word `sigaction` record of these architectures, keeps only the `SA_NOCLDSTOP`, `SA_NOCLDWAIT`, `SA_SIGINFO`, `SA_ONSTACK`, `SA_RESTART`, `SA_NODEFER`, `SA_RESETHAND`, and `SA_EXPOSE_TAGBITS` flag bits, and drops `SIGKILL` and `SIGSTOP` from the action mask.
+Cleared flag bits are not reported back, matching the Linux probe behavior; `SA_EXPOSE_TAGBITS` is retained but tag bits are not exposed in `siginfo`.
 On delivery it constructs the signal frame for the current architecture, and on return it restores the user state.
 Blocking operations return `EINTR` or execute the restart path according to the delivery action.
 A restarted timed futex wait keeps its original deadline.
