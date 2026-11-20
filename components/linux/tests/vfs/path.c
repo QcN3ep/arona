@@ -167,6 +167,10 @@ static void native_handles(void) {
 }
 static void mounts(void) {
     struct statfs a, b;
+    long root = open("/", O_DIRECTORY);
+    CHECK(SC(43, P("/"), P(&a)) == 0 && a.files > 0 && a.free_files == 0);
+    CHECK(SC(44, root, P(&b)) == 0 && b.files == a.files);
+    close(root);
     for (const char **path = (const char *[]){"/proc", "/sys", "/dev", "/dev/pts", "/dev/mqueue", "/dev/shm", "/dev/hugepages", 0}; *path; path++) {
         long fd = open(*path, O_DIRECTORY);
         CHECK(SC(43, P(*path), P(&a)) == 0);

@@ -17,6 +17,8 @@ pub struct Archive {
     frames: Rc<Handle<FrameAllocation>>,
     length: usize,
     entries: BTreeMap<Vec<u8>, Entry>,
+    /// Number of distinct inodes the archive contains; hard links share one.
+    files: u64,
 }
 
 struct Entry {
@@ -29,17 +31,19 @@ pub struct File {
     frames: Rc<Handle<FrameAllocation>>,
     range: Range<usize>,
     metadata: crate::Metadata,
+    files: u64,
 }
 
 pub struct Directory {
     _frames: Rc<Handle<FrameAllocation>>,
     entries: Vec<crate::DirEntry>,
     metadata: crate::Metadata,
+    files: u64,
 }
 
 impl Directory {
     pub fn statistics(&self) -> Result<crate::Statistics, Error> {
-        statistics(&self._frames, self.metadata.device)
+        statistics(&self._frames, self.metadata.device, self.files)
     }
 
     pub fn metadata(&self) -> crate::Metadata {
@@ -56,7 +60,7 @@ impl Directory {
 
 impl Archive {
     pub fn statistics(&self) -> Result<crate::Statistics, Error> {
-        statistics(&self.frames, self.device)
+        statistics(&self.frames, self.device, self.files)
     }
 
     pub fn new(frames: Handle<FrameAllocation>, length: usize) -> Result<Self, Error> {
@@ -73,6 +77,7 @@ impl Archive {
             frames: Rc::new(frames),
             length,
             entries: BTreeMap::new(),
+            files: 0,
         };
         archive.index()?;
         Ok(archive)
@@ -264,6 +269,14 @@ impl Archive {
                 }
             }
         }
+        let mut inodes: Vec<u64> = self
+            .entries
+            .values()
+            .map(|entry| entry.metadata.inode)
+            .collect();
+        inodes.sort_unstable();
+        inodes.dedup();
+        self.files = inodes.len() as u64;
         Ok(())
     }
 
@@ -293,6 +306,7 @@ impl Archive {
             _frames: Rc::clone(&self.frames),
             entries: self.read_dir(path)?,
             metadata,
+            files: self.files,
         })
     }
 
@@ -340,6 +354,7 @@ impl Archive {
             metadata: entry.metadata,
             frames: Rc::clone(&self.frames),
             range: entry.range.clone(),
+            files: self.files,
         })
     }
 }
@@ -378,7 +393,7 @@ fn field(header: &[u8; HEADER_SIZE], offset: usize) -> Result<usize, Error> {
 
 impl File {
     pub fn statistics(&self) -> Result<crate::Statistics, Error> {
-        statistics(&self.frames, self.metadata.device)
+        statistics(&self.frames, self.metadata.device, self.files)
     }
 
     pub fn metadata(&self) -> crate::Metadata {
@@ -386,12 +401,20 @@ impl File {
     }
 }
 
-fn statistics(frames: &Handle<FrameAllocation>, device: u64) -> Result<crate::Statistics, Error> {
+fn statistics(
+    frames: &Handle<FrameAllocation>,
+    device: u64,
+    files: u64,
+) -> Result<crate::Statistics, Error> {
     Ok(crate::Statistics {
         kind: 0x8584_58f6,
         device,
         block_size: PAGE_SIZE as u64,
         blocks: frames.frames()?,
+        // The archive is immutable: every inode it holds is in use, so none
+        // are free, and nothing can allocate more.
+        files,
+        free_files: 0,
         name_length: 255,
         flags: 1,
         ..crate::Statistics::default()

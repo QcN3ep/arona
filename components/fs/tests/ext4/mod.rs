@@ -1004,6 +1004,14 @@ fn archive_metadata() {
     );
     assert_eq!(archive.open_directory(b"data").unwrap().read_dir().len(), 3);
     assert_eq!(archive.open_directory(b"/").unwrap().read_dir().len(), 1);
+    // The two hard links share inode 7 and the symlink uses 8, so the archive
+    // holds these two plus the synthesized root and data directories.
+    let statistics = archive.statistics().unwrap();
+    assert_eq!(statistics.files, 4);
+    assert_eq!(statistics.free_files, 0);
+    assert_eq!(first.statistics().unwrap().files, 4);
+    let directory = archive.open_directory(b"data").unwrap();
+    assert_eq!(directory.statistics().unwrap().files, 4);
 }
 
 fn service_reads(file: &fs::File<'_>) {
