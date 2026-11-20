@@ -2,10 +2,9 @@
 
 //! Discover devices and normalize address, interrupt, and DMA resources while preserving device-specific properties.
 
-pub mod flash;
 mod interrupts;
 mod pci;
-pub mod serial;
+mod serial;
 pub mod syscon;
 
 use core::{fmt::Write, ops::Range};

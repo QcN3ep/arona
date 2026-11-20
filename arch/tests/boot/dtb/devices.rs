@@ -27,7 +27,6 @@ fn discovers_unfamiliar_devices_and_preserves_owned_configuration() {
         .iter()
         .find(|device| device.has_identity("devicetree", "acme,adc"))
         .unwrap();
-    assert!(UartInfo::from_device(sensor, &hardware).unwrap().is_none());
     assert_eq!(
         sensor.mmio_regions.as_slice(),
         &[PhysRange {
@@ -81,9 +80,7 @@ fn discovers_unfamiliar_devices_and_preserves_owned_configuration() {
 
 fn parse_device_configurations(hardware: &HardwareInfo) -> Result<(), arch::boot::dtb::Error> {
     for device in &hardware.devices {
-        UartInfo::from_device(device, hardware)?;
         SysconInfo::from_device(device, hardware)?;
-        FlashInfo::from_device(device, hardware)?;
     }
     Ok(())
 }
@@ -148,11 +145,6 @@ fn accepts_128_devices_and_rejects_overflow() {
 #[test]
 fn rejects_invalid_device_properties() {
     for (original, path, property, cell, value) in [
-        (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 63),
-        (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 255),
-        (DTB, "/soc@10000000/serial@0", "reg-io-width", 0, 0),
-        (DTB, "/soc@10000000/serial@0", "reg-offset", 0, u32::MAX),
-        (DTB, "/clock", "clock-frequency", 0, 0),
         (DTB, "/memory@80000000", "reg", 3, 0x8000001),
         (DTB, "/interrupt-controller@c000000", "riscv,ndev", 0, 0),
         (LOONGARCH_DTB, "/pcie@20000000", "interrupt-map", 3, 0),
@@ -179,7 +171,6 @@ fn rejects_invalid_device_properties() {
             193,
         ),
         (LOONGARCH_DTB, "/eiointc@1400", "interrupts", 0, 14),
-        (LOONGARCH_DTB, "/flash@1c000000", "bank-width", 0, 3),
         (RISCV_DTB, "/cpus", "timebase-frequency", 0, 0),
         (
             RISCV_DTB,
@@ -407,7 +398,7 @@ fn unsupported_optional_information_does_not_prevent_boot() {
             assert!(hardware.console.is_none());
         } else {
             let console = hardware.console.as_ref().unwrap();
-            assert!(SerialSettings::from_options(&console.options).is_err());
+            assert_eq!(console.options.as_str(), "115200x8r");
         }
     }
 }
@@ -415,9 +406,6 @@ fn unsupported_optional_information_does_not_prevent_boot() {
 #[test]
 fn rejects_broken_control_and_routing_descriptions() {
     for (original, path, property, cell, value) in [
-        (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 0),
-        (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 62),
-        (DTB, "/soc@10000000/serial@0", "reg-shift", 0, 64),
         (DTB, "/memory@80000000", "reg", 1, 0x80000001),
         (LOONGARCH_DTB, "/ged@100e001c", "reg-io-width", 0, 4),
         (

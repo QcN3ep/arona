@@ -13,12 +13,7 @@ use std::{
 use arch::boot::{
     dtb::{
         Dtb,
-        devices::{
-            RegisterEndian,
-            flash::FlashInfo,
-            serial::{SerialSettings, UartInfo},
-            syscon::SysconInfo,
-        },
+        devices::{RegisterEndian, syscon::SysconInfo},
     },
     prepare_boot_info,
 };
@@ -125,26 +120,16 @@ fn dtb_produces_complete_boot_data() {
         (uart.mmio_regions[0].start, uart.mmio_regions[0].end),
         (0x10000000, 0x10000100)
     );
-    let serial = UartInfo::from_device(uart, &hardware).unwrap().unwrap();
-    assert_eq!(
-        (
-            serial.register_shift,
-            serial.register_width,
-            serial.register_offset
-        ),
-        (2, 4, 8)
-    );
-    assert_eq!(serial.clock_frequency_hz, Some(3_686_400));
+    for (name, expected) in [("reg-shift", 2_u32), ("reg-io-width", 4), ("reg-offset", 8)] {
+        assert_eq!(
+            hardware.device_property(uart.instance_id, "devicetree", name),
+            Some(expected.to_be_bytes().as_slice())
+        );
+    }
     assert_eq!(hardware.console.as_ref().unwrap().device, uart.instance_id);
-    let settings =
-        SerialSettings::from_options(&hardware.console.as_ref().unwrap().options).unwrap();
     assert_eq!(
-        (
-            settings.baud_rate,
-            settings.data_bits,
-            settings.flow_control
-        ),
-        (115200, 8, true)
+        hardware.console.as_ref().unwrap().options.as_str(),
+        "115200n8r"
     );
     assert_eq!(
         (uart.interrupts[0].controller, uart.interrupts[0].line),
@@ -413,11 +398,8 @@ fn loongarch_dtb_preserves_register_spaces_and_interrupt_routes() {
         (CpuInterruptTarget::AllCpus, 3)
     );
     assert_eq!(
-        FlashInfo::from_device(flash, &hardware)
-            .unwrap()
-            .unwrap()
-            .bank_width,
-        4
+        hardware.device_property(flash.instance_id, "devicetree", "bank-width"),
+        Some(4_u32.to_be_bytes().as_slice())
     );
     assert_eq!(flash.mmio_regions.len(), 2);
     let DmaCapability::Present(dma) = fw_cfg.dma else {
@@ -592,8 +574,6 @@ fn riscv_dtb_preserves_cpu_contexts_and_platform_devices() {
         .find(|device| device.has_identity("devicetree", "ns16550a"))
         .unwrap();
     assert_eq!(hardware.console.as_ref().unwrap().device, uart.instance_id);
-    let serial = UartInfo::from_device(uart, &hardware).unwrap().unwrap();
-    assert_eq!(serial.clock_frequency_hz, Some(3_686_400));
     let syscon = hardware
         .devices
         .iter()
