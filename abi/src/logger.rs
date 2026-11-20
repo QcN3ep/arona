@@ -18,6 +18,19 @@ pub enum Level {
     Trace = 5,
 }
 
+impl Level {
+    pub fn from_raw(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Error),
+            2 => Some(Self::Warn),
+            3 => Some(Self::Info),
+            4 => Some(Self::Debug),
+            5 => Some(Self::Trace),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Record<'a> {
     /// The sequence starts at one; a gap indicates a lost record.
@@ -77,14 +90,7 @@ impl<'a> Record<'a> {
         {
             *word = u32::from_le_bytes(*bytes);
         }
-        let level = match words[0] {
-            1 => Level::Error,
-            2 => Level::Warn,
-            3 => Level::Info,
-            4 => Level::Debug,
-            5 => Level::Trace,
-            _ => return None,
-        };
+        let level = Level::from_raw(words[0])?;
         let flags = words[1];
         if sequence == 0 || sequence == u64::MAX || flags & !(TRUNCATED | TIMESTAMP) != 0 {
             return None;

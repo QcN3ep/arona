@@ -7,7 +7,7 @@ use core::fmt::Write;
 use devmgr::uart::Session;
 use fs::{File, ReadAt};
 use runtime::{
-    Channel, FrameAllocation, Handle, KernelError, KernelLog, Reply, Task,
+    Channel, FrameAllocation, Handle, KernelError, KernelLog, Task,
     ipc::{self, Message, ReceivedMessage, WaitItem, WaitMode},
     logger::MAX_RECORD_SIZE,
     thread,
@@ -15,7 +15,7 @@ use runtime::{
 
 use crate::{
     Error, Record,
-    protocol::{self, Submission},
+    protocol::{self, Submission, deliver},
 };
 
 const RETAINED_BYTES: usize = 1024 * 1024;
@@ -413,25 +413,4 @@ fn deadline() -> Result<u64, ()> {
         .map_err(|_| ())?
         .checked_add(IO_TIMEOUT_NS)
         .ok_or(())
-}
-
-fn deliver(reply: &Handle<Reply>, result: Result<Message, Error>) -> Result<(), Error> {
-    let mut message = match result {
-        Ok(message) => message,
-        Err(error) => Message::new(
-            match error {
-                Error::InvalidRequest => protocol::INVALID_REQUEST,
-                Error::BufferTooSmall => protocol::BUFFER_TOO_SMALL,
-                Error::Busy | Error::Runtime(runtime::Error::Kernel(KernelError::Busy)) => {
-                    protocol::BUSY
-                }
-                _ => protocol::UNAVAILABLE,
-            },
-            &[],
-        )?,
-    };
-    match reply.send(&mut message) {
-        Ok(()) | Err(runtime::Error::Kernel(KernelError::InvalidState)) => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }

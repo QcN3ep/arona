@@ -322,6 +322,24 @@ fn exercise(control: &Control<'_>, client: &Client<'static>) -> u64 {
         assert_eq!(record.message, "concurrent record");
         cursor = record.sequence + 1;
     }
+    for (level, expected) in [
+        (log::Level::Error, Level::Error),
+        (log::Level::Warn, Level::Warn),
+        (log::Level::Info, Level::Info),
+        (log::Level::Debug, Level::Debug),
+        (log::Level::Trace, Level::Trace),
+    ] {
+        let sequence = client
+            .write(level, "levels", "log level", deadline())
+            .unwrap();
+        let record = control
+            .read(cursor, &mut bytes, deadline())
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.sequence, sequence);
+        assert_eq!(record.level, expected);
+        cursor = sequence + 1;
+    }
     assert_eq!(control.read(cursor, &mut bytes, deadline()), Ok(None));
     client.flush(deadline()).unwrap();
     cursor

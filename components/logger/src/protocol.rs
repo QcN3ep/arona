@@ -3,7 +3,7 @@
 use arrayvec::ArrayString;
 use core::fmt::{self, Write};
 use runtime::{
-    Channel, FrameAllocation, Handle, Rights, Task,
+    Channel, FrameAllocation, Handle, KernelError, Reply, Rights, Task,
     ipc::{Message, ReceivedMessage, Transfer},
 };
 
@@ -16,10 +16,43 @@ pub const READ: u64 = 16;
 pub const READ_KERNEL: u64 = 17;
 pub const PRINT_KERNEL: u64 = 18;
 pub const SUCCESS: u64 = 0;
-pub const INVALID_REQUEST: u64 = 1;
-pub const BUFFER_TOO_SMALL: u64 = 2;
-pub const UNAVAILABLE: u64 = 3;
-pub const BUSY: u64 = 4;
+macro_rules! statuses {
+    ($($name:ident = $value:literal => $error:ident),* $(,)?) => {
+        $(pub const $name: u64 = $value;)*
+
+        fn error_status(error: Error) -> u64 {
+            match error {
+                $(Error::$error => $name,)*
+                Error::Runtime(runtime::Error::Kernel(KernelError::Busy)) => BUSY,
+                _ => UNAVAILABLE,
+            }
+        }
+
+        pub fn response(response: ReceivedMessage) -> Result<ReceivedMessage, Error> {
+            if !response.handles().is_empty() {
+                return Err(Error::InvalidRequest);
+            }
+            if response.tag == SUCCESS {
+                return Ok(response);
+            }
+            if !response.words().is_empty() {
+                return Err(Error::InvalidRequest);
+            }
+            Err(match response.tag {
+                $($name => Error::$error,)*
+                _ => Error::InvalidRequest,
+            })
+        }
+    };
+}
+
+statuses! {
+    INVALID_REQUEST = 1 => InvalidRequest,
+    BUFFER_TOO_SMALL = 2 => BufferTooSmall,
+    UNAVAILABLE = 3 => Unavailable,
+    BUSY = 4 => Busy,
+}
+
 pub const CHANNEL_RIGHTS: Rights = Rights::READ_WRITE.union(Rights::WAIT);
 pub const MAX_TEXT: usize = MAX_RECORD_SIZE - abi::logger::HEADER_SIZE;
 
@@ -81,14 +114,7 @@ impl Submission {
         if header & !0x0000_ffff_ffff_000f != 0 {
             return Err(Error::InvalidRequest);
         }
-        let level = match header & 7 {
-            1 => Level::Error,
-            2 => Level::Warn,
-            3 => Level::Info,
-            4 => Level::Debug,
-            5 => Level::Trace,
-            _ => return Err(Error::InvalidRequest),
-        };
+        let level = Level::from_raw((header & 7) as u32).ok_or(Error::InvalidRequest)?;
         let target_length = ((header >> 16) & 0xffff) as usize;
         let length = target_length + ((header >> 32) & 0xffff) as usize;
         if length > MAX_TEXT {
@@ -159,23 +185,15 @@ pub fn transfer<T: runtime::Object>(
         .map_err(|_| Error::InvalidRequest)
 }
 
-pub fn response(response: ReceivedMessage) -> Result<ReceivedMessage, Error> {
-    if !response.handles().is_empty() {
-        return Err(Error::InvalidRequest);
+pub fn deliver(reply: &Handle<Reply>, result: Result<Message, Error>) -> Result<(), Error> {
+    let mut message = match result {
+        Ok(message) => message,
+        Err(error) => Message::new(error_status(error), &[])?,
+    };
+    match reply.send(&mut message) {
+        Ok(()) | Err(runtime::Error::Kernel(KernelError::InvalidState)) => Ok(()),
+        Err(error) => Err(error.into()),
     }
-    if response.tag == SUCCESS {
-        return Ok(response);
-    }
-    if !response.words().is_empty() {
-        return Err(Error::InvalidRequest);
-    }
-    Err(match response.tag {
-        INVALID_REQUEST => Error::InvalidRequest,
-        BUFFER_TOO_SMALL => Error::BufferTooSmall,
-        UNAVAILABLE => Error::Unavailable,
-        BUSY => Error::Busy,
-        _ => Error::InvalidRequest,
-    })
 }
 
 pub fn call(
