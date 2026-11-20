@@ -5,6 +5,12 @@
 #![feature(custom_test_frameworks)]
 #![test_runner(run)]
 
+extern crate alloc;
+
+mod ipc;
+mod memory;
+mod trap;
+
 use testkit::{kperf, perf::Perf};
 
 #[kperf]
