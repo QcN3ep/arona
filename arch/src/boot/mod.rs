@@ -9,7 +9,8 @@ pub(crate) mod console;
 pub mod dtb;
 #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 mod image;
-pub mod initramfs;
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+pub(crate) mod initramfs;
 
 use kernel::{BootInfo, HardwareInfo, KernelImage, memory::MemoryRegionState};
 

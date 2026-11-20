@@ -105,7 +105,7 @@ pub unsafe extern "C" fn _start_native(hartid: usize, dtb: usize) -> ! {
     let image = kernel_image();
     let archive = crate::boot::initramfs::source(external_initramfs, image)
         .unwrap_or_else(|error| panic!("failed to locate initramfs: {error}"));
-    let init = crate::boot::initramfs::prepare(archive, hardware, image, 243)
+    let init = kernel::boot::initramfs::prepare(archive, hardware, image, 243)
         .unwrap_or_else(|error| panic!("failed to parse init image: {error}"));
     let mut info = prepare_boot_info(hartid as u64, image, hardware)
         .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));

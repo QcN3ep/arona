@@ -3,7 +3,7 @@
 //! Validate the initial static ELF and provide loadable segments.
 
 use super::Image;
-use kernel::{
+use crate::{
     BootProgram, ProgramSegment,
     hardware::mmu::{PAGE_SIZE, PagePermissions},
     memory::{USER_ADDRESS_RANGE, VirtRange},

@@ -48,7 +48,8 @@ After hardware parsing completes, the architecture layer hands over the data use
 | `initramfs` | The `BootData` of the boot archive |
 
 `BootProgram` provides the common boot code with program segments, the entry point, and data reading.
-ELF format parsing remains in the architecture boot code.
+The kernel parses the boot archive and the init ELF.
+The architecture boot code locates the archive and supplies the native ELF machine identifier.
 init comes from `bin/init` in the initramfs; for choosing between an embedded and a standalone archive, see [System Images](../system/images.md).
 
 ## Common Initialization Order

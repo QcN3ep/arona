@@ -342,8 +342,8 @@ fn run_program(
         bytes
     });
     if matches!(suite, "init" | "init-shutdown" | "linux" | "net-service") {
-        let init = arch::boot::initramfs::find_init(
-            arch::boot::initramfs::Image::from_bytes(bytes, 0).unwrap(),
+        let init = kernel::boot::initramfs::find_init(
+            kernel::boot::initramfs::Image::from_bytes(bytes, 0).unwrap(),
         )
         .unwrap()
         .data()

@@ -5,6 +5,7 @@
 mod console;
 mod hardware;
 mod image;
+pub mod initramfs;
 mod memory;
 mod program;
 
