@@ -144,11 +144,13 @@ impl Service<'_> {
     fn dispatch(&mut self, mut message: ReceivedMessage, control: bool) -> Result<(), Error> {
         let reply = message.take_reply();
         if !control && message.tag == protocol::WRITE {
-            let result =
-                Submission::decode(message).and_then(|submission| self.publish(submission));
+            let submission = Submission::decode(message);
+            let result = match &submission {
+                Ok(submission) => self.publish(submission),
+                Err(error) => Err(*error),
+            };
             match result {
-                Ok(bytes) => {
-                    let record = Record::decode(&bytes).ok_or(Error::InvalidRequest)?;
+                Ok((record, bytes)) => {
                     if let Some(reply) = &reply {
                         deliver(
                             reply,
@@ -175,7 +177,7 @@ impl Service<'_> {
         Ok(())
     }
 
-    fn publish(&mut self, submission: Submission) -> Result<Vec<u8>, Error> {
+    fn publish<'a>(&mut self, submission: &'a Submission) -> Result<(Record<'a>, Vec<u8>), Error> {
         let sequence = self
             .sequence
             .checked_add(1)
@@ -194,7 +196,7 @@ impl Service<'_> {
         record.encode(&mut bytes).ok_or(Error::InvalidRequest)?;
         retain(&mut self.records, &mut self.retained, bytes.clone());
         self.sequence = sequence;
-        Ok(bytes)
+        Ok((record, bytes))
     }
 
     fn persist(&mut self, bytes: &[u8]) {
@@ -352,19 +354,7 @@ fn restore(file: &File<'_>) -> Result<Restored, ()> {
             buffered += count;
             continue;
         }
-        if buffered < abi::logger::HEADER_SIZE {
-            break;
-        }
-        let target = u32::from_le_bytes(input[24..28].try_into().unwrap()) as usize;
-        let message = u32::from_le_bytes(input[28..32].try_into().unwrap()) as usize;
-        let Some(length) = abi::logger::HEADER_SIZE
-            .checked_add(target)
-            .and_then(|length| length.checked_add(message))
-            .filter(|length| *length <= MAX_RECORD_SIZE && *length <= buffered)
-        else {
-            break;
-        };
-        let Some(record) = Record::decode(&input[..length]) else {
+        let Some((record, length)) = Record::decode_prefix(&input[..buffered]) else {
             break;
         };
         if record.sequence <= sequence {

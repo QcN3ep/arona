@@ -183,6 +183,17 @@ fn buffered_records_survive_failed_reads_and_overwrite_as_whole_records() {
     assert_eq!(record.sequence, 1);
     assert_eq!(record.timestamp_ns, None);
     assert_eq!(record.message, "early record");
+    let mut stream = [0; MAX_RECORD_SIZE * 2];
+    stream[..length].copy_from_slice(&bytes[..length]);
+    stream[length..length * 2].copy_from_slice(&bytes[..length]);
+    assert_eq!(BufferedRecord::decode(&stream[..length * 2]), None);
+    assert_eq!(
+        BufferedRecord::decode_prefix(&stream[..length * 2]),
+        Some((record, length))
+    );
+    assert_eq!(BufferedRecord::decode_prefix(&stream[..length - 1]), None);
+    stream[length - 1] = 0xff;
+    assert_eq!(BufferedRecord::decode_prefix(&stream[..length * 2]), None);
     let mut snapshot = [0; MAX_RECORD_SIZE];
     assert_eq!(other.read(0, &mut snapshot), Ok(length));
     assert_eq!(&snapshot[..length], &bytes[..length]);

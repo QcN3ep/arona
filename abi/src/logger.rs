@@ -78,16 +78,20 @@ impl Record<'_> {
 
 impl<'a> Record<'a> {
     pub fn decode(bytes: &'a [u8]) -> Option<Self> {
-        if !(HEADER_SIZE..=MAX_RECORD_SIZE).contains(&bytes.len()) {
+        if bytes.len() > MAX_RECORD_SIZE {
             return None;
         }
-        let sequence = u64::from_le_bytes(bytes[..8].try_into().ok()?);
-        let timestamp = u64::from_le_bytes(bytes[8..16].try_into().ok()?);
+        let (record, length) = Self::decode_prefix(bytes)?;
+        (length == bytes.len()).then_some(record)
+    }
+
+    /// Decodes the first complete record and returns the number of bytes it occupies.
+    pub fn decode_prefix(bytes: &'a [u8]) -> Option<(Self, usize)> {
+        let header = bytes.get(..HEADER_SIZE)?;
+        let sequence = u64::from_le_bytes(header[..8].try_into().ok()?);
+        let timestamp = u64::from_le_bytes(header[8..16].try_into().ok()?);
         let mut words = [0; 4];
-        for (word, bytes) in words
-            .iter_mut()
-            .zip(bytes[16..HEADER_SIZE].as_chunks::<4>().0)
-        {
+        for (word, bytes) in words.iter_mut().zip(header[16..].as_chunks::<4>().0) {
             *word = u32::from_le_bytes(*bytes);
         }
         let level = Level::from_raw(words[0])?;
@@ -95,18 +99,24 @@ impl<'a> Record<'a> {
         if sequence == 0 || sequence == u64::MAX || flags & !(TRUNCATED | TIMESTAMP) != 0 {
             return None;
         }
-        let payload = &bytes[HEADER_SIZE..];
-        if (words[2] as usize).checked_add(words[3] as usize)? != payload.len() {
+        let length = HEADER_SIZE
+            .checked_add(words[2] as usize)?
+            .checked_add(words[3] as usize)?;
+        if length > MAX_RECORD_SIZE {
             return None;
         }
+        let payload = bytes.get(HEADER_SIZE..length)?;
         let (target, message) = payload.split_at(words[2] as usize);
-        Some(Self {
-            sequence,
-            timestamp_ns: (flags & TIMESTAMP != 0).then_some(timestamp),
-            level,
-            truncated: flags & TRUNCATED != 0,
-            target: core::str::from_utf8(target).ok()?,
-            message: core::str::from_utf8(message).ok()?,
-        })
+        Some((
+            Self {
+                sequence,
+                timestamp_ns: (flags & TIMESTAMP != 0).then_some(timestamp),
+                level,
+                truncated: flags & TRUNCATED != 0,
+                target: core::str::from_utf8(target).ok()?,
+                message: core::str::from_utf8(message).ok()?,
+            },
+            length,
+        ))
     }
 }

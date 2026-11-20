@@ -111,6 +111,16 @@ fn restart_persistent(
     let failure_kernel_log = kernel_log
         .try_clone(Rights::READ | Rights::TRANSFER)
         .unwrap();
+    let long = "日志".repeat(200);
+    let mut sequences = Vec::new();
+    for _ in 0..4 {
+        sequences.push(
+            logger
+                .client
+                .write(log::Level::Info, "recovery", &long, deadline())
+                .unwrap(),
+        );
+    }
     let persisted = logger
         .client
         .write(
@@ -125,6 +135,7 @@ fn restart_persistent(
     verify_file_failure(files, uart_control, id, failure_kernel_log);
     let file = files.open("/var/log/system.log", deadline()).unwrap();
     let size = file.size(deadline()).unwrap();
+    assert!(size > 4096);
     assert_eq!(file.write_at(size, b"torn", deadline()).unwrap(), 4);
     file.fsync(deadline()).unwrap();
     drop(file);
@@ -140,6 +151,17 @@ fn restart_persistent(
         size
     );
     let mut recovered = [0; MAX_RECORD_SIZE];
+    for sequence in sequences {
+        let record = logger
+            .control
+            .read(sequence, &mut recovered, deadline())
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.sequence, sequence);
+        assert_eq!(record.target, "recovery");
+        assert!(record.truncated);
+        assert!(long.starts_with(record.message));
+    }
     let record = logger
         .control
         .read(persisted, &mut recovered, deadline())
