@@ -58,6 +58,8 @@ SECTIONS
         _kernel_boot_stack = .;
         QUAD(_boot_stack_bottom - _kernel_offset)
         QUAD(_boot_stack_top - _kernel_offset)
+        _kernel_window_table = .;
+        QUAD(_boot_tables_window_phys)
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
         . = ALIGN(8);

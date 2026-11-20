@@ -16,10 +16,9 @@ const ENTRIES: usize = PAGE_SIZE / size_of::<u64>();
 pub(crate) const WINDOW_INDEX: usize = ENTRIES - 1;
 pub(crate) const PAGE_TABLE_WINDOW: usize = usize::MAX & !(PAGE_SIZE - 1);
 
-#[cfg(target_arch = "riscv64")]
-const KERNEL_OFFSET: usize = 0xffff_ffc0_0000_0000 - 0x8020_0000;
-#[cfg(target_arch = "loongarch64")]
-const KERNEL_OFFSET: usize = 0xffff_8000_0000_0000;
+unsafe extern "C" {
+    static _kernel_window_table: u64;
+}
 
 pub(crate) trait Format: Sync + Sized {
     const VIRTUAL_BITS: u32;
@@ -133,7 +132,8 @@ impl PageTable {
 }
 
 pub(crate) fn window_table_physical() -> u64 {
-    (core::ptr::addr_of!(PAGE_TABLE_WINDOW_TABLE) as usize - KERNEL_OFFSET) as u64
+    // SAFETY: The linker emits this physical address as one immutable word in kernel rodata.
+    unsafe { _kernel_window_table }
 }
 
 pub(crate) fn read_frame<F: Format>(
