@@ -41,3 +41,11 @@ arrayvec = { version = "0.7.6", default-features = false }
 abi = { package = "arona-abi", path = "../../abi" }
 dlmalloc = { version = "0.2.12", default-features = false, optional = true }
 spin = { version = "0.9.9", default-features = false, features = ["mutex", "spin_mutex", "once"], optional = true }
+
+[[test]]
+name = "kperf"
+path = "tests/kperf/main.rs"
+required-features = ["program"]
+
+[dev-dependencies]
+testkit = { package = "arona-testkit-core", path = "../../testkit/core" }

@@ -70,7 +70,7 @@ impl SavedRun {
             || !matches!(metadata["mode"].as_str(), Some("count" | "profile"))
             || !matches!(
                 metadata["case"].as_str(),
-                Some("calibration" | "system" | "kperf")
+                Some("calibration" | "system" | "kperf" | "runtime" | "fs")
             )
         {
             return Err(format!(

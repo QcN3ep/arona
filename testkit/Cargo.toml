@@ -18,6 +18,6 @@ bench = false
 abi = { package = "arona-abi", path = "../abi" }
 arrayvec = { version = "0.7.6", default-features = false }
 kernel = { package = "arona-kernel", path = "../kernel" }
-macros = { package = "arona-testkit-macros", path = "macros" }
+testkit_core = { package = "arona-testkit-core", path = "core" }
 spin = { version = "0.9.9", default-features = false, features = ["mutex", "once"] }
 runtime = { package = "arona-runtime", path = "../components/runtime" }

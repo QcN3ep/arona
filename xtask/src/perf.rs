@@ -7,6 +7,7 @@ mod cases;
 mod diff;
 mod report;
 mod system;
+mod user;
 
 use super::{
     Target, build_std, cargo_command, execute, linux_test, qemu_command, target_directory,
@@ -91,7 +92,14 @@ impl Options {
                         Some("kperf") => "kperf",
                         Some("calibration") => "calibration",
                         Some("system") => "system",
-                        _ => return Err("--case supports kperf, calibration, or system".to_owned()),
+                        Some("runtime") => "runtime",
+                        Some("fs") => "fs",
+                        _ => {
+                            return Err(
+                                "--case supports kperf, runtime, fs, calibration, or system"
+                                    .to_owned(),
+                            );
+                        }
                     };
                 }
                 "--kernel" | "--initramfs" | "--start" | "--end" | "--success" | "--workload"
@@ -143,7 +151,7 @@ impl Options {
                 "system input options require --case system without --artifacts".to_owned(),
             );
         }
-        if (options.case != "kperf" || options.artifacts.is_some())
+        if (!matches!(options.case, "kperf" | "runtime" | "fs") || options.artifacts.is_some())
             && (options.list || !options.filter.is_empty() || options.iterations.is_some())
         {
             return Err("--list, --filter, and --iterations require fresh kperf cases".to_owned());
@@ -170,7 +178,7 @@ pub(super) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<(), S
     }
     let options = Options::parse(arguments)?;
     let root = workspace_root()?;
-    if options.case == "kperf" && options.artifacts.is_none() {
+    if matches!(options.case, "kperf" | "runtime" | "fs") && options.artifacts.is_none() {
         return cases::run(options, &root);
     }
     execute_run(&options, &root)
@@ -222,7 +230,7 @@ fn collect(
     if options.case != "calibration" {
         metadata["measurement"] = manifest["measurement"].clone();
     }
-    if options.case == "system" {
+    if system::uses_initramfs(options.case) {
         command.arg("-initrd").arg(saved.join("initramfs.cpio"));
         command.args(["-device", "virtio-rng-pci,disable-legacy=on"]);
         system::attach_disks(&mut command, directory, &manifest)?;
@@ -271,7 +279,10 @@ fn collect(
     } else {
         PASSED
     };
-    let selection = if options.case == "kperf" {
+    let selection = if manifest["select_case"]
+        .as_bool()
+        .ok_or("missing case selection mode")?
+    {
         Some(cases::selection(&manifest)?)
     } else {
         None

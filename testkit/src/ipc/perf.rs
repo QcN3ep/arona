@@ -48,7 +48,7 @@ impl Drop for Peers {
 /// Check object reclamation after the measured thread and its fixtures have exited.
 pub fn run(perf: &mut Perf, case: fn(&mut Perf)) {
     let before = resources();
-    perf.in_thread(case);
+    crate::perf::in_thread(perf, case);
     assert_eq!(resources(), before);
 }
 

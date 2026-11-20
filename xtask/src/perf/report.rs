@@ -57,7 +57,7 @@ pub(super) fn build(directory: &Path, metadata: &Value) -> Result<(Value, Vec<St
     if metadata["mode"] != "profile"
         || !matches!(
             metadata["case"].as_str(),
-            Some("calibration" | "system" | "kperf")
+            Some("calibration" | "system" | "kperf" | "runtime" | "fs")
         )
     {
         return Err("report requires a saved instruction profile".to_owned());

@@ -38,6 +38,7 @@ version = "1.0.0"
 dependencies = [
  "arona-devmgr",
  "arona-runtime",
+ "arona-testkit-core",
 ]
 
 [[package]]
@@ -120,6 +121,7 @@ name = "arona-runtime"
 version = "1.0.0"
 dependencies = [
  "arona-abi",
+ "arona-testkit-core",
  "arrayvec",
  "dlmalloc",
  "spin",
@@ -132,8 +134,17 @@ dependencies = [
  "arona-abi",
  "arona-kernel",
  "arona-runtime",
- "arona-testkit-macros",
+ "arona-testkit-core",
  "arrayvec",
+ "spin",
+]
+
+[[package]]
+name = "arona-testkit-core"
+version = "1.0.0"
+dependencies = [
+ "arona-runtime",
+ "arona-testkit-macros",
  "spin",
 ]
 

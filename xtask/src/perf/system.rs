@@ -326,3 +326,7 @@ pub(super) fn files(target: super::Target) -> Vec<&'static str> {
     }
     files
 }
+
+pub(super) fn uses_initramfs(case: &str) -> bool {
+    matches!(case, "system" | "runtime" | "fs")
+}

@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
+
+[package]
+name = "arona-testkit-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "testkit_core"
+test = false
+bench = false
+
+[dependencies]
+macros = { package = "arona-testkit-macros", path = "../macros" }
+runtime = { package = "arona-runtime", path = "../../components/runtime" }
+spin = { version = "0.9.9", default-features = false, features = ["once"] }

@@ -67,6 +67,11 @@ Publish the image once and make the GHCR package public before running CI, so pu
 
 Performance cases use `#[testkit::kperf]` on `fn(&mut testkit::perf::Perf)` and share the same registration and selection mechanism.
 The `kperf` architecture target collects performance cases from its subsystem modules.
+
+User performance cases use the same `#[kperf]` macro and `Perf::iter` interval as kernel cases.
+Run `cargo xtask perf run riscv64 --release --case runtime --list` to list runtime cases, or use `--case fs` for filesystem cases.
+The runner packages the selected program as the initial Task and discovers its compiled case descriptors over the console.
+`--filter`, `--iterations`, and `--mode` have the same meaning for all three case collections.
 Reusable kernel scenarios live in `testkit` beside their functional counterparts.
 Run performance cases through [the perf command](xtask.md#performance-cases).
 

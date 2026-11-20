@@ -46,3 +46,11 @@ required-features = ["baremetal"]
 name = "tmpfs"
 path = "tests/tmpfs/mod.rs"
 required-features = ["host-tests"]
+
+[[test]]
+name = "kperf"
+path = "tests/kperf/main.rs"
+required-features = ["baremetal"]
+
+[dev-dependencies]
+testkit = { package = "arona-testkit-core", path = "../../testkit/core" }

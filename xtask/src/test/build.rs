@@ -74,6 +74,13 @@ impl Build {
         if let Some(path) = self.programs.get(&key) {
             return Ok(path.clone());
         }
+        let command = self.program_command(package, name);
+        let path = linux_test::build_runner(command, name)?;
+        self.programs.insert(key, path.clone());
+        Ok(path)
+    }
+
+    pub fn program_command(&self, package: &str, name: &str) -> std::process::Command {
         let mut command = cargo_command(self.root.clone());
         build_std(&mut command);
         command.args([
@@ -96,10 +103,21 @@ impl Build {
         if self.release {
             command.arg("--release");
         }
-        command.args(["--", "-Cstrip=symbols", "-Clink-arg=-zmax-page-size=4096"]);
-        let path = linux_test::build_runner(command, name)?;
-        self.programs.insert(key, path.clone());
-        Ok(path)
+        if self.symbols {
+            let profile = if self.release { "RELEASE" } else { "DEV" };
+            command.env(format!("CARGO_PROFILE_{profile}_DEBUG"), "2");
+            command.env(format!("CARGO_PROFILE_{profile}_STRIP"), "none");
+        }
+        command.args([
+            "--",
+            "-Cpanic=abort",
+            "-Zpanic-abort-tests",
+            "-Clink-arg=-zmax-page-size=4096",
+        ]);
+        if !self.symbols {
+            command.arg("-Cstrip=symbols");
+        }
+        command
     }
 
     pub fn binary(&mut self, name: &str) -> Result<PathBuf, String> {

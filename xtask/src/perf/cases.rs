@@ -37,17 +37,18 @@ pub(super) fn run(mut options: Options, root: &Path) -> Result<(), String> {
     let mut matched = 0;
     let mut failures = 0;
     let source = artifacts::source_state(root)?;
-    let command = builds.image_command("kperf")?;
-    let build = if options.list {
-        Value::Null
+    let (executable, build, cases) = if options.case == "kperf" {
+        let command = builds.image_command("kperf")?;
+        let build = artifacts::build_description(&command, root, source.clone())?;
+        let executable = linux_test::build_runner(command, "kperf")?;
+        let cases = test::vm::list(options.target, root, &executable, &directory)?;
+        (executable, build, cases)
     } else {
-        artifacts::build_description(&command, root, source.clone())?
+        super::user::build(&mut options, root, &directory, &mut builds, source.clone())?
     };
-    let executable = linux_test::build_runner(command, "kperf")?;
     if artifacts::source_state(root)? != source {
         return Err("source inputs changed during the performance build".to_owned());
     }
-    let cases = test::vm::list(options.target, root, &executable, &directory)?;
     for case in cases
         .into_iter()
         .filter(|case| case.performance && case.name.contains(&options.filter))
@@ -64,6 +65,11 @@ pub(super) fn run(mut options: Options, root: &Path) -> Result<(), String> {
             executable: executable.clone(),
             build: build.clone(),
         });
+        if options.case != "kperf" {
+            options.input.success = Some(format!("KTEST PASS {}", case.name));
+            options.input.workload = Some(case.name.clone());
+            options.input.units = Some(options.iterations.unwrap_or(1));
+        }
         if let Err(error) = execute_run(&options, root) {
             failures += 1;
             eprintln!("perf {} ... FAILED: {error}", case.name);

@@ -38,6 +38,26 @@ pub(crate) fn list(
     )
 }
 
+pub(crate) fn list_with_initrd(
+    target: Target,
+    root: &Path,
+    kernel: &Path,
+    initrd: &Path,
+    directory: &Path,
+) -> Result<Vec<Case>, String> {
+    let mut resources = Resources::default();
+    resources.initrd = Some(initrd.to_path_buf());
+    collect(
+        target,
+        root,
+        kernel,
+        directory,
+        None,
+        &mut resources,
+        Duration::from_secs(30),
+    )
+}
+
 pub(super) fn run(
     target: Target,
     root: &Path,

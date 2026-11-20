@@ -9,23 +9,10 @@ extern crate alloc;
 
 use kernel::trap::{Trap, TrapOrigin, TrapOutcome};
 
-pub use macros::{kperf, ktest};
+pub use testkit_core::{Case, CaseKind, kperf, ktest};
 
 pub mod perf;
 pub mod register;
-
-pub struct Case {
-    pub name: &'static str,
-    pub kind: CaseKind,
-}
-
-pub enum CaseKind {
-    Test {
-        run: fn(),
-        expected: &'static [&'static str],
-    },
-    Perf(fn(&mut perf::Perf)),
-}
 
 mod device;
 pub mod ipc;

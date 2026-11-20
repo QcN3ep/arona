@@ -58,7 +58,7 @@ pub(super) fn prepare(options: &Options, root: &Path, run: &Path) -> Result<Valu
     {
         verify_file(&directory, &name, &manifest)?;
     }
-    if options.case == "system" {
+    if system::uses_initramfs(options.case) {
         system::validate_images(options.target, &directory, &manifest)?;
     }
     fs::write(
@@ -70,7 +70,7 @@ pub(super) fn prepare(options: &Options, root: &Path, run: &Path) -> Result<Valu
 }
 
 pub(super) fn filenames(target: Target, case: &str) -> Vec<&'static str> {
-    if case == "system" {
+    if system::uses_initramfs(case) {
         return system::files(target);
     }
     if matches!(target, Target::Riscv64) {
@@ -131,7 +131,7 @@ pub(super) fn digest(path: &Path) -> Result<String, String> {
 }
 
 fn create(options: &Options, root: &Path, directory: &Path) -> Result<Value, String> {
-    if options.case == "system" {
+    if system::uses_initramfs(options.case) {
         return create_system(options, root, directory);
     }
     let (executable, mut build) = if options.case == "kperf" {
@@ -167,7 +167,7 @@ fn create(options: &Options, root: &Path, directory: &Path) -> Result<Value, Str
     let mut manifest = json!({
         "target": options.target.triple(), "case": options.case, "images": [], "disks": [],
         "machine_arguments": machine_arguments(options.target, root),
-        "release": options.release.unwrap_or(false), "files": files, "build": build,
+        "release": options.release.unwrap_or(false), "files": files, "build": build, "select_case": options.case == "kperf",
     });
     if let Some(selection) = &options.selection {
         manifest["measurement"] = json!({
@@ -235,9 +235,11 @@ fn create_system(options: &Options, root: &Path, directory: &Path) -> Result<Val
         files.insert(name.clone(), digest(&directory.join(name))?);
     }
     Ok(json!({
-        "target": options.target.triple(), "case": "system", "measurement": measurement, "images":images, "disks":disks,
+        "target": options.target.triple(), "case": options.case, "measurement": measurement, "images":images, "disks":disks,
         "machine_arguments": machine_arguments(options.target, root),
         "release": options.release.unwrap_or(false), "files": files,
+        "select_case": options.selection.is_some(),
+        "build": options.selection.as_ref().map(|selection| &selection.build),
         "input_kernel": options.input.kernel, "input_initramfs": options.input.initramfs, "input_disks": options.input.disks,
     }))
 }
@@ -356,7 +358,7 @@ pub(super) fn validate_images(target: Target, directory: &Path, case: &str) -> R
     let sections = symbols["Sections"]
         .as_array()
         .ok_or("missing ELF sections")?;
-    if case == "system"
+    if system::uses_initramfs(case)
         && sections.iter().any(|section| {
             section["Section"]["Name"]["Name"] == ".initramfs"
                 && section["Section"]["Size"]
