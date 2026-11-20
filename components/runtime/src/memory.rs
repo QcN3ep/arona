@@ -270,6 +270,43 @@ impl Handle<Task> {
             .map_err(|_| Error::Protocol)
     }
 }
+impl BorrowedHandle<'_, Task> {
+    pub(crate) fn unmap(&self, range: &Range<usize>) -> Result<(), Error> {
+        let length = range_length(range)?;
+        // SAFETY: UNMAP describes an address range and accesses no local buffer.
+        unsafe { self.invoke(task::UNMAP, [range.start as u64, length as u64, 0, 0, 0]) }?;
+        Ok(())
+    }
+
+    pub(crate) fn unreserve(&self, range: &Range<usize>) -> Result<(), Error> {
+        let length = range_length(range)?;
+        // SAFETY: UNRESERVE describes an address range and accesses no local buffer.
+        unsafe {
+            self.invoke(
+                task::UNRESERVE,
+                [range.start as u64, length as u64, 0, 0, 0],
+            )
+        }?;
+        Ok(())
+    }
+
+    pub(crate) fn protect(
+        &self,
+        range: &Range<usize>,
+        permissions: Permissions,
+    ) -> Result<(), Error> {
+        let length = range_length(range)?;
+        // SAFETY: PROTECT describes an address range and accesses no local buffer.
+        unsafe {
+            self.invoke(
+                task::PROTECT,
+                [range.start as u64, length as u64, permissions as u64, 0, 0],
+            )
+        }?;
+        Ok(())
+    }
+}
+
 /// Live references to a frame allocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AllocationState {
@@ -343,38 +380,14 @@ impl Mapping<'_> {
     }
     pub fn protect(&mut self, permissions: Permissions) -> Result<(), Error> {
         let range = self
-            .range()
+            .range
+            .as_ref()
             .ok_or(Error::Kernel(abi::Error::InvalidState))?;
-        // SAFETY: PROTECT takes only handles and scalar values, with no local buffers.
-        unsafe {
-            self.task.invoke(
-                task::PROTECT,
-                [
-                    range.start as u64,
-                    (range.end - range.start) as u64,
-                    permissions as u64,
-                    0,
-                    0,
-                ],
-            )
-        }?;
-        Ok(())
+        self.task.protect(range, permissions)
     }
     pub fn unmap(&mut self) -> Result<(), Error> {
         if let Some(range) = &self.range {
-            // SAFETY: UNMAP takes only handles and scalar values, with no local buffers.
-            unsafe {
-                self.task.invoke(
-                    task::UNMAP,
-                    [
-                        range.start as u64,
-                        (range.end - range.start) as u64,
-                        0,
-                        0,
-                        0,
-                    ],
-                )
-            }?;
+            self.task.unmap(range)?;
             self.range = None;
         }
         Ok(())
@@ -397,19 +410,7 @@ impl Reservation<'_> {
     }
     pub fn release(&mut self) -> Result<(), Error> {
         if let Some(range) = &self.range {
-            // SAFETY: UNRESERVE takes only handles and scalar values, with no local buffers.
-            unsafe {
-                self.task.invoke(
-                    task::UNRESERVE,
-                    [
-                        range.start as u64,
-                        (range.end - range.start) as u64,
-                        0,
-                        0,
-                        0,
-                    ],
-                )
-            }?;
+            self.task.unreserve(range)?;
             self.range = None;
         }
         Ok(())
@@ -419,6 +420,13 @@ impl Drop for Reservation<'_> {
     fn drop(&mut self) {
         let _ = self.release();
     }
+}
+
+fn range_length(range: &Range<usize>) -> Result<usize, Error> {
+    range
+        .end
+        .checked_sub(range.start)
+        .ok_or(Error::Kernel(abi::Error::InvalidArgument))
 }
 
 fn decode_range(start: u64, length: u64) -> Result<Range<usize>, Error> {

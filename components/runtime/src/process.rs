@@ -7,7 +7,6 @@ use crate::{
     Channel, Error, FrameAllocation, Handle, Object, Rights, Task, memory::Permissions,
     thread::UserEntry,
 };
-use abi::method::task;
 pub use abi::process::ProcessStart;
 
 pub const REQUIRED_RIGHTS: Rights = Rights::FRAME_ALLOCATE
@@ -94,49 +93,16 @@ impl SupervisedTask {
     }
 
     pub fn unmap(&self, range: Range<usize>) -> Result<(), Error> {
-        let length = range
-            .end
-            .checked_sub(range.start)
-            .ok_or(Error::Kernel(abi::Error::InvalidArgument))?;
-        // SAFETY: UNMAP takes only handles and scalar values, with no local buffers.
-        unsafe {
-            self.task.borrow().invoke(
-                abi::method::task::UNMAP,
-                [range.start as u64, length as u64, 0, 0, 0],
-            )
-        }?;
-        Ok(())
+        self.task.borrow().unmap(&range)
     }
 
     /// Releases a reservation previously established by [`Self::reserve`].
     pub fn unreserve(&self, range: Range<usize>) -> Result<(), Error> {
-        let length = range
-            .end
-            .checked_sub(range.start)
-            .ok_or(Error::Kernel(abi::Error::InvalidArgument))?;
-        // SAFETY: UNRESERVE takes only handles and scalar values, with no local buffers.
-        unsafe {
-            self.task.borrow().invoke(
-                task::UNRESERVE,
-                [range.start as u64, length as u64, 0, 0, 0],
-            )
-        }?;
-        Ok(())
+        self.task.borrow().unreserve(&range)
     }
 
     pub fn protect(&self, range: Range<usize>, permissions: Permissions) -> Result<(), Error> {
-        let length = range
-            .end
-            .checked_sub(range.start)
-            .ok_or(Error::Kernel(abi::Error::InvalidArgument))?;
-        // SAFETY: PROTECT takes only handles and scalar values, with no local buffers.
-        unsafe {
-            self.task.borrow().invoke(
-                abi::method::task::PROTECT,
-                [range.start as u64, length as u64, permissions as u64, 0, 0],
-            )
-        }?;
-        Ok(())
+        self.task.borrow().protect(&range, permissions)
     }
 
     pub fn create_thread(

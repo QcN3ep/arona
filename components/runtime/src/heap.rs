@@ -36,13 +36,10 @@ unsafe impl Allocator for System {
                     None,
                     Permissions::ReadWrite,
                 )
-            });
+            })
+            .and_then(|mapping| mapping.into_range());
         match result {
-            Ok(mapping) => {
-                let range = mapping.range().unwrap();
-                core::mem::forget(mapping);
-                (range.start as *mut u8, size, 0)
-            }
+            Ok(range) => (range.start as *mut u8, size, 0),
             Err(_) => (ptr::null_mut(), 0, 0),
         }
     }
@@ -59,14 +56,11 @@ unsafe impl Allocator for System {
     }
 
     fn free(&self, pointer: *mut u8, size: usize) -> bool {
-        // SAFETY: UNMAP takes only handles and scalar values, with no local buffers.
-        unsafe {
-            process::task().borrow().invoke(
-                abi::method::task::UNMAP,
-                [pointer as u64, size as u64, 0, 0, 0],
-            )
-        }
-        .is_ok()
+        let start = pointer as usize;
+        let Some(end) = start.checked_add(size) else {
+            return false;
+        };
+        process::task().borrow().unmap(&(start..end)).is_ok()
     }
 
     fn allocates_zeros(&self) -> bool {
