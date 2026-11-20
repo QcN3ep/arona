@@ -884,10 +884,6 @@ impl<F: FileData + 'static> crate::backend::Backend for MemoryVolume<F> {
         Ok(alloc::boxed::Box::new(file))
     }
 
-    fn create(&self, path: &[u8]) -> Result<alloc::boxed::Box<dyn crate::backend::File>, Error> {
-        self.create_with_permissions(path, 0o644)
-    }
-
     fn create_with_permissions(
         &self,
         path: &[u8],

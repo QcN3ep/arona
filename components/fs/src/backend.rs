@@ -27,7 +27,9 @@ pub(crate) trait Backend {
 
     fn open_directory(&self, path: &[u8]) -> Result<Box<dyn File>, Error>;
 
-    fn create(&self, path: &[u8]) -> Result<Box<dyn File>, Error>;
+    fn create(&self, path: &[u8]) -> Result<Box<dyn File>, Error> {
+        self.create_with_permissions(path, 0o644)
+    }
 
     fn create_with_permissions(
         &self,

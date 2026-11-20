@@ -312,10 +312,6 @@ impl crate::backend::Backend for Ext4 {
         Ext4::open_directory(self, path).map(|file| Box::new(file) as Box<dyn crate::backend::File>)
     }
 
-    fn create(&self, path: &[u8]) -> Result<Box<dyn crate::backend::File>, Error> {
-        Ext4::create(self, path).map(|file| Box::new(file) as Box<dyn crate::backend::File>)
-    }
-
     fn create_with_permissions(
         &self,
         path: &[u8],

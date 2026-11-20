@@ -238,10 +238,6 @@ impl crate::backend::Backend for Tmpfs {
             .map(|file| Box::new(file) as Box<dyn crate::backend::File>)
     }
 
-    fn create(&self, path: &[u8]) -> Result<Box<dyn crate::backend::File>, Error> {
-        Tmpfs::create(self, path).map(|file| Box::new(file) as Box<dyn crate::backend::File>)
-    }
-
     fn create_with_permissions(
         &self,
         path: &[u8],

@@ -301,10 +301,6 @@ impl crate::backend::Backend for Fat32 {
             .map(|file| Box::new(file) as Box<dyn crate::backend::File>)
     }
 
-    fn create(&self, path: &[u8]) -> Result<Box<dyn crate::backend::File>, Error> {
-        Fat32::create(self, path).map(|file| Box::new(file) as Box<dyn crate::backend::File>)
-    }
-
     fn create_with_permissions(
         &self,
         path: &[u8],
