@@ -25,9 +25,11 @@ struct DmaRange<'a> {
 
 impl Handle<Device> {
     pub fn create_dma(&self, id: u32, rights: Rights) -> Result<Handle<DmaDomain>, Error> {
-        let [raw, _] = self
-            .borrow()
-            .invoke(device::CREATE_DMA, [id as u64, rights.bits(), 0, 0, 0])?;
+        // SAFETY: CREATE_DMA takes only handles and scalar values, with no local buffers.
+        let [raw, _] = unsafe {
+            self.borrow()
+                .invoke(device::CREATE_DMA, [id as u64, rights.bits(), 0, 0, 0])
+        }?;
         // SAFETY: A successful CREATE_DMA must deliver an exclusive new DMA domain handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
@@ -88,16 +90,19 @@ impl Handle<DmaDomain> {
         count: u64,
         direction: DmaDirection,
     ) -> Result<DmaRange<'_>, Error> {
-        let [address, length] = self.borrow().invoke(
-            dma::MAP,
-            [
-                frames.borrow().raw().raw(),
-                first,
-                count,
-                direction as u64,
-                0,
-            ],
-        )?;
+        // SAFETY: MAP takes only handles and scalar values, with no local buffers.
+        let [address, length] = unsafe {
+            self.borrow().invoke(
+                dma::MAP,
+                [
+                    frames.borrow().raw().raw(),
+                    first,
+                    count,
+                    direction as u64,
+                    0,
+                ],
+            )
+        }?;
         Ok(DmaRange {
             domain: self.borrow(),
             address: Some(address),
@@ -107,7 +112,8 @@ impl Handle<DmaDomain> {
     }
 
     pub fn resume(&self) -> Result<(), Error> {
-        self.borrow().invoke(dma::RESUME, [0; 5])?;
+        // SAFETY: RESUME takes only handles and scalar values, with no local buffers.
+        unsafe { self.borrow().invoke(dma::RESUME, [0; 5]) }?;
         Ok(())
     }
 
@@ -115,12 +121,14 @@ impl Handle<DmaDomain> {
     ///
     /// The device queue must be stopped, and in-flight DMA must have completed.
     pub fn quiesce(&self) -> Result<(), Error> {
-        self.borrow().invoke(dma::QUIESCE, [0; 5])?;
+        // SAFETY: QUIESCE takes only handles and scalar values, with no local buffers.
+        unsafe { self.borrow().invoke(dma::QUIESCE, [0; 5]) }?;
         Ok(())
     }
 
     pub fn revoke(&self) -> Result<(), Error> {
-        self.borrow().invoke(dma::REVOKE, [0; 5])?;
+        // SAFETY: REVOKE takes only handles and scalar values, with no local buffers.
+        unsafe { self.borrow().invoke(dma::REVOKE, [0; 5]) }?;
         Ok(())
     }
 }
@@ -144,16 +152,19 @@ impl DmaRange<'_> {
     ) -> Result<(), Error> {
         let offset = self.check(offset, output.len())?;
         synchronize();
-        frames.invoke(
-            memory::READ,
-            [
-                offset,
-                output.as_mut_ptr() as u64,
-                output.len() as u64,
-                0,
-                0,
-            ],
-        )?;
+        // SAFETY: The output buffer remains exclusively borrowed until the call returns.
+        unsafe {
+            frames.invoke(
+                memory::READ,
+                [
+                    offset,
+                    output.as_mut_ptr() as u64,
+                    output.len() as u64,
+                    0,
+                    0,
+                ],
+            )
+        }?;
         synchronize();
         Ok(())
     }
@@ -166,17 +177,21 @@ impl DmaRange<'_> {
     ) -> Result<(), Error> {
         let offset = self.check(offset, input.len())?;
         synchronize();
-        frames.invoke(
-            memory::WRITE,
-            [offset, input.as_ptr() as u64, input.len() as u64, 0, 0],
-        )?;
+        // SAFETY: The input buffer remains borrowed until the call returns.
+        unsafe {
+            frames.invoke(
+                memory::WRITE,
+                [offset, input.as_ptr() as u64, input.len() as u64, 0, 0],
+            )
+        }?;
         synchronize();
         Ok(())
     }
 
     fn unmap(&mut self) -> Result<(), Error> {
         if let Some(address) = self.address {
-            self.domain.invoke(dma::UNMAP, [address, 0, 0, 0, 0])?;
+            // SAFETY: UNMAP takes only handles and scalar values, with no local buffers.
+            unsafe { self.domain.invoke(dma::UNMAP, [address, 0, 0, 0, 0]) }?;
             self.address = None;
         }
         Ok(())

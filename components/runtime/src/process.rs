@@ -98,10 +98,13 @@ impl SupervisedTask {
             .end
             .checked_sub(range.start)
             .ok_or(Error::Kernel(abi::Error::InvalidArgument))?;
-        self.task.borrow().invoke(
-            abi::method::task::UNMAP,
-            [range.start as u64, length as u64, 0, 0, 0],
-        )?;
+        // SAFETY: UNMAP takes only handles and scalar values, with no local buffers.
+        unsafe {
+            self.task.borrow().invoke(
+                abi::method::task::UNMAP,
+                [range.start as u64, length as u64, 0, 0, 0],
+            )
+        }?;
         Ok(())
     }
 
@@ -111,10 +114,13 @@ impl SupervisedTask {
             .end
             .checked_sub(range.start)
             .ok_or(Error::Kernel(abi::Error::InvalidArgument))?;
-        self.task.borrow().invoke(
-            task::UNRESERVE,
-            [range.start as u64, length as u64, 0, 0, 0],
-        )?;
+        // SAFETY: UNRESERVE takes only handles and scalar values, with no local buffers.
+        unsafe {
+            self.task.borrow().invoke(
+                task::UNRESERVE,
+                [range.start as u64, length as u64, 0, 0, 0],
+            )
+        }?;
         Ok(())
     }
 
@@ -123,10 +129,13 @@ impl SupervisedTask {
             .end
             .checked_sub(range.start)
             .ok_or(Error::Kernel(abi::Error::InvalidArgument))?;
-        self.task.borrow().invoke(
-            abi::method::task::PROTECT,
-            [range.start as u64, length as u64, permissions as u64, 0, 0],
-        )?;
+        // SAFETY: PROTECT takes only handles and scalar values, with no local buffers.
+        unsafe {
+            self.task.borrow().invoke(
+                abi::method::task::PROTECT,
+                [range.start as u64, length as u64, permissions as u64, 0, 0],
+            )
+        }?;
         Ok(())
     }
 

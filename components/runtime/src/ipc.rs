@@ -195,10 +195,13 @@ impl Handle<Task> {
         first: Rights,
         second: Rights,
     ) -> Result<(Handle<Channel>, Handle<Channel>), Error> {
-        let [first, second] = self.borrow().invoke(
-            method::task::CHANNEL,
-            [first.bits(), second.bits(), 0, 0, 0],
-        )?;
+        // SAFETY: CHANNEL takes only handles and scalar values, with no local buffers.
+        let [first, second] = unsafe {
+            self.borrow().invoke(
+                method::task::CHANNEL,
+                [first.bits(), second.bits(), 0, 0, 0],
+            )
+        }?;
         // SAFETY: A successful CHANNEL delivers two exclusive Channel handles.
         Ok(unsafe {
             (
@@ -208,9 +211,11 @@ impl Handle<Task> {
         })
     }
     pub fn event(&self, rights: Rights) -> Result<Handle<Event>, Error> {
-        let [raw, _] = self
-            .borrow()
-            .invoke(method::task::EVENT, [rights.bits(), 0, 0, 0, 0])?;
+        // SAFETY: EVENT takes only handles and scalar values, with no local buffers.
+        let [raw, _] = unsafe {
+            self.borrow()
+                .invoke(method::task::EVENT, [rights.bits(), 0, 0, 0, 0])
+        }?;
         // SAFETY: A successful EVENT delivers an exclusive Event handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
@@ -220,10 +225,13 @@ impl Handle<Task> {
         mask: u64,
         rights: Rights,
     ) -> Result<Handle<Timer>, Error> {
-        let [raw, _] = self.borrow().invoke(
-            method::task::TIMER,
-            [event.borrow().raw().raw(), mask, rights.bits(), 0, 0],
-        )?;
+        // SAFETY: TIMER takes only handles and scalar values, with no local buffers.
+        let [raw, _] = unsafe {
+            self.borrow().invoke(
+                method::task::TIMER,
+                [event.borrow().raw().raw(), mask, rights.bits(), 0, 0],
+            )
+        }?;
         // SAFETY: A successful TIMER delivers an exclusive Timer handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
@@ -231,10 +239,13 @@ impl Handle<Task> {
 impl Handle<Channel> {
     pub fn start_call(&self, message: &mut Message) -> Result<Handle<Call>, Error> {
         let bytes = message.encode()?;
-        let [raw, _] = self.borrow().invoke(
-            method::channel::START_CALL,
-            [bytes.as_ptr() as u64, 0, 0, 0, 0],
-        )?;
+        // SAFETY: The input buffer remains borrowed until the call returns.
+        let [raw, _] = unsafe {
+            self.borrow().invoke(
+                method::channel::START_CALL,
+                [bytes.as_ptr() as u64, 0, 0, 0, 0],
+            )
+        }?;
         message.commit();
         // SAFETY: A successful START_CALL delivers an exclusive Call handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
@@ -242,25 +253,31 @@ impl Handle<Channel> {
 
     pub fn send(&self, message: &mut Message, mode: WaitMode) -> Result<(), Error> {
         let bytes = message.encode()?;
-        self.borrow().invoke(
-            method::channel::SEND,
-            [bytes.as_ptr() as u64, mode.raw()?, 0, 0, 0],
-        )?;
+        // SAFETY: The input buffer remains borrowed until the call returns.
+        unsafe {
+            self.borrow().invoke(
+                method::channel::SEND,
+                [bytes.as_ptr() as u64, mode.raw()?, 0, 0, 0],
+            )
+        }?;
         message.commit();
         Ok(())
     }
     pub fn receive(&self, mode: WaitMode) -> Result<ReceivedMessage, Error> {
         let mut bytes = [0; abi::ipc::Message::SIZE];
-        self.borrow().invoke(
-            method::channel::RECEIVE,
-            [
-                bytes.as_mut_ptr() as u64,
-                MESSAGE_HANDLES as u64,
-                mode.raw()?,
-                0,
-                0,
-            ],
-        )?;
+        // SAFETY: The output buffer remains exclusively borrowed until the call returns.
+        unsafe {
+            self.borrow().invoke(
+                method::channel::RECEIVE,
+                [
+                    bytes.as_mut_ptr() as u64,
+                    MESSAGE_HANDLES as u64,
+                    mode.raw()?,
+                    0,
+                    0,
+                ],
+            )
+        }?;
         ReceivedMessage::decode(&bytes)
     }
     pub fn call(
@@ -273,17 +290,20 @@ impl Handle<Channel> {
             Err(error) => return Err(CallError::NotSubmitted(error)),
         };
         let mut output = [0; abi::ipc::Message::SIZE];
-        let result = call::invoke_return(
-            self.borrow().raw(),
-            method::channel::CALL,
-            [
-                bytes.as_ptr() as u64,
-                output.as_mut_ptr() as u64,
-                deadline_ns.unwrap_or(u64::MAX),
-                0,
-                0,
-            ],
-        );
+        // SAFETY: The encoded message stays borrowed and the output buffer stays exclusively borrowed for the call.
+        let result = unsafe {
+            call::invoke_return(
+                self.borrow().raw(),
+                method::channel::CALL,
+                [
+                    bytes.as_ptr() as u64,
+                    output.as_mut_ptr() as u64,
+                    deadline_ns.unwrap_or(u64::MAX),
+                    0,
+                    0,
+                ],
+            )
+        };
         match result.values[1] {
             0 if result.status != 0 => {
                 Err(CallError::NotSubmitted(call::check(result).unwrap_err()))
@@ -303,47 +323,57 @@ impl Handle<Channel> {
 impl Handle<Call> {
     pub fn try_receive(&self) -> Result<ReceivedMessage, Error> {
         let mut output = [0; abi::ipc::Message::SIZE];
-        self.borrow().invoke(
-            method::call::RECEIVE,
-            [output.as_mut_ptr() as u64, 0, 0, 0, 0],
-        )?;
+        // SAFETY: The output buffer remains exclusively borrowed until the call returns.
+        unsafe {
+            self.borrow().invoke(
+                method::call::RECEIVE,
+                [output.as_mut_ptr() as u64, 0, 0, 0, 0],
+            )
+        }?;
         ReceivedMessage::decode(&output)
     }
 
     /// Cancel a wait that has not completed; operations already performed by the server are not undone.
     pub fn cancel(&self) -> Result<(), Error> {
-        self.borrow()
-            .invoke(method::call::CANCEL, [0; 5])
-            .map(|_| ())
+        // SAFETY: CANCEL takes only handles and scalar values, with no local buffers.
+        unsafe { self.borrow().invoke(method::call::CANCEL, [0; 5]) }.map(|_| ())
     }
 }
 
 impl Handle<Reply> {
     pub fn send(&self, message: &mut Message) -> Result<(), Error> {
         let bytes = message.encode()?;
-        self.borrow()
-            .invoke(method::reply::SEND, [bytes.as_ptr() as u64, 0, 0, 0, 0])?;
+        // SAFETY: The input buffer remains borrowed until the call returns.
+        unsafe {
+            self.borrow()
+                .invoke(method::reply::SEND, [bytes.as_ptr() as u64, 0, 0, 0, 0])
+        }?;
         message.commit();
         Ok(())
     }
 }
 impl Handle<Event> {
     pub fn signal(&self, mask: u64) -> Result<(), Error> {
-        self.borrow()
-            .invoke(method::event::SIGNAL, [mask, 0, 0, 0, 0])
-            .map(|_| ())
+        // SAFETY: SIGNAL takes only handles and scalar values, with no local buffers.
+        unsafe {
+            self.borrow()
+                .invoke(method::event::SIGNAL, [mask, 0, 0, 0, 0])
+        }
+        .map(|_| ())
     }
 }
 impl Handle<Timer> {
     pub fn arm(&self, deadline_ns: u64) -> Result<(), Error> {
-        self.borrow()
-            .invoke(method::timer::ARM, [deadline_ns, 0, 0, 0, 0])
-            .map(|_| ())
+        // SAFETY: ARM takes only handles and scalar values, with no local buffers.
+        unsafe {
+            self.borrow()
+                .invoke(method::timer::ARM, [deadline_ns, 0, 0, 0, 0])
+        }
+        .map(|_| ())
     }
     pub fn cancel(&self) -> Result<(), Error> {
-        self.borrow()
-            .invoke(method::timer::CANCEL, [0; 5])
-            .map(|_| ())
+        // SAFETY: CANCEL takes only handles and scalar values, with no local buffers.
+        unsafe { self.borrow().invoke(method::timer::CANCEL, [0; 5]) }.map(|_| ())
     }
 }
 
@@ -380,20 +410,23 @@ pub fn wait_many(items: &[WaitItem<'_>], mode: WaitMode) -> Result<WaitResult, E
     for item in items {
         bytes.extend_from_slice(&item.raw.encode());
     }
-    let [index, ready] = thread::current().invoke(
-        method::thread::WAIT_MANY,
-        [
-            if items.is_empty() {
-                0
-            } else {
-                bytes.as_ptr() as u64
-            },
-            items.len() as u64,
-            deadline,
-            0,
-            0,
-        ],
-    )?;
+    // SAFETY: The encoded wait items and their borrowed handles remain alive until the call returns.
+    let [index, ready] = unsafe {
+        thread::current().invoke(
+            method::thread::WAIT_MANY,
+            [
+                if items.is_empty() {
+                    0
+                } else {
+                    bytes.as_ptr() as u64
+                },
+                items.len() as u64,
+                deadline,
+                0,
+                0,
+            ],
+        )
+    }?;
     if index >= items.len() as u64 {
         return Err(Error::Protocol);
     }

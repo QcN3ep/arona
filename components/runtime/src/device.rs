@@ -27,10 +27,13 @@ macro_rules! catalog {
         impl Handle<$kind> {
             pub fn next(&self, after: u32) -> Result<Option<u32>, Error> {
                 let query = u64::from(after).to_le_bytes();
-                let [id, _] = self.borrow().invoke(
-                    abi::method::INFO,
-                    [topic::NEXT_DEVICE, query.as_ptr() as u64, 8, 0, 0],
-                )?;
+                // SAFETY: The input buffer remains borrowed until the call returns.
+                let [id, _] = unsafe {
+                    self.borrow().invoke(
+                        abi::method::INFO,
+                        [topic::NEXT_DEVICE, query.as_ptr() as u64, 8, 0, 0],
+                    )
+                }?;
                 let id = u32::try_from(id).map_err(|_| Error::Protocol)?;
                 Ok((id != 0).then_some(id))
             }
@@ -64,16 +67,19 @@ macro_rules! catalog {
                 query[..8].copy_from_slice(&u64::from(id).to_le_bytes());
                 query[8..].copy_from_slice(&(index as u64).to_le_bytes());
                 let length = if indexed { 16 } else { 8 };
-                let [written, _] = self.borrow().invoke(
-                    abi::method::INFO,
-                    [
-                        topic,
-                        query.as_ptr() as u64,
-                        length,
-                        output.as_mut_ptr() as u64,
-                        output.len() as u64,
-                    ],
-                )?;
+                // SAFETY: The query stays borrowed and the output buffer stays exclusively borrowed for the call.
+                let [written, _] = unsafe {
+                    self.borrow().invoke(
+                        abi::method::INFO,
+                        [
+                            topic,
+                            query.as_ptr() as u64,
+                            length,
+                            output.as_mut_ptr() as u64,
+                            output.len() as u64,
+                        ],
+                    )
+                }?;
                 output
                     .get(..usize::try_from(written).map_err(|_| Error::Protocol)?)
                     .ok_or(Error::Protocol)
@@ -106,10 +112,13 @@ catalog!(Device);
 
 impl Handle<DeviceSet> {
     pub fn claim_group(&self, group: u32, rights: Rights) -> Result<Handle<Device>, Error> {
-        let [raw, _] = self.borrow().invoke(
-            device_set::CLAIM_GROUP,
-            [group as u64, rights.bits(), 0, 0, 0],
-        )?;
+        // SAFETY: CLAIM_GROUP takes only handles and scalar values, with no local buffers.
+        let [raw, _] = unsafe {
+            self.borrow().invoke(
+                device_set::CLAIM_GROUP,
+                [group as u64, rights.bits(), 0, 0, 0],
+            )
+        }?;
         // SAFETY: A successful CLAIM_GROUP must deliver an exclusive new device handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
@@ -117,9 +126,11 @@ impl Handle<DeviceSet> {
 
 impl Handle<Device> {
     pub fn map_mmio(&self, id: u32, region: usize) -> Result<Mmio<'_>, Error> {
-        let [start, length] = self
-            .borrow()
-            .invoke(device::MAP, [id as u64, region as u64, 0, 0, 0])?;
+        // SAFETY: MAP takes only handles and scalar values, with no local buffers.
+        let [start, length] = unsafe {
+            self.borrow()
+                .invoke(device::MAP, [id as u64, region as u64, 0, 0, 0])
+        }?;
         let end = start.checked_add(length).ok_or(Error::Protocol)?;
         let start = usize::try_from(start).map_err(|_| Error::Protocol)?;
         let end = usize::try_from(end).map_err(|_| Error::Protocol)?;
@@ -140,10 +151,13 @@ impl Handle<Device> {
         event: &'a Handle<Event>,
         mask: u64,
     ) -> Result<InterruptBinding<'a>, Error> {
-        self.borrow().invoke(
-            device::BIND,
-            [id as u64, index as u64, event.borrow().raw().raw(), mask, 0],
-        )?;
+        // SAFETY: BIND takes only handles and scalar values, with no local buffers.
+        unsafe {
+            self.borrow().invoke(
+                device::BIND,
+                [id as u64, index as u64, event.borrow().raw().raw(), mask, 0],
+            )
+        }?;
         Ok(InterruptBinding {
             device: self.borrow(),
             event: event.borrow(),
@@ -154,7 +168,8 @@ impl Handle<Device> {
     }
 
     pub fn revoke(&self) -> Result<(), Error> {
-        self.borrow().invoke(device::REVOKE, [0; 5])?;
+        // SAFETY: REVOKE takes only handles and scalar values, with no local buffers.
+        unsafe { self.borrow().invoke(device::REVOKE, [0; 5]) }?;
         Ok(())
     }
 }
@@ -174,8 +189,11 @@ impl Mmio<'_> {
 
     pub fn unmap(&mut self) -> Result<(), Error> {
         if let Some(range) = &self.range {
-            self.device
-                .invoke(device::UNMAP, [range.start as u64, 0, 0, 0, 0])?;
+            // SAFETY: UNMAP takes only handles and scalar values, with no local buffers.
+            unsafe {
+                self.device
+                    .invoke(device::UNMAP, [range.start as u64, 0, 0, 0, 0])
+            }?;
             self.range = None;
         }
         Ok(())
@@ -212,15 +230,21 @@ impl InterruptBinding<'_> {
         if !self.bound {
             return Err(Error::Kernel(abi::Error::Closed));
         }
-        self.device
-            .invoke(device::ACK, [self.id as u64, self.index as u64, 0, 0, 0])?;
+        // SAFETY: ACK takes only handles and scalar values, with no local buffers.
+        unsafe {
+            self.device
+                .invoke(device::ACK, [self.id as u64, self.index as u64, 0, 0, 0])
+        }?;
         Ok(())
     }
 
     pub fn unbind(&mut self) -> Result<(), Error> {
         if self.bound {
-            self.device
-                .invoke(device::UNBIND, [self.id as u64, self.index as u64, 0, 0, 0])?;
+            // SAFETY: UNBIND takes only handles and scalar values, with no local buffers.
+            unsafe {
+                self.device
+                    .invoke(device::UNBIND, [self.id as u64, self.index as u64, 0, 0, 0])
+            }?;
             self.bound = false;
         }
         Ok(())

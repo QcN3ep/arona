@@ -6,16 +6,27 @@ pub enum Error {
     Protocol,
 }
 
-pub(crate) fn invoke(
+/// # Safety
+///
+/// Any buffers encoded in arguments must remain valid for the call, and output buffers must be exclusively borrowed.
+pub(crate) unsafe fn invoke(
     handle: abi::Handle,
     method: u64,
     arguments: [u64; 5],
 ) -> Result<[u64; 2], Error> {
-    check(invoke_return(handle, method, arguments))
+    // SAFETY: The caller retains the encoded buffers and their required access.
+    check(unsafe { invoke_return(handle, method, arguments) })
 }
 
-pub(crate) fn invoke_return(handle: abi::Handle, method: u64, arguments: [u64; 5]) -> abi::Return {
-    // SAFETY: The caller must maintain buffer validity and output exclusivity during the trap.
+/// # Safety
+///
+/// Any buffers encoded in arguments must remain valid for the call, and output buffers must be exclusively borrowed.
+pub(crate) unsafe fn invoke_return(
+    handle: abi::Handle,
+    method: u64,
+    arguments: [u64; 5],
+) -> abi::Return {
+    // SAFETY: The caller retains the encoded buffers and their required access.
     unsafe { raw(handle, method, arguments) }
 }
 

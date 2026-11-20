@@ -95,16 +95,19 @@ pub(crate) fn state<T: Object>(
 ) -> Result<UserState, Error> {
     let query = abi::register::GENERAL.to_le_bytes();
     let mut bytes = [0; abi::register::General::SIZE];
-    let [written, _] = handle.invoke(
-        abi::method::INFO,
-        [
-            topic,
-            query.as_ptr() as u64,
-            query.len() as u64,
-            bytes.as_mut_ptr() as u64,
-            bytes.len() as u64,
-        ],
-    )?;
+    // SAFETY: The query stays borrowed and the output buffer stays exclusively borrowed for the call.
+    let [written, _] = unsafe {
+        handle.invoke(
+            abi::method::INFO,
+            [
+                topic,
+                query.as_ptr() as u64,
+                query.len() as u64,
+                bytes.as_mut_ptr() as u64,
+                bytes.len() as u64,
+            ],
+        )
+    }?;
     if written != bytes.len() as u64 {
         return Err(Error::Protocol);
     }
@@ -121,16 +124,19 @@ pub(crate) fn read_floating<T: Object>(
 ) -> Result<ScalarFloat, Error> {
     let query = abi::register::FLOAT.to_le_bytes();
     let mut bytes = [0; ScalarFloat::LOONGARCH_SIZE];
-    let [written, _] = handle.invoke(
-        abi::method::INFO,
-        [
-            topic,
-            query.as_ptr() as u64,
-            query.len() as u64,
-            bytes.as_mut_ptr() as u64,
-            bytes.len() as u64,
-        ],
-    )?;
+    // SAFETY: The query stays borrowed and the output buffer stays exclusively borrowed for the call.
+    let [written, _] = unsafe {
+        handle.invoke(
+            abi::method::INFO,
+            [
+                topic,
+                query.as_ptr() as u64,
+                query.len() as u64,
+                bytes.as_mut_ptr() as u64,
+                bytes.len() as u64,
+            ],
+        )
+    }?;
     let written = usize::try_from(written).map_err(|_| Error::Protocol)?;
     let bytes = bytes.get(..written).ok_or(Error::Protocol)?;
     ScalarFloat::decode(bytes).map_err(|_| Error::Protocol)

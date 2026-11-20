@@ -59,13 +59,14 @@ unsafe impl Allocator for System {
     }
 
     fn free(&self, pointer: *mut u8, size: usize) -> bool {
-        process::task()
-            .borrow()
-            .invoke(
+        // SAFETY: UNMAP takes only handles and scalar values, with no local buffers.
+        unsafe {
+            process::task().borrow().invoke(
                 abi::method::task::UNMAP,
                 [pointer as u64, size as u64, 0, 0, 0],
             )
-            .is_ok()
+        }
+        .is_ok()
     }
 
     fn allocates_zeros(&self) -> bool {

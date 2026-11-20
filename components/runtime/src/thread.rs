@@ -47,8 +47,16 @@ impl CurrentThread {
         self.handle().state()
     }
 
-    pub(crate) fn invoke(&self, method: u64, arguments: [u64; 5]) -> Result<[u64; 2], Error> {
-        self.handle().invoke(method, arguments)
+    /// # Safety
+    ///
+    /// Any buffers encoded in arguments must remain valid for the call, and output buffers must be exclusively borrowed.
+    pub(crate) unsafe fn invoke(
+        &self,
+        method: u64,
+        arguments: [u64; 5],
+    ) -> Result<[u64; 2], Error> {
+        // SAFETY: The caller retains the encoded buffers and their required access.
+        unsafe { self.handle().invoke(method, arguments) }
     }
 
     fn handle(&self) -> BorrowedHandle<'_, Thread> {
@@ -56,13 +64,15 @@ impl CurrentThread {
     }
 }
 pub fn yield_now() -> Result<(), Error> {
-    current().invoke(thread::YIELD, [0; 5]).map(|_| ())
+    // SAFETY: YIELD takes only handles and scalar values, with no local buffers.
+    unsafe { current().invoke(thread::YIELD, [0; 5]) }.map(|_| ())
 }
 pub fn sleep_until(deadline_ns: u64) -> Result<(), Error> {
     if deadline_ns == 0 {
         return Ok(());
     }
-    match current().invoke(thread::WAIT_MANY, [0, 0, deadline_ns, 0, 0]) {
+    // SAFETY: The item count is zero, so WAIT_MANY accesses no item buffer.
+    match unsafe { current().invoke(thread::WAIT_MANY, [0, 0, deadline_ns, 0, 0]) } {
         Err(Error::Kernel(abi::Error::TimedOut)) => Ok(()),
         Err(error) => Err(error),
         Ok(_) => Err(Error::Protocol),
@@ -75,16 +85,19 @@ pub fn now_ns() -> Result<u64, Error> {
 }
 /// Terminate the current thread without unwinding the stack or running thread-local destructors.
 pub fn exit(status: usize) -> ! {
-    let _ = current().invoke(thread::TERMINATE, [status as u64, 0, 0, 0, 0]);
+    // SAFETY: TERMINATE takes only handles and scalar values, with no local buffers.
+    let _ = unsafe { current().invoke(thread::TERMINATE, [status as u64, 0, 0, 0, 0]) };
     loop {
         core::hint::spin_loop();
     }
 }
 impl Handle<Task> {
     pub fn create_task(&self, rights: Rights) -> Result<Handle<Task>, Error> {
-        let [raw, _] = self
-            .borrow()
-            .invoke(task::CREATE, [rights.bits(), 0, 0, 0, 0])?;
+        // SAFETY: CREATE takes only handles and scalar values, with no local buffers.
+        let [raw, _] = unsafe {
+            self.borrow()
+                .invoke(task::CREATE, [rights.bits(), 0, 0, 0, 0])
+        }?;
         // SAFETY: A successful CREATE delivers an exclusive Task handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
@@ -98,10 +111,13 @@ impl Handle<Task> {
         rights: Rights,
     ) -> Result<Handle<Thread>, Error> {
         let bytes = entry.encode();
-        let [raw, _] = self.borrow().invoke(
-            task::CREATE_THREAD,
-            [bytes.as_ptr() as u64, rights.bits(), 0, 0, 0],
-        )?;
+        // SAFETY: The input buffer remains borrowed until the call returns.
+        let [raw, _] = unsafe {
+            self.borrow().invoke(
+                task::CREATE_THREAD,
+                [bytes.as_ptr() as u64, rights.bits(), 0, 0, 0],
+            )
+        }?;
         // SAFETY: A successful CREATE_THREAD delivers an exclusive Thread handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
@@ -110,10 +126,13 @@ impl Handle<Task> {
         handle: Handle<T>,
         rights: Rights,
     ) -> Result<abi::Handle, (Error, Handle<T>)> {
-        match self.borrow().invoke(
-            task::INSTALL,
-            [handle.borrow().raw().raw(), rights.bits(), 0, 0, 0],
-        ) {
+        // SAFETY: INSTALL takes only handles and scalar values, with no local buffers.
+        match unsafe {
+            self.borrow().invoke(
+                task::INSTALL,
+                [handle.borrow().raw().raw(), rights.bits(), 0, 0, 0],
+            )
+        } {
             Ok([raw, _]) => {
                 let _ = handle.into_raw();
                 Ok(abi::Handle::from_raw(raw))
@@ -126,9 +145,12 @@ impl Handle<Task> {
         lifecycle(state, status)
     }
     pub fn terminate(&self, status: usize) -> Result<(), Error> {
-        self.borrow()
-            .invoke(task::TERMINATE, [status as u64, 0, 0, 0, 0])
-            .map(|_| ())
+        // SAFETY: TERMINATE takes only handles and scalar values, with no local buffers.
+        unsafe {
+            self.borrow()
+                .invoke(task::TERMINATE, [status as u64, 0, 0, 0, 0])
+        }
+        .map(|_| ())
     }
     pub fn wait(&self, deadline_ns: u64) -> Result<usize, Error> {
         wait_for_exit(self, deadline_ns)?;
@@ -144,7 +166,8 @@ impl Handle<Thread> {
     }
 
     pub fn start(&self) -> Result<(), Error> {
-        self.borrow().invoke(thread::START, [0; 5]).map(|_| ())
+        // SAFETY: START takes only handles and scalar values, with no local buffers.
+        unsafe { self.borrow().invoke(thread::START, [0; 5]) }.map(|_| ())
     }
     pub fn state(&self) -> Result<(Lifecycle, usize), Error> {
         self.borrow().state()
@@ -153,9 +176,12 @@ impl Handle<Thread> {
         Ok(self.borrow().query(abi::info::thread::CPU_TIME)?[0])
     }
     pub fn terminate(&self, status: usize) -> Result<(), Error> {
-        self.borrow()
-            .invoke(thread::TERMINATE, [status as u64, 0, 0, 0, 0])
-            .map(|_| ())
+        // SAFETY: TERMINATE takes only handles and scalar values, with no local buffers.
+        unsafe {
+            self.borrow()
+                .invoke(thread::TERMINATE, [status as u64, 0, 0, 0, 0])
+        }
+        .map(|_| ())
     }
     pub fn wait(&self, deadline_ns: u64) -> Result<usize, Error> {
         wait_for_exit(self, deadline_ns)?;
@@ -167,8 +193,8 @@ impl BorrowedHandle<'_, Thread> {
         u32::try_from(self.query(abi::info::thread::SCHEDULING)?[0]).map_err(|_| Error::Protocol)
     }
     pub fn set_weight(&self, weight: u32) -> Result<(), Error> {
-        self.invoke(thread::SET_SCHEDULING, [u64::from(weight), 0, 0, 0, 0])
-            .map(|_| ())
+        // SAFETY: SET_SCHEDULING takes only handles and scalar values, with no local buffers.
+        unsafe { self.invoke(thread::SET_SCHEDULING, [u64::from(weight), 0, 0, 0, 0]) }.map(|_| ())
     }
     pub fn state(&self) -> Result<(Lifecycle, usize), Error> {
         let [state, status] = self.query(abi::info::thread::LIFECYCLE)?;

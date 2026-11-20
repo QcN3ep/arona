@@ -16,18 +16,23 @@ pub struct Trap {
 
 impl Handle<Task> {
     pub fn trap_port(&self, rights: Rights) -> Result<Handle<TrapPort>, Error> {
-        let [raw, _] = self
-            .borrow()
-            .invoke(method::task::TRAP_PORT, [rights.bits(), 0, 0, 0, 0])?;
+        // SAFETY: TRAP_PORT takes only handles and scalar values, with no local buffers.
+        let [raw, _] = unsafe {
+            self.borrow()
+                .invoke(method::task::TRAP_PORT, [rights.bits(), 0, 0, 0, 0])
+        }?;
         // SAFETY: A successful TRAP_PORT must deliver an exclusive TrapPort handle.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
 
     pub fn bind_trap(&self, port: &Handle<TrapPort>) -> Result<(), Error> {
-        self.borrow().invoke(
-            method::task::SET_TRAP,
-            [port.borrow().raw().raw(), 0, 0, 0, 0],
-        )?;
+        // SAFETY: SET_TRAP takes only handles and scalar values, with no local buffers.
+        unsafe {
+            self.borrow().invoke(
+                method::task::SET_TRAP,
+                [port.borrow().raw().raw(), 0, 0, 0, 0],
+            )
+        }?;
         Ok(())
     }
 }
@@ -39,20 +44,23 @@ impl Handle<Thread> {
 
     pub fn set_registers(&self, groups: &[crate::register::Write<'_>]) -> Result<(), Error> {
         let records = crate::register::requests(groups)?;
-        self.borrow().invoke(
-            method::thread::SET_REGISTERS,
-            [
-                if records.is_empty() {
-                    0
-                } else {
-                    records.as_ptr() as u64
-                },
-                records.len() as u64,
-                0,
-                0,
-                0,
-            ],
-        )?;
+        // SAFETY: The request records and the register slices they reference remain borrowed until the call returns.
+        unsafe {
+            self.borrow().invoke(
+                method::thread::SET_REGISTERS,
+                [
+                    if records.is_empty() {
+                        0
+                    } else {
+                        records.as_ptr() as u64
+                    },
+                    records.len() as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        }?;
         Ok(())
     }
     pub fn set_user_state(&self, state: &UserState) -> Result<(), Error> {
@@ -62,7 +70,8 @@ impl Handle<Thread> {
     }
 
     pub fn interrupt(&self) -> Result<(), Error> {
-        self.borrow().invoke(method::thread::INTERRUPT, [0; 5])?;
+        // SAFETY: INTERRUPT takes only handles and scalar values, with no local buffers.
+        unsafe { self.borrow().invoke(method::thread::INTERRUPT, [0; 5]) }?;
         Ok(())
     }
 }
@@ -72,10 +81,13 @@ impl Handle<TrapPort> {
         mode.validate()?;
         loop {
             let mut bytes = [0; TrapInfo::SIZE];
-            let result = self.borrow().invoke(
-                method::trap_port::RECEIVE,
-                [bytes.as_mut_ptr() as u64, 0, 0, 0, 0],
-            );
+            // SAFETY: The output buffer remains exclusively borrowed until the call returns.
+            let result = unsafe {
+                self.borrow().invoke(
+                    method::trap_port::RECEIVE,
+                    [bytes.as_mut_ptr() as u64, 0, 0, 0, 0],
+                )
+            };
             match result {
                 Ok([raw, length]) => {
                     // SAFETY: A successful RECEIVE must deliver an exclusive TrapContinuation handle.
@@ -129,20 +141,23 @@ impl Trap {
             Ok(records) => records,
             Err(error) => return Err((error, self)),
         };
-        match self.continuation.borrow().invoke(
-            method::trap_continuation::RESUME,
-            [
-                if records.is_empty() {
-                    0
-                } else {
-                    records.as_ptr() as u64
-                },
-                records.len() as u64,
-                0,
-                0,
-                0,
-            ],
-        ) {
+        // SAFETY: The request records and the register slices they reference remain borrowed until the call returns.
+        match unsafe {
+            self.continuation.borrow().invoke(
+                method::trap_continuation::RESUME,
+                [
+                    if records.is_empty() {
+                        0
+                    } else {
+                        records.as_ptr() as u64
+                    },
+                    records.len() as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        } {
             Ok(_) => Ok(()),
             Err(error) => Err((error, self)),
         }

@@ -14,16 +14,19 @@ impl Handle<SystemInfo> {
 
     pub fn runnable_integral(&self) -> Result<RunnableIntegral, Error> {
         let mut bytes = [0; RunnableIntegral::SIZE];
-        let [written, _] = self.borrow().invoke(
-            abi::method::INFO,
-            [
-                abi::info::system::RUNNABLE_INTEGRAL,
-                0,
-                0,
-                bytes.as_mut_ptr() as u64,
-                bytes.len() as u64,
-            ],
-        )?;
+        // SAFETY: The output buffer remains exclusively borrowed until the call returns.
+        let [written, _] = unsafe {
+            self.borrow().invoke(
+                abi::method::INFO,
+                [
+                    abi::info::system::RUNNABLE_INTEGRAL,
+                    0,
+                    0,
+                    bytes.as_mut_ptr() as u64,
+                    bytes.len() as u64,
+                ],
+            )
+        }?;
         if written != bytes.len() as u64 {
             return Err(Error::Protocol);
         }

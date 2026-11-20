@@ -12,16 +12,19 @@ impl Handle<KernelLog> {
     }
     /// When cursor is zero, read the earliest record; afterward use the previous record's sequence + 1.
     pub fn read<'a>(&self, cursor: u64, output: &'a mut [u8]) -> Result<Option<Record<'a>>, Error> {
-        let [length, _] = self.borrow().invoke(
-            abi::method::kernel_log::READ,
-            [
-                cursor,
-                output.as_mut_ptr() as u64,
-                output.len() as u64,
-                0,
-                0,
-            ],
-        )?;
+        // SAFETY: The output buffer remains exclusively borrowed until the call returns.
+        let [length, _] = unsafe {
+            self.borrow().invoke(
+                abi::method::kernel_log::READ,
+                [
+                    cursor,
+                    output.as_mut_ptr() as u64,
+                    output.len() as u64,
+                    0,
+                    0,
+                ],
+            )
+        }?;
         if length == 0 {
             return Ok(None);
         }

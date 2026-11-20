@@ -58,7 +58,8 @@ impl<T: Object> Handle<T> {
 }
 impl<T: Object> Drop for Handle<T> {
     fn drop(&mut self) {
-        let _ = call::invoke(self.raw, abi::method::CLOSE, [0; 5]);
+        // SAFETY: CLOSE takes no buffer arguments.
+        let _ = unsafe { call::invoke(self.raw, abi::method::CLOSE, [0; 5]) };
     }
 }
 impl BorrowedHandle<'static, crate::Thread> {
@@ -74,23 +75,34 @@ impl<T: Object> BorrowedHandle<'_, T> {
         self.raw
     }
     pub fn info(&self) -> Result<HandleInfo, Error> {
-        let [kind, rights] = self.invoke(abi::method::INFO, [0; 5])?;
+        // SAFETY: Topic zero returns handle metadata in registers without accessing buffers.
+        let [kind, rights] = unsafe { self.invoke(abi::method::INFO, [0; 5]) }?;
         Ok(HandleInfo {
             kind,
             rights: Rights::from_bits(rights).ok_or(Error::Protocol)?,
         })
     }
     pub fn try_clone(&self, rights: Rights) -> Result<Handle<T>, Error> {
-        let [raw, _] = self.invoke(abi::method::DUPLICATE, [rights.bits(), 0, 0, 0, 0])?;
+        // SAFETY: DUPLICATE takes rights and no buffer arguments.
+        let [raw, _] = unsafe { self.invoke(abi::method::DUPLICATE, [rights.bits(), 0, 0, 0, 0]) }?;
         // SAFETY: A successful DUPLICATE must deliver a new handle of the same type.
         Ok(unsafe { Handle::from_raw(abi::Handle::from_raw(raw)) })
     }
-    pub(crate) fn invoke(&self, method: u64, arguments: [u64; 5]) -> Result<[u64; 2], Error> {
-        call::invoke(self.raw, method, arguments)
+    /// # Safety
+    ///
+    /// Any buffers encoded in arguments must remain valid for the call, and output buffers must be exclusively borrowed.
+    pub(crate) unsafe fn invoke(
+        &self,
+        method: u64,
+        arguments: [u64; 5],
+    ) -> Result<[u64; 2], Error> {
+        // SAFETY: The caller retains the encoded buffers and their required access.
+        unsafe { call::invoke(self.raw, method, arguments) }
     }
 
     pub(crate) fn query(&self, topic: u64) -> Result<[u64; 2], Error> {
-        self.invoke(abi::method::INFO, [topic, 0, 0, 0, 0])
+        // SAFETY: Query and output lengths are zero, so no buffers can be accessed.
+        unsafe { self.invoke(abi::method::INFO, [topic, 0, 0, 0, 0]) }
     }
 }
 
@@ -136,7 +148,8 @@ impl<T: Object> From<Handle<T>> for AnyHandle {
 }
 impl Drop for AnyHandle {
     fn drop(&mut self) {
-        let _ = call::invoke(self.raw, abi::method::CLOSE, [0; 5]);
+        // SAFETY: CLOSE takes no buffer arguments.
+        let _ = unsafe { call::invoke(self.raw, abi::method::CLOSE, [0; 5]) };
     }
 }
 impl<T: Object> core::fmt::Debug for Handle<T> {
