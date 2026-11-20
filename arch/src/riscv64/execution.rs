@@ -19,8 +19,8 @@ use super::{
     trap::{self, TrapFrame},
 };
 use crate::execution::{
-    ContextStatus, EntryContext, SavedContext, activate, capture_frame, pointer,
-    validate_user_access, validate_user_entry,
+    ContextStatus, EntryContext, SavedContext, capture_frame, pointer, validate_user_access,
+    validate_user_entry,
 };
 
 const SIE: usize = 1 << 1;
@@ -148,37 +148,14 @@ impl Execution for RiscvExecution {
         let context = user_context(storage)?;
         // SAFETY: The context is exclusively held on this processor with interrupts disabled.
         let frame = unsafe { &mut (*context).frame };
-        let mut general = abi::register::General {
-            pc: frame.pc as u64,
-            registers: frame.registers.map(|register| register as u64),
-        };
-        let mut general_written = false;
-        let mut floating = None;
-        for group in groups {
-            let layout = self.register_size(group.group)?;
-            if group.bytes.len() != layout {
-                return Err(ExecutionError::InvalidState);
-            }
-            if group.group == abi::register::GENERAL {
-                if general_written {
-                    return Err(ExecutionError::InvalidRegisterGroup);
-                }
-                general = abi::register::General::decode(
-                    group
-                        .bytes
-                        .try_into()
-                        .map_err(|_| ExecutionError::InvalidState)?,
-                );
-                general_written = true;
-            } else {
-                if floating.is_some() {
-                    return Err(ExecutionError::InvalidRegisterGroup);
-                }
-                let value = abi::register::ScalarFloat::decode(group.bytes)
-                    .map_err(|_| ExecutionError::InvalidState)?;
-                floating = Some(value);
-            }
-        }
+        let (general, general_written, floating) = crate::execution::decode_registers(
+            groups,
+            abi::register::General {
+                pc: frame.pc as u64,
+                registers: frame.registers.map(|register| register as u64),
+            },
+            |group| self.register_size(group),
+        )?;
         if let Some(floating) = &floating
             && (floating.control & !0xff != 0
                 || floating.control >> 5 > 4
@@ -285,32 +262,28 @@ impl Execution for RiscvExecution {
         next: &ContextStorage,
     ) -> Result<(), ExecutionError> {
         check_environment()?;
-        let current = pointer::<Context>(current)?;
-        let next = pointer::<Context>(next)?;
-        // SAFETY: Both contexts must be exclusive and initialized, and the entry state must not be accessed concurrently.
+        // SAFETY: The environment check excludes concurrent entry-state access; Execution retains both contexts and stacks.
         unsafe {
-            activate(
-                current,
+            crate::execution::switch_context(
+                Some(current),
                 next,
-                &mut *core::ptr::addr_of_mut!(trap::STATE),
-                ContextStatus::Suspended,
-            )?;
-            switch(core::ptr::addr_of_mut!((*current).continuation), next);
+                core::ptr::addr_of_mut!(trap::STATE),
+                switch,
+            )
         }
-        Ok(())
     }
 
     fn switch_current(&self, next: &ContextStorage) -> Result<(), ExecutionError> {
         check_environment()?;
-        let next = pointer::<Context>(next)?;
-        // SAFETY: The current context and target storage must be alive, and the entry state must be exclusively held by the current processor.
+        // SAFETY: The current entry state identifies the initialized context, and the target storage remains alive.
         unsafe {
-            let state = &mut *core::ptr::addr_of_mut!(trap::STATE);
-            let current = state.context.cast::<Context>();
-            activate(current, next, state, ContextStatus::Suspended)?;
-            switch(core::ptr::addr_of_mut!((*current).continuation), next);
+            crate::execution::switch_context(
+                None,
+                next,
+                core::ptr::addr_of_mut!(trap::STATE),
+                switch,
+            )
         }
-        Ok(())
     }
 
     fn restore(
@@ -319,17 +292,14 @@ impl Execution for RiscvExecution {
         next: &ContextStorage,
     ) -> Result<Infallible, ExecutionError> {
         check_environment()?;
-        let current = pointer::<Context>(current)?;
-        let next = pointer::<Context>(next)?;
-        // SAFETY: Both contexts must be exclusive and initialized, and the target frame and its stack must remain alive and mapped.
+        // SAFETY: Execution retains both initialized contexts and the target stack through the non-returning restore.
         unsafe {
-            activate(
+            crate::execution::restore_context(
                 current,
                 next,
-                &mut *core::ptr::addr_of_mut!(trap::STATE),
-                ContextStatus::Retired,
-            )?;
-            restore(next)
+                core::ptr::addr_of_mut!(trap::STATE),
+                restore,
+            )
         }
     }
 }

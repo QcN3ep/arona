@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use core::alloc::Layout;
+use core::{alloc::Layout, convert::Infallible};
 
 use kernel::{
     hardware::{
@@ -188,4 +188,87 @@ pub(crate) unsafe fn capture_frame<F>(frame: *mut F, state: &EntryState) -> *mut
 
 fn valid_address(address: usize, user: bool) -> bool {
     (address <= isize::MAX as usize) == user && hardware::mmu().is_valid_virtual_address(address)
+}
+
+/// # Safety
+///
+/// The entry state and initialized contexts must be exclusive to this processor with interrupts and extensions disabled. The switch function must use their declared layout and retain both stacks.
+pub(crate) unsafe fn switch_context<F, C>(
+    current: Option<&ContextStorage>,
+    next: &ContextStorage,
+    state: *mut EntryState,
+    switch: unsafe extern "C" fn(*mut C, *const SavedContext<F, C>),
+) -> Result<(), ExecutionError> {
+    let next = pointer::<SavedContext<F, C>>(next)?;
+    // SAFETY: The caller retains the entry state and both initialized context layouts.
+    unsafe {
+        let current = match current {
+            Some(storage) => pointer::<SavedContext<F, C>>(storage)?,
+            None => (*state).context.cast(),
+        };
+        activate(current, next, &mut *state, ContextStatus::Suspended)?;
+        switch(core::ptr::addr_of_mut!((*current).continuation), next);
+    }
+    Ok(())
+}
+
+/// # Safety
+///
+/// The entry state and initialized contexts must be exclusive to this processor with interrupts and extensions disabled. The restore function must use their declared layout, and the target stack must remain mapped.
+pub(crate) unsafe fn restore_context<F, C>(
+    current: &ContextStorage,
+    next: &ContextStorage,
+    state: *mut EntryState,
+    restore: unsafe extern "C" fn(*const SavedContext<F, C>) -> !,
+) -> Result<Infallible, ExecutionError> {
+    let current = pointer::<SavedContext<F, C>>(current)?;
+    let next = pointer::<SavedContext<F, C>>(next)?;
+    // SAFETY: The caller retains both initialized contexts and the target stack through restoration.
+    unsafe {
+        activate(current, next, &mut *state, ContextStatus::Retired)?;
+        restore(next)
+    }
+}
+
+pub(crate) fn decode_registers(
+    groups: &[kernel::hardware::execution::RegisterWrite<'_>],
+    mut general: abi::register::General,
+    size: impl Fn(u64) -> Result<usize, ExecutionError>,
+) -> Result<
+    (
+        abi::register::General,
+        bool,
+        Option<abi::register::ScalarFloat>,
+    ),
+    ExecutionError,
+> {
+    let mut general_written = false;
+    let mut floating = None;
+    for group in groups {
+        let layout = size(group.group)?;
+        if group.bytes.len() != layout {
+            return Err(ExecutionError::InvalidState);
+        }
+        if group.group == abi::register::GENERAL {
+            if general_written {
+                return Err(ExecutionError::InvalidRegisterGroup);
+            }
+            general = abi::register::General::decode(
+                group
+                    .bytes
+                    .try_into()
+                    .map_err(|_| ExecutionError::InvalidState)?,
+            );
+            general_written = true;
+        } else {
+            if floating.is_some() {
+                return Err(ExecutionError::InvalidRegisterGroup);
+            }
+            floating = Some(
+                abi::register::ScalarFloat::decode(group.bytes)
+                    .map_err(|_| ExecutionError::InvalidState)?,
+            );
+        }
+    }
+    Ok((general, general_written, floating))
 }
