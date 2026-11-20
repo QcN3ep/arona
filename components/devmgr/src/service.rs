@@ -246,8 +246,10 @@ impl DeviceManager {
             ) else {
                 unreachable!()
             };
-            let result = worker.thread.join().map_err(|_| Error::Unavailable)?;
-            instance.state = InstanceState::Failed(result.err().unwrap_or(Error::Unavailable));
+            instance.state = InstanceState::Failed(match worker.thread.join() {
+                Ok(Err(error)) => error,
+                Ok(Ok(())) | Err(_) => Error::Unavailable,
+            });
         }
         Ok(())
     }
