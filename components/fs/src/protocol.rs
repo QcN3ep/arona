@@ -124,13 +124,18 @@ pub fn call(
 }
 
 pub(crate) fn response_result(response: ReceivedMessage) -> Result<ReceivedMessage, Error> {
+    let response = response_status(response)?;
     if !response.handles().is_empty() {
         return Err(Error::InvalidData);
     }
+    Ok(response)
+}
+
+pub(crate) fn response_status(response: ReceivedMessage) -> Result<ReceivedMessage, Error> {
     if response.tag == SUCCESS {
         return Ok(response);
     }
-    if !response.words().is_empty() {
+    if !response.words().is_empty() || !response.handles().is_empty() {
         return Err(Error::InvalidData);
     }
     Err(tag_error(response.tag))

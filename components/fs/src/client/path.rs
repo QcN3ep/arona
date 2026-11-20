@@ -2,10 +2,9 @@
 
 //! Relative path requests for directory sessions.
 
-use super::pending::{
-    complete_directory, complete_open, complete_read, empty_call, input_buffer, metadata_call,
-    output_buffer, statistics_call,
-};
+use super::pending::{empty_call, metadata_call, statistics_call};
+use super::request::{input_buffer, output_buffer};
+use super::response::{complete_directory, complete_open, complete_read};
 use super::{Client, Directory, File, PAGE_SIZE, Pending, PendingMetadata, PendingRead};
 use crate::{
     Error, OpenOptions,

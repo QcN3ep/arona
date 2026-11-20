@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::{AtomicUsize, Ordering};
-use runtime::{
-    Channel, FrameAllocation, Handle, Rights, Task,
-    ipc::{Message, ReceivedMessage},
-};
+use core::sync::atomic::AtomicUsize;
+use runtime::{Channel, FrameAllocation, Handle, Rights, Task, ipc::Message};
 
+use super::request::{attributes_request, metadata_request, output_buffer};
+use super::response::{
+    complete_append, complete_directory, complete_empty, complete_map_huge, complete_metadata,
+    complete_open, complete_read, complete_size, complete_truncate, complete_write,
+    directory_entries,
+};
 use super::{Client, Directory, File, PAGE_SIZE};
 use crate::{
     Error, Metadata,
@@ -66,21 +69,6 @@ impl<'a> Client<'a> {
         Ok(Pending::new(call, (self.task, channel), complete_open))
     }
 
-    pub fn start_open_with(
-        &self,
-        path: &[u8],
-        options: crate::OpenOptions,
-    ) -> Result<PendingOpen<'a>, Error> {
-        options.validate()?;
-        let [flags, permissions] = options.encode();
-        let (call, channel) = self.open_call_with(
-            protocol::OPEN,
-            path,
-            &[path.len() as u64, flags, permissions],
-        )?;
-        Ok(Pending::new(call, (self.task, channel), complete_open))
-    }
-
     pub fn start_create(&self, path: &[u8]) -> Result<PendingOpen<'a>, Error> {
         let (call, channel) = self.open_call(protocol::CREATE, path)?;
         Ok(Pending::new(call, (self.task, channel), complete_open))
@@ -118,29 +106,12 @@ impl<'a> Client<'a> {
     }
 
     pub fn start_symlink(&self, target: &[u8], path: &[u8]) -> Result<Pending<()>, Error> {
-        if target.is_empty() || target.len() >= PAGE_SIZE || target.contains(&0) {
-            return Err(Error::InvalidRequest);
-        }
-        let mut frames = self
-            .task
-            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER)?;
-        frames.write(0, target)?;
-        let mut request =
-            Message::new(protocol::SYMLINK, &[target.len() as u64, path.len() as u64])?;
-        transfer(&mut request, frames, Rights::READ)?;
-        transfer(&mut request, self.path(path)?, Rights::READ)?;
-        empty_call(&self.channel, request)
+        empty_call(&self.channel, self.symlink_message(target, path)?)
     }
 
     pub fn start_read_link(&self, path: &[u8]) -> Result<PendingRead, Error> {
-        let frames = output_buffer(self.task, PAGE_SIZE)?;
-        let mut request = Message::new(protocol::READ_LINK, &[path.len() as u64])?;
-        transfer(&mut request, self.path(path)?, Rights::READ)?;
-        transfer(
-            &mut request,
-            frames.try_clone(Rights::WRITE | Rights::TRANSFER)?,
-            Rights::WRITE,
-        )?;
+        let request = self.path_message(protocol::READ_LINK, path)?;
+        let (mut request, frames) = super::request::output_request(self.task, request, PAGE_SIZE)?;
         Ok(Pending::new(
             self.channel.start_call(&mut request)?,
             (frames, PAGE_SIZE - 1),
@@ -153,36 +124,20 @@ impl<'a> Client<'a> {
         method: u64,
         path: &[u8],
     ) -> Result<(Handle<runtime::Call>, Handle<Channel>), Error> {
-        self.open_call_with(method, path, &[path.len() as u64])
-    }
-
-    fn open_call_with(
-        &self,
-        method: u64,
-        path: &[u8],
-        words: &[u64],
-    ) -> Result<(Handle<runtime::Call>, Handle<Channel>), Error> {
-        let (channel, server) = self.task.channel(
+        let (mut request, channel) = self.open_message(
+            method,
+            path,
             CHANNEL_RIGHTS | Rights::TRANSFER | Rights::DUPLICATE,
-            Rights::READ | Rights::WAIT | Rights::TRANSFER,
         )?;
-        let mut request = Message::new(method, words)?;
-        transfer(&mut request, self.path(path)?, Rights::READ)?;
-        transfer(&mut request, server, Rights::READ | Rights::WAIT)?;
         Ok((self.channel.start_call(&mut request)?, channel))
     }
 
     fn start_path(&self, method: u64, path: &[u8]) -> Result<Pending<()>, Error> {
-        let mut request = Message::new(method, &[path.len() as u64])?;
-        transfer(&mut request, self.path(path)?, Rights::READ)?;
-        empty_call(&self.channel, request)
+        empty_call(&self.channel, self.path_message(method, path)?)
     }
 
     fn start_pair(&self, method: u64, source: &[u8], target: &[u8]) -> Result<Pending<()>, Error> {
-        let mut request = Message::new(method, &[source.len() as u64, target.len() as u64])?;
-        transfer(&mut request, self.path(source)?, Rights::READ)?;
-        transfer(&mut request, self.path(target)?, Rights::READ)?;
-        empty_call(&self.channel, request)
+        empty_call(&self.channel, self.pair_message(method, source, target)?)
     }
 }
 
@@ -226,13 +181,7 @@ impl File<'_> {
     }
 
     pub fn start_read_at(&self, offset: usize, length: usize) -> Result<PendingRead, Error> {
-        let frames = output_buffer(self.task, length)?;
-        let mut request = Message::new(protocol::READ, &[offset as u64, length as u64])?;
-        transfer(
-            &mut request,
-            frames.try_clone(Rights::WRITE | Rights::TRANSFER)?,
-            Rights::WRITE,
-        )?;
+        let (mut request, frames) = self.read_message(offset, length)?;
         Ok(Pending::new(
             self.channel.start_call(&mut request)?,
             (frames, length),
@@ -241,48 +190,20 @@ impl File<'_> {
     }
 
     pub fn start_write_at(&self, offset: usize, input: &[u8]) -> Result<PendingWrite, Error> {
-        let mut request = Message::new(protocol::WRITE, &[offset as u64, input.len() as u64])?;
-        transfer(&mut request, input_buffer(self.task, input)?, Rights::READ)?;
+        let mut request = self.write_message(protocol::WRITE, offset, input)?;
         Ok(Pending::new(
             self.channel.start_call(&mut request)?,
             (Arc::clone(&self.length), input.len()),
-            |(length, limit), response| {
-                let response = response_result(response)?;
-                let [count, size] = *response.words() else {
-                    return Err(Error::InvalidData);
-                };
-                if count > limit as u64 {
-                    return Err(Error::InvalidData);
-                }
-                length.store(
-                    usize::try_from(size).map_err(|_| Error::InvalidData)?,
-                    Ordering::Relaxed,
-                );
-                Ok(count as usize)
-            },
+            |(length, limit), response| complete_write((&length, limit), response),
         ))
     }
 
     pub fn start_append(&self, input: &[u8]) -> Result<PendingAppend, Error> {
-        let mut request = Message::new(protocol::APPEND, &[0, input.len() as u64])?;
-        transfer(&mut request, input_buffer(self.task, input)?, Rights::READ)?;
+        let mut request = self.write_message(protocol::APPEND, 0, input)?;
         Ok(Pending::new(
             self.channel.start_call(&mut request)?,
             (Arc::clone(&self.length), input.len()),
-            |(length, limit), response| {
-                let response = response_result(response)?;
-                let [count, size, offset] = *response.words() else {
-                    return Err(Error::InvalidData);
-                };
-                if count > limit as u64 || offset.checked_add(count) != Some(size) {
-                    return Err(Error::InvalidData);
-                }
-                length.store(
-                    usize::try_from(size).map_err(|_| Error::InvalidData)?,
-                    Ordering::Relaxed,
-                );
-                Ok((offset as usize, count as usize))
-            },
+            |(length, limit), response| complete_append((&length, limit), response),
         ))
     }
 
@@ -291,14 +212,7 @@ impl File<'_> {
             self.channel
                 .start_call(&mut Message::new(protocol::TRUNCATE, &[size as u64])?)?,
             (Arc::clone(&self.length), size),
-            |(length, size), response| {
-                let response = response_result(response)?;
-                if response.words() != [size as u64] {
-                    return Err(Error::InvalidData);
-                }
-                length.store(size, Ordering::Relaxed);
-                Ok(())
-            },
+            |(length, size), response| complete_truncate((&length, size), response),
         ))
     }
 
@@ -307,11 +221,7 @@ impl File<'_> {
             self.channel
                 .start_call(&mut Message::new(protocol::FILE_INFO, &[])?)?,
             Arc::clone(&self.length),
-            |length, response| {
-                let size = response_size(response_result(response)?)?;
-                length.store(size, Ordering::Relaxed);
-                Ok(size)
-            },
+            |length, response| complete_size(&length, response),
         ))
     }
 
@@ -324,10 +234,8 @@ impl File<'_> {
             self.channel
                 .start_call(&mut Message::new(protocol::MAPPING_INFO, &[])?)?,
             self.channel.try_clone(CHANNEL_RIGHTS)?,
-            |channel, mut response| {
-                if response.tag != protocol::SUCCESS {
-                    return Err(protocol::tag_error(response.tag));
-                }
+            |channel, response| {
+                let mut response = protocol::response_status(response)?;
                 let [granule, device, inode] = *response.words() else {
                     return Err(Error::InvalidData);
                 };
@@ -433,58 +341,6 @@ impl Directory<'_> {
     }
 }
 
-pub(super) fn complete_open<'a>(
-    (task, channel): (&'a Handle<Task>, Handle<Channel>),
-    response: ReceivedMessage,
-) -> Result<File<'a>, Error> {
-    let length = response_size(response_result(response)?)?;
-    Ok(File {
-        task,
-        channel,
-        length: Arc::new(AtomicUsize::new(length)),
-    })
-}
-
-fn response_size(response: ReceivedMessage) -> Result<usize, Error> {
-    let [size] = *response.words() else {
-        return Err(Error::InvalidData);
-    };
-    usize::try_from(size).map_err(|_| Error::InvalidData)
-}
-
-pub(super) fn complete_read(
-    (frames, limit): (Handle<FrameAllocation>, usize),
-    response: ReceivedMessage,
-) -> Result<Vec<u8>, Error> {
-    let count = response_size(response_result(response)?)?;
-    if count > limit {
-        return Err(Error::InvalidData);
-    }
-    let mut bytes = alloc::vec![0; count];
-    frames.read(0, &mut bytes)?;
-    Ok(bytes)
-}
-
-/// Validates a `MAP_HUGEPAGE` reply, which carries exactly one frame allocation.
-pub(super) fn complete_map_huge(
-    mut response: ReceivedMessage,
-) -> Result<Handle<FrameAllocation>, Error> {
-    if response.tag != protocol::SUCCESS {
-        if !response.handles().is_empty() || !response.words().is_empty() {
-            return Err(Error::InvalidData);
-        }
-        return Err(protocol::tag_error(response.tag));
-    }
-    if !response.words().is_empty() || response.handles().len() != 1 {
-        return Err(Error::InvalidData);
-    }
-    response
-        .take_handle(0)
-        .ok_or(Error::InvalidData)?
-        .downcast::<FrameAllocation>()
-        .map_err(|_| Error::InvalidData)
-}
-
 pub(super) fn empty_call(
     channel: &Handle<Channel>,
     mut request: Message,
@@ -492,36 +348,8 @@ pub(super) fn empty_call(
     Ok(Pending::new(
         channel.start_call(&mut request)?,
         (),
-        |(), response| {
-            let response = response_result(response)?;
-            if !response.words().is_empty() {
-                return Err(Error::InvalidData);
-            }
-            Ok(())
-        },
+        |(), response| complete_empty(response),
     ))
-}
-
-pub(super) fn output_buffer(
-    task: &Handle<Task>,
-    length: usize,
-) -> Result<Handle<FrameAllocation>, Error> {
-    Ok(task.allocate(
-        length.div_ceil(PAGE_SIZE).max(1) as u64,
-        Rights::READ_WRITE | Rights::TRANSFER | Rights::DUPLICATE,
-    )?)
-}
-
-pub(super) fn input_buffer(
-    task: &Handle<Task>,
-    bytes: &[u8],
-) -> Result<Handle<FrameAllocation>, Error> {
-    let mut frames = task.allocate(
-        bytes.len().div_ceil(PAGE_SIZE).max(1) as u64,
-        Rights::READ_WRITE | Rights::TRANSFER,
-    )?;
-    frames.write(0, bytes)?;
-    Ok(frames)
 }
 
 pub(super) fn statistics_call(
@@ -553,26 +381,13 @@ pub(super) fn statistics_call(
 pub(super) fn metadata_call(
     task: &Handle<Task>,
     channel: &Handle<Channel>,
-    mut request: Message,
+    request: Message,
 ) -> Result<PendingMetadata, Error> {
-    let output = output_buffer(task, PAGE_SIZE)?;
-    transfer(
-        &mut request,
-        output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
-        Rights::WRITE,
-    )?;
+    let (mut request, output) = metadata_request(task, request)?;
     Ok(Pending::new(
         channel.start_call(&mut request)?,
         output,
-        |output, response| {
-            let response = response_result(response)?;
-            if !response.words().is_empty() {
-                return Err(Error::InvalidData);
-            }
-            let mut bytes = [0; Metadata::SIZE];
-            output.read(0, &mut bytes)?;
-            Metadata::decode(&bytes).map_err(|_| Error::InvalidData)
-        },
+        complete_metadata,
     ))
 }
 
@@ -581,50 +396,5 @@ fn attributes_call(
     channel: &Handle<Channel>,
     attributes: crate::Attributes,
 ) -> Result<Pending<()>, Error> {
-    let mut request = Message::new(protocol::SET_ATTRIBUTES, &[])?;
-    transfer(
-        &mut request,
-        input_buffer(task, &attributes.encode())?,
-        Rights::READ,
-    )?;
-    empty_call(channel, request)
-}
-
-pub(super) fn directory_entries(bytes: &[u8], count: usize) -> Result<Vec<crate::DirEntry>, Error> {
-    if count > bytes.len() / crate::DirEntry::HEADER_SIZE {
-        return Err(Error::InvalidData);
-    }
-    let mut entries = Vec::new();
-    let mut remaining = bytes;
-    for _ in 0..count {
-        let (entry, length) = crate::DirEntry::decode_prefix(remaining)?;
-        entries.push(entry);
-        remaining = &remaining[length..];
-    }
-    if !remaining.is_empty() {
-        return Err(Error::InvalidData);
-    }
-    Ok(entries)
-}
-
-pub(super) fn complete_directory<'a>(
-    (task, channel, owner): (&'a Handle<Task>, Handle<Channel>, Arc<()>),
-    response: ReceivedMessage,
-) -> Result<Directory<'a>, Error> {
-    let response = response_result(response)?;
-    let [0, id] = *response.words() else {
-        return Err(Error::InvalidData);
-    };
-    if id == 0 {
-        return Err(Error::InvalidData);
-    }
-    Ok(Directory {
-        file: File {
-            task,
-            channel,
-            length: Arc::new(AtomicUsize::new(0)),
-        },
-        id,
-        owner,
-    })
+    empty_call(channel, attributes_request(task, attributes)?)
 }

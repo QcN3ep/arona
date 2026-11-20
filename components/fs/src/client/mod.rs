@@ -2,6 +2,8 @@
 
 mod path;
 mod pending;
+mod request;
+mod response;
 
 pub use path::{OpenedNode, PendingNode};
 
@@ -99,23 +101,10 @@ impl<'a> Client<'a> {
     }
 
     pub fn metadata(&self, path: &[u8], deadline: u64) -> Result<crate::Metadata, Error> {
-        let output = self
-            .task
-            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER | Rights::DUPLICATE)?;
         let mut request = Message::new(protocol::METADATA, &[path.len() as u64])?;
         transfer(&mut request, self.path(path)?, Rights::READ)?;
-        transfer(
-            &mut request,
-            output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
-            Rights::WRITE,
-        )?;
-        let response = call(&self.channel, &mut request, deadline)?;
-        if !response.words().is_empty() {
-            return Err(Error::InvalidData);
-        }
-        let mut bytes = [0; crate::Metadata::SIZE];
-        output.read(0, &mut bytes)?;
-        crate::Metadata::decode(&bytes).map_err(|_| Error::InvalidData)
+        let (mut request, output) = request::metadata_request(self.task, request)?;
+        response::complete_metadata(output, call(&self.channel, &mut request, deadline)?)
     }
 
     pub fn hard_link(&self, source: &[u8], target: &[u8], deadline: u64) -> Result<(), Error> {
@@ -123,84 +112,30 @@ impl<'a> Client<'a> {
     }
 
     pub fn symlink(&self, target: &[u8], path: &[u8], deadline: u64) -> Result<(), Error> {
-        if target.is_empty() || target.len() >= PAGE_SIZE || target.contains(&0) {
-            return Err(Error::InvalidRequest);
-        }
-        let mut frames = self
-            .task
-            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER)?;
-        frames.write(0, target)?;
-        let mut request =
-            Message::new(protocol::SYMLINK, &[target.len() as u64, path.len() as u64])?;
-        transfer(&mut request, frames, Rights::READ)?;
-        transfer(&mut request, self.path(path)?, Rights::READ)?;
-        let response = call(&self.channel, &mut request, deadline)?;
-        if !response.words().is_empty() {
-            return Err(Error::InvalidData);
-        }
-        Ok(())
+        let mut request = self.symlink_message(target, path)?;
+        response::complete_empty(call(&self.channel, &mut request, deadline)?)
     }
 
     pub fn read_link(&self, path: &[u8], deadline: u64) -> Result<alloc::vec::Vec<u8>, Error> {
-        let output = self
-            .task
-            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER | Rights::DUPLICATE)?;
-        let mut request = Message::new(protocol::READ_LINK, &[path.len() as u64])?;
-        transfer(&mut request, self.path(path)?, Rights::READ)?;
-        transfer(
-            &mut request,
-            output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
-            Rights::WRITE,
-        )?;
-        let response = call(&self.channel, &mut request, deadline)?;
-        let [length] = *response.words() else {
-            return Err(Error::InvalidData);
-        };
-        if length >= PAGE_SIZE as u64 {
-            return Err(Error::InvalidData);
-        }
-        let mut bytes = alloc::vec![0; length as usize];
-        output.read(0, &mut bytes)?;
-        Ok(bytes)
+        let request = self.path_message(protocol::READ_LINK, path)?;
+        let (mut request, output) = request::output_request(self.task, request, PAGE_SIZE)?;
+        response::complete_read(
+            (output, PAGE_SIZE - 1),
+            call(&self.channel, &mut request, deadline)?,
+        )
     }
 
     fn open_request(&self, method: u64, path: &[u8], deadline: u64) -> Result<File<'a>, Error> {
-        crate::path::components(path)?;
-        if path.is_empty() {
-            return Err(Error::InvalidRequest);
-        }
-        let mut path_frames = self.task.allocate(
-            path.len().div_ceil(PAGE_SIZE) as u64,
-            Rights::READ_WRITE | Rights::TRANSFER,
-        )?;
-        path_frames.write(0, path)?;
-        let (file, server) = self.task.channel(
-            CHANNEL_RIGHTS.union(Rights::TRANSFER),
-            Rights::READ | Rights::WAIT | Rights::TRANSFER,
-        )?;
-        let mut request = Message::new(method, &[path.len() as u64])?;
-        transfer(&mut request, path_frames, Rights::READ)?;
-        transfer(&mut request, server, Rights::READ | Rights::WAIT)?;
-        let response = call(&self.channel, &mut request, deadline)?;
-        let [length] = response.words() else {
-            return Err(Error::InvalidData);
-        };
-        Ok(File {
-            task: self.task,
-            channel: file,
-            length: Arc::new(AtomicUsize::new(
-                usize::try_from(*length).map_err(|_| Error::InvalidData)?,
-            )),
-        })
+        let (mut request, file) =
+            self.open_message(method, path, CHANNEL_RIGHTS | Rights::TRANSFER)?;
+        response::complete_open(
+            (self.task, file),
+            call(&self.channel, &mut request, deadline)?,
+        )
     }
     fn path_request(&self, method: u64, path: &[u8], deadline: u64) -> Result<(), Error> {
-        let mut request = Message::new(method, &[path.len() as u64])?;
-        transfer(&mut request, self.path(path)?, Rights::READ)?;
-        let response = call(&self.channel, &mut request, deadline)?;
-        if !response.words().is_empty() {
-            return Err(Error::InvalidData);
-        }
-        Ok(())
+        let mut request = self.path_message(method, path)?;
+        response::complete_empty(call(&self.channel, &mut request, deadline)?)
     }
     fn path(&self, path: &[u8]) -> Result<Handle<runtime::FrameAllocation>, Error> {
         crate::path::components(path)?;
@@ -235,15 +170,10 @@ impl<'a> Client<'a> {
         target: &[u8],
         deadline: u64,
     ) -> Result<(), Error> {
-        let mut request = Message::new(method, &[source.len() as u64, target.len() as u64])?;
-        transfer(&mut request, self.path(source)?, Rights::READ)?;
-        transfer(&mut request, self.path(target)?, Rights::READ)?;
-        let response = call(&self.channel, &mut request, deadline)?;
-        if !response.words().is_empty() {
-            return Err(Error::InvalidData);
-        }
-        Ok(())
+        let mut request = self.pair_message(method, source, target)?;
+        response::complete_empty(call(&self.channel, &mut request, deadline)?)
     }
+
     pub fn read_dir(
         &self,
         path: &str,
@@ -266,22 +196,9 @@ impl File<'_> {
     }
 
     pub fn metadata(&self, deadline: u64) -> Result<crate::Metadata, Error> {
-        let output = self
-            .task
-            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER | Rights::DUPLICATE)?;
-        let mut request = Message::new(protocol::METADATA, &[])?;
-        transfer(
-            &mut request,
-            output.try_clone(Rights::WRITE | Rights::TRANSFER)?,
-            Rights::WRITE,
-        )?;
-        let response = call(&self.channel, &mut request, deadline)?;
-        if !response.words().is_empty() {
-            return Err(Error::InvalidData);
-        }
-        let mut bytes = [0; crate::Metadata::SIZE];
-        output.read(0, &mut bytes)?;
-        crate::Metadata::decode(&bytes).map_err(|_| Error::InvalidData)
+        let (mut request, output) =
+            request::metadata_request(self.task, Message::new(protocol::METADATA, &[])?)?;
+        response::complete_metadata(output, call(&self.channel, &mut request, deadline)?)
     }
 
     pub fn set_attributes(
@@ -289,42 +206,17 @@ impl File<'_> {
         attributes: crate::Attributes,
         deadline: u64,
     ) -> Result<(), Error> {
-        let mut input = self
-            .task
-            .allocate(1, Rights::READ_WRITE | Rights::TRANSFER)?;
-        input.write(0, &attributes.encode())?;
-        let mut request = Message::new(protocol::SET_ATTRIBUTES, &[])?;
-        transfer(&mut request, input, Rights::READ)?;
-        let response = call(&self.channel, &mut request, deadline)?;
-        if !response.words().is_empty() {
-            return Err(Error::InvalidData);
-        }
-        Ok(())
+        let mut request = request::attributes_request(self.task, attributes)?;
+        response::complete_empty(call(&self.channel, &mut request, deadline)?)
     }
 
     pub fn append(&self, input: &[u8], deadline: u64) -> Result<(usize, usize), Error> {
         if input.is_empty() {
             return Ok((self.size(deadline)?, 0));
         }
-        let mut frames = self.task.allocate(
-            input.len().div_ceil(PAGE_SIZE) as u64,
-            Rights::READ_WRITE | Rights::TRANSFER,
-        )?;
-        frames.write(0, input)?;
-        let mut request = Message::new(protocol::APPEND, &[0, input.len() as u64])?;
-        transfer(&mut request, frames, Rights::READ)?;
+        let mut request = self.write_message(protocol::APPEND, 0, input)?;
         let response = call(&self.channel, &mut request, deadline)?;
-        let [count, size, offset] = *response.words() else {
-            return Err(Error::InvalidData);
-        };
-        if count > input.len() as u64 || offset.checked_add(count) != Some(size) {
-            return Err(Error::InvalidData);
-        }
-        self.length.store(
-            usize::try_from(size).map_err(|_| Error::InvalidData)?,
-            Ordering::Relaxed,
-        );
-        Ok((offset as usize, count as usize))
+        response::complete_append((&self.length, input.len()), response)
     }
 
     pub fn from_channel(
@@ -354,10 +246,7 @@ impl File<'_> {
             &mut Message::new(protocol::FSYNC, &[])?,
             deadline,
         )?;
-        if !response.words().is_empty() {
-            return Err(Error::InvalidData);
-        }
-        Ok(())
+        response::complete_empty(response)
     }
 
     pub fn write_at(&self, offset: usize, input: &[u8], deadline: u64) -> Result<usize, Error> {
@@ -365,25 +254,9 @@ impl File<'_> {
         if length == 0 {
             return Ok(0);
         }
-        let mut frames = self.task.allocate(
-            length.div_ceil(PAGE_SIZE) as u64,
-            Rights::READ_WRITE | Rights::TRANSFER,
-        )?;
-        frames.write(0, input)?;
-        let mut request = Message::new(protocol::WRITE, &[offset as u64, length as u64])?;
-        transfer(&mut request, frames, Rights::READ)?;
+        let mut request = self.write_message(protocol::WRITE, offset, input)?;
         let response = call(&self.channel, &mut request, deadline)?;
-        let [count, size] = *response.words() else {
-            return Err(Error::InvalidData);
-        };
-        if count > length as u64 {
-            return Err(Error::InvalidData);
-        }
-        self.length.store(
-            usize::try_from(size).map_err(|_| Error::InvalidData)?,
-            Ordering::Relaxed,
-        );
-        Ok(count as usize)
+        response::complete_write((&self.length, length), response)
     }
     pub fn truncate(&self, length: usize, deadline: u64) -> Result<(), Error> {
         let response = call(
@@ -391,11 +264,7 @@ impl File<'_> {
             &mut Message::new(protocol::TRUNCATE, &[length as u64])?,
             deadline,
         )?;
-        if response.words() != [length as u64] {
-            return Err(Error::InvalidData);
-        }
-        self.length.store(length, Ordering::Relaxed);
-        Ok(())
+        response::complete_truncate((&self.length, length), response)
     }
     /// Returns the huge page size of a huge page backed file, or zero for other files.
     pub fn hugepage_size(&self, deadline: u64) -> Result<usize, Error> {
@@ -416,7 +285,7 @@ impl File<'_> {
         offset: usize,
         deadline: u64,
     ) -> Result<runtime::Handle<runtime::FrameAllocation>, Error> {
-        pending::complete_map_huge(protocol::call_with_reply(
+        response::complete_map_huge(protocol::call_with_reply(
             &self.channel,
             &mut Message::new(protocol::MAP_HUGEPAGE, &[offset as u64])?,
             deadline,
@@ -429,12 +298,7 @@ impl File<'_> {
             &mut Message::new(protocol::FILE_INFO, &[])?,
             deadline,
         )?;
-        let [size] = *response.words() else {
-            return Err(Error::InvalidData);
-        };
-        let size = usize::try_from(size).map_err(|_| Error::InvalidData)?;
-        self.length.store(size, Ordering::Relaxed);
-        Ok(size)
+        response::complete_size(&self.length, response)
     }
 
     pub fn read_at(&self, offset: usize, output: &mut [u8], deadline: u64) -> Result<usize, Error> {
@@ -442,24 +306,8 @@ impl File<'_> {
         if length == 0 {
             return Ok(0);
         }
-        let frames = self.task.allocate(
-            length.div_ceil(PAGE_SIZE) as u64,
-            Rights::READ_WRITE | Rights::DUPLICATE | Rights::TRANSFER,
-        )?;
-        let mut request = Message::new(protocol::READ, &[offset as u64, length as u64])?;
-        transfer(
-            &mut request,
-            frames.try_clone(Rights::WRITE | Rights::TRANSFER)?,
-            Rights::WRITE,
-        )?;
-        let response = call(&self.channel, &mut request, deadline)?;
-        let [count] = response.words() else {
-            return Err(Error::InvalidData);
-        };
-        let count = usize::try_from(*count).map_err(|_| Error::InvalidData)?;
-        if count > length {
-            return Err(Error::InvalidData);
-        }
+        let (mut request, frames) = self.read_message(offset, length)?;
+        let count = response::read_count(call(&self.channel, &mut request, deadline)?, length)?;
         frames.read(0, &mut output[..count])?;
         Ok(count)
     }
@@ -539,7 +387,7 @@ impl MappingSource {
                 &[offset as u64, u64::from(writable)],
             )?)?,
             (),
-            |(), response| pending::complete_map_huge(response),
+            |(), response| response::complete_map_huge(response),
         ))
     }
 
