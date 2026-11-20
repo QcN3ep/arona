@@ -31,6 +31,29 @@ pub(crate) fn open_call_partition(
     device: u32,
     partition: u32,
 ) -> Result<(Handle<Call>, Handle<Channel>), Error> {
+    let (channel, mut request) = open_request(task, device, partition)?;
+    Ok((service.start_call(&mut request)?, channel))
+}
+
+pub(crate) fn open(
+    task: &Handle<Task>,
+    service: &Handle<Channel>,
+    device: u32,
+    partition: u32,
+    deadline: Option<u64>,
+) -> Result<Handle<Channel>, Error> {
+    let (channel, mut request) = open_request(task, device, partition)?;
+    complete_open(
+        channel,
+        service.call(&mut request, deadline).map_err(Error::Call)?,
+    )
+}
+
+fn open_request(
+    task: &Handle<Task>,
+    device: u32,
+    partition: u32,
+) -> Result<(Handle<Channel>, Message), Error> {
     let rights = CHANNEL_RIGHTS | Rights::TRANSFER;
     let (channel, server) = task.channel(rights, rights)?;
     let mut request = Message::new(OPEN, &[device.into(), partition.into()])?;
@@ -40,7 +63,14 @@ pub(crate) fn open_call_partition(
             rights,
         })
         .map_err(|_| Error::InvalidRequest)?;
-    Ok((service.start_call(&mut request)?, channel))
+    Ok((channel, request))
+}
+
+pub(crate) fn check_session(channel: &Handle<Channel>) -> Result<(), Error> {
+    if !channel.info()?.rights.contains(CHANNEL_RIGHTS) {
+        return Err(Error::Denied);
+    }
+    Ok(())
 }
 
 pub(crate) fn complete_open(

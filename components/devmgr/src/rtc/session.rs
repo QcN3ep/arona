@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use super::Timestamp;
+use crate::protocol::call_until as call;
 use crate::protocol::response_result;
-use crate::{
-    Error,
-    device::{CHANNEL_RIGHTS, OPEN, Pending},
-};
+use crate::{Error, device::Pending};
 use runtime::{
-    Channel, Handle, Rights, Task,
-    ipc::{Message, ReceivedMessage, Transfer},
+    Channel, Handle, Task,
+    ipc::{Message, ReceivedMessage},
 };
 
 pub(super) const NOW: u64 = 2;
@@ -20,9 +18,7 @@ pub struct Session {
 
 impl Session {
     pub fn from_channel(channel: Handle<Channel>) -> Result<Self, Error> {
-        if !channel.info()?.rights.contains(CHANNEL_RIGHTS) {
-            return Err(runtime::Error::Kernel(runtime::KernelError::Denied).into());
-        }
+        crate::device::check_session(&channel)?;
         Ok(Self { channel })
     }
 
@@ -40,22 +36,10 @@ impl Session {
         device: u32,
         deadline: u64,
     ) -> Result<Self, Error> {
-        let (channel, server) = task.channel(
-            CHANNEL_RIGHTS | Rights::TRANSFER,
-            CHANNEL_RIGHTS | Rights::TRANSFER,
-        )?;
-        let mut request = Message::new(OPEN, &[device.into(), 0])?;
-        request
-            .push(Transfer {
-                handle: server.into(),
-                rights: CHANNEL_RIGHTS | Rights::TRANSFER,
-            })
-            .map_err(|_| Error::InvalidRequest)?;
-        let response = call(service, &mut request, deadline)?;
-        if !response.words().is_empty() {
-            return Err(runtime::Error::Protocol.into());
-        }
-        Ok(Self { channel })
+        let deadline = crate::protocol::finite_deadline(deadline)?;
+        Ok(Self {
+            channel: crate::device::open(task, service, device, 0, deadline)?,
+        })
     }
 
     pub fn start_open(
@@ -111,18 +95,6 @@ fn set_message(time: Timestamp) -> Result<Message, Error> {
         SET,
         &[time.seconds as u64, time.nanoseconds.into()],
     )?)
-}
-
-fn call(
-    channel: &Handle<Channel>,
-    message: &mut Message,
-    deadline: u64,
-) -> Result<ReceivedMessage, Error> {
-    if matches!(deadline, 0 | u64::MAX) {
-        return Err(Error::InvalidRequest);
-    }
-    let response = channel.call(message, Some(deadline)).map_err(Error::Call)?;
-    response_result(response)
 }
 
 fn timestamp(response: ReceivedMessage) -> Result<Timestamp, Error> {

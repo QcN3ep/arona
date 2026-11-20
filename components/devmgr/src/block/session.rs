@@ -2,6 +2,7 @@
 
 //! Request submission, cancellation, and completion acknowledgement for block device sessions.
 
+use crate::protocol::call as response;
 use runtime::{
     Channel, FrameAllocation, Handle, Rights, Task,
     ipc::{Message, ReceivedMessage, Transfer},
@@ -9,10 +10,7 @@ use runtime::{
 
 use super::{CancelResult, Completion, Info, Status};
 use crate::protocol::{empty, response_result};
-use crate::{
-    Error,
-    device::{CHANNEL_RIGHTS, OPEN, Pending},
-};
+use crate::{Error, device::Pending};
 
 pub(super) const INFO: u64 = 2;
 pub(super) const READ: u64 = 3;
@@ -55,17 +53,9 @@ impl Session {
         device: u32,
         partition: u32,
     ) -> Result<Self, Error> {
-        let rights = CHANNEL_RIGHTS.union(Rights::TRANSFER);
-        let (channel, server) = task.channel(rights, rights)?;
-        let mut request = Message::new(OPEN, &[device.into(), partition.into()])?;
-        request
-            .push(Transfer {
-                handle: server.into(),
-                rights,
-            })
-            .map_err(|_| runtime::Error::Protocol)?;
-        empty(response(service, &mut request, None)?)?;
-        Ok(Self { channel })
+        Ok(Self {
+            channel: crate::device::open(task, service, device, partition, None)?,
+        })
     }
 
     pub fn start_open(
@@ -241,15 +231,6 @@ impl Session {
         let mut request = transfer_request(method, id, offset, frames, buffer_offset, length)?;
         empty(response(&self.channel, &mut request, None)?)
     }
-}
-
-fn response(
-    channel: &Handle<Channel>,
-    request: &mut Message,
-    deadline: Option<u64>,
-) -> Result<ReceivedMessage, Error> {
-    let response = channel.call(request, deadline).map_err(Error::Call)?;
-    response_result(response)
 }
 
 fn info(response: ReceivedMessage) -> Result<Info, Error> {

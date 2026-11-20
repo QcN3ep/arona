@@ -4,7 +4,7 @@ use super::{Info, MAX_FRAME, MIN_FRAME};
 use crate::protocol::response_result;
 use crate::{
     Error,
-    device::{self, CHANNEL_RIGHTS, Pending},
+    device::{self, Pending},
 };
 use runtime::{
     Channel, FrameAllocation, Handle, Rights, Task,
@@ -29,9 +29,7 @@ pub struct Session<'a> {
 
 impl<'a> Session<'a> {
     pub fn from_channel(task: &'a Handle<Task>, channel: Handle<Channel>) -> Result<Self, Error> {
-        if !channel.info()?.rights.contains(CHANNEL_RIGHTS) {
-            return Err(Error::Denied);
-        }
+        device::check_session(&channel)?;
         Ok(Self { task, channel })
     }
 

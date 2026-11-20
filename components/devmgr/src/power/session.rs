@@ -3,14 +3,12 @@
 //! Client sessions for platform power capability queries and actions.
 
 use super::Capabilities;
-use crate::protocol::{empty, response_result};
-use crate::{
-    Error,
-    device::{CHANNEL_RIGHTS, OPEN},
-};
+use crate::Error;
+use crate::protocol::call_until as call;
+use crate::protocol::empty;
 use runtime::{
-    Channel, Handle, Rights, Task,
-    ipc::{Message, ReceivedMessage, Transfer},
+    Channel, Handle, Task,
+    ipc::{Message, ReceivedMessage},
 };
 
 pub(super) const CAPABILITIES: u64 = 2;
@@ -33,22 +31,10 @@ impl Session {
         device: u32,
         deadline: u64,
     ) -> Result<Self, Error> {
-        let (channel, server) = task.channel(
-            CHANNEL_RIGHTS | Rights::TRANSFER,
-            CHANNEL_RIGHTS | Rights::TRANSFER,
-        )?;
-        let mut request = Message::new(OPEN, &[device.into(), 0])?;
-        request
-            .push(Transfer {
-                handle: server.into(),
-                rights: CHANNEL_RIGHTS | Rights::TRANSFER,
-            })
-            .map_err(|_| Error::InvalidRequest)?;
-        let response = call(service, &mut request, deadline)?;
-        if !response.words().is_empty() {
-            return Err(runtime::Error::Protocol.into());
-        }
-        Ok(Self { channel })
+        let deadline = crate::protocol::finite_deadline(deadline)?;
+        Ok(Self {
+            channel: crate::device::open(task, service, device, 0, deadline)?,
+        })
     }
 
     pub fn capabilities(&self, deadline: u64) -> Result<Capabilities, Error> {
@@ -72,18 +58,6 @@ impl Session {
         let response = call(&self.channel, &mut Message::new(tag, &[])?, deadline)?;
         empty(response)
     }
-}
-
-fn call(
-    channel: &Handle<Channel>,
-    message: &mut Message,
-    deadline: u64,
-) -> Result<ReceivedMessage, Error> {
-    if matches!(deadline, 0 | u64::MAX) {
-        return Err(Error::InvalidRequest);
-    }
-    let response = channel.call(message, Some(deadline)).map_err(Error::Call)?;
-    response_result(response)
 }
 
 fn capabilities(response: ReceivedMessage) -> Result<Capabilities, Error> {

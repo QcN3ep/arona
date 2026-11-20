@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use runtime::{
-    Call, Channel, Handle, KernelError, Rights, Task,
-    ipc::{self, Message, ReceivedMessage, Transfer, WaitItem, WaitMode},
+    Call, Channel, Handle, KernelError, Task,
+    ipc::{self, Message, ReceivedMessage, WaitItem, WaitMode},
 };
 
 use super::{DataBits, LineErrors, Parity, ReadResult, Settings, StopBits};
 use crate::protocol::{empty, response_result};
-use crate::{
-    Error,
-    device::{CHANNEL_RIGHTS, OPEN, Pending},
-};
+use crate::{Error, device::Pending};
 
 pub(super) const READ: u64 = 2;
 pub(super) const TRY_READ: u64 = 3;
@@ -68,7 +65,7 @@ impl PendingOpen {
         match core::mem::replace(&mut self.stage, OpenStage::Finished) {
             OpenStage::Open(channel, access) => {
                 let channel = crate::device::complete_open(channel, response)?;
-                self.call = channel.start_call(&mut Message::new(SET_ACCESS, &[access as u64])?)?;
+                self.call = channel.start_call(&mut access_request(access)?)?;
                 self.stage = OpenStage::Configure(channel);
                 Err(runtime::Error::Kernel(KernelError::WouldBlock).into())
             }
@@ -92,29 +89,13 @@ impl Session {
         device: u32,
         access: Access,
     ) -> Result<Self, Error> {
-        let (channel, server) = task.channel(
-            CHANNEL_RIGHTS.union(Rights::TRANSFER),
-            CHANNEL_RIGHTS.union(Rights::TRANSFER),
-        )?;
-        let mut request = Message::new(OPEN, &[u64::from(device), 0])?;
-        request
-            .push(Transfer {
-                handle: server.into(),
-                rights: CHANNEL_RIGHTS.union(Rights::TRANSFER),
-            })
-            .map_err(|_| runtime::Error::Protocol)?;
-        empty(response(service, &mut request)?)?;
-        empty(response(
-            &channel,
-            &mut Message::new(SET_ACCESS, &[access as u64])?,
-        )?)?;
+        let channel = crate::device::open(task, service, device, 0, None)?;
+        empty(response(&channel, &mut access_request(access)?)?)?;
         Ok(Self { channel })
     }
 
     pub fn from_channel(channel: Handle<Channel>) -> Result<Self, Error> {
-        if !channel.info()?.rights.contains(CHANNEL_RIGHTS) {
-            return Err(runtime::Error::Kernel(runtime::KernelError::Denied).into());
-        }
+        crate::device::check_session(&channel)?;
         Ok(Self { channel })
     }
 
@@ -144,18 +125,10 @@ impl Session {
     }
 
     pub fn start_write(&self, bytes: &[u8]) -> Result<Pending<usize, usize>, Error> {
-        let bytes = &bytes[..bytes.len().min(MAX_BYTES)];
-        let words = encode(bytes);
-        let call = self.channel.start_call(&mut Message::new(
-            WRITE,
-            &words[..1 + bytes.len().div_ceil(8)],
-        )?)?;
-        Ok(Pending::new(call, bytes.len(), |length, response| {
-            let response = response_result(response)?;
-            if response.words() != [length as u64] {
-                return Err(runtime::Error::Protocol.into());
-            }
-            Ok(length)
+        let (mut request, length) = write_request(bytes)?;
+        let call = self.channel.start_call(&mut request)?;
+        Ok(Pending::new(call, length, |length, response| {
+            write_result(length, response_result(response)?)
         }))
     }
 
@@ -199,14 +172,8 @@ impl Session {
 
     /// Returns the number of bytes accepted into the transmit buffer.
     pub fn write(&self, bytes: &[u8]) -> Result<usize, Error> {
-        let bytes = &bytes[..bytes.len().min(MAX_BYTES)];
-        let words = encode(bytes);
-        let mut request = Message::new(WRITE, &words[..1 + bytes.len().div_ceil(8)])?;
-        let response = response(&self.channel, &mut request)?;
-        if response.words() != [bytes.len() as u64] {
-            return Err(runtime::Error::Protocol.into());
-        }
-        Ok(bytes.len())
+        let (mut request, length) = write_request(bytes)?;
+        write_result(length, response(&self.channel, &mut request)?)
     }
 
     pub fn write_all(&self, mut bytes: &[u8]) -> Result<(), Error> {
@@ -273,8 +240,7 @@ fn line_errors(bits: u64) -> LineErrors {
 }
 
 fn response(channel: &Handle<Channel>, request: &mut Message) -> Result<ReceivedMessage, Error> {
-    let response = channel.call(request, None).map_err(Error::Call)?;
-    response_result(response)
+    crate::protocol::call(channel, request, None)
 }
 
 fn settings_words(settings: Settings) -> Result<[u64; 4], Error> {
@@ -326,4 +292,24 @@ fn read_result(
             errors: line_errors(*errors),
         },
     ))
+}
+
+fn access_request(access: Access) -> Result<Message, Error> {
+    Ok(Message::new(SET_ACCESS, &[access as u64])?)
+}
+
+fn write_request(bytes: &[u8]) -> Result<(Message, usize), Error> {
+    let bytes = &bytes[..bytes.len().min(MAX_BYTES)];
+    let words = encode(bytes);
+    Ok((
+        Message::new(WRITE, &words[..1 + bytes.len().div_ceil(8)])?,
+        bytes.len(),
+    ))
+}
+
+fn write_result(length: usize, response: ReceivedMessage) -> Result<usize, Error> {
+    if response.words() != [length as u64] {
+        return Err(runtime::Error::Protocol.into());
+    }
+    Ok(length)
 }

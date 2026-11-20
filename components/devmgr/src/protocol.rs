@@ -3,7 +3,10 @@
 //! Status encoding and response validation shared by device sessions.
 
 use crate::Error;
-use runtime::{KernelError, ipc::ReceivedMessage};
+use runtime::{
+    Channel, Handle, KernelError,
+    ipc::{Message, ReceivedMessage},
+};
 
 pub(crate) const SUCCESS: u64 = 0;
 
@@ -56,4 +59,28 @@ pub(crate) fn empty(response: ReceivedMessage) -> Result<(), Error> {
     } else {
         Err(runtime::Error::Protocol.into())
     }
+}
+
+pub(crate) fn call(
+    channel: &Handle<Channel>,
+    request: &mut Message,
+    deadline: Option<u64>,
+) -> Result<ReceivedMessage, Error> {
+    response_result(channel.call(request, deadline).map_err(Error::Call)?)
+}
+
+pub(crate) fn finite_deadline(deadline: u64) -> Result<Option<u64>, Error> {
+    if matches!(deadline, 0 | u64::MAX) {
+        Err(Error::InvalidRequest)
+    } else {
+        Ok(Some(deadline))
+    }
+}
+
+pub(crate) fn call_until(
+    channel: &Handle<Channel>,
+    request: &mut Message,
+    deadline: u64,
+) -> Result<ReceivedMessage, Error> {
+    call(channel, request, finite_deadline(deadline)?)
 }

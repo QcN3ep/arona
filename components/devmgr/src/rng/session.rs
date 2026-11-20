@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use super::MAX_BYTES;
+use crate::protocol::call_until as call;
 use crate::protocol::response_result;
-use crate::{
-    Error,
-    device::{CHANNEL_RIGHTS, OPEN, Pending},
-};
+use crate::{Error, device::Pending};
 use runtime::{
     Channel, Handle, Rights, Task,
-    ipc::{Message, ReceivedMessage, Transfer},
+    ipc::{Message, Transfer},
 };
 
 pub(super) const READ: u64 = 2;
@@ -23,9 +21,7 @@ pub struct Session<'a> {
 
 impl<'a> Session<'a> {
     pub fn from_channel(task: &'a Handle<Task>, channel: Handle<Channel>) -> Result<Self, Error> {
-        if !channel.info()?.rights.contains(CHANNEL_RIGHTS) {
-            return Err(runtime::Error::Kernel(runtime::KernelError::Denied).into());
-        }
+        crate::device::check_session(&channel)?;
         Ok(Self { task, channel })
     }
 
@@ -43,22 +39,11 @@ impl<'a> Session<'a> {
         device: u32,
         deadline: u64,
     ) -> Result<Self, Error> {
-        let (channel, server) = task.channel(
-            CHANNEL_RIGHTS | Rights::TRANSFER,
-            CHANNEL_RIGHTS | Rights::TRANSFER,
-        )?;
-        let mut request = Message::new(OPEN, &[device.into(), 0])?;
-        request
-            .push(Transfer {
-                handle: server.into(),
-                rights: CHANNEL_RIGHTS | Rights::TRANSFER,
-            })
-            .map_err(|_| Error::InvalidRequest)?;
-        let response = call(service, &mut request, deadline)?;
-        if !response.words().is_empty() {
-            return Err(runtime::Error::Protocol.into());
-        }
-        Ok(Self { task, channel })
+        let deadline = crate::protocol::finite_deadline(deadline)?;
+        Ok(Self {
+            task,
+            channel: crate::device::open(task, service, device, 0, deadline)?,
+        })
     }
 
     pub fn start_open(
@@ -86,25 +71,14 @@ impl<'a> Session<'a> {
         let buffer = self
             .task
             .allocate(1, Rights::READ_WRITE | Rights::DUPLICATE | Rights::TRANSFER)?;
-        let mut request = Message::new(READ, &[length as u64])?;
-        request
-            .push(Transfer {
-                handle: buffer.try_clone(Rights::WRITE | Rights::TRANSFER)?.into(),
-                rights: Rights::WRITE,
-            })
-            .map_err(|_| Error::InvalidRequest)?;
+        let mut request = read_request(&buffer, length)?;
         Ok(Pending::new(
             self.channel.start_call(&mut request)?,
             (buffer, length),
             |(buffer, length), response| {
                 let response = response_result(response)?;
-                let [count] = *response.words() else {
-                    return Err(runtime::Error::Protocol.into());
-                };
-                if count == 0 || count > length as u64 {
-                    return Err(runtime::Error::Protocol.into());
-                }
-                let mut bytes = alloc::vec![0; count as usize];
+                let count = read_count(length, &response)?;
+                let mut bytes = alloc::vec![0; count];
                 buffer.read(0, &mut bytes)?;
                 Ok(bytes)
             },
@@ -120,35 +94,36 @@ impl<'a> Session<'a> {
             .allocate(1, Rights::READ_WRITE | Rights::DUPLICATE | Rights::TRANSFER)?;
         while !output.is_empty() {
             let length = output.len().min(MAX_BYTES);
-            let mut request = Message::new(READ, &[length as u64])?;
-            request
-                .push(Transfer {
-                    handle: buffer.try_clone(Rights::WRITE | Rights::TRANSFER)?.into(),
-                    rights: Rights::WRITE,
-                })
-                .map_err(|_| Error::InvalidRequest)?;
+            let mut request = read_request(&buffer, length)?;
             let response = call(&self.channel, &mut request, deadline)?;
-            let [count] = *response.words() else {
-                return Err(runtime::Error::Protocol.into());
-            };
-            if count == 0 || count > length as u64 {
-                return Err(runtime::Error::Protocol.into());
-            }
-            buffer.read(0, &mut output[..count as usize])?;
-            output = &mut output[count as usize..];
+            let count = read_count(length, &response)?;
+            buffer.read(0, &mut output[..count])?;
+            output = &mut output[count..];
         }
         Ok(())
     }
 }
 
-fn call(
-    channel: &Handle<Channel>,
-    message: &mut Message,
-    deadline: u64,
-) -> Result<ReceivedMessage, Error> {
-    if matches!(deadline, 0 | u64::MAX) {
-        return Err(Error::InvalidRequest);
+fn read_request(
+    buffer: &Handle<runtime::FrameAllocation>,
+    length: usize,
+) -> Result<Message, Error> {
+    let mut request = Message::new(READ, &[length as u64])?;
+    request
+        .push(Transfer {
+            handle: buffer.try_clone(Rights::WRITE | Rights::TRANSFER)?.into(),
+            rights: Rights::WRITE,
+        })
+        .map_err(|_| Error::InvalidRequest)?;
+    Ok(request)
+}
+
+fn read_count(length: usize, response: &runtime::ipc::ReceivedMessage) -> Result<usize, Error> {
+    let [count] = *response.words() else {
+        return Err(runtime::Error::Protocol.into());
+    };
+    if count == 0 || count > length as u64 {
+        return Err(runtime::Error::Protocol.into());
     }
-    let response = channel.call(message, Some(deadline)).map_err(Error::Call)?;
-    response_result(response)
+    Ok(count as usize)
 }
