@@ -44,9 +44,22 @@ mappings:
     sb t0, 0(s0)
     sb t0, 0(s1)
     sb t0, 0(s2)
+    # MAP_DENYWRITE is accepted and ignored.
+    li a0, 0
+    li a1, 4096
+    li a2, 3
+    li a3, 0x822
+    li a4, -1
+    li a5, 0
+    memcall 222
+    blez a0, memory_failure
+    li a1, 4096
+    memcall 215
+    result 0
 
     addi a0, s0, 1
     li a1, 4096
+    li a3, 0x22
     memcall 222
     blez a0, memory_failure
     beq a0, s0, memory_failure

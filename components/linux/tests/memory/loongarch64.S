@@ -42,9 +42,22 @@ mappings:
     st.b $t0, $s0, 0
     st.b $t0, $s1, 0
     st.b $t0, $s2, 0
+    # MAP_DENYWRITE is accepted and ignored.
+    li.d $a0, 0
+    li.d $a1, 4096
+    li.d $a2, 3
+    li.d $a3, 0x822
+    li.d $a4, -1
+    li.d $a5, 0
+    memcall 222
+    blez $a0, memory_failure
+    li.d $a1, 4096
+    memcall 215
+    result 0
 
     addi.d $a0, $s0, 1
     li.d $a1, 4096
+    li.d $a3, 0x22
     memcall 222
     blez $a0, memory_failure
     beq $a0, $s0, memory_failure

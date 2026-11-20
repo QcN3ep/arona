@@ -326,6 +326,7 @@ Unnamed endpoints do not participate in the pathname namespace.
 The compatibility layer's AddressSpace records program mappings and their backing page frames and operates the native address space through the supervised Task.
 `brk` manages the heap range after the data segment.
 `mmap` establishes anonymous and file-backed mappings and handles address hints, page alignment, `MAP_FIXED` replacement, and `MAP_FIXED_NOREPLACE`.
+Advisory flags such as `MAP_DENYWRITE` and `MAP_STACK` are accepted without changing the mapping behavior.
 Anonymous shared mappings retain a shared backing relationship between the relevant processes.
 ELF segments and memory mappings may be writable and executable, including code and mutable data stored in the same page.
 

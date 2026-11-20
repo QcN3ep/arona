@@ -31,7 +31,8 @@ const MAP_SHARED: usize = 1;
 const MAP_PRIVATE: usize = 2;
 const MAP_FIXED: usize = 0x10;
 const MAP_ANONYMOUS: usize = 0x20;
-// Linux accepts MAP_STACK without changing the mapping behavior.
+// Linux accepts MAP_DENYWRITE and MAP_STACK without changing the mapping behavior.
+const MAP_DENYWRITE: usize = 0x800;
 const MAP_STACK: usize = 0x20000;
 const MAP_FIXED_NOREPLACE: usize = 0x100000;
 // REFERENCE: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/include/uapi/asm-generic/mman-common.h?h=v6.12
@@ -70,6 +71,7 @@ fn start<'a>(process: &Process<'a>, arguments: [usize; 6]) -> Result<Pending<'a>
     if flags
         & !(3
             | MAP_ANONYMOUS
+            | MAP_DENYWRITE
             | MAP_FIXED
             | MAP_STACK
             | MAP_FIXED_NOREPLACE
