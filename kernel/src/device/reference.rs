@@ -45,18 +45,13 @@ impl DeviceReference {
         let space = task.address_space().map_err(|_| DeviceError::Closed)?;
         let registry = registry()?;
         let mut state = registry.state.lock();
-        let grant = state.grant(self)?;
+        let grant = state.grant_mut(self)?;
         let device = registry.member(grant.group, id)?;
         let physical = *device
             .mmio_regions
             .get(region)
             .ok_or(DeviceError::InvalidArgument)?;
         let envelope = registry.envelope(grant.group, physical)?;
-        let grant = state
-            .grants
-            .iter_mut()
-            .find(|grant| grant.token.0.id == self.0.id)
-            .unwrap();
         grant
             .mappings
             .try_reserve(1)

@@ -564,14 +564,23 @@ impl Registry {
 }
 
 impl DeviceState {
-    fn grant(&self, reference: &DeviceReference) -> Result<&Grant, DeviceError> {
+    fn grant_index(&self, reference: &DeviceReference) -> Result<usize, DeviceError> {
         if reference.0.revoked.load(Ordering::Acquire) {
             return Err(DeviceError::Closed);
         }
         self.grants
             .iter()
-            .find(|grant| grant.token.0.id == reference.0.id)
+            .position(|grant| grant.token.0.id == reference.0.id)
             .ok_or(DeviceError::Closed)
+    }
+
+    fn grant(&self, reference: &DeviceReference) -> Result<&Grant, DeviceError> {
+        Ok(&self.grants[self.grant_index(reference)?])
+    }
+
+    fn grant_mut(&mut self, reference: &DeviceReference) -> Result<&mut Grant, DeviceError> {
+        let index = self.grant_index(reference)?;
+        Ok(&mut self.grants[index])
     }
 
     fn remove_released(&mut self) {

@@ -54,7 +54,7 @@ impl DeviceReference {
             id,
         })?;
         let mut state = registry.state.lock();
-        let grant = state.grant(self)?;
+        let grant = state.grant_mut(self)?;
         let hardware = registry.member(grant.group, device)?;
         hardware::dma()
             .address_bits(hardware)
@@ -66,11 +66,6 @@ impl DeviceReference {
         {
             return Err(DeviceError::Busy);
         }
-        let grant = state
-            .grants
-            .iter_mut()
-            .find(|grant| grant.token.0.id == self.0.id)
-            .unwrap();
         grant
             .domains
             .try_reserve(1)
@@ -214,12 +209,11 @@ impl Domain {
 
 impl DomainToken {
     fn domain<'a>(&self, state: &'a mut DeviceState) -> Result<&'a mut Domain, DeviceError> {
-        state.grant(&self.grant)?;
         state
-            .grants
+            .grant_mut(&self.grant)?
+            .domains
             .iter_mut()
-            .find(|grant| grant.token.0.id == self.grant.0.id)
-            .and_then(|grant| grant.domains.iter_mut().find(|domain| domain.id == self.id))
+            .find(|domain| domain.id == self.id)
             .ok_or(DeviceError::Closed)
     }
 }
