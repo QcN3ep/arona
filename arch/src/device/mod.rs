@@ -6,7 +6,6 @@ pub(crate) mod dma;
 pub(crate) mod pci;
 pub mod uart;
 
-#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
 pub(crate) mod mmio;
 
 fn io_fence() {
