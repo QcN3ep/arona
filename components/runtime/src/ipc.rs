@@ -147,6 +147,7 @@ pub enum CallError {
     Submitted(Error),
 }
 
+#[must_use = "Dropping the pending call closes its handle and abandons its response"]
 pub struct PendingCall<T, S = (), E = Error> {
     call: Handle<Call>,
     state: Option<S>,

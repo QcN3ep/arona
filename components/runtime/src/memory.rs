@@ -5,10 +5,12 @@ pub use abi::memory::{HUGE_PAGE_SIZE, Permissions};
 use abi::method::{memory, task};
 use core::ops::Range;
 
+#[must_use = "Dropping the mapping unmaps its address range"]
 pub struct Mapping<'a> {
     task: BorrowedHandle<'a, Task>,
     range: Option<Range<usize>>,
 }
+#[must_use = "Dropping the reservation releases its address range"]
 pub struct Reservation<'a> {
     task: BorrowedHandle<'a, Task>,
     range: Option<Range<usize>>,
