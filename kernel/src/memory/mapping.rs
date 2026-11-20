@@ -87,6 +87,47 @@ pub(super) enum MappingKind {
     Guard,
 }
 
+impl MappingKind {
+    fn decode(tag: u64, physical_start: u64) -> Self {
+        match tag {
+            0 => Self::Reserved,
+            1 => Self::Preparing,
+            2 => Self::Mapped,
+            3 => Self::Permanent { physical_start },
+            4 => Self::DirectMap,
+            5 => Self::Owned,
+            6 => Self::Device { physical_start },
+            7 => Self::Guard,
+            8 => Self::Huge,
+            _ => panic!("invalid mapping kind"),
+        }
+    }
+
+    fn encode(self, physical: &mut u64) -> u64 {
+        match self {
+            Self::Reserved => 0,
+            Self::Preparing => 1,
+            Self::Mapped => 2,
+            Self::Permanent { physical_start } => {
+                *physical = physical_start;
+                3
+            }
+            Self::DirectMap => 4,
+            Self::Owned => 5,
+            Self::Device { physical_start } => {
+                *physical = physical_start;
+                6
+            }
+            Self::Guard => 7,
+            Self::Huge => 8,
+        }
+    }
+
+    fn mapped(self) -> bool {
+        !matches!(self, Self::Reserved | Self::Guard)
+    }
+}
+
 pub(super) struct OwnedMapping {
     pub range: VirtRange,
     pub generation: u64,
@@ -238,20 +279,16 @@ impl MappingIndex {
             location + (TREE_WORDS * size_of::<u64>()) as u64,
             &mut words,
         );
-        let mapped = match words[1] >> 8 {
-            0 | 7 => false,
-            1..=6 | 8 => true,
-            _ => panic!("invalid mapping kind"),
-        };
+        let kind = MappingKind::decode(words[1] >> 8, 0);
         Some((
             MappingInfo {
                 range,
                 mapping: None,
                 maximum: MappingRights(words[1] as u8),
                 generation: words[0],
-                leaf_level: usize::from(words[1] >> 8 == 8),
+                leaf_level: usize::from(kind == MappingKind::Huge),
             },
-            mapped,
+            kind.mapped(),
         ))
     }
 
@@ -712,22 +749,7 @@ impl MappingRecord {
             range,
             generation: words[0],
             maximum: MappingRights(words[1] as u8),
-            kind: match words[1] >> 8 {
-                0 => MappingKind::Reserved,
-                1 => MappingKind::Preparing,
-                2 => MappingKind::Mapped,
-                3 => MappingKind::Permanent {
-                    physical_start: words[6],
-                },
-                4 => MappingKind::DirectMap,
-                5 => MappingKind::Owned,
-                6 => MappingKind::Device {
-                    physical_start: words[6],
-                },
-                7 => MappingKind::Guard,
-                8 => MappingKind::Huge,
-                _ => panic!("invalid mapping kind"),
-            },
+            kind: MappingKind::decode(words[1] >> 8, words[6]),
             journal: MappingJournal {
                 tables: core::array::from_fn(|i| {
                     (words[2 + i] != NIL).then(|| Frame::new(words[2 + i]).unwrap())
@@ -760,23 +782,7 @@ impl MappingRecord {
                     | u64::from(attributes.user_accessible) << 3,
             )
         });
-        let kind = match record.kind {
-            MappingKind::Reserved => 0,
-            MappingKind::Preparing => 1,
-            MappingKind::Mapped => 2,
-            MappingKind::Permanent { physical_start } => {
-                physical = physical_start;
-                3
-            }
-            MappingKind::DirectMap => 4,
-            MappingKind::Owned => 5,
-            MappingKind::Device { physical_start } => {
-                physical = physical_start;
-                6
-            }
-            MappingKind::Guard => 7,
-            MappingKind::Huge => 8,
-        };
+        let kind = record.kind.encode(&mut physical);
         write(
             address + (TREE_WORDS * size_of::<u64>()) as u64,
             &[
