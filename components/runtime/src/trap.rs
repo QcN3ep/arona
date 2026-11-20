@@ -137,12 +137,18 @@ impl Trap {
         self,
         groups: &[crate::register::Write<'_>],
     ) -> Result<(), (Error, Self)> {
-        let records = match crate::register::requests(groups) {
-            Ok(records) => records,
-            Err(error) => return Err((error, self)),
-        };
+        self.apply_registers(groups).map_err(|error| (error, self))
+    }
+    pub fn resume(self, state: &UserState) -> Result<(), (Error, Self)> {
+        let result = crate::register::float_size()
+            .and_then(|size| state.with_groups(size, |groups| self.apply_registers(groups))?);
+        result.map_err(|error| (error, self))
+    }
+
+    fn apply_registers(&self, groups: &[crate::register::Write<'_>]) -> Result<(), Error> {
+        let records = crate::register::requests(groups)?;
         // SAFETY: The request records and the register slices they reference remain borrowed until the call returns.
-        match unsafe {
+        unsafe {
             self.continuation.borrow().invoke(
                 method::trap_continuation::RESUME,
                 [
@@ -157,37 +163,7 @@ impl Trap {
                     0,
                 ],
             )
-        } {
-            Ok(_) => Ok(()),
-            Err(error) => Err((error, self)),
-        }
-    }
-    pub fn resume(self, state: &UserState) -> Result<(), (Error, Self)> {
-        let float_size = match crate::register::float_size() {
-            Ok(size) => size,
-            Err(error) => return Err((error, self)),
-        };
-        let general = state.general().encode();
-        let floating = match state
-            .floating
-            .as_ref()
-            .map(|floating| floating.encode(float_size))
-            .transpose()
-        {
-            Ok(floating) => floating,
-            Err(error) => return Err((Error::Kernel(error), self)),
-        };
-        let mut groups = arrayvec::ArrayVec::<crate::register::Write<'_>, 2>::new();
-        groups.push(crate::register::Write {
-            group: abi::register::GENERAL,
-            bytes: &general,
-        });
-        if let Some((bytes, length)) = &floating {
-            groups.push(crate::register::Write {
-                group: abi::register::FLOAT,
-                bytes: &bytes[..*length],
-            });
-        }
-        self.resume_registers(&groups)
+        }?;
+        Ok(())
     }
 }

@@ -155,6 +155,15 @@ fn supervised() {
     assert_eq!(trap.info.kind, runtime::trap::TrapInfo::ILLEGAL_INSTRUCTION);
     let state = trap.state().unwrap();
     assert_eq!(state.pc, text_range.start);
+    #[cfg(target_arch = "riscv64")]
+    let trap = {
+        let mut invalid = state.clone();
+        invalid.floating.as_mut().unwrap().conditions[0] = 1;
+        let (error, trap) = trap.resume(&invalid).unwrap_err();
+        assert_eq!(error, Error::Kernel(abi::Error::InvalidArgument));
+        assert_eq!(trap.state().unwrap(), state);
+        trap
+    };
     let mut invalid = state.clone();
     invalid.pc = usize::MAX;
     let (_, trap) = trap.resume(&invalid).unwrap_err();
