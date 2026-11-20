@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use super::{Info, MAX_FRAME, MIN_FRAME};
+use crate::protocol::response_result;
 use crate::{
     Error,
-    device::{self, BUSY, CHANNEL_RIGHTS, INVALID_REQUEST, Pending, SUCCESS, UNAVAILABLE},
+    device::{self, CHANNEL_RIGHTS, Pending},
 };
 use runtime::{
     Channel, FrameAllocation, Handle, Rights, Task,
@@ -164,23 +165,5 @@ fn decode_info(response: ReceivedMessage) -> Result<Info, Error> {
         mtu: mtu as u16,
         link_up: link != 0,
         sequence,
-    })
-}
-
-fn response_result(response: ReceivedMessage) -> Result<ReceivedMessage, Error> {
-    if !response.handles().is_empty() {
-        return Err(runtime::Error::Protocol.into());
-    }
-    if response.tag == SUCCESS {
-        return Ok(response);
-    }
-    if !response.words().is_empty() {
-        return Err(runtime::Error::Protocol.into());
-    }
-    Err(match response.tag {
-        BUSY => Error::Busy,
-        INVALID_REQUEST => Error::InvalidRequest,
-        UNAVAILABLE => Error::Unavailable,
-        _ => return Err(runtime::Error::Protocol.into()),
     })
 }

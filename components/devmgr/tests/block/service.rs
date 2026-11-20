@@ -49,7 +49,7 @@ pub fn run(devices: &Handle<DeviceSet>, id: u32, group: u32, configuration: Conf
     // session can open before those requests return their shared queue slots.
     let until = deadline().unwrap();
     loop {
-        match session.read(1, 0, &output, 0, 512) {
+        match session.read(1, 0, &output, 0, info.block_size as usize) {
             Ok(()) => break,
             Err(Error::Busy) => {
                 assert!(thread::now_ns().unwrap() < until);
@@ -60,10 +60,12 @@ pub fn run(devices: &Handle<DeviceSet>, id: u32, group: u32, configuration: Conf
     }
     assert_eq!(
         session.acknowledge(1, deadline()).unwrap(),
-        super::success(512)
+        super::success(info.block_size as usize)
     );
     // When the supervisor closes the control channel, the service must still drain in-flight requests of the current session.
-    session.read(2, 0, &output, 0, 512).unwrap();
+    session
+        .read(2, 0, &output, 0, info.block_size as usize)
+        .unwrap();
     drop(control);
     worker.join().unwrap();
     assert!(session.acknowledge(2, deadline()).is_err());
@@ -99,6 +101,24 @@ fn exercise(session: &Session) -> block::Info {
         .unwrap()
         .wait(WaitMode::Until(deadline().unwrap()))
         .unwrap();
+    if info.read_only {
+        let input = super::frames();
+        assert_eq!(
+            session.write(1, 0, &input, 0, info.block_size as usize),
+            Err(Error::ReadOnly)
+        );
+        assert_eq!(
+            session
+                .start_write(2, 0, &input, 0, info.block_size as usize)
+                .unwrap()
+                .wait(WaitMode::Until(deadline().unwrap())),
+            Err(Error::ReadOnly)
+        );
+        assert_eq!(session.try_acknowledge(1), Err(Error::NotFound));
+        assert_eq!(session.try_acknowledge(2), Err(Error::NotFound));
+        assert_eq!(session.info().unwrap(), info);
+        return info;
+    }
     let mut input = super::frames();
     input.write(0, &[0x79; 4096]).unwrap();
     let output = super::frames();

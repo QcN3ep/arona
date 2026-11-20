@@ -2,6 +2,9 @@
 
 //! UART sessions, transmit and receive buffers, and interrupt-driven request handling.
 
+use crate::protocol::{
+    BUSY, DENIED, INVALID_CONFIGURATION, INVALID_REQUEST, SUCCESS, error_status,
+};
 use alloc::{collections::VecDeque, vec::Vec};
 use runtime::{
     Channel, Event, Handle, KernelError, Reply,
@@ -13,13 +16,7 @@ use super::{
     Access, DataBits, Parity, Settings, StopBits, Uart,
     session::{self, MAX_BYTES},
 };
-use crate::{
-    Error,
-    device::{
-        BUSY, CLOCK_UNAVAILABLE, DENIED, INVALID_CONFIGURATION, INVALID_REQUEST, OpenRequest,
-        SUCCESS, UNSUPPORTED,
-    },
-};
+use crate::{Error, device::OpenRequest};
 
 const BUFFER_SIZE: usize = 4096;
 const TRANSMIT_POLL_NS: u64 = 1_000_000;
@@ -325,10 +322,12 @@ impl State {
                 deliver(reply, &mut Message::new(SUCCESS, &[])?)?;
                 Ok(())
             }
-            Err(Error::Busy) => reject(reply, BUSY),
-            Err(Error::Unsupported) => reject(reply, UNSUPPORTED),
-            Err(Error::InvalidConfiguration) => reject(reply, INVALID_CONFIGURATION),
-            Err(Error::ClockUnavailable) => reject(reply, CLOCK_UNAVAILABLE),
+            Err(
+                error @ (Error::Busy
+                | Error::Unsupported
+                | Error::InvalidConfiguration
+                | Error::ClockUnavailable),
+            ) => reject(reply, error_status(error)),
             Err(error) => Err(error),
         }
     }

@@ -106,6 +106,12 @@ fn exercise(control: &Handle<Channel>, id: u32) -> Session {
         .unwrap()
         .wait(WaitMode::Until(thread::now_ns().unwrap() + 5_000_000_000))
         .unwrap();
+    let malformed = session
+        .channel()
+        .call(&mut Message::new(u64::MAX, &[]).unwrap(), None)
+        .unwrap();
+    assert_eq!(malformed.tag, 1);
+    assert!(malformed.words().is_empty());
     buffered_output(&session);
     shared_output(control, id);
     let session = receive(session, b"UART service RX 1\n", b"service-uart");

@@ -98,7 +98,7 @@ fn driver(
     drop(domain);
     drop(event);
     drop(grant);
-    if !info.read_only && info.capacity != 2 * 1024 * 1024 {
+    if info.capacity != 2 * 1024 * 1024 {
         service::run(devices, id, group, configuration);
     }
     true

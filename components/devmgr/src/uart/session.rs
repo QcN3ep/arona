@@ -6,12 +6,10 @@ use runtime::{
 };
 
 use super::{DataBits, LineErrors, Parity, ReadResult, Settings, StopBits};
+use crate::protocol::{empty, response_result};
 use crate::{
     Error,
-    device::{
-        BUSY, CHANNEL_RIGHTS, CLOCK_UNAVAILABLE, DENIED, INVALID_CONFIGURATION, INVALID_REQUEST,
-        OPEN, Pending, SUCCESS, UNAVAILABLE, UNSUPPORTED,
-    },
+    device::{CHANNEL_RIGHTS, OPEN, Pending},
 };
 
 pub(super) const READ: u64 = 2;
@@ -277,32 +275,6 @@ fn line_errors(bits: u64) -> LineErrors {
 fn response(channel: &Handle<Channel>, request: &mut Message) -> Result<ReceivedMessage, Error> {
     let response = channel.call(request, None).map_err(Error::Call)?;
     response_result(response)
-}
-
-fn response_result(response: ReceivedMessage) -> Result<ReceivedMessage, Error> {
-    if !response.handles().is_empty() || response.tag != SUCCESS && !response.words().is_empty() {
-        return Err(runtime::Error::Protocol.into());
-    }
-    let error = match response.tag {
-        SUCCESS => return Ok(response),
-        INVALID_REQUEST => runtime::Error::Protocol.into(),
-        BUSY => Error::Busy,
-        DENIED => Error::Denied,
-        UNSUPPORTED => Error::Unsupported,
-        INVALID_CONFIGURATION => Error::InvalidConfiguration,
-        CLOCK_UNAVAILABLE => Error::ClockUnavailable,
-        UNAVAILABLE => Error::Unavailable,
-        _ => runtime::Error::Protocol.into(),
-    };
-    Err(error)
-}
-
-fn empty(response: ReceivedMessage) -> Result<(), Error> {
-    if response.words().is_empty() {
-        Ok(())
-    } else {
-        Err(runtime::Error::Protocol.into())
-    }
 }
 
 fn settings_words(settings: Settings) -> Result<[u64; 4], Error> {

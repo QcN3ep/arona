@@ -14,6 +14,7 @@ pub mod device;
 pub mod mbr;
 pub mod net;
 pub mod power;
+mod protocol;
 pub mod rng;
 pub mod rtc;
 pub mod uart;

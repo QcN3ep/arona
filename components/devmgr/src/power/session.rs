@@ -3,9 +3,10 @@
 //! Client sessions for platform power capability queries and actions.
 
 use super::Capabilities;
+use crate::protocol::{empty, response_result};
 use crate::{
     Error,
-    device::{BUSY, CHANNEL_RIGHTS, INVALID_REQUEST, OPEN, SUCCESS, UNAVAILABLE, UNSUPPORTED},
+    device::{CHANNEL_RIGHTS, OPEN},
 };
 use runtime::{
     Channel, Handle, Rights, Task,
@@ -85,25 +86,6 @@ fn call(
     response_result(response)
 }
 
-fn response_result(response: ReceivedMessage) -> Result<ReceivedMessage, Error> {
-    if !response.handles().is_empty() {
-        return Err(runtime::Error::Protocol.into());
-    }
-    if response.tag == SUCCESS {
-        return Ok(response);
-    }
-    if !response.words().is_empty() {
-        return Err(runtime::Error::Protocol.into());
-    }
-    Err(match response.tag {
-        BUSY => Error::Busy,
-        INVALID_REQUEST => Error::InvalidRequest,
-        UNSUPPORTED => Error::Unsupported,
-        UNAVAILABLE => Error::Unavailable,
-        _ => return Err(runtime::Error::Protocol.into()),
-    })
-}
-
 fn capabilities(response: ReceivedMessage) -> Result<Capabilities, Error> {
     let [shutdown, reboot] = *response.words() else {
         return Err(runtime::Error::Protocol.into());
@@ -119,12 +101,4 @@ fn capabilities(response: ReceivedMessage) -> Result<Capabilities, Error> {
         shutdown: flag(shutdown)?,
         reboot: flag(reboot)?,
     })
-}
-
-fn empty(response: ReceivedMessage) -> Result<(), Error> {
-    if response.words().is_empty() {
-        Ok(())
-    } else {
-        Err(runtime::Error::Protocol.into())
-    }
 }

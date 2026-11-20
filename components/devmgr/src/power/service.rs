@@ -6,7 +6,8 @@ use super::{
     Error, Power,
     session::{CAPABILITIES, REBOOT, SHUTDOWN},
 };
-use crate::device::{BUSY, INVALID_REQUEST, OpenRequest, SUCCESS, UNAVAILABLE, UNSUPPORTED};
+use crate::device::OpenRequest;
+use crate::protocol::{INVALID_REQUEST, SUCCESS, error_status};
 use alloc::vec::Vec;
 use runtime::{
     Channel, Handle, KernelError, Reply,
@@ -90,16 +91,7 @@ fn receive(power: &mut Power<'_>, mut message: ReceivedMessage) -> Result<(), Er
 fn action(reply: Handle<Reply>, result: Result<(), Error>) -> Result<(), Error> {
     match result {
         Ok(()) => deliver(reply, SUCCESS, &[])?,
-        Err(error) => deliver(
-            reply,
-            match error {
-                Error::Unsupported => UNSUPPORTED,
-                Error::Busy => BUSY,
-                Error::InvalidRequest | Error::InvalidConfiguration => INVALID_REQUEST,
-                _ => UNAVAILABLE,
-            },
-            &[],
-        )?,
+        Err(error) => deliver(reply, error_status(error), &[])?,
     };
     Ok(())
 }

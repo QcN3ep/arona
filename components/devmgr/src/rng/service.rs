@@ -3,10 +3,8 @@
 //! Entropy request queuing, completion delivery, and session reclamation.
 
 use super::{MAX_BYTES, Rng, session::READ};
-use crate::{
-    Error,
-    device::{INVALID_REQUEST, OpenRequest, SUCCESS, UNAVAILABLE},
-};
+use crate::protocol::{INVALID_REQUEST, SUCCESS, UNAVAILABLE};
+use crate::{Error, device::OpenRequest};
 use alloc::{collections::VecDeque, vec::Vec};
 use runtime::{
     Channel, Event, FrameAllocation, Handle, KernelError, Reply, Rights,

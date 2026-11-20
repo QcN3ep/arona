@@ -2,6 +2,7 @@
 
 //! Block device session dispatch, queue backpressure, and completion delivery.
 
+use crate::protocol::SUCCESS;
 use alloc::vec::Vec;
 use runtime::{
     Channel, Event, FrameAllocation, Handle, KernelError, Reply,
@@ -9,10 +10,7 @@ use runtime::{
 };
 
 use super::{Block, CancelResult, session};
-use crate::{
-    Error,
-    device::{OpenRequest, SUCCESS},
-};
+use crate::{Error, device::OpenRequest};
 
 struct Connection {
     channel: Handle<Channel>,
@@ -354,7 +352,10 @@ fn internal(slot: u32, id: u32) -> Result<u64, Error> {
 }
 
 fn reject(reply: &Handle<Reply>, error: Error) -> Result<(), Error> {
-    deliver(reply, &mut Message::new(session::error_status(error), &[])?)?;
+    deliver(
+        reply,
+        &mut Message::new(crate::protocol::error_status(error), &[])?,
+    )?;
     Ok(())
 }
 

@@ -8,7 +8,10 @@ use runtime::{
     ipc::{Message, ReceivedMessage, Transfer, WaitMode},
 };
 
-use crate::Error;
+use crate::{
+    Error,
+    protocol::{BUSY, INVALID_REQUEST, SUCCESS, UNAVAILABLE},
+};
 
 const NEXT: u64 = 2;
 
@@ -44,20 +47,8 @@ pub(crate) fn complete_open(
     channel: Handle<Channel>,
     response: ReceivedMessage,
 ) -> Result<Handle<Channel>, Error> {
-    if !response.handles().is_empty() || !response.words().is_empty() {
-        return Err(runtime::Error::Protocol.into());
-    }
-    match response.tag {
-        SUCCESS => Ok(channel),
-        INVALID_REQUEST => Err(Error::InvalidRequest),
-        BUSY => Err(Error::Busy),
-        UNSUPPORTED => Err(Error::Unsupported),
-        NOT_FOUND => Err(Error::NotFound),
-        INVALID_CONFIGURATION => Err(Error::InvalidConfiguration),
-        CLOCK_UNAVAILABLE => Err(Error::ClockUnavailable),
-        UNAVAILABLE => Err(Error::Unavailable),
-        _ => Err(runtime::Error::Protocol.into()),
-    }
+    crate::protocol::empty(crate::protocol::response_result(response)?)?;
+    Ok(channel)
 }
 
 #[derive(Clone, Copy)]
@@ -156,15 +147,6 @@ impl DiscoveryRequest {
 
 pub(crate) const OPEN: u64 = 1;
 pub(crate) const CHANNEL_RIGHTS: Rights = Rights::READ_WRITE.union(Rights::WAIT);
-pub(crate) const SUCCESS: u64 = 0;
-pub(crate) const INVALID_REQUEST: u64 = 1;
-pub(crate) const BUSY: u64 = 2;
-pub(crate) const UNSUPPORTED: u64 = 3;
-pub(crate) const INVALID_CONFIGURATION: u64 = 4;
-pub(crate) const CLOCK_UNAVAILABLE: u64 = 5;
-pub(crate) const UNAVAILABLE: u64 = 6;
-pub(crate) const DENIED: u64 = 7;
-pub(crate) const NOT_FOUND: u64 = 8;
 
 pub struct OpenRequest {
     pub device: u32,
@@ -218,18 +200,7 @@ impl OpenRequest {
     }
 
     pub fn reject(self, error: Error) -> Result<(), Error> {
-        reject(
-            &self.reply,
-            match error {
-                Error::Busy | Error::Runtime(runtime::Error::Kernel(KernelError::Busy)) => BUSY,
-                Error::Unsupported => UNSUPPORTED,
-                Error::InvalidRequest => INVALID_REQUEST,
-                Error::InvalidConfiguration => INVALID_CONFIGURATION,
-                Error::ClockUnavailable => CLOCK_UNAVAILABLE,
-                Error::NotFound => NOT_FOUND,
-                _ => UNAVAILABLE,
-            },
-        )
+        reject(&self.reply, crate::protocol::error_status(error))
     }
 
     pub fn forward(self, target: &Handle<Channel>) -> Result<(), Error> {

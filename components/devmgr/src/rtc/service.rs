@@ -6,10 +6,8 @@ use super::{
     Timestamp,
     session::{NOW, SET},
 };
-use crate::{
-    Error,
-    device::{BUSY, INVALID_REQUEST, OpenRequest, SUCCESS, UNAVAILABLE, UNSUPPORTED},
-};
+use crate::protocol::{INVALID_REQUEST, SUCCESS, error_status};
+use crate::{Error, device::OpenRequest};
 use alloc::vec::Vec;
 use runtime::{
     Channel, Handle, KernelError, Reply,
@@ -79,15 +77,7 @@ fn receive(rtc: &mut super::Rtc<'_>, mut message: ReceivedMessage) -> Result<(),
                 SUCCESS,
                 &[time.seconds as u64, time.nanoseconds.into()],
             ),
-            Err(error) => deliver(
-                reply,
-                if error == Error::Busy {
-                    BUSY
-                } else {
-                    UNAVAILABLE
-                },
-                &[],
-            ),
+            Err(error) => deliver(reply, error_status(error), &[]),
         }
         .map(|_| ());
     }
@@ -101,10 +91,7 @@ fn receive(rtc: &mut super::Rtc<'_>, mut message: ReceivedMessage) -> Result<(),
                     nanoseconds: *nanoseconds as u32,
                 }) {
                     Ok(()) => SUCCESS,
-                    Err(Error::InvalidRequest) => INVALID_REQUEST,
-                    Err(Error::Unsupported) => UNSUPPORTED,
-                    Err(Error::Busy) => BUSY,
-                    Err(_) => UNAVAILABLE,
+                    Err(error) => error_status(error),
                 }
             }
             _ => INVALID_REQUEST,

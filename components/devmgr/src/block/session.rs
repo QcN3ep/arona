@@ -8,12 +8,10 @@ use runtime::{
 };
 
 use super::{CancelResult, Completion, Info, Status};
+use crate::protocol::{empty, response_result};
 use crate::{
     Error,
-    device::{
-        BUSY, CHANNEL_RIGHTS, INVALID_REQUEST, NOT_FOUND, OPEN, Pending, SUCCESS, UNAVAILABLE,
-        UNSUPPORTED,
-    },
+    device::{CHANNEL_RIGHTS, OPEN, Pending},
 };
 
 pub(super) const INFO: u64 = 2;
@@ -22,8 +20,6 @@ pub(super) const WRITE: u64 = 4;
 pub(super) const FLUSH: u64 = 5;
 pub(super) const CANCEL: u64 = 6;
 pub(super) const ACK: u64 = 7;
-const READ_ONLY: u64 = 7;
-const DEVICE_FAULT: u64 = 9;
 
 pub struct Session {
     channel: Handle<Channel>,
@@ -247,18 +243,6 @@ impl Session {
     }
 }
 
-pub(super) fn error_status(error: Error) -> u64 {
-    match error {
-        Error::Busy => BUSY,
-        Error::Unsupported => UNSUPPORTED,
-        Error::ReadOnly => READ_ONLY,
-        Error::NotFound => NOT_FOUND,
-        Error::DeviceFault => DEVICE_FAULT,
-        Error::InvalidRequest => INVALID_REQUEST,
-        _ => UNAVAILABLE,
-    }
-}
-
 fn response(
     channel: &Handle<Channel>,
     request: &mut Message,
@@ -266,36 +250,6 @@ fn response(
 ) -> Result<ReceivedMessage, Error> {
     let response = channel.call(request, deadline).map_err(Error::Call)?;
     response_result(response)
-}
-
-fn response_result(response: ReceivedMessage) -> Result<ReceivedMessage, Error> {
-    if !response.handles().is_empty() {
-        return Err(runtime::Error::Protocol.into());
-    }
-    if response.tag == SUCCESS {
-        return Ok(response);
-    }
-    if !response.words().is_empty() {
-        return Err(runtime::Error::Protocol.into());
-    }
-    Err(match response.tag {
-        INVALID_REQUEST => Error::InvalidRequest,
-        BUSY => Error::Busy,
-        UNSUPPORTED => Error::Unsupported,
-        READ_ONLY => Error::ReadOnly,
-        NOT_FOUND => Error::NotFound,
-        DEVICE_FAULT => Error::DeviceFault,
-        UNAVAILABLE => Error::Unavailable,
-        _ => return Err(runtime::Error::Protocol.into()),
-    })
-}
-
-fn empty(response: ReceivedMessage) -> Result<(), Error> {
-    if response.words().is_empty() {
-        Ok(())
-    } else {
-        Err(runtime::Error::Protocol.into())
-    }
 }
 
 fn info(response: ReceivedMessage) -> Result<Info, Error> {

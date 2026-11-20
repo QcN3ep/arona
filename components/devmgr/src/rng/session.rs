@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
 use super::MAX_BYTES;
+use crate::protocol::response_result;
 use crate::{
     Error,
-    device::{
-        BUSY, CHANNEL_RIGHTS, INVALID_REQUEST, OPEN, Pending, SUCCESS, UNAVAILABLE, UNSUPPORTED,
-    },
+    device::{CHANNEL_RIGHTS, OPEN, Pending},
 };
 use runtime::{
     Channel, Handle, Rights, Task,
@@ -152,23 +151,4 @@ fn call(
     }
     let response = channel.call(message, Some(deadline)).map_err(Error::Call)?;
     response_result(response)
-}
-
-fn response_result(response: ReceivedMessage) -> Result<ReceivedMessage, Error> {
-    if !response.handles().is_empty() {
-        return Err(runtime::Error::Protocol.into());
-    }
-    if response.tag == SUCCESS {
-        return Ok(response);
-    }
-    if !response.words().is_empty() {
-        return Err(runtime::Error::Protocol.into());
-    }
-    Err(match response.tag {
-        BUSY => Error::Busy,
-        INVALID_REQUEST => Error::InvalidRequest,
-        UNSUPPORTED => Error::Unsupported,
-        UNAVAILABLE => Error::Unavailable,
-        _ => return Err(runtime::Error::Protocol.into()),
-    })
 }

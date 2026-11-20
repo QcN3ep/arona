@@ -6,10 +6,8 @@ use super::{
     Info, MAX_FRAME, MIN_FRAME, Net,
     session::{INFO, RECEIVE, TRANSMIT, WATCH},
 };
-use crate::{
-    Error,
-    device::{BUSY, INVALID_REQUEST, OpenRequest, SUCCESS, UNAVAILABLE},
-};
+use crate::protocol::{BUSY, INVALID_REQUEST, SUCCESS, UNAVAILABLE};
+use crate::{Error, device::OpenRequest};
 use alloc::{collections::VecDeque, vec::Vec};
 use runtime::{
     Channel, Event, FrameAllocation, Handle, KernelError, Reply, Rights,
