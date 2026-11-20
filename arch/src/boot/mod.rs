@@ -41,3 +41,43 @@ pub fn prepare_boot_info(
         initramfs: None,
     })
 }
+
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+pub(crate) fn enter(
+    boot_cpu_id: u64,
+    hardware: &mut HardwareInfo,
+    external_initramfs: Option<kernel::memory::PhysRange>,
+    machine: u16,
+    console: kernel::BootConsoleMapping,
+) -> ! {
+    crate::hardware::bind();
+    let image = kernel_image();
+    let archive = initramfs::source(external_initramfs, image)
+        .unwrap_or_else(|error| panic!("failed to locate initramfs: {error}"));
+    let init = kernel::boot::initramfs::prepare(archive, hardware, image, machine)
+        .unwrap_or_else(|error| panic!("failed to parse init image: {error}"));
+    let mut info = prepare_boot_info(boot_cpu_id, image, hardware)
+        .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));
+    info.init = Some(&init);
+    info.initramfs = Some(archive.data());
+    info.early_console = Some(console);
+    // SAFETY: The architecture handoff has initialized hardware and reserved firmware storage, and the local archive and ELF outlive this non-returning call.
+    kernel::boot_kernel(info)
+}
+
+#[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+pub(crate) fn clear_bss() {
+    unsafe extern "C" {
+        static _sbss: u8;
+        static _ebss: u8;
+    }
+    let mut cursor = core::ptr::addr_of!(_sbss) as usize;
+    let end = core::ptr::addr_of!(_ebss) as usize;
+    while cursor < end {
+        // SAFETY: Boot invokes this before using BSS; the linker supplies an exclusive, writable, word-aligned region.
+        unsafe {
+            (cursor as *mut u64).write_volatile(0);
+        }
+        cursor += size_of::<u64>();
+    }
+}

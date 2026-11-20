@@ -14,7 +14,7 @@ use uefi_raw::{
 };
 
 use super::cpu::CPU;
-use crate::boot::{console::EarlyConsole, dtb::Dtb, kernel_image, prepare_boot_info};
+use crate::boot::{console::EarlyConsole, dtb::Dtb};
 use crate::device::uart::Uart;
 
 mod paging;
@@ -32,10 +32,7 @@ static mut HARDWARE_INFO: HardwareInfo = HardwareInfo::new();
 pub(super) static EARLY_CONSOLE: EarlyConsole =
     EarlyConsole::new(unsafe { Uart::new(paging::UART_BASE + 0x1e0) });
 
-unsafe extern "C" {
-    static _sbss: u8;
-    static _ebss: u8;
-}
+unsafe extern "C" {}
 
 // REFERENCE: https://loongson.github.io/LoongArch-Documentation/LoongArch-Vol1-EN.html
 
@@ -78,7 +75,7 @@ unsafe extern "C" fn _start_virtual(_system_table: usize) -> ! {
 /// Can only be called once by `_start` after establishing the higher-half mapping and stack during system boot.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
-    clear_bss();
+    crate::boot::clear_bss();
     EARLY_CONSOLE.init();
     kernel::boot::register_early_console(&EARLY_CONSOLE).expect("failed to register early console");
     logger::init(log::LevelFilter::Debug).expect("failed to initialize logger");
@@ -140,25 +137,18 @@ pub unsafe extern "C" fn _start_native(system_table: usize) -> ! {
             .reserve(range, MemoryRegionState::BootReserved)
             .unwrap_or_else(|error| panic!("failed to reserve firmware data: {error}"));
     }
-    crate::hardware::bind();
-    let image = kernel_image();
-    let archive = crate::boot::initramfs::source(external_initramfs, image)
-        .unwrap_or_else(|error| panic!("failed to locate initramfs: {error}"));
-    let init = kernel::boot::initramfs::prepare(archive, hardware, image, 258)
-        .unwrap_or_else(|error| panic!("failed to parse init image: {error}"));
-    let mut info = prepare_boot_info(boot_cpu_id, image, hardware)
-        .unwrap_or_else(|error| panic!("failed to prepare boot information: {error}"));
-    info.init = Some(&init);
-    info.initramfs = Some(archive.data());
-    info.early_console = Some(BootConsoleMapping {
-        virtual_address: paging::UART_BASE,
-        physical_address: paging::UART_PHYSICAL_BASE as u64,
-        memory_type: MemoryType::Device,
-    });
-
     log::debug!(target: "arch::boot", "Parsed DTB at {dtb:#x}");
-    // SAFETY: Boot information must match the actual hardware, and the processor must be in the execution environment required to run the kernel.
-    kernel::boot_kernel(info)
+    crate::boot::enter(
+        boot_cpu_id,
+        hardware,
+        external_initramfs,
+        258,
+        BootConsoleMapping {
+            virtual_address: paging::UART_BASE,
+            physical_address: paging::UART_PHYSICAL_BASE as u64,
+            memory_type: MemoryType::Device,
+        },
+    )
 }
 
 fn configuration_table(tables: &[ConfigurationTable], guid: Guid) -> Option<usize> {
@@ -189,19 +179,6 @@ fn initramfs(tables: &[ConfigurationTable]) -> Option<PhysRange> {
         start: table.base,
         end,
     })
-}
-
-fn clear_bss() {
-    let mut cursor = core::ptr::addr_of!(_sbss) as usize;
-    let end = core::ptr::addr_of!(_ebss) as usize;
-
-    while cursor < end {
-        // SAFETY: Must ensure this address lies in writable, 8-byte-aligned BSS.
-        unsafe {
-            (cursor as *mut u64).write_volatile(0);
-        }
-        cursor += size_of::<u64>();
-    }
 }
 
 fn firmware_address(physical: usize, size: usize) -> usize {
