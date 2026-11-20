@@ -17,6 +17,10 @@ pub enum WaitMode {
     Until(u64),
 }
 impl WaitMode {
+    pub(crate) fn validate(self) -> Result<(), Error> {
+        self.raw().map(|_| ())
+    }
+
     fn raw(self) -> Result<u64, Error> {
         match self {
             Self::Poll => Ok(0),
@@ -364,6 +368,7 @@ pub struct WaitResult {
     pub ready: u64,
 }
 pub fn wait_many(items: &[WaitItem<'_>], mode: WaitMode) -> Result<WaitResult, Error> {
+    let deadline = mode.raw()?;
     let length = items
         .len()
         .checked_mul(abi::ipc::WaitItem::SIZE)
@@ -384,7 +389,7 @@ pub fn wait_many(items: &[WaitItem<'_>], mode: WaitMode) -> Result<WaitResult, E
                 bytes.as_ptr() as u64
             },
             items.len() as u64,
-            mode.raw()?,
+            deadline,
             0,
             0,
         ],

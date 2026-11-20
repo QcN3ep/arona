@@ -69,6 +69,7 @@ impl Handle<Thread> {
 
 impl Handle<TrapPort> {
     pub fn receive(&self, mode: WaitMode) -> Result<Trap, Error> {
+        mode.validate()?;
         loop {
             let mut bytes = [0; TrapInfo::SIZE];
             let result = self.borrow().invoke(

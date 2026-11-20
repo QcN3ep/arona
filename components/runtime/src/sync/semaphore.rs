@@ -38,9 +38,7 @@ impl Semaphore {
     ///
     /// A permit committed to this waiter wins a racing timeout or wait error.
     pub fn wait(&self, mode: WaitMode) -> Result<(), Error> {
-        if matches!(mode, WaitMode::Until(0 | u64::MAX)) {
-            return Err(Error::Kernel(KernelError::InvalidArgument));
-        }
+        mode.validate()?;
         {
             let mut state = state_lock(&self.state);
             if state.take() {

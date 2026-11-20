@@ -137,6 +137,17 @@ fn supervised() {
         .unwrap();
     let id = thread.id().unwrap();
     thread.start().unwrap();
+    runtime::ipc::wait_many(
+        &[runtime::ipc::WaitItem::new(&port, runtime::ipc::READABLE)],
+        WaitMode::Until(thread::now_ns().unwrap() + 2_000_000_000),
+    )
+    .unwrap();
+    for invalid in [0, u64::MAX] {
+        assert!(matches!(
+            port.receive(WaitMode::Until(invalid)),
+            Err(Error::Kernel(abi::Error::InvalidArgument))
+        ));
+    }
     let trap = port
         .receive(WaitMode::Until(thread::now_ns().unwrap() + 2_000_000_000))
         .unwrap();
