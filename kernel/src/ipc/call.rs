@@ -97,13 +97,7 @@ impl Call {
             }
             state.deadline
         };
-        let outcome = match deadline {
-            Some(deadline) => wait.wait_until(deadline).map_err(ChannelError::from)?,
-            None => {
-                wait.wait().map_err(ChannelError::from)?;
-                WaitOutcome::Notified
-            }
-        };
+        let outcome = wait.block(deadline).map_err(ChannelError::from)?;
         let _interrupts = InterruptGuard::new();
         self.reference.0.lock().waker = None;
         if outcome == WaitOutcome::TimedOut {

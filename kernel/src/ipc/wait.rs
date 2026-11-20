@@ -416,15 +416,20 @@ fn prepare(mode: WaitMode) -> Result<Wait, WaitManyError> {
     }
 }
 
-fn wait_for(mode: WaitMode, wait: Wait) -> Result<WaitOutcome, WaitManyError> {
-    match mode {
-        WaitMode::NonBlocking => Err(WaitManyError::WouldBlock),
-        WaitMode::Blocking => wait
-            .wait()
-            .map_err(Into::into)
-            .map(|_| WaitOutcome::Notified),
-        WaitMode::Deadline(deadline) => wait.wait_until(deadline).map_err(Into::into),
+impl WaitMode {
+    pub(crate) fn deadline(self) -> Option<u64> {
+        match self {
+            Self::Deadline(deadline) => Some(deadline),
+            Self::NonBlocking | Self::Blocking => None,
+        }
     }
+}
+
+fn wait_for(mode: WaitMode, wait: Wait) -> Result<WaitOutcome, WaitManyError> {
+    if matches!(mode, WaitMode::NonBlocking) {
+        return Err(WaitManyError::WouldBlock);
+    }
+    wait.block(mode.deadline()).map_err(Into::into)
 }
 
 impl From<HandleError> for WaitManyError {

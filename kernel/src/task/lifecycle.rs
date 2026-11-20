@@ -392,7 +392,7 @@ impl Task {
         deliver: impl FnOnce(&ReceivedMessage, &[super::HandleEntry]) -> Result<(), TaskError>,
     ) -> Result<ReceivedMessage, TaskError> {
         let mode = deadline.map_or(WaitMode::Blocking, WaitMode::Deadline);
-        let call = self.submit_call(handle, message, transfers, deadline, mode)?;
+        let call = self.submit_call(handle, message, transfers, mode)?;
         *committed = true;
         call.wait_with(deliver)
     }
@@ -403,7 +403,7 @@ impl Task {
         message: Message,
         transfers: &[TransferRequest],
     ) -> Result<Call, TaskError> {
-        self.submit_call(handle, message, transfers, None, WaitMode::NonBlocking)
+        self.submit_call(handle, message, transfers, WaitMode::NonBlocking)
     }
 
     fn submit_call(
@@ -411,9 +411,9 @@ impl Task {
         handle: Handle,
         message: Message,
         transfers: &[TransferRequest],
-        deadline: Option<u64>,
         mode: WaitMode,
     ) -> Result<Call, TaskError> {
+        let deadline = mode.deadline();
         let _interrupts = InterruptGuard::new();
         let channel = self.channel(handle, Rights::READ | Rights::WRITE)?;
         TASKS

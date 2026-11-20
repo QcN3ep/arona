@@ -686,13 +686,12 @@ impl WaitMode {
     }
 
     fn wait(self, wait: Wait) -> Result<(), ChannelError> {
-        match self {
-            Self::NonBlocking => Err(ChannelError::WouldBlock),
-            Self::Blocking => wait.wait().map_err(Into::into),
-            Self::Deadline(deadline) => match wait.wait_until(deadline)? {
-                WaitOutcome::Notified => Ok(()),
-                WaitOutcome::TimedOut => Err(ChannelError::TimedOut),
-            },
+        if matches!(self, Self::NonBlocking) {
+            return Err(ChannelError::WouldBlock);
+        }
+        match wait.block(self.deadline())? {
+            WaitOutcome::Notified => Ok(()),
+            WaitOutcome::TimedOut => Err(ChannelError::TimedOut),
         }
     }
 }

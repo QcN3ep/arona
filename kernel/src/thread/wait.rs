@@ -93,13 +93,7 @@ pub(crate) fn finish_task_exit(task: &Task, status: usize) {
 impl ExitTarget {
     fn wait(self, deadline: Option<u64>) -> Result<Option<usize>, ThreadError> {
         let wait = self.prepare_exit_wait(deadline)?;
-        let outcome = match deadline {
-            Some(deadline) => wait.wait_until(deadline)?,
-            None => {
-                wait.wait()?;
-                WaitOutcome::Notified
-            }
-        };
+        let outcome = wait.block(deadline)?;
         match outcome {
             WaitOutcome::Notified => Ok(Some(
                 self.exit_status()
@@ -186,7 +180,7 @@ impl Wait {
         self.block(Some(deadline_ns))
     }
 
-    fn block(self, deadline: Option<u64>) -> Result<WaitOutcome, ThreadError> {
+    pub(crate) fn block(self, deadline: Option<u64>) -> Result<WaitOutcome, ThreadError> {
         let completed = scheduler::with_scheduler(|scheduler| {
             if !scheduler
                 .current
