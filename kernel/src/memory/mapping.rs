@@ -187,6 +187,7 @@ impl MappingRecord {
 }
 
 pub(super) struct MappingIndex {
+    count: usize,
     root: u64,
     free: u64,
     backing: Option<FrameAllocation>,
@@ -207,6 +208,7 @@ struct MappingNode {
 impl MappingIndex {
     pub fn new() -> Self {
         Self {
+            count: 0,
             root: NIL,
             free: NIL,
             backing: None,
@@ -214,14 +216,7 @@ impl MappingIndex {
     }
 
     pub fn len(&self) -> usize {
-        fn count(address: u64) -> usize {
-            if address == NIL {
-                return 0;
-            }
-            let node = MappingNode::read(address);
-            1 + count(node.left) + count(node.right)
-        }
-        count(self.root)
+        self.count
     }
 
     pub fn any(&self, predicate: impl Fn(&MappingRecord) -> bool) -> bool {
@@ -371,6 +366,7 @@ impl MappingIndex {
             write(parent + field * size_of::<u64>() as u64, &[address]);
             self.rebalance(parent);
         }
+        self.count += 1;
         Ok(())
     }
 
@@ -418,6 +414,7 @@ impl MappingIndex {
             node.parent
         };
         self.rebalance(rebalance);
+        self.count -= 1;
         if self.root == NIL {
             self.free = NIL;
             self.backing = None;
