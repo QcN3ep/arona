@@ -19,7 +19,6 @@ use runtime::{
     Device, DmaDomain, Event, Handle, Task,
     device::InterruptBinding,
     dma::{DmaBuffer, DmaDirection},
-    ipc::{self, WaitItem, WaitMode},
 };
 
 pub const MAX_BYTES: usize = 4096;
@@ -61,11 +60,7 @@ impl<'a> Rng<'a> {
         transport.negotiate(0)?;
         let queue = Queue::new(domain, task, &mut transport, 0)?;
         let buffer = domain.allocate(task, 1, DmaDirection::FromDevice)?;
-        match ipc::wait_many(&[WaitItem::new(event, 1)], WaitMode::Poll) {
-            Ok(_) | Err(runtime::Error::Kernel(runtime::KernelError::WouldBlock)) => {}
-            Err(error) => return Err(error.into()),
-        }
-        let interrupt = grant.bind_interrupt(configuration.id, 0, event, 1)?;
+        let interrupt = virtio::bind_interrupt(grant, configuration.id, event)?;
         let mut rng = Self {
             transport,
             interrupt,

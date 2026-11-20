@@ -8,7 +8,12 @@ pub(crate) mod queue;
 
 use alloc::boxed::Box;
 
-use runtime::{Device, Handle, thread};
+use runtime::{
+    Device, Event, Handle,
+    device::InterruptBinding,
+    ipc::{self, WaitItem, WaitMode},
+    thread,
+};
 
 use crate::{Error, device::DeviceDescription};
 
@@ -72,6 +77,19 @@ pub(crate) fn probe(
         return Ok(Some(Configuration::Mmio(device.info().id)));
     }
     Ok(None)
+}
+
+pub(crate) fn bind_interrupt<'a>(
+    grant: &'a Handle<Device>,
+    device: u32,
+    event: &'a Handle<Event>,
+) -> Result<InterruptBinding<'a>, Error> {
+    // Unbinding preserves Event bits, so discard the previous instance's notification.
+    match ipc::wait_many(&[WaitItem::new(event, 1)], WaitMode::Poll) {
+        Ok(_) | Err(runtime::Error::Kernel(runtime::KernelError::WouldBlock)) => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(grant.bind_interrupt(device, 0, event, 1)?)
 }
 
 macro_rules! transport {

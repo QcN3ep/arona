@@ -9,7 +9,7 @@ pub use session::Session;
 
 use alloc::vec::Vec;
 use runtime::{
-    Device, DmaDomain, Event, FrameAllocation, Handle, KernelError, Rights, Task,
+    Device, DmaDomain, Event, FrameAllocation, Handle, Rights, Task,
     device::InterruptBinding,
     dma::{DmaBuffer, DmaDirection},
     ipc::{self, WaitItem, WaitMode},
@@ -154,12 +154,7 @@ impl<'a> Block<'a> {
         for _ in 0..count {
             buffers.push(domain.allocate(task, 1, DmaDirection::Bidirectional)?);
         }
-        // Unbinding preserves Event bits, so discard the previous instance's notifications.
-        match ipc::wait_many(&[WaitItem::new(event, 1)], WaitMode::Poll) {
-            Ok(_) | Err(runtime::Error::Kernel(KernelError::WouldBlock)) => {}
-            Err(error) => return Err(error.into()),
-        }
-        let interrupt = grant.bind_interrupt(configuration.id, 0, event, 1)?;
+        let interrupt = virtio::bind_interrupt(grant, configuration.id, event)?;
         let mut block = Self {
             transport,
             interrupt,

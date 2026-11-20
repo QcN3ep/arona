@@ -12,7 +12,6 @@ use runtime::{
     Device, DmaDomain, Event, Handle, Task,
     device::InterruptBinding,
     dma::{DmaBuffer, DmaDirection},
-    ipc::{self, WaitItem, WaitMode},
     thread,
 };
 
@@ -100,11 +99,7 @@ impl<'a> Net<'a> {
         let tx_slots = tx.size().min(MAX_SLOTS);
         let receive = allocate_buffers(domain, task, rx_slots, DmaDirection::FromDevice)?;
         let transmit = allocate_buffers(domain, task, tx_slots, DmaDirection::ToDevice)?;
-        match ipc::wait_many(&[WaitItem::new(event, 1)], WaitMode::Poll) {
-            Ok(_) | Err(runtime::Error::Kernel(runtime::KernelError::WouldBlock)) => {}
-            Err(error) => return Err(error.into()),
-        }
-        let interrupt = grant.bind_interrupt(configuration.id, 0, event, 1)?;
+        let interrupt = virtio::bind_interrupt(grant, configuration.id, event)?;
         let mut net = Self {
             transport,
             interrupt,

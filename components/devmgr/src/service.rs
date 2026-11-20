@@ -15,7 +15,7 @@ use devmgr::{
     uart::{self, Settings, Uart},
 };
 use runtime::{
-    Channel, Device, DeviceSet, Event, Handle, KernelError, Rights,
+    Channel, Device, DeviceSet, DmaDomain, Event, Handle, KernelError, Rights,
     ipc::{self, WaitItem, WaitMode},
     process, thread,
 };
@@ -326,37 +326,28 @@ fn serve(
             return power::service::run(&mut power, server, id);
         }
         Configuration::Block(configuration) => {
-            let domain = grant.create_dma(
-                id,
-                Rights::READ | Rights::DMA_MAP | Rights::DEVICE_CONTROL | Rights::REVOKE,
-            )?;
-            let mut block = Block::new(configuration, grant, &domain, event, process::task())?;
-            ready.store(true, Ordering::Release);
-            wake.signal(1)?;
-            block::service::run(&mut block, event, server, id)?;
-            return Ok(domain.revoke()?);
+            return with_dma(grant, id, |domain| {
+                let mut driver = Block::new(configuration, grant, domain, event, process::task())?;
+                ready.store(true, Ordering::Release);
+                wake.signal(1)?;
+                block::service::run(&mut driver, event, server, id)
+            });
         }
         Configuration::Rng(configuration) => {
-            let domain = grant.create_dma(
-                id,
-                Rights::READ | Rights::DMA_MAP | Rights::DEVICE_CONTROL | Rights::REVOKE,
-            )?;
-            let mut rng = Rng::new(configuration, grant, &domain, event, process::task())?;
-            ready.store(true, Ordering::Release);
-            wake.signal(1)?;
-            rng::service::run(&mut rng, event, server, id)?;
-            return Ok(domain.revoke()?);
+            return with_dma(grant, id, |domain| {
+                let mut driver = Rng::new(configuration, grant, domain, event, process::task())?;
+                ready.store(true, Ordering::Release);
+                wake.signal(1)?;
+                rng::service::run(&mut driver, event, server, id)
+            });
         }
         Configuration::Net(configuration) => {
-            let domain = grant.create_dma(
-                id,
-                Rights::READ | Rights::DMA_MAP | Rights::DEVICE_CONTROL | Rights::REVOKE,
-            )?;
-            let mut net = Net::new(configuration, grant, &domain, event, process::task())?;
-            ready.store(true, Ordering::Release);
-            wake.signal(1)?;
-            net::service::run(&mut net, event, server, id)?;
-            return Ok(domain.revoke()?);
+            return with_dma(grant, id, |domain| {
+                let mut driver = Net::new(configuration, grant, domain, event, process::task())?;
+                ready.store(true, Ordering::Release);
+                wake.signal(1)?;
+                net::service::run(&mut driver, event, server, id)
+            });
         }
         Configuration::Uart(_) => {}
     }
@@ -367,6 +358,20 @@ fn serve(
     ready.store(true, Ordering::Release);
     wake.signal(1)?;
     uart::service::run(&mut uart, event, server, id)
+}
+
+fn with_dma(
+    grant: &Handle<Device>,
+    device: u32,
+    serve: impl FnOnce(&Handle<DmaDomain>) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let domain = grant.create_dma(
+        device,
+        Rights::READ | Rights::DMA_MAP | Rights::DEVICE_CONTROL | Rights::REVOKE,
+    )?;
+    let result = serve(&domain);
+    let revoked = domain.revoke().map_err(Error::from);
+    result.and(revoked)
 }
 
 fn probe(device: &DeviceDescription<'_>) -> Result<Option<Configuration>, Error> {
