@@ -147,7 +147,54 @@ child_tid_cleared:
     ld.d $t1, $sp, 88
     or $t0, $t0, $t1
     beqz $t0, child_failure
+    # A process clone may start the child on a caller-supplied stack.
+    li.d $a0, 0
+    li.d $a1, 8192
+    li.d $a2, 3
+    li.d $a3, 0x22
+    li.d $a4, -1
+    li.d $a5, 0
+    invoke 222
+    blez $a0, child_failure
+    move $s6, $a0
+    li.d $t0, 8192
+    add.d $s6, $s6, $t0
+    li.d $a0, 17
+    move $a1, $s6
+    li.d $a2, 0
+    li.d $a3, 0
+    li.d $a4, 0
+    invoke 220
+    beqz $a0, child_stack_child
+    bltz $a0, child_failure
+    move $s7, $a0
+    move $a0, $s7
+    move $a1, $sp
+    li.d $a2, 0
+    addi.d $a3, $sp, 80
+    invoke 260
+    bne $a0, $s7, child_failure
+    ld.w $t0, $sp, 0
+    li.d $t1, 0x2a00
+    bne $t0, $t1, child_failure
+    li.d $a0, 17
+    addi.d $a1, $s6, 1
+    li.d $a2, 0
+    li.d $a3, 0
+    li.d $a4, 0
+    invoke 220
+    expect -22
+    li.d $a0, -1
+    li.d $a1, 0
+    li.d $a2, 1
+    li.d $a3, 0
+    invoke 260
+    expect -10
     b busy_done
+child_stack_child:
+    bne $sp, $s6, child_failure
+    li.d $a0, 42
+    invoke 94
 busy_child:
     invoke 172
     ld.w $t0, $sp, 132

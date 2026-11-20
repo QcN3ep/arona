@@ -399,6 +399,7 @@ Invalid control commands return `EINVAL`.
 
 The PID namespace records PIDs, TIDs, parent-child relationships, process groups, sessions, and exit changes.
 `clone` distinguishes process duplication from thread creation by flags and establishes the corresponding resource relationships respectively.
+A process clone with a nonzero `child_stack` starts the child on that stack top, while a zero value keeps the copied parent stack.
 A process clone with `CLONE_VM | CLONE_VFORK` shares the parent's page frames and suspends the calling parent thread until the child executes a new image or exits.
 `wait4` and `waitid` observe child process changes, and thread exits and process group exits are handled along their respective paths.
 When requested, wait calls return the child's recorded thread execution time in the user-time fields of `rusage`.

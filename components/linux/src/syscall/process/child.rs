@@ -7,7 +7,7 @@ use crate::{
     process::{Process, Thread, Vfork},
     syscall::{
         Context, Outcome,
-        abi::{EFAULT, ENOMEM, EOPNOTSUPP, Errno},
+        abi::{EFAULT, EINVAL, ENOMEM, EOPNOTSUPP, Errno},
     },
 };
 use alloc::rc::Rc;
@@ -40,7 +40,11 @@ fn spawn<'a>(
     args: [usize; 6],
 ) -> Result<(usize, Option<Rc<Vfork>>), Errno> {
     let [flags, stack, parent_tid, _, child_tid] = super::thread::arguments(process.machine, args);
-    let vfork = validate(flags, stack)?;
+    let vfork = validate(flags)?;
+    if stack != 0 && stack & 15 != 0 {
+        // The entry stack must be aligned, as in the thread clone path.
+        return Err(EINVAL);
+    }
     let (group, session) = process.namespace.identity(process.pid)?;
     process.children.try_reserve(1).map_err(|_| ENOMEM)?;
     let pid = process.namespace.allocate().ok_or(ENOMEM)?;
@@ -62,6 +66,11 @@ fn spawn<'a>(
     process
         .machine
         .complete(&mut state, context.trap.info.successor as usize, Ok(0));
+    if stack != 0 {
+        // REFERENCE: https://man7.org/linux/man-pages/man2/clone.2.html
+        // clone(2) starts the child on the caller-supplied stack top.
+        process.machine.thread_state(&mut state, stack, None);
+    }
     let native = address_space
         .native
         .create_thread(
@@ -184,7 +193,7 @@ fn spawn<'a>(
 }
 
 /// Check the fork flags and report whether they request vfork.
-fn validate(flags: usize, stack: usize) -> Result<bool, Errno> {
+fn validate(flags: usize) -> Result<bool, Errno> {
     let requested = flags & (VM | VFORK);
     let vfork = requested == VM | VFORK;
     if requested != 0 && !vfork {
@@ -197,7 +206,7 @@ fn validate(flags: usize, stack: usize) -> Result<bool, Errno> {
         | DETACHED
         | 0xff
         | if vfork { VM | VFORK } else { 0 };
-    if flags & !supported != 0 || !matches!(flags & 255, 0 | SIGCHLD) || stack != 0 {
+    if flags & !supported != 0 || !matches!(flags & 255, 0 | SIGCHLD) {
         // TODO: Support the remaining clone flags.
         return Err(EOPNOTSUPP);
     }
@@ -207,10 +216,7 @@ fn validate(flags: usize, stack: usize) -> Result<bool, Errno> {
 fn entry(machine: crate::elf::Machine, state: &runtime::trap::UserState) -> UserEntry {
     UserEntry {
         pc: state.pc as u64,
-        stack_pointer: state.registers[match machine {
-            crate::elf::Machine::Riscv64 => 2,
-            crate::elf::Machine::LoongArch64 => 3,
-        }] as u64,
+        stack_pointer: machine.stack_pointer(state) as u64,
         thread_pointer: 0,
         argument: 0,
     }

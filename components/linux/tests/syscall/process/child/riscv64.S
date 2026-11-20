@@ -147,7 +147,54 @@ child_tid_cleared:
     ld t1, 88(sp)
     or t0, t0, t1
     beqz t0, child_failure
+    # A process clone may start the child on a caller-supplied stack.
+    li a0, 0
+    li a1, 8192
+    li a2, 3
+    li a3, 0x22
+    li a4, -1
+    li a5, 0
+    invoke 222
+    blez a0, child_failure
+    mv s6, a0
+    li t0, 8192
+    add s6, s6, t0
+    li a0, 17
+    mv a1, s6
+    li a2, 0
+    li a3, 0
+    li a4, 0
+    invoke 220
+    beqz a0, child_stack_child
+    bltz a0, child_failure
+    mv s7, a0
+    mv a0, s7
+    mv a1, sp
+    li a2, 0
+    addi a3, sp, 80
+    invoke 260
+    bne a0, s7, child_failure
+    lw t0, 0(sp)
+    li t1, 0x2a00
+    bne t0, t1, child_failure
+    li a0, 17
+    addi a1, s6, 1
+    li a2, 0
+    li a3, 0
+    li a4, 0
+    invoke 220
+    expect -22
+    li a0, -1
+    li a1, 0
+    li a2, 1
+    li a3, 0
+    invoke 260
+    expect -10
     j busy_done
+child_stack_child:
+    bne sp, s6, child_failure
+    li a0, 42
+    invoke 94
 busy_child:
     invoke 172
     lw t0, 132(sp)

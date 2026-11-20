@@ -223,23 +223,28 @@ pub(super) const EALREADY: Errno = Errno(114);
 pub(super) const EINPROGRESS: Errno = Errno(115);
 
 impl Machine {
+    fn stack_register(self) -> usize {
+        match self {
+            Self::Riscv64 => 2,
+            Self::LoongArch64 => 3,
+        }
+    }
+
     pub(crate) fn initial(self, entry: usize, stack: usize) -> UserState {
         let mut state = UserState {
             pc: entry,
             ..UserState::default()
         };
-        state.registers[match self {
-            Self::Riscv64 => 2,
-            Self::LoongArch64 => 3,
-        }] = stack;
+        state.registers[self.stack_register()] = stack;
         state
     }
 
+    pub(super) fn stack_pointer(self, state: &UserState) -> usize {
+        state.registers[self.stack_register()]
+    }
+
     pub(super) fn thread_state(self, state: &mut UserState, stack: usize, tls: Option<usize>) {
-        state.registers[match self {
-            Self::Riscv64 => 2,
-            Self::LoongArch64 => 3,
-        }] = stack;
+        state.registers[self.stack_register()] = stack;
         if let Some(tls) = tls {
             state.registers[match self {
                 Self::Riscv64 => 4,
