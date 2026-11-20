@@ -75,6 +75,7 @@ fn directories_list_in_name_order() {
 #[test]
 fn directory_operations_report_their_errors() {
     let tmpfs = Tmpfs::new().unwrap();
+    assert_eq!(tmpfs.rename(b"/", b"/"), Err(Error::InvalidRequest));
     tmpfs.mkdir(b"/d").unwrap();
     assert_eq!(tmpfs.mkdir(b"/d").unwrap_err(), Error::AlreadyExists);
     assert_eq!(tmpfs.create(b"/d").err(), Some(Error::AlreadyExists));
@@ -166,13 +167,22 @@ fn unlink_removes_entries_and_rejects_inhabited_directories() {
 
 #[test]
 fn open_files_survive_unlink_until_they_close() {
-    let tmpfs = Tmpfs::new().unwrap();
+    let tmpfs = Tmpfs::with_capacity(4096).unwrap();
     let file = tmpfs.create(b"/a").unwrap();
     file.write_at(0, b"kept").unwrap();
     tmpfs.unlink(b"/a").unwrap();
     assert_eq!(tmpfs.metadata(b"/a").unwrap_err(), Error::NotFound);
     assert_eq!(read(&file), b"kept".to_vec());
+    assert_eq!(tmpfs.statistics().unwrap().free_blocks, 0);
+    assert_eq!(file.metadata().unwrap().links, 0);
+    let other = tmpfs.create(b"/b").unwrap();
+    assert_eq!(other.write_at(0, b"full"), Err(Error::NoSpace));
+    assert_eq!(other.len(), 0);
     drop(file);
+    assert_eq!(tmpfs.statistics().unwrap().free_blocks, 1);
+    other.write_at(0, b"available").unwrap();
+    other.truncate(0).unwrap();
+    assert_eq!(tmpfs.statistics().unwrap().free_blocks, 1);
 }
 
 #[test]
@@ -212,6 +222,13 @@ fn symbolic_links_resolve_and_report_their_target() {
     assert_eq!(tmpfs.read_link(b"/s").unwrap(), b"a".to_vec());
     assert_eq!(tmpfs.read_link(b"/a").unwrap_err(), Error::InvalidRequest);
     assert_eq!(tmpfs.open_bytes(b"/s").err(), Some(Error::InvalidRequest));
+    let path = tmpfs.open_path(b"/s").unwrap();
+    assert_eq!(read(&path), b"a");
+    assert_eq!(path.metadata().unwrap().blocks, 0);
+    assert_eq!(
+        tmpfs.statistics().unwrap().free_blocks,
+        tmpfs.statistics().unwrap().blocks
+    );
     assert_eq!(
         tmpfs.symlink(b"", b"/t").unwrap_err(),
         Error::InvalidRequest

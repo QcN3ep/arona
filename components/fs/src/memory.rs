@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-//! Inode and capacity management for huge page files.
+//! Shared inode and capacity management for in-memory filesystems.
 //!
 //! The volume owns the inode map, directory entries, metadata, link and session
 //! accounting. A backend supplies file contents through [`FileData`], which also decides
@@ -74,6 +74,21 @@ impl Context<'_> {
 pub(crate) trait FileData: Sized {
     const MAGIC: u64;
     type Config: Copy;
+    const DIRECTORY_SIZE: u64 = BLOCK_SIZE;
+    const SYMLINK_LIMIT: usize = BLOCK_SIZE as usize - 1;
+
+    fn symlink_charge(size: usize) -> usize {
+        size
+    }
+
+    fn inode_counts(linked: u64, _retained: u64) -> (u64, u64) {
+        let files: u64 = 1 << 20;
+        (files, files.saturating_sub(linked))
+    }
+
+    fn blocks(&self) -> u64 {
+        self.size().div_ceil(512)
+    }
 
     fn new(config: Self::Config) -> Self;
 
@@ -138,6 +153,7 @@ struct Volume<F: FileData> {
 
 struct Inode<F: FileData> {
     number: u64,
+    parent: u64,
     content: Content<F>,
     permissions: u16,
     uid: u32,
@@ -176,15 +192,16 @@ impl<F: FileData> Content<F> {
         match self {
             Self::File(file) => file.size(),
             Self::Symlink(target) => target.len() as u64,
-            Self::Directory(_) => BLOCK_SIZE,
+            Self::Directory(_) => F::DIRECTORY_SIZE,
         }
     }
 }
 
 impl<F: FileData> Inode<F> {
-    fn new(number: u64, content: Content<F>, permissions: u16, links: u32) -> Self {
+    fn new(number: u64, parent: u64, content: Content<F>, permissions: u16, links: u32) -> Self {
         Self {
             number,
+            parent,
             content,
             permissions,
             uid: 0,
@@ -210,7 +227,11 @@ impl<F: FileData> Inode<F> {
             mount,
             inode: self.number,
             size,
-            blocks: size.div_ceil(512),
+            blocks: match &self.content {
+                Content::File(file) => file.blocks(),
+                Content::Symlink(target) => (F::symlink_charge(target.len()) as u64).div_ceil(512),
+                Content::Directory(_) => F::DIRECTORY_SIZE.div_ceil(512),
+            },
             links: self.links,
             mode: file_type(self.kind()) | u32::from(self.permissions),
             uid: self.uid,
@@ -230,12 +251,20 @@ impl<F: FileData> MemoryVolume<F> {
     }
 
     pub(crate) fn new(config: F::Config) -> Result<Self, Error> {
+        Self::with_capacity(config, DEFAULT_LIMIT)
+    }
+
+    pub(crate) fn with_capacity(config: F::Config, limit: usize) -> Result<Self, Error> {
+        if limit < BLOCK_SIZE as usize || !limit.is_multiple_of(BLOCK_SIZE as usize) {
+            return Err(Error::InvalidRequest);
+        }
         let device = crate::metadata::device_identity()?;
         let mount = crate::metadata::mount_identity()?;
         let mut inodes = BTreeMap::new();
         inodes.insert(
             ROOT_INODE,
             Rc::new(RefCell::new(Inode::new(
+                ROOT_INODE,
                 ROOT_INODE,
                 Content::Directory(BTreeMap::new()),
                 0o755,
@@ -249,20 +278,26 @@ impl<F: FileData> MemoryVolume<F> {
                 inodes,
                 next_inode: ROOT_INODE + 1,
                 used: 0,
-                limit: DEFAULT_LIMIT,
+                limit,
                 config,
                 retired: Vec::new(),
             })),
         })
     }
 
-    fn open_node(&self, path: &[u8], directory: bool) -> Result<MemoryFile<F>, Error> {
+    pub(crate) fn open_node(
+        &self,
+        path: &[u8],
+        directory: bool,
+        path_only: bool,
+    ) -> Result<MemoryFile<F>, Error> {
         let volume = self.volume.borrow();
         let number = volume.lookup(path)?;
         let inode = volume.inode(number)?;
         let kind = inode.borrow().kind();
         match (kind, directory) {
             (Kind::Directory, true) | (Kind::File, false) => {}
+            (Kind::Symlink, false) if path_only => {}
             (Kind::Directory, false) => return Err(Error::IsDirectory),
             (Kind::File | Kind::Symlink, true) => return Err(Error::NotDirectory),
             (Kind::Symlink, false) => return Err(Error::InvalidRequest),
@@ -275,6 +310,18 @@ impl<F: FileData> MemoryVolume<F> {
             volume: Rc::clone(&self.volume),
             inode,
         })
+    }
+
+    pub(crate) fn create_file(
+        &self,
+        path: &[u8],
+        permissions: u16,
+    ) -> Result<MemoryFile<F>, Error> {
+        validate_permissions(permissions)?;
+        self.volume
+            .borrow_mut()
+            .create_node(path, false, permissions)?;
+        self.open_node(path, false, false)
     }
 }
 
@@ -300,6 +347,7 @@ impl<F: FileData> Volume<F> {
             number,
             Rc::new(RefCell::new(Inode::new(
                 number,
+                parent_number,
                 content,
                 permissions,
                 links,
@@ -348,11 +396,7 @@ impl<F: FileData> Volume<F> {
             parent.links = parent.links.checked_sub(1).ok_or(Error::InvalidData)?;
         }
         drop(parent);
-        if inode.borrow().kind() == Kind::Directory {
-            self.remove_inode(&inode);
-        } else {
-            self.remove_link(&inode);
-        }
+        self.remove_inode_or_link(&inode);
         Ok(())
     }
 
@@ -371,10 +415,6 @@ impl<F: FileData> Volume<F> {
     fn rename_path(&mut self, source: &[u8], target: &[u8]) -> Result<(), Error> {
         let source_path = crate::path::normalize(source)?;
         let target_path = crate::path::normalize(target)?;
-        self.lookup(source)?;
-        if source_path == target_path {
-            return Ok(());
-        }
         let (old_parent_number, old_name) = self.parent(source)?;
         let (new_parent_number, new_name) = self.parent(target)?;
         let old_parent = self.inode(old_parent_number)?;
@@ -386,6 +426,9 @@ impl<F: FileData> Volume<F> {
             };
             *entries.get(&old_name).ok_or(Error::NotFound)?
         };
+        if source_path == target_path {
+            return Ok(());
+        }
         let inode = self.inode(number)?;
         let directory = inode.borrow().kind() == Kind::Directory;
         if directory
@@ -460,6 +503,7 @@ impl<F: FileData> Volume<F> {
             }
             parent.links = new_links;
         }
+        inode.borrow_mut().parent = new_parent_number;
         if let Some(replaced) = replaced {
             self.remove_inode_or_link(&replaced);
         }
@@ -467,29 +511,21 @@ impl<F: FileData> Volume<F> {
     }
 
     fn remove_inode_or_link(&mut self, inode: &InodeRef<F>) {
-        if inode.borrow().kind() == Kind::Directory {
-            self.remove_inode(inode);
-        } else {
-            self.remove_link(inode);
-        }
-    }
-
-    fn remove_link(&mut self, inode: &InodeRef<F>) {
-        let (number, orphaned) = {
+        let orphaned = {
             let mut inode = inode.borrow_mut();
-            inode.links = inode.links.saturating_sub(1);
-            if inode.links != 0 {
-                return;
-            }
-            (inode.number, inode.sessions == 0)
+            inode.links = if inode.kind() == Kind::Directory {
+                0
+            } else {
+                inode.links.saturating_sub(1)
+            };
+            inode.links == 0 && inode.sessions == 0
         };
-        self.inodes.remove(&number);
         if orphaned {
-            self.release(inode);
+            self.remove_inode(inode);
         }
     }
 
-    /// Releases the data of an unlinked inode after its last session closes.
+    /// Releases an unlinked inode after its last session closes.
     fn close(&mut self, inode: &InodeRef<F>) {
         let orphaned = {
             let mut inode = inode.borrow_mut();
@@ -497,7 +533,7 @@ impl<F: FileData> Volume<F> {
             inode.links == 0 && inode.sessions == 0
         };
         if orphaned {
-            self.release(inode);
+            self.remove_inode(inode);
         }
     }
 
@@ -515,7 +551,7 @@ impl<F: FileData> Volume<F> {
                 file.release(&mut context);
                 0
             }
-            Content::Symlink(target) => target.len(),
+            Content::Symlink(target) => F::symlink_charge(target.len()),
             Content::Directory(_) => 0,
         };
         context.release(bytes);
@@ -543,12 +579,13 @@ impl<F: FileData> Volume<F> {
     }
 
     fn symlink_path(&mut self, target: &[u8], path: &[u8]) -> Result<(), Error> {
-        if target.is_empty() || target.len() >= BLOCK_SIZE as usize || target.contains(&0) {
+        if target.is_empty() || target.len() > F::SYMLINK_LIMIT || target.contains(&0) {
             return Err(Error::InvalidRequest);
         }
+        let charge = F::symlink_charge(target.len());
         if self
             .used
-            .checked_add(target.len())
+            .checked_add(charge)
             .is_none_or(|used| used > self.limit)
         {
             return Err(Error::NoSpace);
@@ -562,12 +599,13 @@ impl<F: FileData> Volume<F> {
             number,
             Rc::new(RefCell::new(Inode::new(
                 number,
+                parent_number,
                 Content::Symlink(target.to_vec()),
                 0o777,
                 1,
             ))),
         );
-        self.used += target.len();
+        self.used += charge;
         let mut parent = parent.borrow_mut();
         let Content::Directory(entries) = &mut parent.content else {
             return Err(Error::NotDirectory);
@@ -623,7 +661,11 @@ impl<F: FileData> Volume<F> {
     fn write(&mut self, inode: &InodeRef<F>, offset: usize, input: &[u8]) -> Result<usize, Error> {
         let mut inode = inode.borrow_mut();
         let Content::File(file) = &mut inode.content else {
-            return Err(Error::InvalidRequest);
+            return Err(if inode.kind() == Kind::Directory {
+                Error::IsDirectory
+            } else {
+                Error::InvalidRequest
+            });
         };
         let mut context = self.context();
         file.write(&mut context, offset as u64, input)
@@ -635,7 +677,11 @@ impl<F: FileData> Volume<F> {
         }
         let mut inode = inode.borrow_mut();
         let Content::File(file) = &mut inode.content else {
-            return Err(Error::InvalidRequest);
+            return Err(if inode.kind() == Kind::Directory {
+                Error::IsDirectory
+            } else {
+                Error::InvalidRequest
+            });
         };
         let mut context = self.context();
         file.truncate(&mut context, size as u64)
@@ -648,10 +694,16 @@ impl<F: FileData> Volume<F> {
         output: &mut [u8],
     ) -> Result<usize, Error> {
         let inode = inode.borrow();
-        let Content::File(file) = &inode.content else {
-            return Err(Error::InvalidRequest);
-        };
-        file.read(offset as u64, output)
+        match &inode.content {
+            Content::File(file) => file.read(offset as u64, output),
+            Content::Directory(_) => Err(Error::IsDirectory),
+            Content::Symlink(target) => {
+                let start = offset.min(target.len());
+                let count = output.len().min(target.len() - start);
+                output[..count].copy_from_slice(&target[start..start + count]);
+                Ok(count)
+            }
+        }
     }
 
     fn map_page(
@@ -661,7 +713,11 @@ impl<F: FileData> Volume<F> {
     ) -> Result<Handle<FrameAllocation>, Error> {
         let mut inode = inode.borrow_mut();
         let Content::File(file) = &mut inode.content else {
-            return Err(Error::InvalidRequest);
+            return Err(if inode.kind() == Kind::Directory {
+                Error::IsDirectory
+            } else {
+                Error::InvalidRequest
+            });
         };
         let mut context = self.context();
         file.map(&mut context, offset as u64)
@@ -688,7 +744,12 @@ impl<F: FileData> Volume<F> {
     fn statistics_value(&self) -> Statistics {
         let blocks = (self.limit as u64).div_ceil(BLOCK_SIZE);
         let free = self.limit.saturating_sub(self.used) as u64 / BLOCK_SIZE;
-        let files = (1 << 20) as u64;
+        let linked = self
+            .inodes
+            .values()
+            .filter(|inode| inode.borrow().links != 0)
+            .count() as u64;
+        let (files, free_files) = F::inode_counts(linked, self.inodes.len() as u64);
         Statistics {
             kind: F::MAGIC,
             device: self.device,
@@ -697,7 +758,7 @@ impl<F: FileData> Volume<F> {
             free_blocks: free,
             available_blocks: free,
             files,
-            free_files: files.saturating_sub(self.inodes.len() as u64),
+            free_files,
             name_length: NAME_LENGTH,
             flags: 0,
         }
@@ -753,16 +814,7 @@ impl<F: FileData> Volume<F> {
         if number == ROOT_INODE {
             return Ok(None);
         }
-        for (parent, inode) in &self.inodes {
-            let inode = inode.borrow();
-            let Content::Directory(entries) = &inode.content else {
-                continue;
-            };
-            if entries.values().any(|child| *child == number) {
-                return Ok(Some(*parent));
-            }
-        }
-        Err(Error::NotFound)
+        Ok(Some(self.inode(number)?.borrow().parent))
     }
 
     fn path_of(&self, number: u64) -> Result<Vec<u8>, Error> {
@@ -806,14 +858,21 @@ impl<F: FileData + 'static> crate::backend::Backend for MemoryVolume<F> {
     }
 
     fn unmount(&self) -> Result<(), Error> {
+        if Rc::strong_count(&self.volume) != 1 {
+            return Err(Error::Busy);
+        }
         Ok(())
+    }
+
+    fn open_path(&self, path: &[u8]) -> Result<alloc::boxed::Box<dyn crate::backend::File>, Error> {
+        Ok(alloc::boxed::Box::new(self.open_node(path, false, true)?))
     }
 
     fn open_bytes(
         &self,
         path: &[u8],
     ) -> Result<alloc::boxed::Box<dyn crate::backend::File>, Error> {
-        let file = self.open_node(path, false)?;
+        let file = self.open_node(path, false, false)?;
         Ok(alloc::boxed::Box::new(file))
     }
 
@@ -821,7 +880,7 @@ impl<F: FileData + 'static> crate::backend::Backend for MemoryVolume<F> {
         &self,
         path: &[u8],
     ) -> Result<alloc::boxed::Box<dyn crate::backend::File>, Error> {
-        let file = self.open_node(path, true)?;
+        let file = self.open_node(path, true, false)?;
         Ok(alloc::boxed::Box::new(file))
     }
 
@@ -834,11 +893,7 @@ impl<F: FileData + 'static> crate::backend::Backend for MemoryVolume<F> {
         path: &[u8],
         permissions: u16,
     ) -> Result<alloc::boxed::Box<dyn crate::backend::File>, Error> {
-        validate_permissions(permissions)?;
-        self.volume
-            .borrow_mut()
-            .create_node(path, false, permissions)?;
-        self.open_bytes(path)
+        Ok(alloc::boxed::Box::new(self.create_file(path, permissions)?))
     }
 
     fn metadata(&self, path: &[u8]) -> Result<crate::Metadata, Error> {
@@ -877,12 +932,6 @@ impl<F: FileData + 'static> crate::backend::Backend for MemoryVolume<F> {
 
     fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
         self.volume.borrow().read_dir_path(path)
-    }
-}
-
-impl<F: FileData> MemoryFile<F> {
-    fn kind(&self) -> Result<Kind, Error> {
-        Ok(self.inode.borrow().kind())
     }
 }
 
@@ -981,9 +1030,6 @@ impl<F: FileData> ReadAt for MemoryFile<F> {
     }
 
     fn read_at(&self, offset: usize, output: &mut [u8]) -> Result<usize, Error> {
-        if self.kind()? != Kind::File {
-            return Err(Error::IsDirectory);
-        }
         self.volume.borrow().read_inode(&self.inode, offset, output)
     }
 }
