@@ -52,9 +52,7 @@ impl SysconInfo {
             } else {
                 continue;
             };
-            let Ok((controller, write)) = operation(hardware, node) else {
-                continue;
-            };
+            let (controller, write) = operation(hardware, node)?;
             if controller != device.instance_id {
                 continue;
             }
@@ -153,13 +151,12 @@ fn operation(
 /// Publish power operations and the register layout on their system controller.
 ///
 /// Device drivers need the operation data to reach the controller before they can act on it. The
-/// properties are derived from the same parse used by [`SysconInfo::from_device`], and a controller
-/// with at least one operation becomes assignable so a device service can map its registers.
-/// Malformed optional operations are ignored instead of rejecting the boot description.
+/// properties are derived from the same parse used by [`SysconInfo::from_device`].
+/// Invalid controller descriptions are rejected before properties are published.
 pub(super) fn capture(hardware: &mut HardwareInfo) -> Result<()> {
     let mut controls = ArrayVec::<(HardwareDeviceInstanceId, SysconInfo), MAX_DEVICES>::new();
     for device in &hardware.devices {
-        let Ok(Some(info)) = SysconInfo::from_device(device, hardware) else {
+        let Some(info) = SysconInfo::from_device(device, hardware)? else {
             continue;
         };
         if info.poweroff.is_none() && info.reboot.is_none() {

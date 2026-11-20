@@ -78,13 +78,6 @@ fn discovers_unfamiliar_devices_and_preserves_owned_configuration() {
     .unwrap();
 }
 
-fn parse_device_configurations(hardware: &HardwareInfo) -> Result<(), arch::boot::dtb::Error> {
-    for device in &hardware.devices {
-        SysconInfo::from_device(device, hardware)?;
-    }
-    Ok(())
-}
-
 #[test]
 fn accepts_128_devices_and_rejects_overflow() {
     let header = *fdt::Fdt::new_unaligned(DTB).unwrap().header();
@@ -191,11 +184,7 @@ fn rejects_invalid_device_properties() {
         blob[offset..offset + 4].copy_from_slice(&u32::to_be_bytes(value));
         let mut hardware = Box::new(const { HardwareInfo::new() });
         assert!(
-            Dtb::from_bytes(&blob)
-                .unwrap()
-                .dump(&mut hardware)
-                .and_then(|()| parse_device_configurations(&hardware))
-                .is_err(),
+            Dtb::from_bytes(&blob).unwrap().dump(&mut hardware).is_err(),
             "{path}: {cell} = {value}"
         );
     }
@@ -224,7 +213,6 @@ fn rejects_invalid_device_properties() {
             Dtb::from_bytes(&blob)
                 .unwrap()
                 .dump(&mut hardware)
-                .and_then(|()| parse_device_configurations(&hardware))
                 .unwrap_err()
                 .to_string()
         },
@@ -330,7 +318,7 @@ fn rejects_conflicting_device_resources() {
 }
 
 #[test]
-fn unsupported_optional_information_does_not_prevent_boot() {
+fn rejects_invalid_console_and_power_references() {
     for (path, property, value) in [
         ("/poweroff", "regmap", 0xdead),
         ("/poweroff", "offset", 0xffff),
@@ -348,35 +336,9 @@ fn unsupported_optional_information_does_not_prevent_boot() {
             .unwrap();
         let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize;
         blob[offset..offset + 4].copy_from_slice(&u32::to_be_bytes(value));
-        let hardware = parse_hardware(&blob);
-        let control = hardware
-            .devices
-            .iter()
-            .find_map(|device| SysconInfo::from_device(device, &hardware).unwrap())
-            .unwrap();
-        assert_eq!(control.poweroff.is_none(), path == "/poweroff");
-        assert_eq!(control.reboot.is_none(), path == "/reboot");
-        let syscon = hardware
-            .devices
-            .iter()
-            .find(|device| device.has_identity("devicetree", "syscon"))
-            .unwrap();
-        let (invalid, valid) = if path == "/poweroff" {
-            ("poweroff", "reboot")
-        } else {
-            ("reboot", "poweroff")
-        };
+        let mut hardware = Box::new(const { HardwareInfo::new() });
         assert!(
-            hardware
-                .device_property(syscon.instance_id, "power", invalid)
-                .is_none(),
-            "{path}"
-        );
-        assert_eq!(
-            hardware
-                .device_property(syscon.instance_id, "power", valid)
-                .map(|value| value.len()),
-            Some(12),
+            Dtb::from_bytes(&blob).unwrap().dump(&mut hardware).is_err(),
             "{path}"
         );
     }
@@ -393,12 +355,17 @@ fn unsupported_optional_information_does_not_prevent_boot() {
             .unwrap();
         let offset = property.value.as_ptr() as usize - blob.as_ptr() as usize;
         blob[offset..offset + stdout.len()].copy_from_slice(stdout);
-        let hardware = parse_hardware(&blob);
+        let mut hardware = Box::new(const { HardwareInfo::new() });
+        let result = Dtb::from_bytes(&blob).unwrap().dump(&mut hardware);
         if stdout.starts_with(b"missing") {
-            assert!(hardware.console.is_none());
+            assert!(result.is_err());
         } else {
-            let console = hardware.console.as_ref().unwrap();
-            assert_eq!(console.options.as_str(), "115200x8r");
+            result.unwrap();
+            // Driver-specific options remain available to the UART service.
+            assert_eq!(
+                hardware.console.as_ref().unwrap().options.as_str(),
+                "115200x8r"
+            );
         }
     }
 }
@@ -436,11 +403,7 @@ fn rejects_broken_control_and_routing_descriptions() {
         blob[offset..offset + 4].copy_from_slice(&u32::to_be_bytes(value));
         let mut hardware = Box::new(const { HardwareInfo::new() });
         assert!(
-            Dtb::from_bytes(&blob)
-                .unwrap()
-                .dump(&mut hardware)
-                .and_then(|()| parse_device_configurations(&hardware))
-                .is_err(),
+            Dtb::from_bytes(&blob).unwrap().dump(&mut hardware).is_err(),
             "{path}"
         );
     }
