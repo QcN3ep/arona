@@ -165,13 +165,8 @@ impl DiscoveryRequest {
     }
 
     pub fn respond(self, id: Option<u32>) -> Result<(), Error> {
-        match self
-            .reply
-            .send(&mut Message::new(SUCCESS, &[id.unwrap_or(0).into()])?)
-        {
-            Ok(()) | Err(runtime::Error::Kernel(KernelError::InvalidState)) => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        crate::session::respond(&self.reply, SUCCESS, &[id.unwrap_or(0).into()])?;
+        Ok(())
     }
 }
 
@@ -263,10 +258,8 @@ impl OpenRequest {
 }
 
 fn reject(reply: &Handle<Reply>, status: u64) -> Result<(), Error> {
-    match reply.send(&mut Message::new(status, &[])?) {
-        Ok(()) | Err(runtime::Error::Kernel(KernelError::InvalidState)) => Ok(()),
-        Err(error) => Err(error.into()),
-    }
+    crate::session::respond(reply, status, &[])?;
+    Ok(())
 }
 
 mod pci;

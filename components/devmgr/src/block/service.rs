@@ -3,6 +3,7 @@
 //! Block device session dispatch, queue backpressure, and completion delivery.
 
 use crate::protocol::SUCCESS;
+use crate::session::deliver;
 use alloc::vec::Vec;
 use runtime::{
     Channel, Event, FrameAllocation, Handle, KernelError, Reply,
@@ -357,12 +358,4 @@ fn reject(reply: &Handle<Reply>, error: Error) -> Result<(), Error> {
         &mut Message::new(crate::protocol::error_status(error), &[])?,
     )?;
     Ok(())
-}
-
-fn deliver(reply: &Handle<Reply>, message: &mut Message) -> Result<bool, Error> {
-    match reply.send(message) {
-        Ok(()) => Ok(true),
-        Err(runtime::Error::Kernel(KernelError::InvalidState)) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
 }

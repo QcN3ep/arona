@@ -5,6 +5,7 @@
 use crate::protocol::{
     BUSY, DENIED, INVALID_CONFIGURATION, INVALID_REQUEST, SUCCESS, error_status,
 };
+use crate::session::deliver;
 use alloc::{collections::VecDeque, vec::Vec};
 use runtime::{
     Channel, Event, Handle, KernelError, Reply,
@@ -427,12 +428,4 @@ impl Buffer {
 fn reject(reply: &Handle<Reply>, status: u64) -> Result<(), Error> {
     deliver(reply, &mut Message::new(status, &[])?)?;
     Ok(())
-}
-
-fn deliver(reply: &Handle<Reply>, message: &mut Message) -> Result<bool, Error> {
-    match reply.send(message) {
-        Ok(()) => Ok(true),
-        Err(runtime::Error::Kernel(KernelError::InvalidState)) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
 }

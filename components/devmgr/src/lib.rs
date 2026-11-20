@@ -17,6 +17,7 @@ pub mod power;
 mod protocol;
 pub mod rng;
 pub mod rtc;
+mod session;
 pub mod uart;
 mod virtio;
 

@@ -4,11 +4,12 @@
 
 use super::{MAX_BYTES, Rng, session::READ};
 use crate::protocol::{INVALID_REQUEST, SUCCESS, UNAVAILABLE};
+use crate::session::respond;
 use crate::{Error, device::OpenRequest};
 use alloc::{collections::VecDeque, vec::Vec};
 use runtime::{
     Channel, Event, FrameAllocation, Handle, KernelError, Reply, Rights,
-    ipc::{self, Message, ReceivedMessage, WaitItem, WaitMode},
+    ipc::{self, ReceivedMessage, WaitItem, WaitMode},
 };
 
 struct Connection {
@@ -57,7 +58,7 @@ fn serve(
                 if let Some(request) = OpenRequest::decode(request)? {
                     if request.device != device {
                         request.reject(Error::Unsupported)?;
-                    } else if deliver(request.reply, SUCCESS, &[])? {
+                    } else if respond(&request.reply, SUCCESS, &[])? {
                         state.connections.push(Connection {
                             channel: request.channel,
                             pending: VecDeque::new(),
@@ -93,9 +94,9 @@ impl State {
         if let Some(count) = rng.poll(&mut bytes)? {
             let mut request = self.active.take().ok_or(Error::DeviceFault)?;
             if request.output.write(0, &bytes[..count]).is_ok() {
-                deliver(request.reply, SUCCESS, &[count as u64])?;
+                respond(&request.reply, SUCCESS, &[count as u64])?;
             } else {
-                deliver(request.reply, UNAVAILABLE, &[])?;
+                respond(&request.reply, UNAVAILABLE, &[])?;
             }
         }
         Ok(())
@@ -153,7 +154,7 @@ fn receive(connection: &mut Connection, mut message: ReceivedMessage) -> Result<
             length,
         }),
         Err(_) => {
-            deliver(reply, INVALID_REQUEST, &[])?;
+            respond(&reply, INVALID_REQUEST, &[])?;
         }
     }
     Ok(())
@@ -178,12 +179,4 @@ fn decode(message: &mut ReceivedMessage) -> Result<(Handle<FrameAllocation>, usi
         return Err(Error::InvalidRequest);
     }
     Ok((output, length as usize))
-}
-
-fn deliver(reply: Handle<Reply>, tag: u64, words: &[u64]) -> Result<bool, Error> {
-    match reply.send(&mut Message::new(tag, words)?) {
-        Ok(()) => Ok(true),
-        Err(runtime::Error::Kernel(KernelError::InvalidState)) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
 }

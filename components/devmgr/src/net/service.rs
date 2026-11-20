@@ -7,11 +7,12 @@ use super::{
     session::{INFO, RECEIVE, TRANSMIT, WATCH},
 };
 use crate::protocol::{BUSY, INVALID_REQUEST, SUCCESS, UNAVAILABLE};
+use crate::session::respond;
 use crate::{Error, device::OpenRequest};
 use alloc::{collections::VecDeque, vec::Vec};
 use runtime::{
     Channel, Event, FrameAllocation, Handle, KernelError, Reply, Rights,
-    ipc::{self, Message, ReceivedMessage, WaitItem, WaitMode},
+    ipc::{self, ReceivedMessage, WaitItem, WaitMode},
 };
 
 const RECEIVE_CAPACITY: usize = 32;
@@ -73,7 +74,7 @@ fn serve(
                         request.reject(Error::Unsupported)?;
                     } else if state.connection.is_some() {
                         request.reject(Error::Busy)?;
-                    } else if deliver(request.reply, SUCCESS, &[])? {
+                    } else if respond(&request.reply, SUCCESS, &[])? {
                         state.connection = Some(Connection {
                             channel: request.channel,
                             receive: None,
@@ -129,7 +130,7 @@ impl State {
                 .get_mut(usize::from(slot))
                 .and_then(Option::take)
                 .ok_or(Error::DeviceFault)?;
-            deliver(reply, SUCCESS, &[])?;
+            respond(&reply, SUCCESS, &[])?;
         }
         let mut bytes = [0; MAX_FRAME];
         // Bound one dispatch turn so continuous RX cannot starve control or session closure.
@@ -165,8 +166,8 @@ impl State {
         {
             let frame = self.frames.front().unwrap();
             if output.write(0, frame).is_err() {
-                deliver(reply, UNAVAILABLE, &[])?;
-            } else if deliver(reply, SUCCESS, &[frame.len() as u64])? {
+                respond(&reply, UNAVAILABLE, &[])?;
+            } else if respond(&reply, SUCCESS, &[frame.len() as u64])? {
                 self.frames.pop_front();
             }
         }
@@ -184,7 +185,7 @@ impl State {
             }
             (WATCH, [sequence], 0) => {
                 if connection.watch.is_some() {
-                    deliver(reply, BUSY, &[])?;
+                    respond(&reply, BUSY, &[])?;
                 } else {
                     connection.watch = Some((*sequence, reply));
                 }
@@ -192,12 +193,12 @@ impl State {
             (RECEIVE, [], 1) => {
                 if let Ok(buffer) = buffer(&mut message, Rights::WRITE) {
                     if connection.receive.is_some() {
-                        deliver(reply, BUSY, &[])?;
+                        respond(&reply, BUSY, &[])?;
                     } else {
                         connection.receive = Some((buffer, reply));
                     }
                 } else {
-                    deliver(reply, INVALID_REQUEST, &[])?;
+                    respond(&reply, INVALID_REQUEST, &[])?;
                 }
             }
             (TRANSMIT, [length], 1)
@@ -214,19 +215,19 @@ impl State {
                 match result {
                     Ok(slot) => self.transmit[usize::from(slot)] = Some(reply),
                     Err(Error::Busy) => {
-                        deliver(reply, BUSY, &[])?;
+                        respond(&reply, BUSY, &[])?;
                     }
                     Err(Error::InvalidRequest) => {
-                        deliver(reply, INVALID_REQUEST, &[])?;
+                        respond(&reply, INVALID_REQUEST, &[])?;
                     }
                     Err(Error::Unavailable) => {
-                        deliver(reply, UNAVAILABLE, &[])?;
+                        respond(&reply, UNAVAILABLE, &[])?;
                     }
                     Err(error) => return Err(error),
                 }
             }
             _ => {
-                deliver(reply, INVALID_REQUEST, &[])?;
+                respond(&reply, INVALID_REQUEST, &[])?;
             }
         }
         Ok(())
@@ -248,8 +249,8 @@ fn buffer(message: &mut ReceivedMessage, rights: Rights) -> Result<Handle<FrameA
 fn deliver_info(reply: Handle<Reply>, info: Info) -> Result<bool, Error> {
     let mut mac = [0; 8];
     mac[..6].copy_from_slice(&info.mac);
-    deliver(
-        reply,
+    respond(
+        &reply,
         SUCCESS,
         &[
             u64::from_le_bytes(mac),
@@ -258,12 +259,4 @@ fn deliver_info(reply: Handle<Reply>, info: Info) -> Result<bool, Error> {
             info.sequence,
         ],
     )
-}
-
-fn deliver(reply: Handle<Reply>, tag: u64, words: &[u64]) -> Result<bool, Error> {
-    match reply.send(&mut Message::new(tag, words)?) {
-        Ok(()) => Ok(true),
-        Err(runtime::Error::Kernel(KernelError::InvalidState)) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
 }
