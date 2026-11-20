@@ -48,8 +48,8 @@ pub(super) fn complete_read(
     Ok(bytes)
 }
 
-/// Validates a `MAP_HUGEPAGE` reply, which carries exactly one frame allocation.
-pub(super) fn complete_map_huge(
+/// Decodes a page mapping reply carrying exactly one frame allocation.
+pub(super) fn complete_page_map(
     response: ReceivedMessage,
 ) -> Result<Handle<FrameAllocation>, Error> {
     let mut response = protocol::response_status(response)?;

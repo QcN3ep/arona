@@ -8,8 +8,8 @@ mod response;
 pub use path::{OpenedNode, PendingNode};
 
 pub use pending::{
-    Pending, PendingAppend, PendingDirectory, PendingDirectoryPage, PendingHugeMap,
-    PendingHugepageInfo, PendingMapping, PendingMetadata, PendingOpen, PendingRead, PendingSize,
+    Pending, PendingAppend, PendingDirectory, PendingDirectoryPage, PendingHugepageInfo,
+    PendingMapping, PendingMetadata, PendingOpen, PendingPageMap, PendingRead, PendingSize,
     PendingTruncate, PendingWrite,
 };
 pub use pending::{PendingStatistics, PendingVolume};
@@ -266,32 +266,6 @@ impl File<'_> {
         )?;
         response::complete_truncate((&self.length, length), response)
     }
-    /// Returns the huge page size of a huge page backed file, or zero for other files.
-    pub fn hugepage_size(&self, deadline: u64) -> Result<usize, Error> {
-        let response = call(
-            &self.channel,
-            &mut Message::new(protocol::HUGEPAGE_INFO, &[])?,
-            deadline,
-        )?;
-        let [size] = *response.words() else {
-            return Err(Error::InvalidData);
-        };
-        usize::try_from(size).map_err(|_| Error::InvalidData)
-    }
-
-    /// Materializes a huge page block and returns its frame allocation for mapping.
-    pub fn map_huge(
-        &self,
-        offset: usize,
-        deadline: u64,
-    ) -> Result<runtime::Handle<runtime::FrameAllocation>, Error> {
-        response::complete_map_huge(protocol::call_with_reply(
-            &self.channel,
-            &mut Message::new(protocol::MAP_HUGEPAGE, &[offset as u64])?,
-            deadline,
-        )?)
-    }
-
     pub fn size(&self, deadline: u64) -> Result<usize, Error> {
         let response = call(
             &self.channel,
@@ -380,14 +354,14 @@ impl MappingSource {
         &self,
         offset: usize,
         writable: bool,
-    ) -> Result<pending::PendingHugeMap, Error> {
+    ) -> Result<pending::PendingPageMap, Error> {
         Ok(pending::Pending::new(
             self.channel.start_call(&mut Message::new(
                 protocol::MAP_PAGE,
                 &[offset as u64, u64::from(writable)],
             )?)?,
             (),
-            |(), response| response::complete_map_huge(response),
+            |(), response| response::complete_page_map(response),
         ))
     }
 

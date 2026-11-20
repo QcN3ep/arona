@@ -565,20 +565,6 @@ fn file_request(
         (protocol::HUGEPAGE_INFO, []) if request.handles().is_empty() => {
             Ok(Message::new(protocol::SUCCESS, &[file.hugepage_size()])?)
         }
-        (protocol::MAP_HUGEPAGE, [offset]) if request.handles().is_empty() => {
-            let offset = usize::try_from(*offset).map_err(|_| Error::InvalidRequest)?;
-            let frames = file.map_huge(offset)?;
-            let mut response = Message::new(protocol::SUCCESS, &[])?;
-            protocol::transfer(
-                &mut response,
-                frames,
-                Rights::READ_WRITE
-                    .union(Rights::MAP)
-                    .union(Rights::EXECUTE)
-                    .union(Rights::TRANSFER),
-            )?;
-            Ok(response)
-        }
         _ => Err(Error::InvalidRequest),
     }
 }

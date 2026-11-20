@@ -39,7 +39,6 @@ pub const CONNECT_MOUNT: u64 = 29;
 pub const UNMOUNT_MEMORY: u64 = 30;
 pub const MOUNT_HUGEPAGES: u64 = 31;
 pub const HUGEPAGE_INFO: u64 = 32;
-pub const MAP_HUGEPAGE: u64 = 33;
 pub const MAPPING_INFO: u64 = 34;
 pub const MAP_PAGE: u64 = 35;
 pub const VOLUME_INFO: u64 = 36;
@@ -101,9 +100,7 @@ pub fn transfer<T: runtime::Object>(
 
 /// Sends a request and returns the raw reply.
 ///
-/// The caller owns the reply contract, including the error tag and any payload or
-/// transferred handles. This lets the sync and pending `MAP_HUGEPAGE` paths share
-/// one validator.
+/// The caller validates the status, payload, and transferred handles.
 pub(crate) fn call_with_reply(
     channel: &Handle<Channel>,
     message: &mut Message,

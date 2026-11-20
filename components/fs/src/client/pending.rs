@@ -6,9 +6,8 @@ use runtime::{Channel, FrameAllocation, Handle, Rights, Task, ipc::Message};
 
 use super::request::{attributes_request, metadata_request, output_buffer};
 use super::response::{
-    complete_append, complete_directory, complete_empty, complete_map_huge, complete_metadata,
-    complete_open, complete_read, complete_size, complete_truncate, complete_write,
-    directory_entries,
+    complete_append, complete_directory, complete_empty, complete_metadata, complete_open,
+    complete_read, complete_size, complete_truncate, complete_write, directory_entries,
 };
 use super::{Client, Directory, File, PAGE_SIZE};
 use crate::{
@@ -24,7 +23,7 @@ pub type PendingRead = Pending<Vec<u8>, (Handle<FrameAllocation>, usize)>;
 pub type PendingMetadata = Pending<Metadata, Handle<FrameAllocation>>;
 pub type PendingStatistics = Pending<crate::Statistics, Handle<FrameAllocation>>;
 pub type PendingHugepageInfo = Pending<usize>;
-pub type PendingHugeMap = Pending<Handle<FrameAllocation>>;
+pub type PendingPageMap = Pending<Handle<FrameAllocation>>;
 pub type PendingMapping = Pending<super::MappingSource, Handle<Channel>>;
 pub type PendingWrite = Pending<usize, (Arc<AtomicUsize>, usize)>;
 pub type PendingAppend = Pending<(usize, usize), (Arc<AtomicUsize>, usize)>;
@@ -271,16 +270,6 @@ impl File<'_> {
                 };
                 usize::try_from(size).map_err(|_| Error::InvalidData)
             },
-        ))
-    }
-
-    /// Requests the materialized block containing `offset` for a huge page mapping.
-    pub fn start_map_huge(&self, offset: usize) -> Result<PendingHugeMap, Error> {
-        let mut request = Message::new(protocol::MAP_HUGEPAGE, &[offset as u64])?;
-        Ok(Pending::new(
-            self.channel.start_call(&mut request)?,
-            (),
-            |(), response| complete_map_huge(response),
         ))
     }
 }

@@ -123,12 +123,6 @@ impl Fat32 {
         self.open_node(path, false)
     }
 
-    pub fn set_attributes(&self, path: &[u8], attributes: crate::Attributes) -> Result<(), Error> {
-        let mut volume = self.volume.borrow_mut();
-        let node = volume.lookup(path)?;
-        volume.set_attributes(&node, attributes)
-    }
-
     pub fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
         self.open_directory(path)?.read_dir()
     }

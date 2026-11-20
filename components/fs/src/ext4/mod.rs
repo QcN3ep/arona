@@ -116,10 +116,7 @@ impl Ext4 {
         let mut volume = self.volume.borrow_mut();
         Ok(volume.lookup(path)?.metadata(volume.device, volume.mount))
     }
-    pub fn set_attributes(&self, path: &[u8], attributes: crate::Attributes) -> Result<(), Error> {
-        let number = self.volume.borrow_mut().lookup(path)?.number;
-        self.volume.borrow_mut().set_attributes(number, attributes)
-    }
+
     pub fn sync(&self) -> Result<(), Error> {
         self.volume.borrow_mut().sync()
     }

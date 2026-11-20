@@ -52,8 +52,8 @@ pub(super) enum Stage {
     Info(fs::client::PendingHugepageInfo),
     Metadata(fs::client::PendingMetadata),
     Source(fs::client::PendingMapping),
-    MapPage(fs::client::PendingHugeMap),
-    MapHuge(fs::client::PendingHugeMap),
+    MapPage(fs::client::PendingPageMap),
+    MapHuge(fs::client::PendingPageMap),
     Read(fs::client::PendingRead),
     Prepare,
 }
