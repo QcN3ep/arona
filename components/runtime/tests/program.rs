@@ -164,6 +164,13 @@ fn main() {
 
 fn run_threads() {
     let current = thread::current();
+    let owned = current.try_clone(runtime::Rights::READ).unwrap();
+    let identity = owned.id().unwrap();
+    let reader = thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(move || owned.id().unwrap())
+        .unwrap();
+    assert_eq!(reader.join().unwrap(), identity);
     let original = current.weight().unwrap();
     assert_eq!(
         current.set_weight(0),

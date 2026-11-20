@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0 OR GPL-3.0-or-later
 
-use crate::{BorrowedHandle, Error, Handle, Rights, Task, Thread};
+//! Native threads, lifecycle waits, and access to the calling thread.
+
+use crate::{BorrowedHandle, Error, Handle, HandleInfo, Rights, Task, Thread};
 use abi::method::{task, thread};
 pub use abi::thread::{Lifecycle, UserEntry};
+use core::marker::PhantomData;
 
 #[cfg(all(feature = "program", target_os = "none"))]
 mod reaper;
@@ -11,8 +14,46 @@ mod spawn;
 #[cfg(all(feature = "program", target_os = "none"))]
 pub use spawn::{Builder, JoinError, JoinHandle, spawn};
 
-pub fn current() -> BorrowedHandle<'static, Thread> {
-    BorrowedHandle::current()
+/// Access to the calling thread that cannot move or be shared across threads.
+/// Duplicate it to obtain an owned handle with a fixed target.
+pub struct CurrentThread {
+    _local: PhantomData<*mut ()>,
+}
+
+pub fn current() -> CurrentThread {
+    CurrentThread {
+        _local: PhantomData,
+    }
+}
+
+impl CurrentThread {
+    pub fn info(&self) -> Result<HandleInfo, Error> {
+        self.handle().info()
+    }
+
+    pub fn try_clone(&self, rights: Rights) -> Result<Handle<Thread>, Error> {
+        self.handle().try_clone(rights)
+    }
+
+    pub fn weight(&self) -> Result<u32, Error> {
+        self.handle().weight()
+    }
+
+    pub fn set_weight(&self, weight: u32) -> Result<(), Error> {
+        self.handle().set_weight(weight)
+    }
+
+    pub fn state(&self) -> Result<(Lifecycle, usize), Error> {
+        self.handle().state()
+    }
+
+    pub(crate) fn invoke(&self, method: u64, arguments: [u64; 5]) -> Result<[u64; 2], Error> {
+        self.handle().invoke(method, arguments)
+    }
+
+    fn handle(&self) -> BorrowedHandle<'_, Thread> {
+        BorrowedHandle::current()
+    }
 }
 pub fn yield_now() -> Result<(), Error> {
     current().invoke(thread::YIELD, [0; 5]).map(|_| ())

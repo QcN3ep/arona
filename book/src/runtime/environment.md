@@ -15,7 +15,7 @@ Its own Task handle carries page frame allocation, memory mapping, and terminati
 | `process::bootstrap()` | Take the optional bootstrap channel |
 | `process::clock()` | Borrow the optional Clock handle |
 | `process::exit(status)` | Terminate the current Task |
-| `thread::current()` | Borrow a special handle to the current thread |
+| `thread::current()` | Access the calling thread through a value that stays on that thread |
 
 The boot process establishes the initial thread's TLS before calling `main`.
 When `main` returns normally, TLS destructors run first, and then the Task exits.
