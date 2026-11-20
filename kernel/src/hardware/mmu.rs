@@ -171,6 +171,38 @@ pub trait Mmu: Sync {
         words: &[u64],
     ) -> Result<(), MmuError>;
 
+    /// Copy bytes from a normal-memory page retained for readable frame access.
+    fn read_frame_bytes(
+        &self,
+        physical: u64,
+        offset: usize,
+        bytes: &mut [u8],
+    ) -> Result<(), MmuError>;
+
+    /// Copy bytes into a normal-memory page retained for writable frame access.
+    fn write_frame_bytes(&self, physical: u64, offset: usize, bytes: &[u8])
+    -> Result<(), MmuError>;
+
+    /// # Safety
+    ///
+    /// Retain the readable normal-memory mapping and exclude conflicting references during access.
+    fn read_mapped_bytes(
+        &self,
+        address: usize,
+        offset: usize,
+        bytes: &mut [u8],
+    ) -> Result<(), MmuError>;
+
+    /// # Safety
+    ///
+    /// Retain the writable normal-memory mapping and exclude conflicting references during access.
+    fn write_mapped_bytes(
+        &self,
+        address: usize,
+        offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), MmuError>;
+
     fn zero_frame(&self, physical_address: u64) -> Result<(), MmuError>;
 
     /// # Safety

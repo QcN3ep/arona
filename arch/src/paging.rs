@@ -12,6 +12,8 @@ use kernel::{
     memory::Frame,
 };
 
+mod bytes;
+
 const ENTRIES: usize = PAGE_SIZE / size_of::<u64>();
 pub(crate) const WINDOW_INDEX: usize = ENTRIES - 1;
 pub(crate) const PAGE_TABLE_WINDOW: usize = usize::MAX & !(PAGE_SIZE - 1);
@@ -545,6 +547,42 @@ impl<F: Format> Mmu for MmuBackend<F> {
         words: &[u64],
     ) -> Result<(), MmuError> {
         crate::paging::write_frame(&self.0, physical_address, offset, words)
+    }
+
+    fn read_frame_bytes(
+        &self,
+        physical: u64,
+        offset: usize,
+        bytes: &mut [u8],
+    ) -> Result<(), MmuError> {
+        crate::paging::bytes::read_frame(&self.0, physical, offset, bytes)
+    }
+
+    fn write_frame_bytes(
+        &self,
+        physical: u64,
+        offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), MmuError> {
+        crate::paging::bytes::write_frame(&self.0, physical, offset, bytes)
+    }
+
+    fn read_mapped_bytes(
+        &self,
+        address: usize,
+        offset: usize,
+        bytes: &mut [u8],
+    ) -> Result<(), MmuError> {
+        crate::paging::bytes::read_mapped(self, address, offset, bytes)
+    }
+
+    fn write_mapped_bytes(
+        &self,
+        address: usize,
+        offset: usize,
+        bytes: &[u8],
+    ) -> Result<(), MmuError> {
+        crate::paging::bytes::write_mapped(self, address, offset, bytes)
     }
 
     fn zero_frame(&self, physical_address: u64) -> Result<(), MmuError> {

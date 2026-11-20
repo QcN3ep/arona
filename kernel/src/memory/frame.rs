@@ -279,6 +279,27 @@ impl FrameAccessReference {
         self.synchronize_written_code()
     }
 
+    pub(crate) fn read_bytes(&self, offset: usize, bytes: &mut [u8]) -> Result<(), MemoryError> {
+        if let Some(address) = self.virtual_address() {
+            hardware::mmu().read_mapped_bytes(address, offset, bytes)?;
+        } else {
+            hardware::mmu().read_frame_bytes(self.frame.address(), offset, bytes)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn write_bytes(&self, offset: usize, bytes: &[u8]) -> Result<(), MemoryError> {
+        if !self.access.writable() {
+            return Err(MemoryError::AccessConflict);
+        }
+        if let Some(address) = self.virtual_address() {
+            hardware::mmu().write_mapped_bytes(address, offset, bytes)?;
+        } else {
+            hardware::mmu().write_frame_bytes(self.frame.address(), offset, bytes)?;
+        }
+        self.synchronize_written_code()
+    }
+
     /// Atomically compares and exchanges one aligned 32-bit word in this frame.
     ///
     /// The operation needs the direct map, so it reports `InvalidRequest` when
