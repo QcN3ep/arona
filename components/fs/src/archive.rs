@@ -2,7 +2,12 @@
 
 //! Read-only index of CPIO newc archives.
 
-use alloc::{collections::BTreeMap, rc::Rc, vec, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    rc::Rc,
+    vec,
+    vec::Vec,
+};
 use core::ops::Range;
 use runtime::{FrameAllocation, Handle};
 
@@ -269,14 +274,15 @@ impl Archive {
                 }
             }
         }
-        let mut inodes: Vec<u64> = self
-            .entries
-            .values()
-            .map(|entry| entry.metadata.inode)
-            .collect();
-        inodes.sort_unstable();
-        inodes.dedup();
-        self.files = inodes.len() as u64;
+        let mut hard_links = BTreeSet::new();
+        self.files = 0;
+        for entry in self.entries.values() {
+            let linked = entry.metadata.links > 1
+                && crate::FileType::from_mode(entry.metadata.mode) == crate::FileType::Regular;
+            if !linked || hard_links.insert(entry.identity) {
+                self.files += 1;
+            }
+        }
         Ok(())
     }
 

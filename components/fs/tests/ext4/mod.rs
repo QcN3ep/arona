@@ -947,11 +947,25 @@ fn directory_operations(filesystem: &Ext4) {
 
 fn archive_metadata() {
     let mut bytes = alloc::vec::Vec::new();
-    for (name, data, inode, mode, links) in [
-        (b"data/first".as_slice(), b"".as_slice(), 7, 0o100640, 2),
-        (b"data/second", b"linked", 7, 0o100640, 2),
-        (b"data/symlink", b"../data/first", 8, 0o120777, 1),
-        (b"TRAILER!!!", b"", 0, 0, 0),
+    for (name, data, inode, mode, links, major, minor) in [
+        (
+            b"data/first".as_slice(),
+            b"".as_slice(),
+            7,
+            0o100640,
+            2,
+            0,
+            0,
+        ),
+        (b"data/second", b"linked", 7, 0o100640, 2, 0, 0),
+        (b"data/symlink", b"../data/first", 8, 0o120777, 1, 0, 0),
+        (b"data/independent", b"single", 7, 0o100600, 1, 0, 0),
+        (b"data/another", b"separate", 7, 0o100600, 1, 0, 0),
+        (b"data/major-first", b"", 7, 0o100640, 2, 1, 0),
+        (b"data/major-second", b"major", 7, 0o100640, 2, 1, 0),
+        (b"data/minor-first", b"minor", 7, 0o100640, 2, 0, 1),
+        (b"data/minor-second", b"", 7, 0o100640, 2, 0, 1),
+        (b"TRAILER!!!", b"", 0, 0, 0, 0, 0),
     ] {
         bytes.extend_from_slice(b"070701");
         for field in [
@@ -962,8 +976,8 @@ fn archive_metadata() {
             links,
             12345,
             data.len() as u32,
-            0,
-            0,
+            major,
+            minor,
             0,
             0,
             name.len() as u32 + 1,
@@ -1002,16 +1016,27 @@ fn archive_metadata() {
         archive.read_link(b"data/symlink").unwrap(),
         b"../data/first"
     );
-    assert_eq!(archive.open_directory(b"data").unwrap().read_dir().len(), 3);
-    assert_eq!(archive.open_directory(b"/").unwrap().read_dir().len(), 1);
-    // The two hard links share inode 7 and the symlink uses 8, so the archive
-    // holds these two plus the synthesized root and data directories.
-    let statistics = archive.statistics().unwrap();
-    assert_eq!(statistics.files, 4);
-    assert_eq!(statistics.free_files, 0);
-    assert_eq!(first.statistics().unwrap().files, 4);
+    for (name, data) in [
+        (b"data/independent".as_slice(), b"single".as_slice()),
+        (b"data/another", b"separate"),
+        (b"data/major-first", b"major"),
+        (b"data/major-second", b"major"),
+        (b"data/minor-first", b"minor"),
+        (b"data/minor-second", b"minor"),
+    ] {
+        let file = archive.open_bytes(name).unwrap();
+        let mut output = alloc::vec![0; file.len()];
+        file.read_exact_at(0, &mut output).unwrap();
+        assert_eq!(output, data);
+    }
     let directory = archive.open_directory(b"data").unwrap();
-    assert_eq!(directory.statistics().unwrap().files, 4);
+    assert_eq!(directory.read_dir().len(), 9);
+    assert_eq!(archive.open_directory(b"/").unwrap().read_dir().len(), 1);
+    let statistics = archive.statistics().unwrap();
+    assert_eq!(statistics.files, 8);
+    assert_eq!(statistics.free_files, 0);
+    assert_eq!(first.statistics().unwrap(), statistics);
+    assert_eq!(directory.statistics().unwrap(), statistics);
 }
 
 fn service_reads(file: &fs::File<'_>) {
