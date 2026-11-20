@@ -222,9 +222,9 @@ fn open_at(
             let follow = flags == 1 && !(options.create && options.exclusive);
             let path = resolve(namespace, files, anchor, &path, follow, options.create)?;
             if !options.path_only
-                && namespace
-                    .metadata(&path)
-                    .is_ok_and(|info| info.mode & 0o170000 == 0o120000)
+                && namespace.metadata(&path).is_ok_and(|info| {
+                    crate::FileType::from_mode(info.mode) == crate::FileType::SymbolicLink
+                })
             {
                 return Err(if options.create && options.exclusive {
                     Error::AlreadyExists
@@ -281,10 +281,10 @@ fn remove(
     entry_name(&path)?;
     let path = resolve(namespace, files, anchor, &path, false, false)?;
     let info = namespace.metadata(&path)?;
-    if trailing && info.mode & 0o170000 != 0o040000 {
+    if trailing && crate::FileType::from_mode(info.mode) != crate::FileType::Directory {
         return Err(Error::NotDirectory);
     }
-    let directory = info.mode & 0o170000 == 0o040000;
+    let directory = crate::FileType::from_mode(info.mode) == crate::FileType::Directory;
     if directory != remove_directory {
         return Err(if directory {
             Error::IsDirectory

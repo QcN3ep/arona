@@ -398,15 +398,10 @@ fn list(
     let mut bytes = [0; PAGE_SIZE];
     let (mut done, mut count) = (0, 0);
     for entry in entries.iter().skip(start) {
-        let size = entry.name.len();
-        if done + 11 + size > bytes.len() {
+        let Some(length) = entry.encode_into(&mut bytes[done..])? else {
             break;
-        }
-        bytes[done..done + 8].copy_from_slice(&entry.inode.to_le_bytes());
-        bytes[done + 8] = entry.kind as u8;
-        bytes[done + 9..done + 11].copy_from_slice(&(size as u16).to_le_bytes());
-        bytes[done + 11..done + 11 + size].copy_from_slice(&entry.name);
-        done += 11 + size;
+        };
+        done += length;
         count += 1;
     }
     output.write(0, &bytes[..done])?;

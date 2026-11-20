@@ -44,7 +44,7 @@ impl Cache {
     ) -> Result<Box<dyn backend::File>, Error> {
         self.reclaim()?;
         let metadata = file.metadata()?;
-        if metadata.mode & 0o170000 != 0o100000 {
+        if crate::FileType::from_mode(metadata.mode) != crate::FileType::Regular {
             return Ok(file);
         }
         let mut files = self.files.borrow_mut();

@@ -13,6 +13,7 @@ pub mod block;
 mod cache;
 pub mod client;
 mod control;
+mod directory_entry;
 pub mod ext4;
 pub mod fat32;
 mod hugepages;

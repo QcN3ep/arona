@@ -421,7 +421,8 @@ impl Directory<'_> {
                 let [count, length] = *response.words() else {
                     return Err(Error::InvalidData);
                 };
-                if length > PAGE_SIZE as u64 || count > length / 11 {
+                if length > PAGE_SIZE as u64 || count > length / crate::DirEntry::HEADER_SIZE as u64
+                {
                     return Err(Error::InvalidData);
                 }
                 let mut bytes = [0; PAGE_SIZE];
@@ -590,31 +591,17 @@ fn attributes_call(
 }
 
 pub(super) fn directory_entries(bytes: &[u8], count: usize) -> Result<Vec<crate::DirEntry>, Error> {
-    let mut entries = Vec::new();
-    let mut inside = 0;
-    for _ in 0..count {
-        if inside + 11 > bytes.len() {
-            return Err(Error::InvalidData);
-        }
-        let kind = match bytes[inside + 8] {
-            0 => crate::FileType::Unknown,
-            1 => crate::FileType::Regular,
-            2 => crate::FileType::Directory,
-            3 => crate::FileType::SymbolicLink,
-            _ => return Err(Error::InvalidData),
-        };
-        let size = usize::from(u16::from_le_bytes([bytes[inside + 9], bytes[inside + 10]]));
-        if size == 0 || size > 255 || inside + 11 + size > bytes.len() {
-            return Err(Error::InvalidData);
-        }
-        entries.push(crate::DirEntry {
-            name: bytes[inside + 11..inside + 11 + size].to_vec(),
-            inode: u64::from_le_bytes(bytes[inside..inside + 8].try_into().unwrap()),
-            kind,
-        });
-        inside += 11 + size;
+    if count > bytes.len() / crate::DirEntry::HEADER_SIZE {
+        return Err(Error::InvalidData);
     }
-    if inside != bytes.len() {
+    let mut entries = Vec::new();
+    let mut remaining = bytes;
+    for _ in 0..count {
+        let (entry, length) = crate::DirEntry::decode_prefix(remaining)?;
+        entries.push(entry);
+        remaining = &remaining[length..];
+    }
+    if !remaining.is_empty() {
         return Err(Error::InvalidData);
     }
     Ok(entries)

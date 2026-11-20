@@ -45,22 +45,44 @@ pub const MAP_PAGE: u64 = 35;
 pub const VOLUME_INFO: u64 = 36;
 
 pub const SUCCESS: u64 = 0;
-pub const INVALID_REQUEST: u64 = 1;
-pub const NOT_FOUND: u64 = 2;
-pub const IS_DIRECTORY: u64 = 3;
-pub const UNAVAILABLE: u64 = 4;
-pub const BUSY: u64 = 5;
-pub const READ_ONLY: u64 = 6;
-pub const NO_SPACE: u64 = 7;
-pub const ALREADY_EXISTS: u64 = 8;
-pub const NOT_EMPTY: u64 = 9;
-pub const CROSS_DEVICE: u64 = 10;
-pub const NOT_DIRECTORY: u64 = 11;
-pub const IO: u64 = 12;
-pub const FILE_TOO_LARGE: u64 = 13;
-pub const TOO_MANY_LINKS: u64 = 14;
-pub const NAME_TOO_LONG: u64 = 15;
-pub const UNSUPPORTED: u64 = 16;
+macro_rules! statuses {
+    ($($name:ident = $value:literal => $error:ident),* $(,)?) => {
+        $(pub const $name: u64 = $value;)*
+
+        fn error_tag(error: Error) -> u64 {
+            match error {
+                $(Error::$error => $name,)*
+                _ => UNAVAILABLE,
+            }
+        }
+
+        pub(crate) fn tag_error(tag: u64) -> Error {
+            match tag {
+                $($name => Error::$error,)*
+                _ => Error::InvalidData,
+            }
+        }
+    };
+}
+
+statuses! {
+    INVALID_REQUEST = 1 => InvalidRequest,
+    NOT_FOUND = 2 => NotFound,
+    IS_DIRECTORY = 3 => IsDirectory,
+    UNAVAILABLE = 4 => Unavailable,
+    BUSY = 5 => Busy,
+    READ_ONLY = 6 => ReadOnly,
+    NO_SPACE = 7 => NoSpace,
+    ALREADY_EXISTS = 8 => AlreadyExists,
+    NOT_EMPTY = 9 => NotEmpty,
+    CROSS_DEVICE = 10 => CrossDevice,
+    NOT_DIRECTORY = 11 => NotDirectory,
+    IO = 12 => Io,
+    FILE_TOO_LARGE = 13 => FileTooLarge,
+    TOO_MANY_LINKS = 14 => TooManyLinks,
+    NAME_TOO_LONG = 15 => NameTooLong,
+    UNSUPPORTED = 16 => Unsupported,
+}
 
 pub const CHANNEL_RIGHTS: Rights = Rights::READ_WRITE.union(Rights::WAIT);
 
@@ -114,52 +136,10 @@ pub(crate) fn response_result(response: ReceivedMessage) -> Result<ReceivedMessa
     Err(tag_error(response.tag))
 }
 
-pub(crate) fn tag_error(tag: u64) -> Error {
-    match tag {
-        INVALID_REQUEST => Error::InvalidRequest,
-        NOT_FOUND => Error::NotFound,
-        IS_DIRECTORY => Error::IsDirectory,
-        UNAVAILABLE => Error::Unavailable,
-        BUSY => Error::Busy,
-        IO => Error::Io,
-        READ_ONLY => Error::ReadOnly,
-        NO_SPACE => Error::NoSpace,
-        FILE_TOO_LARGE => Error::FileTooLarge,
-        ALREADY_EXISTS => Error::AlreadyExists,
-        NOT_EMPTY => Error::NotEmpty,
-        CROSS_DEVICE => Error::CrossDevice,
-        NOT_DIRECTORY => Error::NotDirectory,
-        TOO_MANY_LINKS => Error::TooManyLinks,
-        NAME_TOO_LONG => Error::NameTooLong,
-        UNSUPPORTED => Error::Unsupported,
-        _ => Error::InvalidData,
-    }
-}
-
 pub fn respond(reply: Handle<Reply>, result: Result<Message, Error>) -> Result<(), Error> {
     let mut message = match result {
         Ok(message) => message,
-        Err(error) => Message::new(
-            match error {
-                Error::InvalidRequest => INVALID_REQUEST,
-                Error::NotFound => NOT_FOUND,
-                Error::IsDirectory => IS_DIRECTORY,
-                Error::Busy => BUSY,
-                Error::Io => IO,
-                Error::ReadOnly => READ_ONLY,
-                Error::NoSpace => NO_SPACE,
-                Error::FileTooLarge => FILE_TOO_LARGE,
-                Error::AlreadyExists => ALREADY_EXISTS,
-                Error::NotEmpty => NOT_EMPTY,
-                Error::CrossDevice => CROSS_DEVICE,
-                Error::NotDirectory => NOT_DIRECTORY,
-                Error::TooManyLinks => TOO_MANY_LINKS,
-                Error::NameTooLong => NAME_TOO_LONG,
-                Error::Unsupported => UNSUPPORTED,
-                _ => UNAVAILABLE,
-            },
-            &[],
-        )?,
+        Err(error) => Message::new(error_tag(error), &[])?,
     };
     match reply.send(&mut message) {
         Ok(()) | Err(runtime::Error::Kernel(runtime::KernelError::InvalidState)) => Ok(()),

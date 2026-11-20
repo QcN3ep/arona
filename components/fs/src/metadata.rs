@@ -116,7 +116,7 @@ impl Metadata {
     }
 
     pub(crate) fn validate(&self) -> Result<(), Error> {
-        if !matches!(self.mode & 0o170000, 0o040000 | 0o100000 | 0o120000)
+        if crate::FileType::from_mode(self.mode) == crate::FileType::Unknown
             || self.mode & !0o177777 != 0
             || [self.accessed, self.modified, self.changed, self.birth]
                 .iter()

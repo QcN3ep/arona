@@ -81,7 +81,7 @@ impl Archive {
     pub fn read_dir(&self, path: &[u8]) -> Result<Vec<crate::DirEntry>, Error> {
         let path = normalize(path)?;
         if let Some(entry) = self.entries.get(&path)
-            && entry.metadata.mode & 0o170000 != 0o040000
+            && crate::FileType::from_mode(entry.metadata.mode) != crate::FileType::Directory
         {
             return Err(Error::NotDirectory);
         }
@@ -161,10 +161,10 @@ impl Archive {
                 return Err(Error::InvalidData);
             }
             let path = normalize(&name).map_err(|_| Error::InvalidData)?;
-            let directory = match mode & 0o170000 {
-                0o040000 if size == 0 => true,
-                0o100000 if links != 0 => false,
-                0o120000 if links != 0 && size > 0 && size < 4096 => false,
+            let directory = match crate::FileType::from_mode(mode as u32) {
+                crate::FileType::Directory if size == 0 => true,
+                crate::FileType::Regular if links != 0 => false,
+                crate::FileType::SymbolicLink if links != 0 && size > 0 && size < 4096 => false,
                 _ => return Err(Error::InvalidData),
             };
             if path.is_empty() && !directory {
@@ -207,18 +207,19 @@ impl Archive {
 
     fn finish_index(&mut self) -> Result<(), Error> {
         let mut data = BTreeMap::new();
-        for entry in self
-            .entries
-            .values()
-            .filter(|entry| entry.metadata.links > 1 && entry.metadata.mode & 0o170000 == 0o100000)
-        {
+        for entry in self.entries.values().filter(|entry| {
+            entry.metadata.links > 1
+                && crate::FileType::from_mode(entry.metadata.mode) == crate::FileType::Regular
+        }) {
             if !entry.range.is_empty() && data.insert(entry.identity, entry.range.clone()).is_some()
             {
                 return Err(Error::InvalidData);
             }
         }
         for entry in self.entries.values_mut() {
-            if entry.metadata.links > 1 && entry.metadata.mode & 0o170000 == 0o100000 {
+            if entry.metadata.links > 1
+                && crate::FileType::from_mode(entry.metadata.mode) == crate::FileType::Regular
+            {
                 if let Some(range) = data.get(&entry.identity) {
                     entry.range = range.clone();
                 }
@@ -236,7 +237,8 @@ impl Archive {
                     .rposition(|byte| *byte == b'/')
                     .map_or(b"".as_slice(), |end| &parent[..end]);
                 if let Some(entry) = self.entries.get(parent) {
-                    if entry.metadata.mode & 0o170000 != 0o040000 {
+                    if crate::FileType::from_mode(entry.metadata.mode) != crate::FileType::Directory
+                    {
                         return Err(Error::InvalidData);
                     }
                 } else {
@@ -274,7 +276,7 @@ impl Archive {
 
     pub fn read_link(&self, path: &[u8]) -> Result<Vec<u8>, Error> {
         let entry = self.entries.get(&normalize(path)?).ok_or(Error::NotFound)?;
-        if entry.metadata.mode & 0o170000 != 0o120000 {
+        if crate::FileType::from_mode(entry.metadata.mode) != crate::FileType::SymbolicLink {
             return Err(Error::InvalidRequest);
         }
         let mut bytes = vec![0; entry.range.len()];
@@ -284,7 +286,7 @@ impl Archive {
 
     pub fn open_directory(&self, path: &[u8]) -> Result<Directory, Error> {
         let metadata = self.metadata(path)?;
-        if metadata.mode & 0o170000 != 0o040000 {
+        if crate::FileType::from_mode(metadata.mode) != crate::FileType::Directory {
             return Err(Error::NotDirectory);
         }
         Ok(Directory {
@@ -326,10 +328,12 @@ impl Archive {
     fn open_node(&self, path: &[u8], path_only: bool) -> Result<File, Error> {
         let path = normalize(path)?;
         let entry = self.entries.get(&path).ok_or(Error::NotFound)?;
-        if entry.metadata.mode & 0o170000 == 0o040000 {
+        if crate::FileType::from_mode(entry.metadata.mode) == crate::FileType::Directory {
             return Err(Error::IsDirectory);
         }
-        if !path_only && entry.metadata.mode & 0o170000 == 0o120000 {
+        if !path_only
+            && crate::FileType::from_mode(entry.metadata.mode) == crate::FileType::SymbolicLink
+        {
             return Err(Error::InvalidRequest);
         }
         Ok(File {

@@ -75,7 +75,9 @@ impl crate::namespace::Namespace {
                 }
                 result => result?,
             };
-            if info.mode & 0o170000 == 0o120000 && (follow || !pending.is_empty() || directory) {
+            if crate::FileType::from_mode(info.mode) == crate::FileType::SymbolicLink
+                && (follow || !pending.is_empty() || directory)
+            {
                 links += 1;
                 if links > 40 {
                     return Err(Error::TooManyLinks);
@@ -98,7 +100,9 @@ impl crate::namespace::Namespace {
                 {
                     pending.push_front(part.to_vec());
                 }
-            } else if (!pending.is_empty() || directory) && info.mode & 0o170000 != 0o040000 {
+            } else if (!pending.is_empty() || directory)
+                && crate::FileType::from_mode(info.mode) != crate::FileType::Directory
+            {
                 return Err(Error::NotDirectory);
             }
         }

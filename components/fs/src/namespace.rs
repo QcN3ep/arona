@@ -230,7 +230,7 @@ impl Namespace {
     fn check_mount_point(&self, path: &[u8]) -> Result<Vec<u8>, Error> {
         let path = normalize(path)?;
         let metadata = self.metadata(&path)?;
-        if metadata.mode & 0o170000 != 0o040000 {
+        if crate::FileType::from_mode(metadata.mode) != crate::FileType::Directory {
             return Err(Error::NotDirectory);
         }
         Ok(path)
@@ -611,7 +611,7 @@ impl ReadAt for File {
 impl File {
     pub fn read_link(&self) -> Result<Vec<u8>, Error> {
         let info = self.metadata()?;
-        if info.mode & 0o170000 != 0o120000 {
+        if crate::FileType::from_mode(info.mode) != crate::FileType::SymbolicLink {
             return Err(Error::InvalidRequest);
         }
         if info.size >= 4096 {

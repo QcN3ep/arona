@@ -31,7 +31,7 @@ impl Volume {
             return Err(Error::InvalidData);
         }
         let root = Metadata::decode(bytes[..Metadata::SIZE].try_into().unwrap())?;
-        if root.mode & 0o170000 != 0o040000 {
+        if crate::FileType::from_mode(root.mode) != crate::FileType::Directory {
             return Err(Error::InvalidData);
         }
         Ok(Self {
