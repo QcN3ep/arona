@@ -24,7 +24,7 @@ struct Connection {
 enum Response {
     Reply(Vec<u64>),
     Pending(u64),
-    Delivered,
+    Delivered(bool),
 }
 
 pub fn run(
@@ -188,8 +188,9 @@ fn handle(
                 connection.acknowledgements.push((id as u32, reply));
             }
         }
-        Ok(Response::Delivered) => {
-            if tag == session::ACK
+        Ok(Response::Delivered(delivered)) => {
+            if delivered
+                && tag == session::ACK
                 && let Some(id) = id
             {
                 connection.active.retain(|active| *active != id);
@@ -279,10 +280,11 @@ fn dispatch(
                     SUCCESS,
                     &[completion.status as u64, completion.bytes as u64],
                 )?;
-                if deliver(reply, &mut response)? {
+                let delivered = deliver(reply, &mut response)?;
+                if delivered {
                     block.acknowledge(internal)?;
                 }
-                Ok(Response::Delivered)
+                Ok(Response::Delivered(delivered))
             } else if *wait == 1 {
                 Ok(Response::Pending(u64::from(id)))
             } else {
@@ -308,10 +310,8 @@ fn complete(block: &mut Block<'_>, connection: &mut Connection) -> Result<(), Er
             )? {
                 block.acknowledge(internal)?;
                 connection.active.retain(|active| active != id);
-                connection.acknowledgements.swap_remove(index);
-            } else {
-                index += 1;
             }
+            connection.acknowledgements.swap_remove(index);
         } else {
             index += 1;
         }

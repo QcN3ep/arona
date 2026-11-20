@@ -167,6 +167,48 @@ fn exercise(session: &Session) -> block::Info {
         session.read(4, 1, &output, 0, 512),
         Err(Error::InvalidRequest)
     );
+    for id in 1000..1008 {
+        session
+            .read(id, 0, &output, 0, info.block_size as usize)
+            .unwrap();
+        let mut acknowledgement = session.start_acknowledge(id).unwrap();
+        match acknowledgement.cancel() {
+            Ok(()) => {
+                assert_eq!(
+                    acknowledgement.wait(WaitMode::Until(deadline().unwrap())),
+                    Err(Error::Runtime(runtime::Error::Kernel(
+                        runtime::KernelError::Cancelled
+                    )))
+                );
+                let until = deadline().unwrap();
+                loop {
+                    match session.acknowledge(id, Some(until)) {
+                        Ok(completion) => {
+                            assert_eq!(completion, super::success(info.block_size as usize));
+                            break;
+                        }
+                        Err(Error::Busy) => {
+                            assert!(thread::now_ns().unwrap() < until);
+                            thread::yield_now().unwrap();
+                        }
+                        Err(error) => {
+                            panic!("acknowledgement after cancellation failed: {error:?}")
+                        }
+                    }
+                }
+            }
+            Err(Error::Runtime(runtime::Error::Kernel(runtime::KernelError::InvalidState))) => {
+                assert_eq!(
+                    acknowledgement
+                        .wait(WaitMode::Until(deadline().unwrap()))
+                        .unwrap(),
+                    super::success(info.block_size as usize)
+                );
+            }
+            Err(error) => panic!("acknowledgement cancellation failed: {error:?}"),
+        }
+        assert_eq!(session.try_acknowledge(id), Err(Error::NotFound));
+    }
     for id in 0..info.max_requests as u64 {
         session.read(id, 0, &output, 0, 512).unwrap();
     }
