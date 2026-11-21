@@ -94,3 +94,34 @@ fn boundary(program: &Path, name: &str) -> Result<String, String> {
     }
     Ok(format!("bin/init:{}", symbols[0]))
 }
+
+pub(super) fn fixture(
+    options: &mut Options,
+    root: &Path,
+    directory: &Path,
+    case: &str,
+) -> Result<(), String> {
+    if options.case != "fs" {
+        return Ok(());
+    }
+    options.input.disks.clear();
+    let backend = case
+        .strip_prefix("kperf::")
+        .and_then(|name| name.split_once("::"))
+        .map(|(backend, _)| backend)
+        .ok_or("missing filesystem backend")?;
+    if backend == "tmpfs" {
+        return Ok(());
+    }
+    let disk = directory.join(format!("{backend}.raw"));
+    if !disk.exists() {
+        let mut command = Command::new("python3");
+        command
+            .arg(root.join("components/fs/tests/kperf/fixture.py"))
+            .arg(backend)
+            .arg(&disk);
+        crate::execute(command)?;
+    }
+    options.input.disks.push(disk);
+    Ok(())
+}

@@ -49,15 +49,17 @@ pub(super) fn run(mut options: Options, root: &Path) -> Result<(), String> {
     if artifacts::source_state(root)? != source {
         return Err("source inputs changed during the performance build".to_owned());
     }
+    let filter = options.filter.clone();
     for case in cases
         .into_iter()
-        .filter(|case| case.performance && case.name.contains(&options.filter))
+        .filter(|case| case.performance && case.name.contains(&filter))
     {
         matched += 1;
         if options.list {
             println!("{}", case.name);
             continue;
         }
+        super::user::fixture(&mut options, root, &directory, &case.name)?;
         println!("perf {} ...", case.name);
         options.selection = Some(Selection {
             name: case.name.clone(),
