@@ -49,24 +49,36 @@ pub(super) fn apply(
             requests.push(request);
         }
     }
+    if requests.len() <= 2
+        && requests
+            .iter()
+            .all(|request| matches!(request.group, abi::register::GENERAL | abi::register::FLOAT))
+    {
+        let mut storage = [[0; abi::register::ScalarFloat::LOONGARCH_SIZE]; 2];
+        let mut writes = arrayvec::ArrayVec::<Write<'_>, 2>::new();
+        for (request, bytes) in requests.iter().zip(&mut storage) {
+            let length = layout(request.group)?;
+            let bytes = bytes.get_mut(..length).ok_or(Error::Unsupported)?;
+            read_group(caller, request, bytes)?;
+            writes.push(Write {
+                group: request.group,
+                bytes,
+            });
+        }
+        return Ok(apply(&writes)?);
+    }
     let mut groups = Vec::<Group>::new();
     groups
         .try_reserve_exact(count)
         .map_err(|_| MemoryError::NoMemory)?;
     for request in requests {
         let layout = layout(request.group)?;
-        if request.length != layout as u64 {
-            return Err(Error::InvalidArgument.into());
-        }
-        let length = layout;
         let mut bytes = Vec::new();
         bytes
-            .try_reserve_exact(length)
+            .try_reserve_exact(layout)
             .map_err(|_| MemoryError::NoMemory)?;
-        bytes.resize(length, 0);
-        caller
-            .pin_user_memory(request.address as usize, length, false)?
-            .read(0, &mut bytes)?;
+        bytes.resize(layout, 0);
+        read_group(caller, &request, &mut bytes)?;
         groups.push(Group {
             id: request.group,
             bytes,
@@ -83,6 +95,15 @@ pub(super) fn apply(
     Ok(apply(&writes)?)
 }
 
+fn read_group(caller: &Task, request: &WriteRequest, bytes: &mut [u8]) -> Result<(), CallError> {
+    if request.length != bytes.len() as u64 {
+        return Err(Error::InvalidArgument.into());
+    }
+    Ok(caller
+        .pin_user_memory(request.address as usize, bytes.len(), false)?
+        .read(0, bytes)?)
+}
+
 pub(super) fn info(
     caller: &Task,
     target: &ObjectReference,
@@ -94,18 +115,32 @@ pub(super) fn info(
         ObjectReference::TrapContinuation(continuation) => continuation.register_size(group)?,
         _ => return Err(Error::Unsupported.into()),
     };
-    let length = layout;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(length)
-        .map_err(|_| MemoryError::NoMemory)?;
-    bytes.resize(length, 0);
-    match target {
-        ObjectReference::Thread(thread) => thread.read_registers(group, &mut bytes)?,
-        ObjectReference::TrapContinuation(continuation) => {
-            continuation.read_registers(group, &mut bytes)?
+    with_bytes(layout, |bytes| {
+        match target {
+            ObjectReference::Thread(thread) => thread.read_registers(group, bytes)?,
+            ObjectReference::TrapContinuation(continuation) => {
+                continuation.read_registers(group, bytes)?
+            }
+            _ => unreachable!(),
         }
-        _ => unreachable!(),
+        super::info::output(caller, args[3], args[4], bytes)
+    })
+}
+
+fn with_bytes<T>(
+    length: usize,
+    operation: impl FnOnce(&mut [u8]) -> Result<T, CallError>,
+) -> Result<T, CallError> {
+    const SCALAR_SIZE: usize = abi::register::ScalarFloat::LOONGARCH_SIZE;
+    if length <= SCALAR_SIZE {
+        let mut bytes = [0; SCALAR_SIZE];
+        operation(&mut bytes[..length])
+    } else {
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|_| MemoryError::NoMemory)?;
+        bytes.resize(length, 0);
+        operation(&mut bytes)
     }
-    super::info::output(caller, args[3], args[4], &bytes)
 }
