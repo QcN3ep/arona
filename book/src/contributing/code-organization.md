@@ -10,7 +10,8 @@ Reading from the bottom up, `abi` defines handover types, `kernel` provides reso
 | `abi/` | `arona-abi` | Object types, permissions, methods, and cross-boundary exchange formats |
 | `kernel/` | `arona-kernel` | Privileged kernel mechanisms and hardware interface definitions |
 | `arch/` | `arona-arch` | Hardware interface implementations and the kernel executable |
-| `testkit/` | `arona-testkit` | Shared functional and performance case interfaces and kernel scenarios |
+| `testkit/` | `arona-testkit` | Kernel scenarios and shared case reexports |
+| `testkit/core/` | `arona-testkit-core` | Case descriptors, performance intervals, and the user program runner |
 | `testkit/macros/` | `arona-testkit-macros` | `ktest` and `kperf` case registration |
 | `components/runtime/` | `arona-runtime` | Native Rust runtime environment and kernel call wrappers |
 | `components/init/` | `arona-init` | Starting base services and supervising configured applications |

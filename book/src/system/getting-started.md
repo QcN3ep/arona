@@ -31,7 +31,7 @@ cargo xtask run riscv64 --release
 cargo xtask run loongarch64 --release
 ```
 
-The command builds init, devmgr, logger, fs, and linux in order, packages them into an initramfs in cpio newc format, and then embeds the archive into the kernel ELF.
+The command builds init, devmgr, logger, fs, linux, and net in order, packages them into an initramfs in cpio newc format, and then embeds the archive into the kernel ELF.
 `--release` selects the release profile for both the kernel and the system services; when omitted, debug is used.
 
 QEMU uses the `virt` machine, 256 MiB of memory, one processor, and terminal UART output, with the default network device disabled.
@@ -46,7 +46,7 @@ At this point the kernel is setting up the address space, exception entry, inter
 The UART is also handed over during this process: the kernel boot stage uses an early console, detaches it before entering the scheduler, and the user-space devmgr then takes over the UART.
 logger outputs service logs through a devmgr session.
 
-The default archive contains five system services, and init waits for service events with an empty application list.
+The default archive contains the system services, and init waits for service events with an empty application list.
 To add a shell, place the Linux static program and `/etc/init.toml` into an external root directory, then package them together with `--rootfs`.
 [Boot Configuration and Usage](configuration.md) shows the configuration for an interactive shell.
 

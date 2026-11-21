@@ -16,7 +16,7 @@ cargo xtask help
 
 | Command | What it does |
 |---|---|
-| `build` | Build the five system services, package the archive, and build the kernel ELF |
+| `build` | Build the system services, package the archive, and build the kernel ELF |
 | `run` | Run `build`, then start QEMU |
 | `package-init` | Build the system services and package the normal boot archive |
 | `package-linux-test` | Build and package the archive used by the Linux integration tests |
@@ -125,6 +125,7 @@ cargo xtask perf run loongarch64 --release --filter calibration::straight --iter
 
 The default case type is `kperf` and the default mode is `count`.
 The runner discovers `#[testkit::kperf]` functions from the `kperf` architecture target and its modules.
+Use `--case runtime` or `--case fs` to select the corresponding user program's registered cases.
 `--filter NAME` selects names containing `NAME`, and `--list` lists matching cases without collecting instructions.
 Each selected case runs in a fresh QEMU instance.
 

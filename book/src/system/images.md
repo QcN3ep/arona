@@ -15,6 +15,7 @@ The system services in the archive are located in `/bin`:
 | `/bin/logger` | Log service |
 | `/bin/fs` | File service |
 | `/bin/linux` | Linux compatibility service |
+| `/bin/net` | Network service |
 
 The packager also creates the `dev`, `dev/shm`, and `dev/hugepages` directories.
 init mounts tmpfs at `/dev/shm` and hugetlbfs at `/dev/hugepages`.
@@ -68,21 +69,23 @@ For the corresponding configuration, see [Boot Configuration and Usage](configur
 The packager supports regular files, directories, and symbolic links, preserves Unix permission bits, and walks directories in file-name order.
 Symbolic links store their target text; packaging does not follow links to read the target.
 File paths and symbolic link targets use UTF-8.
-The paths of the five system services and the `dev`, `dev/shm`, and `dev/hugepages` directories are reserved by the packager, and entries with the same name in external directories are reported as conflicts during packaging.
+The paths of the system services and the `dev`, `dev/shm`, and `dev/hugepages` directories are reserved by the packager, and entries with the same name in external directories are reported as conflicts during packaging.
 
 ## From Archive to First Program
 
-The architecture boot code first selects the archive source, then scans the newc entries and locates init.
-It checks init's ELF machine type, segment ranges, entry, permissions, and other layout information, and passes it to the kernel as a `BootProgram`.
+The architecture boot code selects the archive source and exposes its physical contents to the kernel loader.
+The loader scans the newc entries, locates init, and checks its ELF machine type, segments, entry, and permissions.
 The boot loader accepts static ELF64 `ET_EXEC` binaries matching the platform and validates that loadable segments have R, RW, or RX permissions.
 
-The kernel sets up init's mappings, stack, and thread from the program segments, and delivers three resources through the bootstrap channel:
+The kernel sets up init's mappings, stack, and thread from the program segments, and delivers the following resources through the bootstrap channel:
 
 | Resource | Purpose |
 |---|---|
 | The archive's `FrameAllocation` handle and its actual byte count | Lets init read the service programs and hand the archive to the file service |
 | `DeviceSet` handle | Authorizes and allocates device resources |
 | `KernelLog` handle | Handed to the log service to read kernel logs |
+| `SystemInfo` handle | Provides system resource statistics |
+| `Entropy` handle | Provides random bytes after the entropy source is seeded |
 
 At this point init has the program data for loading other services, along with the capabilities to allocate devices and read kernel logs.
 It first starts fs from the archive, then reads, parses, and loads the remaining services through the file interface.

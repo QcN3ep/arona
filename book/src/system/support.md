@@ -30,7 +30,7 @@ Both platforms use higher-half kernel addresses, final page tables, user address
 The runtime provides an ordinary `main` entry, `core` and `alloc` runtime environments, a global user heap, TLS, closure threads, and JoinHandle.
 Programs invoke kernel objects through the runtime and access devices, files, and logs through service clients.
 
-The five system services are all native ELF programs, packaged into the newc archive during the build.
+The system services are all native ELF programs, packaged into the newc archive during the build.
 The archive supports being embedded in the kernel ELF and standalone `-initrd` loading.
 init starts applications according to `/etc/init.toml` and enforces restart policies.
 

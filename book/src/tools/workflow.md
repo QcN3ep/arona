@@ -16,7 +16,7 @@ Omitting `--release` uses the debug profile.
 
 A normal build proceeds in the following order:
 
-1. Compile init, devmgr, logger, fs, and linux with the pinned toolchain.
+1. Compile init, devmgr, logger, fs, linux, and net with the pinned toolchain.
 2. Write the service ELFs and the optional external root directory into a newc archive.
 3. Set the archive path and build the kernel in the selected embedded or standalone mode.
 4. The run command starts QEMU for the specified platform.
