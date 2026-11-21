@@ -52,6 +52,7 @@ pub(super) struct Volume {
     pub(super) pending: BTreeMap<u32, Rc<[u8; MAX_BLOCK_SIZE]>>,
     pub(super) failure: Option<Error>,
     pub(super) open: BTreeMap<u32, Weak<FileIdentity>>,
+    last_inode: Option<(Inode, Weak<[u8; MAX_BLOCK_SIZE]>)>,
 }
 
 pub(super) struct Group {
@@ -201,6 +202,7 @@ impl Volume {
             pending: BTreeMap::new(),
             failure: None,
             open: BTreeMap::new(),
+            last_inode: None,
         };
         volume.load_groups()?;
         volume.load_journal(sb)?;
@@ -387,12 +389,20 @@ impl Volume {
         let offset = bit as usize * self.inode_size;
         let bytes = self
             .block(self.groups[group as usize].inode_table + (offset / self.block_size) as u32)?;
+        if let Some((inode, backing)) = &self.last_inode
+            && inode.number == number
+            && backing.ptr_eq(&Rc::downgrade(&bytes))
+        {
+            return Ok(inode.clone());
+        }
+        let backing = Rc::downgrade(&bytes);
         let bytes = &bytes[offset % self.block_size..offset % self.block_size + self.inode_size];
         self.checksum.verify_inode(number, bytes)?;
         let mut inode = Inode::parse(number, bytes)?;
         if inode.flags & 0x40000 != 0 {
             inode.sectors *= self.block_size as u64 / 512;
         }
+        self.last_inode = Some((inode.clone(), backing));
         Ok(inode)
     }
 }
