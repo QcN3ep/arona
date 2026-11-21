@@ -2,6 +2,7 @@
 
 //! FAT32 volume access, file reads and writes, and directory operations.
 
+mod cache;
 mod directory;
 mod edit;
 mod metadata;

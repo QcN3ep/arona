@@ -7,7 +7,7 @@ use alloc::{
 };
 use core::cell::RefCell;
 
-use super::{Node, directory::Entry, half, word};
+use super::{Node, cache::Cache, directory::Entry, half, word};
 use crate::{
     Error,
     block::{Disk, MAX_BLOCK_SIZE},
@@ -37,6 +37,7 @@ pub(super) struct Volume {
     pub closed: bool,
     pub failed: bool,
     pub pending: BTreeMap<u64, Vec<u8>>,
+    pub(super) cache: RefCell<Cache>,
     pub next_free: u32,
     pub info: Vec<u32>,
 }
@@ -117,6 +118,7 @@ impl Volume {
             closed: false,
             failed: false,
             pending: BTreeMap::new(),
+            cache: RefCell::new(Cache::new()),
             next_free: 2,
             info: Vec::new(),
         };
@@ -186,14 +188,18 @@ impl Volume {
             let count = output.len().min(self.sector_size - within);
             if let Some(bytes) = self.pending.get(&(offset - within as u64)) {
                 output[..count].copy_from_slice(&bytes[within..within + count]);
-            } else if within == 0 && count == self.sector_size {
-                self.disk.read(self.start + offset, &mut output[..count])?;
-            } else {
+            } else if !self.cache.borrow().read(
+                offset - within as u64,
+                within,
+                &mut output[..count],
+            ) {
                 let mut sector = [0; MAX_BLOCK_SIZE];
-                self.disk.read(
-                    self.start + offset - within as u64,
-                    &mut sector[..self.sector_size],
-                )?;
+                let base = offset - within as u64;
+                self.disk
+                    .read(self.start + base, &mut sector[..self.sector_size])?;
+                self.cache
+                    .borrow_mut()
+                    .insert(base, &sector[..self.sector_size]);
                 output[..count].copy_from_slice(&sector[within..within + count]);
             }
             output = &mut output[count..];

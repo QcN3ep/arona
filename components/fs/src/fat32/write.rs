@@ -39,6 +39,7 @@ impl Volume {
                 }
             }
             for (&offset, bytes) in &self.pending {
+                self.cache.borrow_mut().remove(offset);
                 if let Err(error) = self.disk.write(self.start + offset, bytes) {
                     self.failed = true;
                     return Err(error);
@@ -97,6 +98,7 @@ impl Volume {
                 self.read_bytes(base, &mut sector[..self.sector_size])?;
             }
             sector[within..within + count].copy_from_slice(&input[..count]);
+            self.cache.borrow_mut().remove(base);
             if let Err(error) = self
                 .disk
                 .write(self.start + base, &sector[..self.sector_size])
