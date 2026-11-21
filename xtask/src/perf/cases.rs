@@ -40,7 +40,9 @@ pub(super) fn run(mut options: Options, root: &Path) -> Result<(), String> {
     let (executable, build, cases) = if options.case == "kperf" {
         let command = builds.image_command("kperf")?;
         let build = artifacts::build_description(&command, root, source.clone())?;
-        let executable = linux_test::build_runner(command, "kperf")?;
+        let built = linux_test::build_runner(command, "kperf")?;
+        let executable = directory.join("kernel.elf");
+        fs::copy(&built, &executable).map_err(|error| error.to_string())?;
         let cases = test::vm::list(options.target, root, &executable, &directory)?;
         (executable, build, cases)
     } else {

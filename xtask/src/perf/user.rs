@@ -19,8 +19,11 @@ pub(super) fn build(
     source: Value,
 ) -> Result<(PathBuf, Value, Vec<test::Case>), String> {
     let command = builds.program_command(options.case, "kperf");
-    let program_build = artifacts::build_description(&command, root, source.clone())?;
-    let program = linux_test::build_runner(command, "kperf")?;
+    let mut program_build = artifacts::build_description(&command, root, source.clone())?;
+    let built_program = linux_test::build_runner(command, "kperf")?;
+    program_build["original_elf"] = json!(built_program);
+    let program = directory.join("program.elf");
+    fs::copy(&built_program, &program).map_err(|error| error.to_string())?;
     let mut archive = Vec::new();
     append_entry(
         &mut archive,
@@ -56,8 +59,11 @@ pub(super) fn build(
     };
     command.env(format!("CARGO_PROFILE_{profile}_DEBUG"), "2");
     command.env(format!("CARGO_PROFILE_{profile}_STRIP"), "none");
-    let kernel_build = artifacts::build_description(&command, root, source)?;
-    let kernel = linux_test::build_runner(command, "arch")?;
+    let mut kernel_build = artifacts::build_description(&command, root, source)?;
+    let built_kernel = linux_test::build_runner(command, "arch")?;
+    kernel_build["original_elf"] = json!(built_kernel);
+    let kernel = directory.join("kernel.elf");
+    fs::copy(&built_kernel, &kernel).map_err(|error| error.to_string())?;
     options.input.kernel = Some(kernel.clone());
     options.input.initramfs = Some(initrd.clone());
     options.input.images = vec![format!("bin/init={}", program.display())];
