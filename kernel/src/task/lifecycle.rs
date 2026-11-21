@@ -255,12 +255,6 @@ impl Task {
         Ok(registry.find(self)?.handles.get(handle, kind, rights)?)
     }
 
-    pub(crate) fn waitable(&self, handle: Handle) -> Result<ObjectReference, TaskError> {
-        let _interrupts = InterruptGuard::new();
-        let registry = TASKS.lock();
-        Ok(registry.find(self)?.handles.get_any(handle, Rights::WAIT)?)
-    }
-
     pub fn close(&self, handle: Handle) -> Result<(), TaskError> {
         let _interrupts = InterruptGuard::new();
         let entry = TASKS.lock().find(self)?.handles.remove(handle)?;

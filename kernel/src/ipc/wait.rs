@@ -8,7 +8,7 @@ use super::{CallReference, ChannelError, ChannelReference, EventError, EventRefe
 use crate::{
     hardware::{self, cpu::InterruptGuard},
     memory::{self, HeapArc, MemoryError},
-    task::{Handle, HandleError, ObjectReference, Task, TaskError, TaskState},
+    task::{Handle, HandleError, HandleTable, ObjectReference, Rights, Task, TaskError, TaskState},
     thread::{self, ThreadError, ThreadState, Wait, WaitOutcome, Waker},
 };
 
@@ -283,45 +283,27 @@ fn resolve(
     resolved
         .try_reserve_exact(count)
         .map_err(|_| MemoryError::NoMemory)?;
-    let mut identities = Vec::new();
-    identities
-        .try_reserve_exact(count)
-        .map_err(|_| MemoryError::NoMemory)?;
-    for index in 0..count {
-        checkpoint(index)?;
-        let item = read(index)?;
+    if count == 1 {
+        let item = read(0)?;
         if item.condition_mask == 0 {
             return Err(WaitManyError::InvalidArgument);
         }
         let object = if item.handle == Handle::CURRENT_THREAD {
             ObjectReference::Thread(thread::current().ok_or(ThreadError::InvalidState)?)
         } else {
-            task.waitable(item.handle)?
+            task.with_handles(|handles| handles.get_any(item.handle, Rights::WAIT))??
         };
-        let source = match object {
-            ObjectReference::Call(call) if item.condition_mask == READABLE => Source::Call(call),
-            ObjectReference::Channel(channel) => {
-                if item.condition_mask & !(READABLE | WRITABLE | PEER_CLOSED) != 0 {
-                    return Err(WaitManyError::InvalidArgument);
-                }
-                Source::Channel(channel)
-            }
-            ObjectReference::Event(event) => Source::Event(event),
-            ObjectReference::TrapPort(port) if item.condition_mask == READABLE => {
-                Source::TrapPort(port)
-            }
-            ObjectReference::Task(target) if item.condition_mask == EXITED => Source::Task(target),
-            ObjectReference::Thread(target) if item.condition_mask == DEAD => {
-                Source::Thread(target)
-            }
-            _ => return Err(WaitManyError::InvalidArgument),
-        };
-        identities.push(source.identity());
         resolved.push(ResolvedItem {
-            source,
+            source: source(object, item.condition_mask)?,
             condition_mask: item.condition_mask,
         });
+        return Ok(resolved);
     }
+    let mut identities = Vec::new();
+    identities
+        .try_reserve_exact(count)
+        .map_err(|_| MemoryError::NoMemory)?;
+    resolve_batches(task, count, read, &mut resolved, &mut identities)?;
     let identities = identities.as_mut_slice();
     for root in (0..identities.len() / 2).rev() {
         checkpoint(root)?;
@@ -338,6 +320,87 @@ fn resolve(
         }
     }
     Ok(resolved)
+}
+
+fn resolve_batches(
+    task: &Task,
+    count: usize,
+    read: &mut dyn FnMut(usize) -> Result<WaitItem, WaitManyError>,
+    resolved: &mut Vec<ResolvedItem>,
+    identities: &mut Vec<usize>,
+) -> Result<(), WaitManyError> {
+    for base in (0..count).step_by(WAIT_BATCH) {
+        checkpoint(base)?;
+        let mut batch = arrayvec::ArrayVec::<WaitItem, WAIT_BATCH>::new();
+        let mut current = None;
+        let mut needs_handles = false;
+        for index in base..(base + WAIT_BATCH).min(count) {
+            let item = read(index)?;
+            if item.condition_mask == 0 {
+                return Err(WaitManyError::InvalidArgument);
+            }
+            if item.handle == Handle::CURRENT_THREAD {
+                current = Some(thread::current().ok_or(ThreadError::InvalidState)?);
+            } else {
+                needs_handles = true;
+            }
+            batch.push(item);
+        }
+        if needs_handles {
+            task.with_handles(|handles| {
+                resolve_batch(
+                    &batch,
+                    current.as_ref(),
+                    Some(handles),
+                    resolved,
+                    identities,
+                )
+            })??;
+        } else {
+            resolve_batch(&batch, current.as_ref(), None, resolved, identities)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_batch(
+    batch: &[WaitItem],
+    current: Option<&thread::Thread>,
+    handles: Option<&HandleTable>,
+    resolved: &mut Vec<ResolvedItem>,
+    identities: &mut Vec<usize>,
+) -> Result<(), WaitManyError> {
+    for item in batch {
+        let object = if item.handle == Handle::CURRENT_THREAD {
+            ObjectReference::Thread(current.unwrap().clone())
+        } else {
+            handles.unwrap().get_any(item.handle, Rights::WAIT)?
+        };
+        let source = source(object, item.condition_mask)?;
+        identities.push(source.identity());
+        resolved.push(ResolvedItem {
+            source,
+            condition_mask: item.condition_mask,
+        });
+    }
+    Ok(())
+}
+
+fn source(object: ObjectReference, condition_mask: u64) -> Result<Source, WaitManyError> {
+    Ok(match object {
+        ObjectReference::Call(call) if condition_mask == READABLE => Source::Call(call),
+        ObjectReference::Channel(channel) => {
+            if condition_mask & !(READABLE | WRITABLE | PEER_CLOSED) != 0 {
+                return Err(WaitManyError::InvalidArgument);
+            }
+            Source::Channel(channel)
+        }
+        ObjectReference::Event(event) => Source::Event(event),
+        ObjectReference::TrapPort(port) if condition_mask == READABLE => Source::TrapPort(port),
+        ObjectReference::Task(target) if condition_mask == EXITED => Source::Task(target),
+        ObjectReference::Thread(target) if condition_mask == DEAD => Source::Thread(target),
+        _ => return Err(WaitManyError::InvalidArgument),
+    })
 }
 
 // REFERENCE: https://en.wikipedia.org/wiki/Heapsort
